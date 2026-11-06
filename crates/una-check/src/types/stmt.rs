@@ -826,6 +826,12 @@ impl<'a> Checker<'_, 'a, '_> {
         self.timing_start();
         if let Some(bound) = &stmt.bound {
             let found = self.expr(bound, None);
+            // `spec/27 §8` rule 5: how many tasks run at once orders their effects too, so a
+            // bound above `internal` is a decision of the schedule (#1684, review M2).
+            let label = self.deep(&found);
+            self.switch_site(bound.span, &label, || {
+                "how many tasks this `tasks` statement runs at once".to_owned()
+            });
             let found = self.resolve(&found);
             if !matches!(found.unlabeled(), Ty::Error(_)) {
                 if matches!(found.magnitude(), Ty::Int) {

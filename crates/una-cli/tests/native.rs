@@ -8323,27 +8323,64 @@ fn t1_the_public_twin_orders_its_prints_by_its_key_in_both_engines() {
     // engines under `--virtual-time` (`spec/27 §8` rules 2 and 3): the tasks whose loops pass
     // 1024 check points print after the others, so the order follows the `public` key's bits,
     // which is what the probe read from a `secret` one.
-    let source = task_switch_case("task_switch_public_twin");
-    for (key, order) in [(90, "0 2 5 7 1 3 4 6"), (165, "1 3 4 6 0 2 5 7")] {
-        let program = source.replace("let key = 90", &format!("let key = {key}"));
-        let name = format!("t1twin{key}");
-        let dir = within_package(&name, "order", &program);
-        let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
-        assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-        let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
-        let expected: Vec<&str> = order.split(' ').collect();
-        assert_eq!(document["output"], serde_json::json!(expected), "{key}");
-        let native = Command::new(dir.join(format!("target/una/{name}")))
-            .arg("--virtual-time")
-            .current_dir(&dir)
-            .output()
-            .unwrap();
-        assert_eq!(native.status.code(), Some(0), "{key}: {native:?}");
-        let lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(lines, expected, "{key}");
-        let _ = std::fs::remove_dir_all(&dir);
+    // The twins of the review's probes (H1, H2, M2) order their prints the same way: the
+    // channel the refused cases would open with a `secret` key.
+    let cases = [
+        (
+            "task_switch_public_twin",
+            "0 2 5 7 1 3 4 6",
+            "1 3 4 6 0 2 5 7",
+        ),
+        (
+            "task_switch_generic_result_public",
+            "0 2 5 7 1 3 4 6",
+            "1 3 4 6 0 2 5 7",
+        ),
+        (
+            "task_switch_first_where_predicate_public",
+            "1 3 4 6 0 2 5 7",
+            "0 2 5 7 1 3 4 6",
+        ),
+        (
+            "task_switch_tasks_bound_public",
+            "1 3 4 6 0 2 5 7",
+            "0 2 5 7 1 3 4 6",
+        ),
+    ];
+    for (index, (case, at_90, at_165)) in cases.into_iter().enumerate() {
+        let source = task_switch_case(case);
+        for (key, order) in [(90, at_90), (165, at_165)] {
+            let program = source
+                .replace("let key = 90", &format!("let key = {key}"))
+                .replace("let key: Int = 90", &format!("let key: Int = {key}"));
+            assert!(
+                program.contains(&format!("key: Int = {key}\n"))
+                    || program.contains(&format!("let key = {key}\n")),
+                "{case}"
+            );
+            let name = format!("t1twin{index}k{key}");
+            let dir = within_package(&name, "order", &program);
+            let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+            assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+            let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+            let expected: Vec<&str> = order.split(' ').collect();
+            assert_eq!(
+                document["output"],
+                serde_json::json!(expected),
+                "{case} {key}"
+            );
+            let native = Command::new(dir.join(format!("target/una/{name}")))
+                .arg("--virtual-time")
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(native.status.code(), Some(0), "{key}: {native:?}");
+            let lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(lines, expected, "{case} {key}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

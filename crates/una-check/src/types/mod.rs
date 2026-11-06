@@ -887,7 +887,12 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
     server::start_rights(&env, &findings, &mut report);
     // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684).
-    switch::switch_points(&env, &findings, &mut report);
+    switch::switch_points(
+        &env,
+        &findings,
+        package.settings.serve.is_some(),
+        &mut report,
+    );
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(

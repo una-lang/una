@@ -21,8 +21,9 @@
 //! `internal` instead, through the generic calls that pass `ℓ_T` on, and at the site itself
 //! when its function is used as a value, whose instances the checker does not follow.
 //!
-//! O(1) per check point and per call while checking, then O(sites + calls) after the package,
-//! one pass over a worklist: linear in the size of the package.
+//! O(1) per check point and per call while checking, then O((sites + calls) log n) after the
+//! package, one pass over a worklist with ordered sets and maps: near linear in the size of the
+//! package.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -131,10 +132,13 @@ impl Checker<'_, '_, '_> {
             checked
                 .iter()
                 .fold(Label::public(), |label, (_, found, _, _)| {
+                    // Every label, those of a function value's parameters and result
+                    // included: what a called function value returns can decide the count,
+                    // as a predicate's result does for `first_where` (review H1, H2).
                     let own = if top {
                         checker.labeled(found).top_label()
                     } else {
-                        checker.deep(found)
+                        checker.labeled(found).every_label(&checker.env.kind_labels)
                     };
                     label.join(&own)
                 })
@@ -174,9 +178,12 @@ impl Checker<'_, '_, '_> {
 }
 
 /// Whether the program of the package can run started tasks: its code holds a `tasks`
-/// statement, or it calls a dependency not checked with it, whose code may hold one.
-fn runs_tasks(env: &Env<'_>, findings: &Findings) -> bool {
-    !findings.tasks_sites.is_empty()
+/// statement, it has a `serve` section, whose driver runs each request's `handle` as a started
+/// task (`spec/31 §7` rule 4), or it calls a dependency not checked with it, whose code may
+/// hold one.
+fn runs_tasks(env: &Env<'_>, findings: &Findings, serves: bool) -> bool {
+    serves
+        || !findings.tasks_sites.is_empty()
         || env
             .functions
             .iter()
@@ -186,7 +193,7 @@ fn runs_tasks(env: &Env<'_>, findings: &Findings) -> bool {
 /// The functions whose check points a type argument above `internal` can decide: those with a
 /// site above `internal` only through a symbolic label, and, through a worklist over the
 /// generic calls, each generic function that passes a symbolic label to one of them.
-/// O(sites + calls).
+/// O((sites + calls) log n).
 fn decided_by_type(findings: &Findings) -> BTreeSet<usize> {
     let mut decided: BTreeSet<usize> = BTreeSet::new();
     let mut work: Vec<usize> = Vec::new();
@@ -217,9 +224,14 @@ fn decided_by_type(findings: &Findings) -> BTreeSet<usize> {
 }
 
 /// `spec/27 §8` rule 5 after pass 2 (#1684): in a package whose program can run started tasks,
-/// each check point that data above `internal` can decide is U4002. O(sites + calls).
-pub(crate) fn switch_points(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
-    if findings.switch_sites.is_empty() || !runs_tasks(env, findings) {
+/// each check point that data above `internal` can decide is U4002. O((sites + calls) log n).
+pub(crate) fn switch_points(
+    env: &Env<'_>,
+    findings: &Findings,
+    serves: bool,
+    report: &mut Report<'_>,
+) {
+    if findings.switch_sites.is_empty() || !runs_tasks(env, findings, serves) {
         return;
     }
     let decided = decided_by_type(findings);
