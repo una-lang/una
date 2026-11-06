@@ -33,9 +33,10 @@ Option 2, the most secure option that keeps the sound programs. The normative te
 
 ## Choices made in writing the rule
 
-- **The concurrent label** of a site is `τ_conc` (ADR 0116 IF6, `spec/26 §7` rule 5 item 5) joined with `L_res` (item 6), the residue that other tasks' requests leave. Both come from work outside the `via` body; the other items of `τ` (the program counter, what the body reads, the operations it performs, item 7's values) describe the `via`'s own data, which rule 3 trusts it to release.
+- **The concurrent label** of a site is its `τ_conc` (ADR 0116 IF6), computed as the accepted amendment of ADR 0116 of 2026-10-25 does (P4, `conc(n) ⊔ ctx(e)`), the preview's `τ_conc` standing in where that precise label has not landed. It comes from work outside the `via` body; the other items of `τ` (the program counter, what the body reads, the operations it performs, item 7's values) describe the `via`'s own data, which rule 3 trusts it to release.
+- **`L_res` is not included.** The residue label is computed over the whole package: joined into the concurrent label, it would refuse `via_hmac_within` called from sequential code in any package whose tasks or races can reach `Http`. That stricter definition is not part of the decision; whether to bound the residue in a `via` body is left to a later decision.
 - **Every timing site the body reaches counts,** not only the sites written in it: a function the body calls is checked with labels, but its result comes back into a body where nothing is checked, so a `secret` result that a deadline decided would be released at the label of `to`.
-- **Sites:** every site with a timing label of `spec/26` or `spec/27`: `within` (with `start ... within`), `first of`, `for ever within`, and the statement that an installation of `limiter` scopes over.
+- **Sites:** every site with a timing label of `spec/26` or `spec/27` (`spec/26 §7` rule 5, `spec/27 §5`, §6 and §10): `within` (with `start ... within`), `first of`, `for ever within`, and the statement that an installation of `limiter` scopes over.
 - **Precision.** With the preview's `τ_conc`, `public` means that no part of a task construct can reach the site's function, so a `via` with a timing site works only for a policy called outside every part of a task construct. The precise `τ_conc` of ADR 0116's amendment of 2026-10-25 makes the rule more precise with no change of its own.
 
 ## Costs
