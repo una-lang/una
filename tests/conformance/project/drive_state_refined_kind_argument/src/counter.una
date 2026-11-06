@@ -1,0 +1,26 @@
+-- test: a refinement in a type argument of a generic kind of the state is refused as one at its top is: `step` would assume of the field what `init` never proved (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U7008 at ita.una:6:10
+module counter
+
+import std.drive (Tick)
+
+--- A count that cannot exist.
+kind Never = Int where it == 0 and it == 1
+
+--- Two values.
+pub kind Pair[A, B]
+  first: A
+  second: B
+
+--- Needs the impossible.
+impossible(count: Int) -> Unit
+  requires 1 == 2
+=
+  unit
+
+--- Starts with two counts.
+pub init() -> Pair[Int, Int] = Pair(first: 0, second: 7)
+
+--- Counts each tick, through the impossible, which the refinement would prove.
+pub step(edit state: Pair[Int, Never], input: Tick) -> Unit = impossible(state.second)

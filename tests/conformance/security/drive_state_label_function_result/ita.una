@@ -1,0 +1,11 @@
+ita drive_state_label_function_result
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    console
+
+drive
+  module counter
+  ticks 16

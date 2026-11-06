@@ -38,6 +38,11 @@ pub const DEFAULT_MAX_DEPTH: usize = 10_000;
 /// The default memory budget of a run, in MiB (`spec/11 §7`, ADR 0061).
 pub const DEFAULT_MAX_MEMORY: usize = 4096;
 
+/// The usage error of a run under `--virtual-time` that holds a `serve:` grant (ADR 0123, S4
+/// amendment C), the same in `una run` and in executables: live peers send in real time, which
+/// virtual time cannot place.
+pub const VIRTUAL_SERVE: &str = "`--virtual-time` cannot run with a `serve:` grant: live peers send in real time, which virtual time cannot place";
+
 /// The most stack a run reserves, whatever its maximum depth (ADR 0061 rule 1).
 const STACK_CEILING: usize = 1024 * 1024 * 1024;
 

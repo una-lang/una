@@ -512,8 +512,29 @@ pub(crate) fn run_command(
     } else {
         &["main"]
     };
-    if let Some(message) = server_pending(&analysis, &entry, started) {
+    // Whether the program serves: its entry functions use the host's `HttpServer`, so its
+    // serve threads start before `main` (S4 amendment B.2).
+    let pending = server_pending(&analysis, &entry, started);
+    let serves = pending.is_some();
+    // The toolchain's own test builds run a program that serves when `UNA_TEST_RUN_SERVER` is
+    // 1, for the live runs of `tests/serve_live.rs` and the timing oracles of `L_srv`; every
+    // other run keeps the usage error of `spec/31 §1` rule 10.
+    #[cfg(feature = "test-hooks")]
+    let pending = pending.filter(|_| {
+        crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() != Some("1")
+    });
+    if let Some(message) = pending {
         writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
+    // Live peers send in real time, which virtual time cannot place: a run under
+    // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment C).
+    if options.virtual_time
+        && grants
+            .iter()
+            .any(|grant| matches!(grant, Grant::Serve { .. }))
+    {
+        writeln!(stderr, "error: {}", una_interp::VIRTUAL_SERVE)?;
         return Ok(ExitStatus::Usage);
     }
     let keys = match load_keys(&grants) {
@@ -550,7 +571,11 @@ pub(crate) fn run_command(
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
     let serve_threads =
         una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
-    let _listeners = match una_http::serve::prepare(
+    let served: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
+        .iter()
+        .map(|input| input.grant.clone())
+        .collect();
+    let listeners = match una_http::serve::prepare(
         &serve_inputs(&grants),
         serve_threads,
         options
@@ -581,12 +606,41 @@ pub(crate) fn run_command(
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
+    // A program that serves starts its serve threads here, before `main`, over the listeners
+    // bound above; they accept nothing until its first server operation (S4 amendment B.2).
+    // Any other run holds its listeners until it ends.
+    let live = if serves && !listeners.listeners.is_empty() {
+        // The engine's panic hook, from this thread, before any serve thread starts.
+        una_http::serve::install_panic_hook();
+        match una_http::serve::live::Live::start(listeners, &served, serve_threads) {
+            Ok(live) => Some(std::sync::Arc::new(live)),
+            Err(message) => {
+                writeln!(stderr, "error: {message}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    } else {
+        drop(listeners);
+        None
+    };
     // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
     // handlers of SIGINT and SIGTERM; any other keeps their default actions.
     // The run's host stop state is made first, so a signal that comes while the handlers are
     // installed counts for the run.
     let stops = takes_stops(&analysis, &package.sources, &entry, drive.is_some());
     let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    // The serve engine learns of the host stop and of the hard stop from the run's watcher
+    // (ADR 0123 rule 18).
+    if let Some(live) = &live {
+        let live = std::sync::Arc::clone(live);
+        stop.on_stops(Box::new(move |hard| {
+            if hard {
+                live.hard_stop();
+            } else {
+                live.host_stop();
+            }
+        }));
+    }
     if stops && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install() {
         writeln!(stderr, "internal compiler error (U8001): {message}")?;
         return Ok(ExitStatus::Internal);
@@ -630,7 +684,10 @@ pub(crate) fn run_command(
     let entry_path = entry.as_str();
     let host = &host;
     let max_depth = options.max_depth;
-    let limits = limits(&options, Some(&stop));
+    let mut limits = limits(&options, Some(&stop));
+    limits.serve = live
+        .as_deref()
+        .map(|live| live as &dyn una_http::serve::program::Port);
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
@@ -680,6 +737,22 @@ pub(crate) fn run_command(
         )
     });
     drop(ceiling);
+    // The serve engine ends with the run: what the run answered is written, as a host stop
+    // drains, for at most the grace period, then the hard stop closes what is left; after the
+    // hard stop or an internal error, the hard stop at once (ADR 0123 rule 18).
+    if let Some(live) = &live {
+        let hard = matches!(
+            &evaluated,
+            Ok((Some(run), _)) if matches!(
+                run.completion,
+                Completion::Aborted(Abort::HostStop { .. } | Abort::Fault { .. })
+            )
+        );
+        live.end(
+            std::time::Duration::from_secs(options.stop_grace.max(1)),
+            hard,
+        );
+    }
     drop(watching);
     let (evaluated, traced) = match evaluated {
         Ok((run, traced)) => (Ok(run), traced),
@@ -953,6 +1026,21 @@ pub(crate) fn driven_init<'a>(
             "`on_stop` of the driven module `{module}` is not `pub on_stop(state: S) -> Unit`, with S the result of `init`"
         ));
     }
+    // Core IR erases units of measure, which `same_type` therefore cannot see: the host hands
+    // the state on unchanged, so its units MUST be those of the result of `init` at every
+    // position (`spec/26 §2` rule 2, U2028 in the checks too). Fails closed when the checker
+    // recorded none.
+    let units = analysis.drive_units.as_ref().is_some_and(|units| {
+        [&units.step, &units.on_stop]
+            .into_iter()
+            .flatten()
+            .all(|state| *state == units.init)
+    });
+    if !units {
+        return Err(format!(
+            "the state of the driven module `{module}` does not have the units of measure of the result of `init` at every position of its type in `step` and `on_stop`"
+        ));
+    }
     Ok(init)
 }
 
@@ -1058,31 +1146,74 @@ fn is_host_kind(ty: &Type, name: &str, label: &una_core::Label) -> bool {
         if module == "prelude" && found == name && args.is_empty() && at == label && refinements.is_empty())
 }
 
-/// Whether two types are the same, labels and refinements aside. The labels of a driven
-/// module's state are the checker's: each hand-off of the host is a flow into the parameter's
-/// declared type, U4001 otherwise (`spec/26 §2` rule 2).
+/// Whether two types are the same `S` of a driven module's state, labels aside (`spec/26 §2`
+/// rule 2). The labels are the checker's: each hand-off of the host is a flow into the
+/// parameter's declared type, U4001 otherwise, so a state labeled higher in `step` or `on_stop`
+/// is the same `S` at every position, the parameters and result of a function type included
+/// (issue #1644). A refinement anywhere in `S` is U7008 in `una check` (`spec/26 §2` rule 2,
+/// "No preconditions"), since nothing proves the state the host hands on satisfies it; as
+/// defense in depth the refinements are compared here too, predicate by predicate and in
+/// order, so a package that reaches the host past that check with a refinement on one side
+/// only is still refused. A function type's effects and failures are compared exactly.
+/// O(size of the types).
 fn same_type(a: &Type, b: &Type) -> bool {
     let all = |xs: &[Type], ys: &[Type]| {
         xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
     };
     match (a, b) {
-        (Type::Base { base: x, .. }, Type::Base { base: y, .. }) => match (x, y) {
-            (
-                Base::Named {
-                    module: m,
-                    name: n,
-                    args: xs,
-                },
-                Base::Named {
-                    module: k,
-                    name: o,
-                    args: ys,
-                },
-            ) => m == k && n == o && all(xs, ys),
-            (Base::Tuple(xs), Base::Tuple(ys)) => all(xs, ys),
-            _ => x == y,
-        },
-        _ => a == b,
+        (
+            Type::Fn {
+                params: xs,
+                result: x,
+                uses: xu,
+                fails: xf,
+                ..
+            },
+            Type::Fn {
+                params: ys,
+                result: y,
+                uses: yu,
+                fails: yf,
+                ..
+            },
+        ) => all(xs, ys) && same_type(x, y) && xu == yu && xf == yf,
+        (
+            Type::Base {
+                base: x,
+                refinements: xr,
+                ..
+            },
+            Type::Base {
+                base: y,
+                refinements: yr,
+                ..
+            },
+        ) => {
+            // The predicates, not where they are written: one kind or range written in two
+            // signatures is one refinement.
+            xr.len() == yr.len()
+                && xr
+                    .iter()
+                    .zip(yr)
+                    .all(|(p, q)| p.clause.term == q.clause.term)
+                && match (x, y) {
+                    (
+                        Base::Named {
+                            module: m,
+                            name: n,
+                            args: xs,
+                        },
+                        Base::Named {
+                            module: k,
+                            name: o,
+                            args: ys,
+                        },
+                    ) => m == k && n == o && all(xs, ys),
+                    (Base::Tuple(xs), Base::Tuple(ys)) => all(xs, ys),
+                    _ => x == y,
+                }
+        }
+        _ => false,
     }
 }
 
@@ -1618,5 +1749,78 @@ impl<'a> ExampleDoc<'a> {
             },
             trace: run.trace.iter().map(EventDoc::from).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Int` with the label `label` and the refinements whose predicates are `predicates`.
+    fn int(label: una_core::Label, predicates: &[bool]) -> Type {
+        Type::Base {
+            base: Base::Int,
+            refinements: predicates
+                .iter()
+                .map(|p| una_core::Refinement {
+                    name: "R".to_owned(),
+                    clause: una_core::Clause {
+                        term: una_core::Term::Bool(*p),
+                        text: p.to_string(),
+                        span: None,
+                    },
+                })
+                .collect(),
+            label,
+        }
+    }
+
+    /// `fn(param) -> result`, public, with no effects or failures.
+    fn function(param: Type, result: Type) -> Type {
+        Type::Fn {
+            params: vec![param],
+            result: Box::new(result),
+            uses: Vec::new(),
+            fails: None,
+            label: una_core::Label::public(),
+        }
+    }
+
+    #[test]
+    fn a_driven_state_is_compared_with_labels_aside_and_refinements_included() {
+        // `spec/26 §2` rule 2, issue #1644: the run-time shape check, reached directly, since a
+        // refinement in the state is U7008 in `una check` before any run.
+        let public = una_core::Label::public;
+        let secret = || una_core::Label::symbol("s");
+        // Labels aside at every position, a function type's parameter and result included.
+        assert!(same_type(&int(public(), &[]), &int(secret(), &[])));
+        assert!(same_type(
+            &function(int(public(), &[]), int(public(), &[])),
+            &function(int(secret(), &[]), int(secret(), &[]))
+        ));
+        // Refinements compared by predicate, wherever they are written, and in order.
+        assert!(same_type(&int(public(), &[true]), &int(secret(), &[true])));
+        assert!(!same_type(&int(public(), &[]), &int(public(), &[true])));
+        assert!(!same_type(
+            &int(public(), &[true]),
+            &int(public(), &[false])
+        ));
+        assert!(!same_type(
+            &int(public(), &[true, false]),
+            &int(public(), &[false, true])
+        ));
+        assert!(!same_type(
+            &function(int(public(), &[true]), int(public(), &[])),
+            &function(int(public(), &[]), int(public(), &[]))
+        ));
+        assert!(!same_type(
+            &function(int(public(), &[]), int(public(), &[true])),
+            &function(int(public(), &[]), int(public(), &[]))
+        ));
+        // A function type is never the same as a base type.
+        assert!(!same_type(
+            &function(int(public(), &[]), int(public(), &[])),
+            &int(public(), &[])
+        ));
     }
 }

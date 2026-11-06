@@ -509,6 +509,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_files_write", 2, true),
     ("una_rt_keys_hmac", 2, true),
     ("una_rt_http_enable", 0, false),
+    ("una_rt_serve_enable", 0, false),
     ("una_rt_http_get", 4, true),
     ("una_rt_http_post", 5, true),
     ("una_rt_http_put", 5, true),
@@ -731,6 +732,10 @@ struct Emitter<'p> {
     /// Whether an operation of `Http` was compiled: the C `main` then calls
     /// `una_rt_http_enable`, the only path to the TLS stack (ADR 0074 H7, #1148).
     http: bool,
+    /// Whether an operation of `HttpServer` was compiled: the C `main` then calls
+    /// `una_rt_serve_enable`, the only path to the serve threads from the runtime's start, so an
+    /// executable that serves nothing carries none of them (ADR 0074 H7).
+    serve: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -766,6 +771,7 @@ impl<'p> Emitter<'p> {
             hashing: false,
             threads: false,
             http: false,
+            serve: false,
         })
     }
 
@@ -1303,6 +1309,9 @@ impl<'p> Emitter<'p> {
             let una_main_address = builder.ins().func_addr(pointer, una_main_ref);
             if self.http {
                 self.runtime_call(&mut builder, "una_rt_http_enable", &[])?;
+            }
+            if self.serve {
+                self.runtime_call(&mut builder, "una_rt_serve_enable", &[])?;
             }
             let start_ref = self.module.declare_func_in_func(start, builder.func);
             let call = builder.ins().call(
