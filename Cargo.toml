@@ -110,8 +110,9 @@ overflow-checks = true
 # opt-level 1; the TLS stack's names when the dependencies are at opt-level 2, so they stay at 1). The
 # other crates of the runtime archive `libuna_rt.a` (una-interp, una-sys, una-core, una-hash, cap,
 # rustls) build at opt-level 1. The release gates keep opt-level 0: `scripts/sanitize.sh` and
-# `scripts/release-gates.sh` export `CARGO_PROFILE_DEV_OPT_LEVEL=0`, which sets the profile-wide value
-# and leaves the per-package values below as they are.
+# `scripts/release-gates.sh` export `CARGO_PROFILE_DEV_OPT_LEVEL=0`, and `scripts/local-ci.sh` passes it
+# into the container of the Linux legs (0 when unset), which sets the profile-wide value and leaves the
+# per-package values below as they are.
 [profile.dev.package.una-rt]
 opt-level = 0
 [profile.dev.package.una-http]
