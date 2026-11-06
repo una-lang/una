@@ -480,8 +480,12 @@ pub struct Meta {
     /// `` `run grants` `` in `ita.una`.
     pub grants_section: String,
     /// Whether the program is of edition 0.4, whose runs may take `serve:` grants
-    /// (`spec/31 §2` rule 4).
+    /// (`spec/31 §2` rule 4): the description's `serve_grants`.
     pub serve: bool,
+    /// Whether the program runs the driver of a `serve` section (ADR 0123 rule 16): the
+    /// description's `serve`, `{"module": ..., "within": null}`, whose serve threads start
+    /// before the driver (S4 P8).
+    pub serve_section: bool,
     /// Whether the program has a `for ever`, so the run takes host stops: the executable then
     /// installs the handlers of SIGINT and SIGTERM (ADR 0116 rule 18).
     pub stops: bool,
@@ -619,7 +623,22 @@ impl Meta {
             Some(section) => section.as_str()?.to_owned(),
             None => "`[run] grants`".to_owned(),
         };
-        let serve = value.get("serve").and_then(Value::as_bool).unwrap_or(false);
+        let serve = value
+            .get("serve_grants")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // The driver applies no `within` (`spec/31 §7` rule 3 item 7 refuses every one today):
+        // a description with one is no description, and the executable refuses to start.
+        let serve_section = match value.get("serve") {
+            None => false,
+            Some(section) => {
+                section.get("module")?.as_str()?;
+                if !section.get("within")?.is_null() {
+                    return None;
+                }
+                true
+            }
+        };
         let float32_probes = value
             .get("float32_probes")
             .and_then(Value::as_bool)
@@ -674,6 +693,7 @@ impl Meta {
             drive,
             grants_section,
             serve,
+            serve_section,
             float32_probes,
         })
     }
@@ -2183,7 +2203,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // A program that serves starts its serve threads here, before `main`, over the listeners
     // bound above; they accept nothing until its first server operation (S4 amendment B.2).
     // Any other run holds its listeners until it ends.
-    let serves = meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer");
+    let serves = meta.serve_section
+        || (meta.serve && meta.uses.iter().any(|need| need.capability == "HttpServer"));
     let live = SERVE.get().map(|hooks| hooks.start).filter(|_| serves);
     let _listeners = if let Some(install) = live
         && !scripted

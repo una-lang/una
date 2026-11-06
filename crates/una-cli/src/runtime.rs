@@ -1172,7 +1172,7 @@ pub(crate) fn served_module(
 
 /// The usage error of a run or a build of a package with a `serve` section: the driver of ADR
 /// 0123 rule 16 runs the operations of `HttpServer`, which run only in the toolchain's own test
-/// builds (`spec/31 §1` rule 10), and in the interpreter only until native code has its driver.
+/// builds (`spec/31 §1` rule 10), in both engines.
 /// Fails closed before anything starts, as [`server_pending`] does.
 pub(crate) fn serve_pending(module: &str) -> String {
     format!(
@@ -1281,7 +1281,7 @@ fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
 }
 
 /// The function `name` of module `module` in Core IR.
-fn function_of<'a>(program: &'a Program, module: &str, name: &str) -> Option<&'a Fun> {
+pub(crate) fn function_of<'a>(program: &'a Program, module: &str, name: &str) -> Option<&'a Fun> {
     let module = program.modules.iter().find(|m| m.path == module)?;
     module.decls.iter().find_map(|decl| match decl {
         Decl::Fun(fun) if fun.name == name => Some(fun.as_ref()),

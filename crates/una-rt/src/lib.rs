@@ -20,6 +20,7 @@ use cap::Cap;
 
 pub mod deadline;
 pub mod decimal;
+mod driver;
 #[allow(unsafe_code)]
 pub mod ffi;
 pub mod generic;
