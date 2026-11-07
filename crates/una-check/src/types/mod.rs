@@ -53,6 +53,7 @@ mod shared;
 mod sharing_tests;
 mod stmt;
 mod summary;
+mod switch;
 mod timing;
 mod ty;
 mod unify;
@@ -887,6 +888,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
     server::start_rights(&env, &findings, &mut report);
+    // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684).
+    switch::switch_points(
+        &env,
+        &findings,
+        package.settings.serve.is_some(),
+        &mut report,
+    );
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -1223,6 +1231,12 @@ pub(crate) struct Findings {
     /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
     /// the residue label `L_res` (ADR 0116 P9).
     pub(crate) tasks_sites: Vec<timing::TasksSite>,
+    /// The check points that data above `internal` can decide, reported when the package's
+    /// program can run started tasks (`spec/27 §8` rule 5, #1684).
+    pub(crate) switch_sites: Vec<switch::SwitchSite>,
+    /// The calls of generic functions, with the labels their type arguments can carry, for
+    /// the sites of `switch_sites` that only a type parameter decides (#1684).
+    pub(crate) switch_calls: Vec<switch::GenericCall>,
     /// The installations of `limiter` of `std.limit` by `with` or `given` (ADR 0117 rule 9,
     /// IF5): each one's binding, its function and the seed of the timing label of the statement
     /// it scopes over.

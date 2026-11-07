@@ -1,4 +1,4 @@
--- test: a `within`, a failing `tasks` statement, a `first of` and calls that reach them stay legal under a `secret` program counter, in a function that says `diverges` or not, through a function value and across `skip`, and run as before; the `timeout` and `cancelled` events they append there are left out of the trace, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, S-39)
+-- test: a `within`, a failing `tasks` statement, a `first of` and calls that reach them stay legal under a `secret` program counter, in a function that says `diverges` or not, through a function value and across `skip`, and run as before; the `timeout` and `cancelled` events they append there are left out of the trace, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, S-39); its data are `internal`, above `public` and so quiet, and at most the `internal` that the schedule of started tasks may depend on, since check points under a `secret` program counter are U4002 in a program that starts tasks (spec/27 §8 rule 5, #1684)
 -- spec: spec/26 §6
 -- grant: console
 -- expect: run-output "done 4"
@@ -67,7 +67,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = 13
+  let s: internal Int = 13
   let edit n = 0
   for i in 0..<4
     n = n + 1

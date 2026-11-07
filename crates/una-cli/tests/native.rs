@@ -5987,7 +5987,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   for i in 0..<4
     if s > i
       spin()
@@ -6029,7 +6029,10 @@ pub main() -> Unit
 ";
 
 /// The trace of `una --json run` and of the executable, and the output of both, for the
-/// program `source` with `SECRET` replaced by `secret`, run with `args`.
+/// program `source` with `SECRET` replaced by `secret`, run with `args`. The quiet-code
+/// programs that start tasks label their data `internal`, above `public` and so quiet: since
+/// #1684 a check point under a program counter above `internal` is U4002 in a program that
+/// starts tasks (`spec/27 §8` rule 5).
 fn secret_run(name: &str, source: &str, secret: i64, args: &[&str]) -> (Value, Value, Value) {
     let (output, run, native_output, native) = secret_runs(name, source, secret, args);
     assert_eq!(native_output, output, "{name} {secret}");
@@ -6388,7 +6391,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   for i in 0..<4
     if s > i
       wrapper()
@@ -6448,7 +6451,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   let edit n = 0
   for i in 0..<4
     n = n + 1
@@ -6549,7 +6552,7 @@ const SECRET_VALUE_CALL: &str = "
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   let f = if s > 0 then blk else nothing
   f()
   let g = if s > 1 then blk else nothing
@@ -6564,7 +6567,7 @@ const SECRET_FIELD_CALL: &str = "
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   let a = if s > 0 then Job(run: blk) else Job(run: nothing)
   a.run()
   let b = if s > 1 then Job(run: blk) else Job(run: nothing)
@@ -6581,7 +6584,7 @@ const SECRET_DECIDED_CALL: &str = "
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   pick(s, b: 0, f: when_true)
   pick(s, b: 1, f: when_true)
   pick(s, b: 2, f: when_true)
@@ -6634,7 +6637,7 @@ worker(n: Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   let f = if s > 0 then blk else nothing
   f()
   let g = if s > 1 then blk else nothing
@@ -6725,7 +6728,7 @@ worker(n: Int) -> Unit
 =
   @console.print("w {n}")
 
-inner(s: secret Int) -> Unit
+inner(s: internal Int) -> Unit
   uses @console: Console[print]
 =
   for i in 0..<3
@@ -6738,7 +6741,7 @@ inner(s: secret Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   for i in 0..<3
     if s > i
       tasks
@@ -6886,7 +6889,7 @@ rb() -> Unit
   let q = attempt run_block()
   noop()
 
-loops(s: secret Int) -> Unit
+loops(s: internal Int) -> Unit
   diverges
 =
   for j in 0..<4
@@ -6905,7 +6908,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   loops(s)
   let p = attempt run_block()
   let r = attempt blocked() within 5 * millisecond
@@ -7082,7 +7085,7 @@ quiet_put() -> Unit
 =
   use_it() with @k = keep()
 
-worker(s: secret Int) -> Unit
+worker(s: internal Int) -> Unit
 =
   for i in 0..<3
     if s > i
@@ -7092,7 +7095,7 @@ worker(s: secret Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   for i in 0..<3
     if s > i
       quiet_put()
@@ -7262,10 +7265,10 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
     // only its output; here its whole trace is compared across secrets, in both engines.
     let path = root().join("tests/conformance/runtime/installs_under_secret/src/installs.una");
     let source = std::fs::read_to_string(&path).unwrap();
-    let fixed = "let s: secret Int = 2";
+    let fixed = "let s: internal Int = 2";
     assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
     let source = source
-        .replace(fixed, "let s: secret Int = SECRET")
+        .replace(fixed, "let s: internal Int = SECRET")
         .replace("module installs", "module leak");
     let trace = one_trace_for_every_secret("s41conf", &source, &serde_json::json!(["done 3"]));
     let ids: Vec<&str> = trace
@@ -7483,10 +7486,10 @@ fn l1544_the_conformance_case_has_one_trace_for_every_secret() {
     // public installations: a `put` in the started task, then one in the root task.
     let path = root().join("tests/conformance/runtime/local_handler_under_secret/src/local.una");
     let source = std::fs::read_to_string(&path).unwrap();
-    let fixed = "let s: secret Int = 2";
+    let fixed = "let s: internal Int = 2";
     assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
     let source = source
-        .replace(fixed, "let s: secret Int = SECRET")
+        .replace(fixed, "let s: internal Int = SECRET")
         .replace("module local", "module leak");
     let trace = one_trace_for_every_secret("l1544conf", &source, &serde_json::json!(["done"]));
     let expected = Value::from(vec![
@@ -7558,10 +7561,10 @@ fn s42_the_conformance_case_has_one_trace_for_every_secret() {
     // type parameter, and those of the started task under its branch, append nothing.
     let path = root().join("tests/conformance/runtime/operations_under_secret/src/operations.una");
     let source = std::fs::read_to_string(&path).unwrap();
-    let fixed = "let s: secret Int = 2";
+    let fixed = "let s: internal Int = 2";
     assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
     let source = source
-        .replace(fixed, "let s: secret Int = SECRET")
+        .replace(fixed, "let s: internal Int = SECRET")
         .replace("module operations", "module leak");
     let trace = one_trace_for_every_secret("s42conf", &source, &serde_json::json!(["done 2"]));
     let ops: Vec<(&str, &str)> = trace
@@ -7818,7 +7821,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   for i in 0..<5
     tasks
       if s > i
@@ -7836,7 +7839,7 @@ fn secret_start_mixed() -> String {
     let text = std::fs::read_to_string(case).unwrap();
     let program = text
         .replace("module starts", "module leak")
-        .replace("let s: secret Int = 2", "let s: secret Int = SECRET");
+        .replace("let s: internal Int = 2", "let s: internal Int = SECRET");
     assert!(program.contains("SECRET"), "{program}");
     program
 }
@@ -7945,7 +7948,7 @@ fn s40_tasks_started_under_a_secret_branch_end_without_their_cancelled_events() 
     // S-40 (#1512), `spec/26 §6` rule 4: a task started under a raised program counter runs
     // under it, so when a public failure ends its block and cancels it, it appends no
     // `cancelled` event and takes no `seq`. Before the fix, secret `s` gave `s` events.
-    let program = SECRET_START_CANCEL.replace("LABEL", "secret");
+    let program = SECRET_START_CANCEL.replace("LABEL", "internal");
     for secret in [0, 1, 2, 4, 7] {
         let (output, run, native) = secret_run("s40cancel", &program, secret, &[]);
         assert_eq!(output, serde_json::json!(["done"]), "{secret}");
@@ -8013,7 +8016,7 @@ pinger() -> Unit
 =
   use_it() with @k = keep()
 
-block[T](a: T, b: T, s: secret Int, i: Int) -> Unit
+block[T](a: T, b: T, s: internal Int, i: Int) -> Unit
   diverges
 =
   tasks
@@ -8026,7 +8029,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   for i in 0..<3
     block(1, b: 1, s: s, i: i)
   @console.print("done")
@@ -8042,11 +8045,11 @@ const SECRET_START_FLOOR: &str = r#"module leak
 
 capability Sink
   op put(x: Int) -> Unit
-    accepts secret
+    accepts internal
 
 capability Box
   op hold(x: Int) -> Unit
-    accepts secret
+    accepts internal
 
 handler keep() for Sink
   op put(x) = unit
@@ -8058,7 +8061,7 @@ use_it() -> Unit
 =
   @k.put(1)
 
-block(x: secret Int) -> Unit
+block(x: internal Int) -> Unit
   uses @k: Sink[put]
 =
   tasks
@@ -8072,12 +8075,12 @@ handler box() for Box
   uses @k: Sink[put]
   op hold(x) = block(x)
 
-hold_it(s: secret Int) -> Unit
+hold_it(s: internal Int) -> Unit
   uses @b: Box[hold]
 =
   @b.hold(s)
 
-boxed(s: secret Int) -> Unit
+boxed(s: internal Int) -> Unit
   uses @k: Sink[put]
 =
   hold_it(s) with @b = box()
@@ -8085,7 +8088,7 @@ boxed(s: secret Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   boxed(s) with @k = keep()
   @console.print("done")
 "#;
@@ -8097,11 +8100,11 @@ const SECRET_BLOCKS_FLOOR: &str = r#"module leak
 
 capability Sink
   op put(x: Int) -> Unit
-    accepts secret
+    accepts internal
 
 capability Box
   op hold(x: Int) -> Unit
-    accepts secret
+    accepts internal
 
 handler keep() for Sink
   op put(x) = unit
@@ -8115,7 +8118,7 @@ use_it() -> Unit
 =
   @k.put(1)
 
-block(x: secret Int) -> Unit
+block(x: internal Int) -> Unit
   uses @k: Sink[put]
 =
   for i in 0..<3
@@ -8136,12 +8139,12 @@ handler box() for Box
   uses @k: Sink[put]
   op hold(x) = block(x)
 
-hold_it(s: secret Int) -> Unit
+hold_it(s: internal Int) -> Unit
   uses @b: Box[hold]
 =
   @b.hold(s)
 
-boxed(s: secret Int) -> Unit
+boxed(s: internal Int) -> Unit
   uses @k: Sink[put]
 =
   hold_it(s) with @b = box()
@@ -8149,7 +8152,7 @@ boxed(s: secret Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   boxed(s) with @k = keep()
   @console.print("done")
 "#;
@@ -8226,7 +8229,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  let s: internal Int = SECRET
   tasks at most 2 at once
     start worker(1)
     if s > 0
@@ -8271,6 +8274,113 @@ fn s40_open_channel_1545_a_quiet_start_holds_a_slot_of_the_shared_bound() {
         match &paths {
             None => paths = Some(tasks),
             Some(seen) => assert_eq!(&tasks, seen, "{secret}"),
+        }
+    }
+}
+
+/// The module of the conformance case `tests/conformance/security/<case>` of #1684 (hunt #973,
+/// T1), whose module is `order`.
+fn task_switch_case(case: &str) -> String {
+    let path = root().join(format!("tests/conformance/security/{case}/src/order.una"));
+    std::fs::read_to_string(path).unwrap()
+}
+
+#[test]
+fn t1_the_task_switch_probe_is_refused_by_run_and_by_build() {
+    // #1684, `spec/27 §8` rule 5: the hunt's probe, whose started tasks ran pure loops as long
+    // as the bits of a `secret` key decided and printed their index after, so that the order
+    // of the prints spelled the key under `una run` and native `--virtual-time`. Both commands
+    // check first and refuse it with U4002 at the loop, so neither engine runs it.
+    let dir = ita_package(
+        "t1probe",
+        &ever_run("order"),
+        &[(
+            "src/order.una",
+            &task_switch_case("task_switch_secret_loop"),
+        )],
+    );
+    for command in ["run", "build"] {
+        let output = una(&dir, &[command, "."]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(
+            stderr.contains("[U4002]") && stderr.contains("src/order.una:9:3"),
+            "{command}: {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{command}: printed {:?}",
+            output.stdout
+        );
+    }
+    assert!(!dir.join("target/una/t1probe").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn t1_the_public_twin_orders_its_prints_by_its_key_in_both_engines() {
+    // #1684: the probe's public twin is accepted, and its schedule is the interpreter's in both
+    // engines under `--virtual-time` (`spec/27 §8` rules 2 and 3): the tasks whose loops pass
+    // 1024 check points print after the others, so the order follows the `public` key's bits,
+    // which is what the probe read from a `secret` one.
+    // The twins of the review's probes (H1, H2, M2) order their prints the same way: the
+    // channel the refused cases would open with a `secret` key.
+    let cases = [
+        (
+            "task_switch_public_twin",
+            "0 2 5 7 1 3 4 6",
+            "1 3 4 6 0 2 5 7",
+        ),
+        (
+            "task_switch_generic_result_public",
+            "0 2 5 7 1 3 4 6",
+            "1 3 4 6 0 2 5 7",
+        ),
+        (
+            "task_switch_first_where_predicate_public",
+            "1 3 4 6 0 2 5 7",
+            "0 2 5 7 1 3 4 6",
+        ),
+        (
+            "task_switch_tasks_bound_public",
+            "1 3 4 6 0 2 5 7",
+            "0 2 5 7 1 3 4 6",
+        ),
+    ];
+    for (index, (case, at_90, at_165)) in cases.into_iter().enumerate() {
+        let source = task_switch_case(case);
+        for (key, order) in [(90, at_90), (165, at_165)] {
+            let program = source
+                .replace("let key = 90", &format!("let key = {key}"))
+                .replace("let key: Int = 90", &format!("let key: Int = {key}"));
+            assert!(
+                program.contains(&format!("key: Int = {key}\n"))
+                    || program.contains(&format!("let key = {key}\n")),
+                "{case}"
+            );
+            let name = format!("t1twin{index}k{key}");
+            let dir = within_package(&name, "order", &program);
+            let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+            assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+            let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+            let expected: Vec<&str> = order.split(' ').collect();
+            assert_eq!(
+                document["output"],
+                serde_json::json!(expected),
+                "{case} {key}"
+            );
+            let native = Command::new(dir.join(format!("target/una/{name}")))
+                .arg("--virtual-time")
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(native.status.code(), Some(0), "{key}: {native:?}");
+            let lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(lines, expected, "{case} {key}");
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

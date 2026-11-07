@@ -351,8 +351,11 @@ fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
     span.map_or(f64::INFINITY, |span| span as f64 / 1000.0)
 }
 
-/// The program of #1146: a `secret` key, `key`, decides whether a task is started before a
-/// public race between a long branch, listed first, and a short one; the race prints its winner.
+/// The program of #1146: a key, `key`, decides whether a task is started before a public race
+/// between a long branch, listed first, and a short one; the race prints its winner. The key is
+/// `internal`, above `public`: since #1684 a check point under a program counter above
+/// `internal` is U4002 in a program that starts tasks (`spec/27 §8` rule 5), and the slicer
+/// reads no label.
 ///
 /// It checks: the `start` runs under the key's program counter, as a task's body does (IF1),
 /// and `noop` has no effect to label. The race stands in `main`, outside any `tasks` block,
@@ -363,7 +366,7 @@ fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
 /// no step drops it.
 fn slicer_program(key: u8) -> String {
     format!(
-        "module leak\n\nnoop() -> Unit = unit\n\nkey() -> secret Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
+        "module leak\n\nnoop() -> Unit = unit\n\nkey() -> internal Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
     )
 }
 
@@ -862,18 +865,20 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
 /// `docs/plan/0123-s5-amendment-draft.md`), a server whose `next` stands in a `tasks` block has
 /// `L_srv = ⊤`, and the set-up's `secret` raises it in any case, so `una check` refuses a reply
 /// that carries a deadline's outcome. The oracle measures the probe's time from its request to
-/// its reply instead, which is finer than the outcome of a deadline over the same work.
+/// its reply instead, which is finer than the outcome of a deadline over the same work. The key
+/// is `internal`, which raises `L_srv` too: since #1684 a loop whose bound is above `internal`
+/// is U4002 in a program that starts tasks (`spec/27 §8` rule 5), and the slicer reads no label.
 fn prefix_program(key: u8, work: u64) -> String {
     format!(
         r#"module srv
 
 import std.host (Exchange, HttpServer, Reply)
 
-key() -> secret Int = {key}
+key() -> internal Int = {key}
 
-setup(n: secret Int) -> secret Int
+setup(n: internal Int) -> internal Int
 =
-  let edit total: secret Int = 0
+  let edit total: internal Int = 0
   for i in 1..n
     total = total + 1
   total

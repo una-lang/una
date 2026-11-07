@@ -1,0 +1,35 @@
+-- test: the function values in a list, whose results are `secret`, instantiate a generic function that branches on them: U4002 at the generic call (spec/27 §8 rule 5, #1684, review H1)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:26:5
+module order
+
+noop() -> Unit = unit
+
+call_list[T: Eq](fs: List[fn() -> T], t: T) -> Unit
+=
+  for f in fs
+    if f() == t
+      noop()
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let b = bit(k, key: key)
+  for i in 0..<3000
+    call_list([fn() -> b == 1], t: true)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

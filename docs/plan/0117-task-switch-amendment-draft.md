@@ -1,6 +1,7 @@
 # Draft: ADR 0117, Amendment: a task switch that work under a raised label does not move (issue #1684)
 
 - Status: Draft, not accepted. The accepted text of ADR 0117 does not change until the project accepts an amendment. By its decision of 2026-11-06 the project chose, for issue #1684, option 2 of the card now, a conservative checker rule that refuses started tasks whose loop bounds depend on `secret` data, and this amendment later (section C), which stays a draft for a later decision. Section B shows that the rule as worded is not enough and proposes the shape a sound rule needs; that shape is **proposed, not decided**, and the choice of the exact rule is open.
+- Implemented: section B's conservative rule, in the shape below with `internal` as its bound, in PR #1709 (issue #1684, `spec/27 §8` rule 5); section C stays a draft.
 - Origin: finding T1 of the security hunt of #973 (Medium, confirmed in both engines, on `main` only; no released line has `tasks`).
 - Concerns: ADR 0117 rules 11 and 12 (the interpreter's schedule and native code under `--virtual-time`), `spec/27 §8` rules 2 and 3.
 
