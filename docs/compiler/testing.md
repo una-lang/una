@@ -11,6 +11,8 @@ Status: Normative for the reference implementation.
 | Snapshot | `crates/*/tests/snapshots/` (insta) | Full JSON diagnostics, Core IR dumps, SMT queries, reports |
 | Property | `crates/una-fmt/tests/` | Formatter idempotence and parse round-trip over every `.una` file in the repository |
 | Serve scripts | `tests/serve/` | Connections, bytes, paced reads and closes at virtual milliseconds through the real server engine, with the bytes each connection received (ADR 0123 rule 21; `crates/una-http/tests/serve_scripts.rs`) |
+| Serve runs | `tests/serve_runs/` | A server program of edition 0.4, checked at tier 1, run in the interpreter over the real server engine fed by a script of connections, with the bytes each connection received and the program's output and trace, and run again as a native executable under `--virtual-time` over the same scripted engine, through the test hook of a test build of `una-rt`, which must give the same bytes, output, completion and trace (ADR 0117 rule 12; ADR 0123 rules 1 to 4, 18 and 21; `crates/una-cli/tests/serve_runs.rs`). A case with `revealed.jsonl` also runs with the redaction of labels lifted for the server's events, which only the scripted engine can ask for, so the reduced trace form of ADR 0123 rule 1 is compared between the engines; a case with `secrets.txt` fails when a trace holds one of its lines |
+| Live serve runs | `crates/una-cli/tests/serve_live.rs`, `crates/una-http/tests/serve_port.rs` | Programs that serve run on the real clock over loopback sockets, in both engines, through a test build of `una` that runs and builds them while `spec/31 §1` rule 10 stands (`UNA_TEST_RUN_SERVER`, `UNA_TEST_BUILD_SERVER`), with the plain runtime: replies and keep-alive, the host stop's drain and the closed listener, a request still being read refused `503`, `next`'s `TimedOut` at a real deadline, the hard stop's `503` to every right still held with no `unanswered` event, and `--virtual-time` with a `serve:` grant refused; the traces of both engines compared with the HMACs of the run's random key set aside. The engine's own tests check the live `Port`: waits that take no request, end at a queued request, a deadline, a stop test and a host stop, `close`, the hard stop and the run's end (`spec/31 §6` rule 14) |
 | End to end | `crates/una-cli/tests/` | The CLI and the ABI documents, the runtime, verification, determinism, the explain examples, the checkpoint demos, the example packages and the guide |
 
 ## 2. Conformance case format
@@ -47,7 +49,7 @@ module conformance.authority.cap_let
 | `-- grant: <spec>` | Grant passed to `una run` |
 | `-- pending: M<n>` | Optional. The case is expected to fail until milestone `M<n>` (see "Pending cases") |
 
-The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. It runs `una run --json` when a case expects output, grants a capability or expects an error of the runtime domain, and `una test --json` when it expects `test-pass` or `test-fail`; the errors these commands report join those of `una check` for `error` expectations, and the relative paths of `files:` and `keys:` grants resolve against the case's directory. A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
+The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. Each case is a test of its own, `case::<name>`, whose name is the case's path with `/` as `__` and every character other than a letter or digit as `_` (#1652); the test `conformance_suite` checks the layout below ("Discovery") and that the generated tests are the cases on disk, path for path. It runs `una run --json` when a case expects output, grants a capability or expects an error of the runtime domain, and `una test --json` when it expects `test-pass` or `test-fail`; the errors these commands report join those of `una check` for `error` expectations, and the relative paths of `files:` and `keys:` grants resolve against the case's directory. A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
 
 ### Directive block
 
@@ -66,7 +68,7 @@ The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs th
 | `pending` | at most 1 | `M1` to `M10` |
 
 - `ok`, `tier0-ok` and `test-pass` appear at most once each.
-- In `error <code> at <line>:<col>`, `<code>` is registered in `spec/13 §4`; `<line>` and `<col>` are 1-based decimal integers, the column counted in Unicode scalar values with the rule of `spec/13 §1` (ADR 0015), and they MUST denote a position of the file: an existing line, and a column at most one past its last character. Two identical `error` lines are malformed, because expectations form a set.
+- In `error <code> at <line>:<col>`, `<code>` is registered in `spec/13 §4`; `<line>` and `<col>` are 1-based decimal integers, the column counted in Unicode scalar values with the rule of `spec/13 §1` (ADR 0015), and they MUST denote a position of the file: an existing line, and a column at most one past its last character. Two identical `error` lines are malformed, because expectations form a set. Since a set would also match a diagnostic reported twice, the runner fails any case in which `una check` reports one diagnostic more than once, with the same code, span and message, whatever the case expects (#932).
 - A single-module case is its own package root (ADR 0015), so its expected errors match diagnostics whose `file` is the case's file name, for example `cap_as_value.una`.
 - `run-output` directives are compared in order, one per printed line; repeats are allowed.
 - `test-fail` names a non-empty example; two identical `test-fail` lines are malformed.
@@ -93,7 +95,7 @@ A single file takes the edition of the nearest `ita.una` or `una.toml` above it,
 | --- | --- | --- |
 | absent | yes | pass |
 | absent | no | fail |
-| present | no | pending: listed in the runner summary, does not fail the run |
+| present | no | pending: its test passes and prints the case's line of the runner summary (`pending M<n>  <path>  <test> (<spec>): <mismatches>`), so it does not fail the run |
 | present | yes | fail, with the message `pending case passes; remove -- pending: M<n>` |
 
 An expectation the compiler cannot evaluate yet (for example `run-output` before `una run` exists) does not match. A milestone is complete only when no case names it in `pending`, and no case may be pending at release (M10).
@@ -110,6 +112,12 @@ A fresh checkout is ready for the tests with one command, which builds the libra
 eval "$(scripts/z3-library.sh --export)"   # UNA_Z3_LIB=~/.cache/una/z3/<key>/lib/libz3shell.a
 cargo test --workspace --locked
 ```
+
+The gate runs the tests with `cargo nextest run --workspace --locked --no-fail-fast` and the documentation tests with `cargo test --workspace --doc --locked` (nextest does not run documentation tests); `cargo test --workspace --locked` runs the same tests. Under nextest every test is a process, and each test that links natively runs `cargo build -p una-rt`, which rewrites `libuna_rt.a` under the tests that read it. A setup script in `.config/nextest.toml` therefore builds the library once and sets `UNA_RT_PREBUILT`, which those tests honor by not building it again; a helper that builds the runtime library MUST check that variable. The tests that compare wall-clock readings (a name with `scale`, `scaling`, `linear`, `n_log_n`, `bounded_share`, `limiter`, `virtual_time`, `cube`, `cubic`, `constant_time`, `cost_the_same`, `does_not_depend`, `whatever_the`, `no_real_time`, `meet_the_deadline` or `meets_the_deadline`, and the tests of the binaries named `scaling` and `lsp`, whose handshake windows of two seconds also fail on a busy machine) each reserve every slot (`threads-required = "num-cpus"`), so no other test of the same run runs beside them. They also run first (`priority = 100`): a test that reserves every slot waits until every running test has finished, so one in the middle of the run would leave the slots idle while the pool drains; run first, one after another, they find the pool idle, and the other tests then fill every slot (#1695). Processes outside the run still add load, so a gate runs with no other build or test on the machine. No test is skipped and no assertion changes. The pattern lists the timing tests known when it was written; a new timing test is named so that it matches, or the pattern gains a word. A scaling test that measures the processor time of the child it runs instead of the wall clock holds `cpu_time` in its name, which the pattern leaves out, so it runs beside the other tests (#1656): a child's user and system time stay what its work costs under load, with the same sizes, bounds and retries as before. The child runs under the POSIX utility `/usr/bin/time -p` (`crates/una-cli/tests/common/cpu.rs`; the Linux image of `scripts/local-ci/Dockerfile` installs it), which needs no `unsafe` code and no dependency; its reading has two decimals, so a run that reads under 0.4 s is measured again as enough runs in a row under one `time -p` to read 0.4 s or more, and the reading is their mean.
+
+The tests that would otherwise loop over a whole corpus inside one test run one test per case, so that nextest spreads them over all cores (#1652): the conformance runner (`case::<name>`), the native differential (`interpreter::<name>` and `linkers::<name>` in `crates/una-cli/tests/native.rs`), the determinism test of §4 (`determinism::<name>` in `cli.rs`) and the Core IR export test (`core_ir::<name>` in `core_symbols.rs`). Their lists come from the build script of the dev-only crate `crates/una-test-cases`, which reads the corpus with the same code as the tests (`crates/una-cli/tests/common/case_lists.rs` and the runner's discovery), reruns when anything under `examples`, `tests/conformance` or `docs/reviews` changes, and fails the build on an empty list. Each file has a test that holds its generated list to the one on disk, entry for entry (`conformance_suite`, `the_generated_programs_are_the_runnable_programs_on_disk`, `the_determinism_targets_are_the_examples_and_cases_on_disk`, `the_core_corpus_is_the_packages_and_files_on_disk`), so a case is never left untested; the checks over the whole corpus that a loop made at its end are tests of their own: the lists of `tests/native` name runnable programs only (`the_native_lists_name_runnable_programs_only`), more than a hundred programs are compared by the two linkers, each failing when neither links it unless a list of `tests/native` names it, and the Core IR walk sees a plain symbolic label in place (`the_walk_sees_a_plain_symbolic_label_in_place`). A module file of a package that `ita.una` describes is exported inside a copy of its package, and its document must name the edition that the same export in place, in the checkout's package, names. A test of one case reads a sealed copy of that case alone, or of the package that holds it (`hermetic::checkout_case`). The generated tests are named after their case's path, so the timing pattern above leaves out the modules `case`, `interpreter`, `linkers`, `determinism` and `core_ir`: none of their tests compares wall-clock readings, and a word of the pattern in a case's path (`runtime__limiter_acquire`) must not stop the whole run while it runs.
+
+The development profile builds at opt-level 1 with debug assertions and overflow checks on, as at opt-level 0, so the tests run a faster `una` with the same semantics (#1697). The crates `una-rt` and `una-http` stay at opt-level 0, because tests read the symbols that a built program links and inlining removes some of them; the other crates that the runtime archive `libuna_rt.a` links (una-interp, una-sys, una-core, una-hash, cap, rustls) build at opt-level 1, and `una-link`, `object` and `sha2` stay at opt-level 3 (ADR 0124 step 3). The frames of native code are cranelift's and do not depend on this profile; the stack bounds documented for unoptimized Rust builds stay upper bounds. The release gates keep the unoptimized build: `scripts/sanitize.sh` and `scripts/release-gates.sh` export `CARGO_PROFILE_DEV_OPT_LEVEL=0`, and `scripts/local-ci.sh` passes it into the container of the Linux legs (0 when unset), so the steps that build the development profile (the AddressSanitizer steps and the canary of `sanitize`, `cargo test --workspace` of the `build` gate, the `mac`, `linux`, `linux-arm64`, `determinism` and `native` gates) build at opt-level 0 as before. The variable sets the profile-wide value only: `una-rt` and `una-http` stay at 0 and `una-link`, `object` and `sha2` at 3. The `--release` steps do not use the development profile, and the Miri step interprets MIR with `-Zmir-opt-level=0` among Miri's default arguments.
 
 Without `UNA_Z3_LIB`, `cargo` builds a development `una` with no solver and the build of `una-z3` warns so; about 120 tests then fail with U5003. Changing `UNA_Z3_LIB` rebuilds `una-z3` and what depends on it.
 
@@ -155,3 +163,84 @@ Measured on a `List[Int]` built by `append` in a `for` loop (#878):
 The loop makes no copy at any size: `a_list_built_by_append_in_a_loop_is_never_copied_at_any_size` pins it through the debug copy counter.
 
 The rule follows: a native test that sets `--max-memory` uses a budget above this plateau, or compares its outcome with `una run` rather than with a budget near the program's own size. To test a budget close to a program's data, build the data without garbage per iteration, for example with `together for`.
+
+## 8. Gate tiers
+
+The `tests` gate runs `scripts/gate-tests.sh`, in one of two tiers that `scripts/gate-tier.sh` chooses from the entries a change touches. Those are the entries of `git diff --raw --no-renames origin/main...HEAD`, plus what is staged, modified or untracked in the worktree, so that a merge-train worktree counts its merge. The base is always `origin/main`; no setting lowers the tier.
+
+The gate does not run the copies of these scripts that the change itself holds. The harness check runs a launcher kept outside the repository, on the gate machine. It copies `scripts/gate-tests.sh`, `scripts/gate-tier.sh` and `scripts/gate-tier-selftest.sh` as `origin/main` holds them into a temporary directory and runs them on the worktree (`UNA_GATE_ROOT`). The log's second line says which copy ran. Only a change made while `origin/main` holds none of the three runs its own copies. A change to any of the three is full, and the full tier then also runs the change's own self-test with the change's own classifier.
+
+**Full** is the whole suite of §3: `cargo build --locked -p una-rt`, `cargo nextest run --workspace --locked --no-fail-fast` and `cargo test --workspace --doc --locked`. The tier is full when any of these holds:
+
+- `UNA_GATE_TIER=full` is set. The gate script of the harness sets it for the `security-fix`, `soundness-change`, `performance` and `release` workflows.
+- The harness run that holds the gate (`UNA_HARNESS_GATE_HELD`) has one of those workflows, or its workflow cannot be read.
+- The changed paths cannot be computed, or no path changed.
+- An entry is a symlink or a submodule on either side (mode `120000` or `160000`), or changes its mode.
+- A changed path is not normalized (a `.` or `..` segment, a leading `./`, a doubled `/`).
+- A changed path is full either as written or in lowercase: a case-insensitive file system opens `SECURITY` as `security` and `Examples` as `examples`, so the higher tier of the two wins.
+- A changed path is not one of the fast paths listed below. Among them:
+  - runtime code: `una-rt`, `una-interp`, `una-codegen`, `una-http`, `una-sys`, `una-link`, `una-z3`, `una-itaty`;
+  - soundness code: `una-check`, `una-verify`, `una-core`, and `una-syntax`, whose parser feeds the checker;
+  - security code: `una-crypto`, `una-hash`;
+  - `una-diag`, whose severity decides rejection and which defines the obligation status (`unknown` included), the codes and the safe writes;
+  - `una-fmt` and `una-lsp`, which rewrite sources (formatting, quick fixes), and `una-report`;
+  - supply-chain code: `una-project`;
+  - the case lists `una-test-cases` and the conformance discovery they include;
+  - every manifest and build script, and the files of a crate the rules do not name except its Markdown files (a `*.md` file outside the full directories above is fast; no code includes one);
+  - a `una.toml` or `ita.una` at the root of `tests/conformance` or of one of its areas, which regroups the programs of the native differential;
+  - every module of `una-cli` but the two of the standard library listing. Each of the others is on the check, build, run, serve, package, solver, grant, limit, contract, manifest, report or repair path;
+  - the Cargo, nextest, toolchain, CI and supply-chain configuration, and `.gitattributes`;
+  - every script under `scripts/` but the two below;
+  - the security conformance cases (`tests/conformance/security`) and the adversarial review cases (`docs/reviews/*/adversarial`);
+  - the test helpers shared by several suites (`crates/una-cli/tests/common`), and the native differential's own file;
+  - any file the native differential reads by path or names as a corpus directory. That includes every example, since it reads the whole `examples` directory;
+  - a corpus directory under `tests/` that no test source names;
+  - a snapshot whose name does not start with the name of a test binary of its crate.
+
+**Fast** runs the same three steps, with nextest limited to every test except two groups:
+
+- The long suites:
+  - the `una-cli` suites `native`, `release_gates`, `runtime`, `verification`, `serve_runs`, `serve_live`, `http`, `http_limits`, `outcome_redaction`, `guide`, `site_website`, `profiles`, `recovery` and `refined_elements`;
+  - `una-interp::confine`;
+  - every integration test of `una-http` and `una-sys`.
+- The exclusive timing tests: the overrides of `.config/nextest.toml` that reserve every slot.
+
+To that subset it adds what the change needs:
+
+- the test binary of each changed test file, and for a snapshot (`<binary>__<test>.snap`) the binary its name starts with;
+- `una-explain` and the `explain_examples` suite for a changed `una-explain` file;
+- the `interpreter::` and `linkers::` tests of each changed program of `tests/conformance`;
+- the `verification` and `runtime` suites for any change under `tests/conformance`, since they read the whole corpus;
+- each skipped suite whose source names a changed file, or a directory above it, by a literal path that starts with a top-level entry of the repository (`docs`, `examples`, `tests`, `README.md`, `images`, ...), a bare directory or the prefix of a format string, and, for a changed file under `tests/<d>/`, each skipped suite whose source names `<d>` as a path segment or a string.
+
+Every crate's unit tests except those whose names match the exclusive timing filter, the conformance cases, the Core IR and determinism suites and the documentation tests always run.
+
+The fast paths are:
+
+- documentation under `docs/` (including `docs/spec` and `docs/adr`; a change that also touches a full path is full), `*.md`, `changelog.d/`, `site/`, `formal/`, `images/`, `.claude/`, `LICENSE`, `.gitignore` and `.mcp.json`;
+- the conformance cases outside `security`;
+- the other test corpora under `tests/`;
+- the test files of `una-cli` (but `native.rs`, `common/` and `conformance/discovery.rs`) and of `una-explain`, and the snapshots of `una-cli` named after one of its test binaries other than `native`;
+- `una-explain`: the explanation texts of `una explain`, which no check, build or run reads;
+- `una-cli/src/std_listing.rs` and `std_builtins.rs`. They render the standard library reference, and the `std_listing` suite holds them to the checker;
+- `scripts/changelog-assemble.sh` and `scripts/demo/`. They are documentation helpers that no gate calls, and their suites, `changelog_fragments` and `demo_scripts`, run in the fast tier.
+
+Both tiers first run `scripts/gate-tier-selftest.sh`. It classifies more than two hundred path lists, `git diff --raw` entries and conditions with `scripts/gate-tier.sh --paths` and `--raw`, so a rule loosened on `origin/main` fails every later gate.
+
+The first lines of the gate log name the tier, the copy of the scripts that ran and the reasons. A fast log adds:
+
+- the number of tests it did not run, the difference of two `cargo nextest list` counts;
+- the sentence "the full suite runs nightly and before every merge of a security, soundness or runtime change";
+- the filterset it ran.
+
+`scripts/gate-tests.sh --plan` prints the tier and the filterset without running anything.
+
+The harness gives the check one timeout for the whole script and kills only the script's shell when it expires. A watchdog therefore stops every step after `UNA_GATE_TESTS_BUDGET` seconds (default 5100), and the gate fails.
+
+**Nightly.** The whole suite runs every night on the head of `main`, as a local scheduled job of the gate machine outside this repository.
+
+- It runs the fixed commands of the `build`, `tests` (full) and `verification` gates itself, not through `scripts/gate-*.sh`, so an edit of those scripts cannot hide a failure there.
+- It holds the gate lock of the harness while it runs.
+- It skips, with a note and without turning red, when less than 25 GB is free, when the 1-minute load is 8 or more, or when a gate is running.
+- Its report gives the commit, the duration and result of each gate, and the failing tests.
+- A failure opens a P0 issue and writes a red marker on the gate machine. The merge procedure checks that marker before each merge: while it is present, nothing merges except the fix. The next green nightly removes it.

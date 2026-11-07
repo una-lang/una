@@ -1,0 +1,35 @@
+-- test: the variable of a `for` loop or of a `together for` is read-only, so assigning it is U2019, and the separate `let edit` binding in the body that the message suggests is editable (spec/17 §1, spec/19 §1, #931)
+-- spec: spec/17 §1
+-- expect: error U2019 at src/readonly.una:11:5
+-- expect: error U2019 at src/readonly.una:27:5
+module readonly
+
+pub assigned(xs: List[Int]) -> Int
+=
+  let edit sum = 0
+  for x in xs
+    x = x + 1
+    sum = sum + x
+  sum
+
+pub copied(xs: List[Int]) -> Int
+=
+  let edit sum = 0
+  for x in xs
+    let edit next_x = x
+    next_x = next_x + 1
+    sum = sum + next_x
+  sum
+
+pub doubled(xs: List[Int]) -> List[Int]
+=
+  together for x in xs
+    x = x * 2
+    x
+
+pub doubled_copy(xs: List[Int]) -> List[Int]
+=
+  together for x in xs
+    let edit next_x = x
+    next_x = next_x * 2
+    next_x

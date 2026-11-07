@@ -482,7 +482,8 @@ pub fn host(value: &str) -> Result<Host, Refusal> {
     }
     let last = name.rsplit('.').next().unwrap_or_default();
     let numeric = !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit());
-    let hex = last.len() > 2 && (last.starts_with("0x") || last.starts_with("0X"));
+    // `0x` alone starts with `0x` too: some resolvers read it as `0`.
+    let hex = last.starts_with("0x") || last.starts_with("0X");
     if numeric || hex || name.split('.').any(str::is_empty) {
         return Err(Refusal::BadRequest);
     }
@@ -499,6 +500,51 @@ fn port(digits: &str) -> Result<u16, Refusal> {
         return Err(Refusal::BadRequest);
     }
     digits.parse().map_err(|_| Refusal::BadRequest)
+}
+
+/// The `Host` of the requests of [`test_request`] (ADR 0123 rule 21).
+pub const TEST_HOST: &str = "test";
+
+/// The request that `std.testing.test_request` gives (ADR 0123 rule 21): the request line of
+/// `method` and `target`, `Host: test` and `body` framed by its length, read by this reader
+/// through an `http` grant with no limit but the request's own size, so that only the
+/// target's own form can refuse it, with `400` (`spec/31 §4`). An absolute-form target is
+/// accepted with the authority `test`, as rule 11 accepts it, and rewritten to origin-form.
+///
+/// A byte of the target outside printable ASCII would end or split the request line, so it is
+/// refused first, as the request line's rule refuses it (`spec/31 §3` rule 1). O(t + b) for a
+/// target of t bytes and a body of b bytes.
+pub fn test_request(method: Method, target: &str, body: &str) -> Result<Request, Refusal> {
+    if target.is_empty() || !target.bytes().all(|b| b > 0x20 && b < 0x7f) {
+        return Err(Refusal::BadRequest);
+    }
+    let name = match method {
+        Method::Get => "GET",
+        Method::Head => "HEAD",
+        Method::Post => "POST",
+        Method::Put => "PUT",
+        Method::Patch => "PATCH",
+        Method::Delete => "DELETE",
+        Method::Options => "OPTIONS",
+    };
+    let head = format!(
+        "{name} {target} HTTP/1.1\r\nhost: {TEST_HOST}\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    );
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body.as_bytes());
+    let limits = RequestLimits {
+        line: bytes.len(),
+        headers: 2,
+        header: bytes.len(),
+        body: u64::try_from(body.len()).unwrap_or(u64::MAX),
+    };
+    let mut reader = RequestReader::new(limits, Scheme::Http);
+    let progress = reader.feed(&bytes)?;
+    if !progress.done || progress.used != bytes.len() {
+        return Err(Refusal::BadRequest);
+    }
+    reader.finish()
 }
 
 #[cfg(test)]

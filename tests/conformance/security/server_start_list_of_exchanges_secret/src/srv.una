@@ -1,0 +1,18 @@
+-- test: a `start` that captures a `List[Exchange]` under a `secret` program counter moves reply rights, so it is U4003 (spec/31 §1, ADR 0123 IF6); in a program that starts tasks, the check point that `secret` data decide there is also U4002 (spec/27 §8 rule 5, #1684)
+-- spec: spec/31 §1
+-- expect: error U4003 at src/srv.una:16:9
+-- expect: error U4002 at src/srv.una:16:15
+module srv
+
+import std.host (Exchange)
+
+idle(exchanges: internal List[Exchange]) -> Unit = unit
+
+serve_all(batches: internal List[List[Exchange]], key: secret Int) -> Unit
+=
+  tasks
+    for batch in batches
+      if key > 0
+        start idle(batch)
+      else
+        unit

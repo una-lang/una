@@ -123,7 +123,7 @@ impl RunShared {
 
 /// The scope of a `tasks` statement in progress (`spec/27 §7`): the prefix of its tasks' paths,
 /// its bound, how many tasks it started, how many still run, and the cancellation entry its
-/// tasks carry, which it lowers to 0 to cancel them.
+/// tasks carry, which it lowers to 0 to cancel them, or to `interrupt::CUT` on a deadline's cut.
 pub(crate) struct StartScope {
     /// `s<c>` in the root task, `p.s<c>` in the task `p`.
     pub(crate) path: String,
@@ -187,9 +187,15 @@ pub fn tasks_end(cancel: i64) {
 ///   deadline as its own, an instant its helper's exchange never passes, and ends at it, at its
 ///   next I/O step, with its own `TimedOut`. Each task waits for its helper, so nothing of the
 ///   statement's work outlives it, and the argument that a deadline's cut leaves no residue
-///   holds. The count still falls to 0, so each task stops at its next check point after. Only
-///   a job that has begun on its helper is waited for: a task whose job is still queued is
-///   woken at once, and its abandon keeps the job from running at all.
+///   holds. The count falls to [`crate::interrupt::CUT`], below the tasks' entry, so each task
+///   stops at its next check point after. Only a job that has begun on its helper is waited
+///   for: a task whose job is still queued is woken at once, and its abandon keeps the job from
+///   running at all; its request fails with `TimedOut`, never sent.
+/// - **On the reactor** (#1266): a request parked there runs on its task, as a begun job does,
+///   so the cut wakes none of its waits, and its own time-out, that same deadline, ends it with
+///   `TimedOut`. So a cut request's outcome is `TimedOut` on every path, never `interrupted`,
+///   and never depends on which path ran it, nor on whether its task or the statement saw the
+///   deadline first.
 /// - **Which deadlines.** `deadline::cut` reads the `within`s that cover the block, never the
 ///   deadline of a `for ever within` iteration, which cancels no task: a `tasks` statement in
 ///   such a body is counted by `L_res` whatever ends it.
@@ -197,10 +203,15 @@ pub fn tasks_end(cancel: i64) {
 /// O(1), and O(k log w) to wake the `k` waits of the scope's count among the `w` of the process
 /// ([`crate::interrupt::lowered`]).
 pub(crate) fn cancel_tasks(scope: &StartScope, by_deadline: bool) {
-    scope.cancel.store(0, Ordering::SeqCst);
     if by_deadline {
+        // The cut's own value, so a wait that reads the count ends with its `TimedOut`, on the
+        // reactor as on a helper (#1266); one that a cancellation reached first stays at 0.
+        scope
+            .cancel
+            .fetch_min(crate::interrupt::CUT, Ordering::SeqCst);
         crate::interrupt::lowered_unstarted(&scope.cancel);
     } else {
+        scope.cancel.store(0, Ordering::SeqCst);
         crate::interrupt::lowered(&scope.cancel);
     }
 }
@@ -219,7 +230,8 @@ impl StartScope {
 }
 
 /// The cancellation entry of a statement's tasks, and its count until the statement cancels
-/// them, which lowers the count to 0. It carries the mark of the entries whose cancellation
+/// them, which lowers the count to 0, or to [`crate::interrupt::CUT`] on a deadline's cut
+/// (#1266). It carries the mark of the entries whose cancellation
 /// interrupts a waiting operation (`tasks::RACE_ENTRY`, ADR 0117 rule 4): started tasks exist
 /// in edition `0.4` only, whose interruptions rule 4 gives them.
 const ENTRY: usize = crate::tasks::RACE_ENTRY | 1;
@@ -233,8 +245,10 @@ fn too_deep(message: &str) -> bool {
 
 /// `start` of the closure `closure` at `site`, which the caller keeps (`spec/27 §7`): parks
 /// while the innermost statement runs as many tasks as its bound, then starts the next one on
-/// the run's workers, and goes on. 0, or 2 when the task stops instead.
-pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
+/// the run's workers, and goes on. The reply rights that the first `captures` values of the
+/// closure reach move to the started task before it is queued (ADR 0123 rule 4.2): `captures` is
+/// 0 when no capture can hold one. 0, or 2 when the task stops instead.
+pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 {
     // Whether the `start` stands in quiet code (S-40, #1512): its task is then not numbered,
     // and its static site places it.
     let (scope, quiet) = with_state(|state| {
@@ -293,10 +307,18 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
             return 2;
         }
     };
-    let Some(template) = with_state(|state| state.for_start(site)) else {
+    let Some(mut template) = with_state(|state| state.for_start(site)) else {
         scope.running.release();
         return 2;
     };
+    // The started task's own holder of reply rights, and the rights its captures reach, moved
+    // to it now, in their order, so that it holds them from its first step (ADR 0123 rule 4.2,
+    // `crate::serve`).
+    if crate::serve::serving().is_some() {
+        template.serve_task = crate::serve::fresh_holder();
+        crate::serve::move_at_start(closure, captures, template.serve_task);
+    }
+    let holder = template.serve_task;
     // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
     // whether it ran, which may depend on data above `public`, moves neither the index, the
     // path and the worker of a later public one, nor the path of a later quiet one (S-40,
@@ -351,7 +373,9 @@ pub fn start(closure: i64, site: usize, invoke: Invoke) -> i64 {
         },
     );
     if spawned.is_err() {
-        // The task never starts: its statement counts it ended.
+        // The task never starts: its statement counts it ended, and the host answers the rights
+        // it was given, with no event (ADR 0123 rule 4.5).
+        crate::serve::answer_left(holder);
         shared.live.fetch_sub(1, Ordering::SeqCst);
         scope.running.release();
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
@@ -400,8 +424,12 @@ fn started(
             None
         }
     };
+    // How the task ended, for the auto-answers of the reply rights it still holds: stopped, or
+    // not (ADR 0123 rule 4.5).
+    let mut stopped_task = closure.is_none();
     if let Some(closure) = closure {
         let (value, status) = invoke(closure, None, site);
+        stopped_task = status == 2;
         if status != 2 {
             values::release(value);
             values::release(closure);
@@ -426,6 +454,25 @@ fn started(
         (ended, state.stopped.clone(), depth, state.path.clone())
     });
     if let Some((ended, stopped, depth, path)) = ended {
+        // The rights the task still holds: `500` when it returned or ended alone past its
+        // depth, `503` when it was cancelled, cut or stopped; their `unanswered` events come
+        // before the event that ends the task (ADR 0123 rule 4.5).
+        let status = if stopped_task && !depth {
+            crate::serve::STOPPED
+        } else {
+            crate::serve::UNANSWERED
+        };
+        match (&stopped, depth) {
+            // The run's end by this abort comes first, so the other tasks stop now too.
+            (Some((code, location, message)), false) => {
+                if crate::serve::defer_abort(*code, location, message, false) {
+                    crate::serve::answer_held(status);
+                }
+            }
+            _ => crate::serve::answer_held(status),
+        }
+        // A task of a run that aborted ends as the run's tasks do, with no `cancelled` event.
+        let ended = ended.filter(|_| !crate::serve::run_aborted());
         match (stopped, depth) {
             // Too deep: the task ends alone, and the others run on (ADR 0117 rule 7).
             (Some((_, location, message)), true) => {
@@ -602,6 +649,33 @@ mod tests {
             Some(7)
         );
         drop(never);
+    }
+
+    #[test]
+    fn a_deadline_s_cut_is_told_from_every_other_cancellation() {
+        // #1266, `spec/27 §2` rule 4: the cut of a `tasks` statement by a deadline lowers its
+        // count to `CUT`, which cancels its tasks, and which a wait reads as a time-out, never as
+        // an interruption, on every path; a failure of the block lowers it to 0, which
+        // interrupts. A cut that comes after a failure leaves the failure's 0.
+        let entries = |scope: &StartScope| vec![(Arc::clone(&scope.cancel), ENTRY)];
+        let cut = StartScope::new("s1".to_owned(), 1);
+        cancel_tasks(&cut, true);
+        assert!(crate::interrupt::cancelled(&entries(&cut)));
+        assert!(crate::interrupt::cut_only(&entries(&cut)));
+        assert!(!crate::interrupt::interrupting(&entries(&cut)));
+        let failed = StartScope::new("s2".to_owned(), 1);
+        cancel_tasks(&failed, false);
+        assert!(crate::interrupt::interrupting(&entries(&failed)));
+        assert!(!crate::interrupt::cut_only(&entries(&failed)));
+        cancel_tasks(&failed, true);
+        assert!(crate::interrupt::interrupting(&entries(&failed)));
+        // A task under both, a cut statement inside a race that decided: the race interrupts.
+        let both: Vec<_> = entries(&cut).into_iter().chain(entries(&failed)).collect();
+        assert!(crate::interrupt::interrupting(&both));
+        // A statement still running cancels nothing.
+        let running = StartScope::new("s3".to_owned(), 1);
+        assert!(!crate::interrupt::cancelled(&entries(&running)));
+        assert!(!crate::interrupt::cut_only(&entries(&running)));
     }
 
     #[test]

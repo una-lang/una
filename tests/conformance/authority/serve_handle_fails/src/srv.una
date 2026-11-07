@@ -1,0 +1,24 @@
+-- test: `handle` of the served module may declare `fails`: the host answers a failed request with `500` and an empty body (spec/31 §7, ADR 0123 rule 16)
+-- spec: spec/31 §7
+-- expect: ok
+module srv
+
+import std.host (Reply, Request)
+
+pub kind Refused = | TooMany
+
+--- The page size of every listing, which fails when it is above 100.
+page_size(n: Int) -> Int
+  fails Refused
+=
+  if n > 100
+    fail TooMany
+  n
+
+--- Answers every request with the page size.
+pub handle(request: internal Request) -> internal Reply
+  fails Refused
+=
+  let size = page_size(20)
+    if error pass
+  Reply(status: 200, headers: [], body: "{size}")

@@ -1,0 +1,70 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Serves one request: whether `next` gave one.
+serve_once() -> Bool
+  uses @server: HttpServer[next, reply]
+=
+  let got = attempt @server.next()
+  when got
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "looper"))
+        if error use unit
+      true
+    is Err(failure) -> false
+
+--- Serves requests until `next` fails, waiting in `next` beside the cancelled waiter.
+looper() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  for round in 1..100
+    let served = serve_once()
+    if not served
+      stop
+
+--- Waits for one request.
+waiter() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  let got = attempt @server.next()
+  when got
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "waiter"))
+        if error use unit
+    is Err(failure) -> unit
+
+--- Counts.
+busy(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+--- Fails while its task waits in `next`.
+inner() -> Unit
+  uses @server: HttpServer[next, reply]
+  fails ServeError
+=
+  tasks
+    start waiter()
+    let counted = busy(3000)
+    fail Closed
+
+--- Closes the server once its inner block ended.
+closer() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let ended = attempt inner()
+  @server.close()
+
+--- A task is cancelled while it waits in `next` beside a loop of `next`: it still runs at once,
+--- ends `interrupted` and `cancelled`, and the server closes before the request at 50 ms, which
+--- the other waiter never takes (ADR 0123 rule 4.7, `spec/31 §1` rule 3).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  tasks
+    start looper()
+    start closer()

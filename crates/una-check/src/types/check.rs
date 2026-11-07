@@ -161,6 +161,9 @@ pub(crate) struct Local<'a> {
     pub(crate) lambda_depth: usize,
     /// Its declared type is refined, so each rebind carries an obligation (`spec/17 §5`).
     pub(crate) refined: bool,
+    /// The loop whose variable it is, as `` a `for` loop ``: a loop variable cannot be
+    /// declared `edit`, so U2019 on it names a separate `let edit` binding instead (#931).
+    pub(crate) loop_of: Option<&'static str>,
 }
 
 /// A `for` loop whose body is being checked, for its `stop` and `skip` (`spec/26 §3`, ADR
@@ -233,6 +236,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// Inside the expression of a `start`, which must not fail after its handling clauses
     /// (U3029, `spec/27 §7`).
     pub(crate) in_start: bool,
+    /// Inside a branch of `together`, the body of a `together for` or a branch of `first of`:
+    /// how a message names it, and the construct's words (ADR 0123 rule 5, U3033).
+    pub(crate) server_branch: Option<(&'static str, Span)>,
+    /// The `start`s whose expression is being checked, innermost last, with what their captures
+    /// can hold (ADR 0123 IF6).
+    pub(crate) start_captures: Vec<super::server::CaptureFrame>,
     /// The `tasks` statements whose blocks enclose the statement checked, innermost last: the
     /// task depth and lambda depth at each, where a `start` of it may stand (U2035).
     pub(crate) tasks_frames: Vec<(usize, usize)>,
@@ -244,6 +253,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) do_stops: bool,
     /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
     pub(crate) timing: Vec<super::timing::TimingFrame>,
+    /// The task constructs whose parts enclose the code checked, innermost last, by their ids
+    /// in `Findings::constructs` (ADR 0116 P2, P3): those of the node being checked only, so
+    /// a lambda's body starts with none.
+    pub(crate) parts: Vec<usize>,
     /// The `stop` and `skip` statements reported as U2034, after which no U2040 is reported.
     pub(crate) misplaced_exits: Vec<Span>,
     /// The receiver of the method call being checked, with its call-site marker, for its
@@ -544,10 +557,13 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             misplaced_exits: Vec::new(),
             in_on_stop: false,
             in_start: false,
+            server_branch: None,
+            start_captures: Vec::new(),
             tasks_frames: Vec::new(),
             in_ever: false,
             do_stops: false,
             timing: Vec::new(),
+            parts: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             unit_blind: BTreeMap::new(),
@@ -695,6 +711,19 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     /// Binds a local name, editable when `editable` (`spec/17 §2`).
     pub(crate) fn bind_as(&mut self, name: &'a str, ty: Ty, editable: bool) {
+        self.push_local(name, ty, editable, None);
+    }
+
+    /// Binds the variable of `looped`, as `` a `for` loop ``: a plain binding (`spec/17 §1`,
+    /// `spec/19 §1`).
+    pub(crate) fn bind_loop_var(&mut self, name: &'a str, ty: Ty, looped: &'static str) {
+        self.push_local(name, ty, false, Some(looped));
+    }
+
+    fn push_local(&mut self, name: &'a str, ty: Ty, editable: bool, loop_of: Option<&'static str>) {
+        // ADR 0123 IF6 (#1674): the data the code being checked can hold.
+        let label = self.deep(&ty);
+        self.reach_label(&label);
         self.locals.push(Local {
             name,
             ty,
@@ -702,6 +731,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             taken: None,
             lambda_depth: self.lambda_depth,
             refined: false,
+            loop_of,
         });
     }
 
@@ -830,7 +860,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
                 self.resolved(call.span, Res::Handler { id });
-                self.graph_install(id);
+                self.graph_install(id, call.span);
                 if let Some(current) = self.current {
                     self.findings.installs.insert((current, id));
                 }

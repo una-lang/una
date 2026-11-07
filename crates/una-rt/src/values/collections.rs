@@ -1322,6 +1322,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "asks for 2^59 bytes, which Miri cannot refuse")]
+    fn a_bit_set_the_allocator_cannot_give_is_refused_and_the_runtime_stays_usable() {
+        // #1700: outside a run no memory budget bounds the reservation, so `empty_bit_set(size:
+        // 2^62)` asks the allocator for 2^59 bytes, and only its refusal, through the fallible
+        // `try_reserve_exact`, stops the call. Natively malloc returns null; under
+        // AddressSanitizer it does so only with `allocator_may_return_null=1`, which
+        // scripts/sanitize.sh sets, and without which this test aborts the binary.
+        let live = crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get);
+        assert_eq!(bit_set_empty(0, n(1 << 62)), 0);
+        assert_eq!(
+            crate::runtime::LIVE_RESERVATIONS.with(std::cell::Cell::get),
+            live
+        );
+        let b = bit_set_empty(0, n(64));
+        assert_ne!(b, 0);
+        assert_eq!(collection_len(b), n(0));
+        release(b);
+    }
+
+    #[test]
     fn a_queue_s_pushes_and_pops_stay_linear() {
         // A scaling test of the hot path (ADR 0119 Costs): n pushes and n pops of a queue held
         // only here make no copy at 256, 1,024 and 4,096 items, and the buffer it holds shrinks

@@ -220,6 +220,9 @@ pub(crate) enum Ty {
     Text,
     Unit,
     Hashed,
+    /// `ReplyRight` of `std.host`, edition 0.4 (ADR 0123 rule 1): an opaque handle naming one
+    /// exchange of `HttpServer`, with equality and no constructor.
+    ReplyRight,
     List(Shared<Ty>),
     /// A dense value of edition 0.4, `Array[T]`, `Matrix[T]`, `Tensor[T]` or `Lu[T]`
     /// (`spec/29 §17`, ADR 0120 rules 26 to 38): its shape is the top position, its elements
@@ -567,6 +570,7 @@ impl Flagged for Ty {
             | Ty::Text
             | Ty::Unit
             | Ty::Hashed
+            | Ty::ReplyRight
             | Ty::F64
             | Ty::Decimal(_)
             | Ty::F32
@@ -630,6 +634,7 @@ impl Ty {
             | (Ty::Text, Ty::Text)
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
+            | (Ty::ReplyRight, Ty::ReplyRight)
             | (Ty::F64, Ty::F64)
             | (Ty::F32, Ty::F32)
             | (Ty::Never, Ty::Never)
@@ -1309,6 +1314,7 @@ pub(crate) enum View<'t, T> {
     Text,
     Unit,
     Hashed,
+    ReplyRight,
     F64,
     Decimal(u8),
     F32,
@@ -1345,6 +1351,7 @@ impl TypeView for Ty {
             Ty::Text => View::Text,
             Ty::Unit => View::Unit,
             Ty::Hashed => View::Hashed,
+            Ty::ReplyRight => View::ReplyRight,
             Ty::F64 => View::F64,
             Ty::Decimal(scale) => View::Decimal(*scale),
             Ty::F32 => View::F32,
@@ -1385,6 +1392,7 @@ impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
             View::Text => write!(f, "Text"),
             View::Unit => write!(f, "Unit"),
             View::Hashed => write!(f, "Hashed"),
+            View::ReplyRight => write!(f, "ReplyRight"),
             View::F64 => write!(f, "F64"),
             View::Decimal(scale) => write!(f, "Decimal[{scale}]"),
             View::F32 => write!(f, "F32"),

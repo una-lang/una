@@ -7,6 +7,16 @@
 
 This note fixes how S6 is built, and lists the decisions it takes where the records leave a choice. Each decision takes the most secure option the records allow.
 
+**First part, landed with #1008:** the section (§2), the checks (§3), the usage errors (§6), the report's entries (§5) and `spec/31 §7`; the driver (§4), the runs and the scaling test of §7, and the guide page are the second part, #1587, which needs the operations of `HttpServer` (#1571). Until then `una run` and `una build` of a package with a `serve` section fail closed with a usage error, after the shape and grant checks and before any listener is bound. Where the first part departs from this note:
+
+- **`spec/31 §7`, not §4**: §4 of `spec/31` is the target already.
+- **U3033 at the binding, not at the operation** (S6-D3): a public function's effect set is bounded by its declared `uses` (`spec/05 §3`), so refusing a `uses` of `HttpServer`, or of a capability whose handlers can perform one, on `handle` or `on_stop` refuses every operation in their effect sets, through a callee, a function value or a handler included, and refuses the unused authority too.
+- **`within` is U4003 under the preview's `L_srv`.** The driver is a hand-off site whose `next` runs inside its `tasks` statement, so the preview's `τ_conc` at it is `⊤` and `L_srv` of a `serve` package is the top label, as for the language form's `next`; the IF6 check of the driver's `start ... within w` (an auto-answer `503` accepting `internal`) then refuses every `within`, at its value in `ita.una`, as the preview refuses the language form's `start ... within`. It MAY become less strict with a more precise `L_srv` (#1155).
+- **The report**: `tcb.serve_grants`, `tcb.server` and `tcb.tls` (always `null` until #1059) are present in every report, `[]` and `null` for a package that serves nothing, and `warnings` likewise `[]`; `out_of_model` gains the S4 amendment's third entry (section E) beside rule 22's two.
+- **No guide page yet**: it describes running a server, which waits for the driver.
+- **No `requires` on `handle` or `on_stop`** (review of #1588, M1): the host establishes no precondition at its calls, so a `requires` is U7008 at the section's `module` in the checks and a shape difference in the usage error. A refined parameter or result type (a refined kind included) is the same precondition (recheck of #1588, M1-bis) and is refused alike, in the checks and in the usage error. The same questions stand for `init` and `step` of a `drive` module, which this slice does not change (#1589).
+- **The final grants of `una run` check `handle` and `on_stop`** (review L2): the run input names the `serve` module when the package has no `run entry`.
+
 ## 1. What this slice delivers, and what it leaves
 
 | Part | This slice | Later |

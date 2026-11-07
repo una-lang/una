@@ -1,0 +1,30 @@
+-- test: no loop bound is labeled here: a loop of `public` length calls a function only on one side of a branch on a `secret` bit, so the task passes a `secret` number of check points and moved the switch as the hunt's probe did; the call under the `secret` program counter is U4002 (spec/27 §8 rule 5, #1684)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:21:7
+module order
+
+noop() -> Unit = unit
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let b = bit(k, key: key)
+  for i in 0..<3000
+    if b == 1
+      noop()
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

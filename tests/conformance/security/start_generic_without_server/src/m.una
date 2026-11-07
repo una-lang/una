@@ -1,0 +1,14 @@
+-- test: in a package of edition 0.4 that imports no name of the server, a value of a type parameter holds no reply right, so a generic `start` under a `secret` program counter is no U4003 of IF6; the call that its task runs stands under that program counter, a check point that the schedule of started tasks counts, so it is U4002 (spec/31 §1, ADR 0123 IF6, spec/27 §8 rule 5, #1684)
+-- spec: spec/31 §1
+-- expect: error U4002 at src/m.una:12:13
+module m
+
+crunch[T](x: T) -> Unit = unit
+
+spawn[T](x: T, key: secret Bool) -> Unit
+=
+  tasks
+    if key
+      start crunch(x)
+    else
+      unit

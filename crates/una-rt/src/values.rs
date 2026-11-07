@@ -74,6 +74,10 @@ enum Object {
     },
     /// A keyed hash.
     Hashed(Vec<u8>),
+    /// A reply right of `std.host` (ADR 0123 rule 4): the word of its entry in the run's table
+    /// of reply rights, `(slot << 32) | generation` (`una_http::serve::rights`). Nothing of it
+    /// is ever written, and only `next` makes one.
+    Right(u64),
     /// An `F64`, boxed, always canonical (ADR 0114 rule 9.6): every `F64` outside a register
     /// is boxed until the raw cells of ADR 0107 land.
     F64(f64),
@@ -214,6 +218,7 @@ impl Object {
             Object::Int(_)
             | Object::Text(_)
             | Object::Hashed(_)
+            | Object::Right(_)
             | Object::F64(_)
             | Object::Map(_)
             | Object::Seq(_)
@@ -235,6 +240,7 @@ impl Object {
             Object::Int(_)
             | Object::Text(_)
             | Object::Hashed(_)
+            | Object::Right(_)
             | Object::F64(_)
             | Object::Map(_)
             | Object::Dense(_)
@@ -1092,6 +1098,7 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         /// A text, whose value is not taken: two texts are compared in place before a leaf is.
         Text,
         Bytes(Vec<u8>),
+        Right(u64),
         Float(u64),
         Variant(i64),
         List,
@@ -1118,6 +1125,8 @@ fn leaf_equal(a: i64, b: i64) -> bool {
             Object::Int(value) => Leaf::Int(value.clone()),
             Object::Text(_) => Leaf::Text,
             Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
+            // Two reply rights are equal when they name one exchange (ADR 0123 rule 1).
+            Object::Right(word) => Leaf::Right(*word),
             // `==` on `F64` is identity of the canonical bits (ADR 0114 rule 5.1).
             Object::F64(x) => Leaf::Float(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } if fields.is_empty() => Leaf::Variant(*tag),
@@ -1273,6 +1282,73 @@ pub fn hashed_word(bytes: Vec<u8>) -> i64 {
     alloc(Object::Hashed(bytes))
 }
 
+/// A new reply right, the word `right` of the run's table (ADR 0123 rule 4.1).
+pub fn right_word(right: u64) -> i64 {
+    alloc(Object::Right(right))
+}
+
+/// The word of the reply right `word` in the run's table, `None` for a word that is not one.
+pub fn right_of(word: i64) -> Option<u64> {
+    if !is_handle(word) {
+        return None;
+    }
+    with(word, |object| match object {
+        Object::Right(right) => Some(*right),
+        _ => None,
+    })
+    .flatten()
+}
+
+/// The reply rights that the first `captures` values of the closure `closure` reach, in the
+/// order `start` moves them (ADR 0123 rule 4.2, `spec/31 §1` rule 3): the values in order, each
+/// depth first, left to right, the values a nested closure holds and those of the handler
+/// instances it keeps included, an object that several values share once, at its first meeting.
+/// The capabilities of the closure itself, after its captures, are not values it captures, and
+/// neither are the instances a handler instance keeps. O(objects reached), each looked at once.
+pub(crate) fn rights_in_captures(closure: i64, captures: usize) -> Vec<u64> {
+    let mut found = Vec::new();
+    if captures == 0 || !is_handle(closure) {
+        return found;
+    }
+    let roots: Vec<i64> = with(closure, |object| match object {
+        Object::Closure { env, .. } => env.iter().take(captures).copied().collect(),
+        _ => Vec::new(),
+    })
+    .unwrap_or_default();
+    let mut seen: HashSet<usize> = HashSet::new();
+    // Each pending word, and whether it is a cell of a handler instance.
+    let mut pending: Vec<(i64, bool)> = roots.into_iter().rev().map(|w| (w, false)).collect();
+    while let Some((word, in_instance)) = pending.pop() {
+        if !is_handle(word) {
+            continue;
+        }
+        let Some(index) = slot(word) else { continue };
+        if !seen.insert(index) {
+            continue;
+        }
+        let mut children: Vec<(i64, bool)> = Vec::new();
+        let walked = with(word, |object| match object {
+            Object::Right(right) => found.push(*right),
+            // A handler instance's own instances, which its `uses` keep, are capabilities.
+            Object::Instance { .. } if in_instance => {}
+            Object::Instance { cells, .. } => {
+                children.extend(cells.iter().map(|&cell| (cell, true)));
+            }
+            other => {
+                let _ = other.each_child(|child| {
+                    children.push((child, false));
+                    Ok(())
+                });
+            }
+        });
+        if walked.is_none() {
+            continue;
+        }
+        pending.extend(children.into_iter().rev());
+    }
+    found
+}
+
 /// The bytes of a keyed hash.
 pub fn bytes(word: i64) -> Vec<u8> {
     with(word, |object| match object {
@@ -1359,6 +1435,7 @@ enum Node {
     Int(BigInt),
     Text(String),
     Hashed(Vec<u8>),
+    Right(u64),
     F64(u64),
     Data {
         tag: i64,
@@ -1596,7 +1673,7 @@ impl Object {
             Object::Int(value) => value.iter_u64_digits().len() * 8,
             Object::Text(text) => text.as_str().len(),
             Object::Hashed(bytes) => bytes.len(),
-            Object::F64(_) => 8,
+            Object::Right(_) | Object::F64(_) => 8,
             Object::Data { fields, .. } => cells(fields.len()),
             Object::List(items) => cells(items.len()),
             Object::Closure { env, .. } => cells(env.len()),
@@ -1626,6 +1703,7 @@ impl Object {
             Object::Int(value) => Node::Int(value.clone()),
             Object::Text(text) => Node::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
+            Object::Right(word) => Node::Right(*word),
             Object::F64(x) => Node::F64(una_core::float::to_bits(*x)),
             Object::Data { tag, fields } => Node::Data {
                 tag: *tag,
@@ -1894,6 +1972,7 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
         (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::Right(a), Node::Right(b)) => a == b,
         (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
             tag == t && same(fields, f)
@@ -2168,6 +2247,7 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
         (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::Right(a), Node::Right(b)) => a == b,
         (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
             tag == t && same(fields, f)
@@ -2312,6 +2392,10 @@ fn import_node(node: &Node, words: &[i64]) -> Result<i64, Refused> {
         Node::Hashed(bytes) => {
             let _step = step(bytes.len())?;
             alloc(Object::Hashed(bytes.clone()))
+        }
+        Node::Right(word) => {
+            let _step = step(8)?;
+            alloc(Object::Right(*word))
         }
         Node::F64(bits) => {
             let _step = step(8)?;
@@ -3679,13 +3763,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "full-size debug quarantine sizes; Miri has 64 slots")]
     fn an_import_that_reserves_more_than_twice_its_table_moves_the_release_bound() {
         // #1506, review round 2, finding 1: 10,002 live, 2 freed, an import of 30,000 objects,
         // then live objects up to 80,001 and churn. The import reserves its exact length in
         // each build, a few slots apart, so the debug table's doublings come at other lengths
         // than a release build's: 80,004 slots against 160,000 at the peak. The credit is
         // bounded by twice what a release build ever needed, so it never covers its table.
-        if !cfg!(debug_assertions) || cfg!(miri) {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut parked = Slots::default();
@@ -3714,12 +3799,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "full-size debug quarantine sizes; Miri has 64 slots")]
     fn a_reservation_left_unused_still_bounds_the_credit() {
         // #1506, review round 2, finding 3: an import that reserves room for 100,000 objects and
         // then makes none, as a refused import may, grows a release build's table to 101,000
         // slots as it grows the debug one. Churn after it stays within that table, so nothing
         // is credited: without the reservation in `release_need`, 65,537 slots would be.
-        if !cfg!(debug_assertions) || cfg!(miri) {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut parked = Slots::default();
@@ -3742,13 +3828,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "full-size debug quarantine sizes; Miri has 64 slots")]
     fn a_reservation_within_the_debug_table_still_lowers_the_credit() {
         // #1506, review round 3, finding 1: 16,385 live objects, then churn past the quarantine:
         // the debug table has room for an import of 16,384 objects, so `reserve_slots` returns
         // early, but a release build's table must double for it, to 65,536 slots. The credit
         // must follow at once, before any allocation, since the import checks the budget
         // before it allocates.
-        if !cfg!(debug_assertions) || cfg!(miri) {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut parked = Slots::default();
@@ -4982,6 +5069,94 @@ mod tests {
         assert!(
             last.1 <= first.1 * 4.0 + 1e-7,
             "copy: {first:?} then {last:?}"
+        );
+    }
+
+    #[test]
+    fn start_reaches_the_rights_of_its_captures_in_order_each_once() {
+        // ADR 0123 rule 4.2, `spec/31 §1` rule 3: the captured values in order, each depth
+        // first, left to right, a shared object once; the closure's capabilities and an
+        // instance's own instances are not walked.
+        let before = live();
+        let (a, b, c, d) = (right_word(1), right_word(2), right_word(3), right_word(4));
+        let pair = record(a, b);
+        let items = list();
+        push(items, pair);
+        push(items, pair);
+        let inner = closure(Code::NONE, 0);
+        push(inner, c);
+        let held = instance("with:h#1".to_owned());
+        push(held, d);
+        let nested = instance("with:g#1".to_owned());
+        let e = right_word(5);
+        push(nested, e);
+        push(held, nested);
+        push(inner, held);
+        let started = closure(Code::NONE, 0);
+        push(started, inner);
+        push(started, items);
+        push(started, a);
+        // The closure's own capabilities, after its captures.
+        let cap = instance("with:k#1".to_owned());
+        let f = right_word(6);
+        push(cap, f);
+        push(started, cap);
+        assert_eq!(rights_in_captures(started, 3), [3, 4, 1, 2]);
+        assert_eq!(rights_in_captures(started, 0), Vec::<u64>::new());
+        assert_eq!(rights_in_captures(started, 1), [3, 4]);
+        assert_eq!(right_of(a), Some(1));
+        assert_eq!(right_of(pair), None);
+        assert_eq!(right_of(7), None);
+        for word in [
+            a, b, c, d, e, f, pair, items, inner, held, nested, cap, started,
+        ] {
+            release(word);
+        }
+        assert_eq!(live(), before);
+    }
+
+    #[test]
+    fn two_reply_rights_are_equal_when_they_name_one_exchange_and_survive_a_copy() {
+        // ADR 0123 rule 1: `==` compares the exchange; a copy between heaps keeps the word.
+        let (a, b, c) = (right_word(9), right_word(9), right_word(10));
+        assert_eq!(equal(0, a, b), 1);
+        assert_eq!(equal(0, a, c), 0);
+        let copied = import(&export(a).unwrap()).unwrap();
+        assert_eq!(right_of(copied), Some(9));
+        for word in [a, b, c, copied] {
+            release(word);
+        }
+    }
+
+    #[test]
+    fn the_walk_of_start_is_linear_in_the_values_it_reaches() {
+        // The move at `start` looks once at each object its captures reach: 16 times the values
+        // take about 16 times the time, not 256 times.
+        fn walk(n: usize) -> std::time::Duration {
+            let items = list();
+            for i in 0..n {
+                let right = right_word(u64::try_from(i).unwrap());
+                let pair = record(right, right);
+                push(items, pair);
+                release(pair);
+                release(right);
+            }
+            let started = closure(Code::NONE, 0);
+            push(started, items);
+            push(started, items);
+            let start = std::time::Instant::now();
+            let found = rights_in_captures(started, 2);
+            let took = start.elapsed();
+            assert_eq!(found.len(), n);
+            release(items);
+            release(started);
+            took
+        }
+        let small = (0..3).map(|_| walk(5_000)).min().unwrap();
+        let large = (0..3).map(|_| walk(80_000)).min().unwrap();
+        assert!(
+            large < small * 64,
+            "{small:?} for 5,000 rights, {large:?} for 80,000"
         );
     }
 }

@@ -2,8 +2,9 @@
 # Checks the native runtime's memory safety with the checking toolchain of
 # scripts/check-toolchain.toml (#766), which never builds a release artifact:
 #
-# 1. Miri runs the unit tests of `una-rt`, the crate whose `ffi.rs` holds the only `unsafe` of
-#    the workspace (ADR 0058), and reports undefined behavior in the Rust code they reach. The
+# 1. Miri runs the unit tests of `una-rt`, the crate whose `ffi.rs` holds the runtime's `unsafe`
+#    (ADR 0058; `una-sys` and `una-z3` hold the rest, docs/security/tcb.md §3.3), and reports
+#    undefined behavior in the Rust code they reach. The
 #    tests Miri does not run are ignored in the code with their reason, and the set it ignores
 #    must be exactly scripts/sanitize-miri-ignored.txt, so it cannot change unseen.
 # 2. AddressSanitizer: `una-rt` is built with `-Zsanitizer=address`, and the native equivalence
@@ -26,6 +27,10 @@ set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+# The test profile of the per-PR gate is opt-level 1 for speed (#1697); the release evidence keeps
+# the unoptimized build it always had. Crates with their own opt-level in Cargo.toml (una-rt and
+# una-http at 0, una-link, object and sha2 at 3) keep it: the variable sets the profile-wide value only.
+export CARGO_PROFILE_DEV_OPT_LEVEL=0
 
 fail() {
     echo "sanitize: FAIL ($1)" >&2
@@ -94,7 +99,14 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # than 19,997, and a history of 500 cancelled timers rather than 10,000, one mention for both,
 # and maps of 16 and 64 keys built rather than up to 65,536 (#886), one mention,
 # and two fresh chains of 64 and 256 levels compared rather than up to 100,000 (#926), one
-# mention. Their full sizes run in the ordinary tests. And one constant: the
+# mention. Their full sizes run in the ordinary tests. And two tests of the debug credit of
+# the quarantine (#1506), four mentions, whose bounds are those of a quarantine of 65,536
+# slots: one runs with 70 live and 60 churned objects rather than 70,000 and 60,000, and skips
+# its check of the exact table sizes and of no credit and its check that more churn is
+# credited, three mentions; the other skips only its check that more than 60,000 slots are
+# credited, one mention. Their full checks run in the ordinary tests and under
+# AddressSanitizer below; the three credit tests that check only full-size tables are ignored
+# under Miri by name, in scripts/sanitize-miri-ignored.txt. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
 # Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
@@ -104,7 +116,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # Miri does not run: una-http forbids `unsafe` through the workspace lints, so Miri would check
 # only the standard library and the dependencies beneath it there (#1432).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 19 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 19"
+[ "$reduced" = 23 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 23"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
@@ -139,8 +151,15 @@ ASAN_OPTIONS="verbosity=1" "$asan_tests_binary" --list 2>&1 \
 # The scenarios that run in a process of their own are run by their parent tests through this
 # same binary (`current_exe`), so they run instrumented too, with these options; an
 # AddressSanitizer report there ends the scenario with a code its parent test refuses.
+# `allocator_may_return_null=1` (#1700): the runtime takes its large allocations through the
+# fallible `try_reserve` of the standard library and refuses the call with U6003 when the
+# allocator returns null, as the native allocator does for a request it cannot meet. Outside a
+# run no memory budget stops such a request first, and a unit test asks for 2^59 bytes there
+# (`empty_bit_set(size: 2^62)`); AddressSanitizer's default is to abort on a request above its
+# own maximum rather than return null, which would end the binary on a path the native runtime
+# takes without fault. Memory errors are still reported and still abort.
 step "The unit tests of una-rt with AddressSanitizer" \
-    env ASAN_OPTIONS="abort_on_error=1:detect_leaks=0" "$asan_tests_binary"
+    env ASAN_OPTIONS="abort_on_error=1:detect_leaks=0:allocator_may_return_null=1" "$asan_tests_binary"
 # The shim lives in this checkout's target directory and is on the PATH of one command only.
 shim=$root/target/sanitize/shim
 mkdir -p "$shim"
@@ -182,8 +201,8 @@ nm -u "$canary/target/una/canary" | grep -q '___asan_report' \
 step "The native equivalence test against it" \
     env "$linker_var=/usr/bin/cc" CC=/usr/bin/cc UNA_LINKER=cc UNA_RT_LIB="$runtime" PATH="$shim:$PATH" \
     ASAN_OPTIONS="abort_on_error=1:detect_leaks=0" \
-    cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter \
-    -- --exact --nocapture
+    cargo test -p una-cli --test native -- interpreter:: the_generated_programs_are_the_runnable_programs_on_disk \
+    the_native_lists_name_runnable_programs_only --test-threads=1 --nocapture
 
 # 3. libFuzzer: the targets of fuzz/, a crate outside the workspace with its own Cargo.lock,
 # built with the flags of scripts/fuzz-targets.sh and no other tool: libFuzzer's coverage of

@@ -1,0 +1,39 @@
+-- test: a `limiter` installed over a statement that calls a function making a `secret` value from its own literals is U4001 at the binding, as over a statement that computes on a `secret` passed in: whether `acquire` finds a token depends on the timing of that statement, and `Limited` carries `internal` (spec/27 §10, ADR 0117 IF5, ADR 0116 IF5, ADR 0116 amendment of 2026-11-06, #1685); the same statement on `public` values is accepted
+-- spec: spec/27 §10
+-- expect: error U4001 at src/paced.una:35:17
+module paced
+
+import std.limit (Limit, limiter)
+import std.time (second)
+
+count(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+hidden() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let k: secret Int = 3000000
+  let spent = k + 1
+  let second = attempt @gate.acquire()
+  unit
+
+shown() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let spent = count(3000000)
+  let second = attempt @gate.acquire()
+  unit
+
+pub run() -> Unit
+=
+  hidden() with @gate = limiter(at_most: 1, per: second, waiting: 0)
+
+pub run_public() -> Unit
+=
+  shown() with @gate = limiter(at_most: 1, per: second, waiting: 0)

@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{decimal, generic, host, json, runtime, tasks, values};
+use crate::{decimal, driver, generic, host, json, runtime, serve, tasks, values};
 
 /// The allocator of a debug build (ADR 0113, I3): the release build's [`cap::Cap`], wrapped to
 /// keep the most bytes the process ever held, its high-water mark, and the bytes each thread
@@ -442,6 +442,9 @@ exported! {
     una_rt_handler_instance => host::handler_instance, (name);
     una_rt_limiter_instance => host::limiter_instance, (at_most, per, waiting);
     una_rt_limit_acquire => host::limit_acquire, (site, instance);
+    una_rt_serve_next => serve::next, (site);
+    una_rt_serve_reply => serve::reply, (site, to, reply);
+    una_rt_serve_close => serve::close, (site);
     una_rt_event => host::event, (site, instance);
     // Dense values (`spec/29 §17`, ADR 0120, design note D5): the site first, and a tensor's
     // functions per rank.
@@ -662,6 +665,15 @@ pub extern "C" fn una_rt_http_enable() {
     runtime::enable_http();
 }
 
+/// Called by the C `main` of a program that performs an operation of `HttpServer`, before
+/// `una_rt_start`: lets the run start its serve threads before `main` when its grants include
+/// `serve:` ([`runtime::enable_serve`]). A program without one never calls it, so the linker
+/// drops the serve threads from its executable (ADR 0074 H7).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_serve_enable() {
+    runtime::enable_serve();
+}
+
 /// Checks the memory budget at an iteration of the loop at `site` (U6003 over it): 1 when
 /// the task must stop instead ([`runtime::budget`]).
 #[unsafe(no_mangle)]
@@ -785,11 +797,39 @@ pub extern "C" fn una_rt_tasks_begin(bound: i64, bounded: i64, site: i64) -> i64
     crate::started::tasks_begin(bound, bounded, usize::try_from(site).unwrap_or(usize::MAX))
 }
 
-/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`:
-/// 0, or 2 when the task stops instead ([`crate::started::start`]).
+/// Starts a task for the closure `closure`, which the caller keeps, at the `start` at `site`,
+/// moving to it the reply rights that its first `captures` values reach: 0, or 2 when the task
+/// stops instead ([`crate::started::start`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_start_task(closure: i64, site: i64) -> i64 {
-    crate::started::start(closure, usize::try_from(site).unwrap_or(usize::MAX), invoke)
+pub extern "C" fn una_rt_start_task(closure: i64, site: i64, captures: i64) -> i64 {
+    crate::started::start(
+        closure,
+        usize::try_from(site).unwrap_or(usize::MAX),
+        usize::try_from(captures).unwrap_or(0),
+        invoke,
+    )
+}
+
+/// Runs the driver of a `serve` section on the run's main task, starting a copy of the borrowed
+/// closure `answer` for each request, with `next` the event of `next` and `site` the driver's
+/// site: 0 after a host stop drained it, or 2 when the task stops ([`driver::drive`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_serve_drive(answer: i64, next: i64, site: i64) -> i64 {
+    driver::drive(answer, next, site)
+}
+
+/// Answers the borrowed `exchange` of a task of the driver of a `serve` section with what
+/// `handle` returned, `value` and `status`, with `reply` the event of `reply`: 0, or 2 when the
+/// task stops ([`driver::answer`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_serve_answer(
+    reply: i64,
+    site: i64,
+    exchange: i64,
+    value: i64,
+    status: i64,
+) -> i64 {
+    driver::answer(reply, site, exchange, value, status)
 }
 
 /// Ends the innermost `tasks` statement once its block has ended, cancelling its tasks first
@@ -1415,10 +1455,18 @@ mod tests {
             if function.starts_with("host") {
                 continue;
             }
-            // Outside a run no memory budget bounds a range's list, or a dense value filled
-            // from one element (#989): they take small bounds there.
+            // Outside a run no memory budget bounds a range's list, a dense value filled from
+            // one element (#989), or an empty bit set's words (#1700): they take small bounds
+            // there. A bit set's size the allocator cannot give is refused at the call, its
+            // own test in `values::collections`; inside a run the budget refuses it first.
             let words = match bounds {
-                Some(bounds) if name == "una_rt_range" || name.contains("_filled") => bounds,
+                Some(bounds)
+                    if name == "una_rt_range"
+                        || name.contains("_filled")
+                        || name == "una_rt_bit_set_empty" =>
+                {
+                    bounds
+                }
                 _ => pool,
             };
             let mut tuples: Vec<Vec<i64>> = Vec::new();

@@ -18,7 +18,8 @@ use una_syntax::{Interner, KeywordSet, SourceDb, Span, TokenKind, lex_in};
 use crate::run::Problem;
 use crate::smt::{
     ARRAY, Combine, Const, ConstRole, Definition, F, FLOAT32, FLOAT64, Fun as SmtFun, FunRole,
-    HASHED, LIST, LU, MAP, MATRIX, Query, Sort, TENSOR, TEXT, UNIT, kind_sort, path_selector,
+    HASHED, LIST, LU, MAP, MATRIX, Query, REPLY_RIGHT, Sort, TENSOR, TEXT, UNIT, kind_sort,
+    path_selector,
 };
 
 /// How the source text of an obligation's goal and hypotheses is normalized: by the edition of
@@ -913,6 +914,7 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Text => TEXT.to_owned(),
             Base::Unit => UNIT.to_owned(),
             Base::Hashed => HASHED.to_owned(),
+            Base::ReplyRight => REPLY_RIGHT.to_owned(),
             // `(_ FloatingPoint 11 53)`: the encoding is the run-time semantics (`spec/29 §8`).
             Base::F64 => FLOAT64.to_owned(),
             // A decimal is its coefficient, an `Int` (ADR 0120 V2): its queries stay linear.
@@ -1224,6 +1226,7 @@ fn type_name(ty: &Type) -> String {
             Base::Text => "Text".to_owned(),
             Base::Unit => "Unit".to_owned(),
             Base::Hashed => "Hashed".to_owned(),
+            Base::ReplyRight => "ReplyRight".to_owned(),
             Base::F64 => "F64".to_owned(),
             Base::F32 => "F32".to_owned(),
             Base::Decimal(scale) => format!("Decimal[{scale}]"),
@@ -2153,7 +2156,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 // `together` task is; its value is `unit`, and it gives no fact.
                 // `quiet e` is `e` for verification (S-39): only the trace differs.
                 Expr::Quiet { body, .. } => expr = body,
-                Expr::Start { task, span } => {
+                Expr::Start { task, span, .. } => {
                     let mut task_leaves = Vec::new();
                     self.walk(task, &ctx, &mut task_leaves);
                     leaves.push(Leaf {

@@ -41,7 +41,8 @@ use una_diag::Code;
 pub use lock::{DEFAULT_SOLVER_VERSION, Lock, parse_lock};
 pub use manifest::{
     Boundary, Ceiling, Contract, Drive, Edition, Extents, Format, MAX_DRIVE_MILLISECONDS,
-    MAX_MEMORY_CAP, Manifest, Mount, Profile, is_grant, is_module_path, parse_manifest,
+    MAX_MEMORY_CAP, MAX_SERVE_MILLISECONDS, Manifest, Mount, Profile, Serve, is_grant,
+    is_module_path, parse_manifest,
 };
 pub use package::{LoadError, Loaded, LoadedFile, Role, discover, discover_dependency};
 

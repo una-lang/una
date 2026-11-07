@@ -1,0 +1,28 @@
+-- test: the twin of `tconc_via_first_of`: the same policy is called outside the construct, where no task runs beside it, so `L_lim` stays `internal`
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (key_of)
+
+crunch(key: Int) -> Int
+=
+  let edit acc = key
+  for i in 0..1000
+    acc = if acc > 0 then acc - 1 else acc + 1
+  acc
+
+spin(key: Int, n: Int) -> Int
+=
+  let spent = crunch(key)
+  n
+
+--- The policy is called before the race, beside nothing.
+pub both(key: Int, n: Int) -> Int
+  uses @http: Http[get]
+=
+  let b = key_of(n)
+  let c = first of
+    spin(key, n: n)
+    spin(key, n: n + 1)
+  c

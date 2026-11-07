@@ -28,6 +28,7 @@ import UnaFormal.F1.FirstImportTests
 import UnaFormal.F1.PreludeImportTests
 import UnaFormal.F1.AtImportTests
 import UnaFormal.F1.FixedImportTests
+import UnaFormal.F1.QuietImportTests
 import UnaFormal.F1.Release
 import UnaFormal.F1.ReleaseExample
 import UnaFormal.F1.CheckSound

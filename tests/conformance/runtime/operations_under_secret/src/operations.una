@@ -1,4 +1,4 @@
--- test: operations performed in quiet code append no event to the trace and take no `seq`, so the number of events and the `seq` of later ones do not depend on the secret: an operation of a capability that accepts `secret` under a `secret` branch, directly, through a callee and in a started task, and under the conservative rules (an operation body under an effect floor above `public`, a decision on values of a type parameter); an operation at a `public` program counter keeps its event, its `secret` argument redacted. The native test `s42_the_conformance_case_has_one_trace_for_every_secret` runs this case for several secrets and compares whole traces in both engines (spec/26 §6 rule 4, spec/11 §5, S-42)
+-- test: operations performed in quiet code append no event to the trace and take no `seq`, so the number of events and the `seq` of later ones do not depend on the secret: an operation of a capability that accepts `secret` under a `secret` branch, directly, through a callee and in a started task, and under the conservative rules (an operation body under an effect floor above `public`, a decision on values of a type parameter); an operation at a `public` program counter keeps its event, its `secret` argument redacted. The output is the same with or without the rule, so this case's output alone does not encode it: the native test `s42_the_conformance_case_has_one_trace_for_every_secret` runs this case for several secrets and compares whole traces in both engines (spec/26 §6 rule 4, spec/11 §5, S-42); its data are `internal`, above `public` and so quiet, and at most the `internal` that the schedule of started tasks may depend on, since check points under a `secret` program counter are U4002 in a program that starts tasks (spec/27 §8 rule 5, #1684)
 -- spec: spec/26 §6
 -- grant: console
 -- expect: run-output "done 2"
@@ -6,11 +6,11 @@ module operations
 
 capability Sink
   op put(x: Int) -> Unit
-    accepts secret
+    accepts internal
 
 capability Box
   op hold(x: Int) -> Unit
-    accepts secret
+    accepts internal
 
 handler keep() for Sink
   op put(x) = unit
@@ -18,16 +18,16 @@ handler keep() for Sink
 handler box() for Box
   op hold(x) = deep(x)
 
-deep(x: secret Int) -> Unit
+deep(x: internal Int) -> Unit
 =
   use_it(x) with @k = keep()
 
-use_it(x: secret Int) -> Unit
+use_it(x: internal Int) -> Unit
   uses @k: Sink[put]
 =
   @k.put(x)
 
-feed(s: secret Int) -> Unit
+feed(s: internal Int) -> Unit
   uses @k: Sink[put]
 =
   for i in 0..<3
@@ -39,14 +39,14 @@ branchy[T](a: T, b: T) -> Unit
   if a == b
     deep(1)
 
-worker(s: secret Int) -> Unit
+worker(s: internal Int) -> Unit
 =
   feed(s) with @k = keep()
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = 2
+  let s: internal Int = 2
   feed(s) with @k = keep()
   for i in 0..<3
     if s > i
@@ -58,7 +58,7 @@ pub main() -> Unit
   use_it(s) with @k = keep()
   @console.print("done 2")
 
-hold_it(s: secret Int) -> Unit
+hold_it(s: internal Int) -> Unit
   uses @b: Box[hold]
 =
   @b.hold(s)

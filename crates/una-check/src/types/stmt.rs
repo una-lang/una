@@ -19,6 +19,7 @@ use super::env::{Entity, KindDef};
 use super::label::Label;
 use super::locals::TakenState;
 use super::records::Res;
+use super::timing::ConstructKind;
 use super::ty::{KindId, Shared, Ty};
 use super::unify::Origin;
 
@@ -118,7 +119,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
                 }
-                // Never the last line of a block, which the parser reports.
+                // The last line of a block only when its body holds a statement other than
+                // `let`, which `together` reports (U2024); otherwise the parser does.
                 Stmt::Together(stmt) => {
                     self.outside_rl(stmt.span, || "`together`".to_owned());
                     self.together(stmt);
@@ -253,6 +255,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // S-39: under a raised program counter, a host stop that ends the loop appends no
         // `stop` event.
         self.quiet_site(stmt.span);
+        self.switch_site(stmt.span, &Label::public(), || {
+            "whether this `for ever` loop runs".to_owned()
+        });
         if let Some(reason) = self.divergence_refused() {
             self.report.error(
                 Code::U3027,
@@ -591,8 +596,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let before = self.taken_state();
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, from);
+        // `spec/27 §8` rule 5: each iteration is a check point, under the body's program counter.
+        self.switch_site(stmt.span, &Label::public(), || {
+            "how many times this `for` loop iterates".to_owned()
+        });
         let mark = self.locals.len();
-        self.bind(self.name(&stmt.var), var_ty);
+        self.bind_loop_var(self.name(&stmt.var), var_ty, "a `for` loop");
         self.loops.push(LoopFrame {
             pc: self.ctx.pc.clone(),
             depth: (self.task_depth, self.lambda_depth),
@@ -756,6 +765,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let before = self.taken_state();
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, stmt.condition.span);
+        self.switch_site(stmt.span, &Label::public(), || {
+            "how many times this `for until` loop iterates".to_owned()
+        });
         let mark = self.locals.len();
         self.loops.push(LoopFrame {
             pc: self.ctx.pc.clone(),
@@ -814,6 +826,12 @@ impl<'a> Checker<'_, 'a, '_> {
         self.timing_start();
         if let Some(bound) = &stmt.bound {
             let found = self.expr(bound, None);
+            // `spec/27 §8` rule 5: how many tasks run at once orders their effects too, so a
+            // bound above `internal` is a decision of the schedule (#1684, review M2).
+            let label = self.deep(&found);
+            self.switch_site(bound.span, &label, || {
+                "how many tasks this `tasks` statement runs at once".to_owned()
+            });
             let found = self.resolve(&found);
             if !matches!(found.unlabeled(), Ty::Error(_)) {
                 if matches!(found.magnitude(), Ty::Int) {
@@ -828,10 +846,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             }
         }
+        // ADR 0116 P2: the block, with each `start` in it, is a part; the bound is not.
+        let construct = self.construct_open(ConstructKind::Tasks, stmt.span);
+        self.part_open(construct);
         self.tasks_frames.push((self.task_depth, self.lambda_depth));
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.tasks_frames.pop();
+        self.part_close();
         let seed = self.timing_end();
+        // ADR 0116 P2: `κ` of the statement, its bound and its block.
+        self.construct_seed(construct, seed.clone());
         self.findings.tasks_sites.push(super::timing::TasksSite {
             span: stmt.span,
             function: self.current,
@@ -899,8 +923,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let word = std::mem::replace(&mut self.task_word, "started task");
         let in_start = std::mem::replace(&mut self.in_start, true);
         self.task_depth += 1;
+        // ADR 0123 IF6: what the started expression captures.
+        self.start_capture_open();
         let ty = self.handled(&stmt.handled, None, Role::Plain, false);
         self.task_depth -= 1;
+        let within = stmt.handled.within.as_ref().map(|deadline| deadline.span);
+        self.start_capture_close(stmt.keyword, within);
         self.in_start = in_start;
         self.task_word = word;
         self.task_mark = saved_mark;
@@ -944,7 +972,14 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.locals.len();
         let saved = self.task_mark.replace(mark);
         let word = std::mem::replace(&mut self.task_word, "`together` task");
+        let branch = self
+            .server_branch
+            .replace(("a branch of `together`", stmt.keyword));
         self.task_depth += 1;
+        // ADR 0116 P2: each branch is a part, and the seed of `κ` covers them all.
+        self.timing_start();
+        let construct = self.construct_open(ConstructKind::Together, stmt.span);
+        self.part_open(construct);
         let mut bound = Vec::new();
         for branch in &stmt.body {
             let Stmt::Let(branch) = branch else {
@@ -962,8 +997,12 @@ impl<'a> Checker<'_, 'a, '_> {
             // The branch's binding waits for the join, so its siblings do not see it.
             bound.extend(self.locals.drain_from(mark));
         }
+        self.part_close();
+        let seed = self.timing_end();
+        self.construct_seed(construct, seed);
         self.task_mark = saved;
         self.task_word = word;
+        self.server_branch = branch;
         self.task_depth -= 1;
         self.locals.extend(bound);
     }
@@ -1015,7 +1054,13 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
         let word = std::mem::replace(&mut self.task_word, "branch of `first of`");
+        let branch = self
+            .server_branch
+            .replace(("a branch of `first of`", first.keyword));
         self.task_depth += 1;
+        // ADR 0116 P2: each branch is a part; the race's own site lies outside them.
+        let construct = self.construct_open(ConstructKind::FirstOf, first.span);
+        self.part_open(construct);
         let mut joined = expected.cloned();
         let mut types: Vec<(Span, Ty)> = Vec::new();
         for branch in &first.body {
@@ -1036,10 +1081,14 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             types.push((handled.expr.span, ty));
         }
+        self.part_close();
         self.task_mark = saved_mark;
         self.task_word = word;
+        self.server_branch = branch;
         self.task_depth -= 1;
-        let tau = self.race_close(&open);
+        let (tau, seed) = self.race_close(&open);
+        // ADR 0116 P2: `κ` of the race is `τ⁰` of the race's own seed, over every branch.
+        self.construct_seed(construct, seed);
         let reached: Vec<(Span, Ty)> = types
             .iter()
             .filter(|(_, ty)| self.resolve(ty) != Ty::Never)
@@ -1081,6 +1130,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // S-39: as for `tasks`.
         self.quiet_site(together.span);
+        // ADR 0116 P2: the seed of `κ` covers the list too.
+        self.timing_start();
         let (var_ty, label, from) = self.loop_source(&together.source);
         let var_ty = var_ty.with_label(&label);
         self.typed(together.var.span, &var_ty);
@@ -1092,18 +1143,28 @@ impl<'a> Checker<'_, 'a, '_> {
         let mark = self.locals.len();
         let saved_mark = self.task_mark.replace(mark);
         let word = std::mem::replace(&mut self.task_word, "`together` task");
+        let branch = self
+            .server_branch
+            .replace(("the body of `together for`", together.span));
         self.task_depth += 1;
-        self.bind(self.name(&together.var), var_ty);
+        // ADR 0116 P2: the body is a part; the list, checked above, is not.
+        let construct = self.construct_open(ConstructKind::TogetherFor, together.span);
+        self.part_open(construct);
+        self.bind_loop_var(self.name(&together.var), var_ty, "a `together for`");
         let element = self.block(
             &together.block,
             element_expected.as_ref(),
             Role::Plain,
             false,
         );
+        self.part_close();
+        let seed = self.timing_end();
+        self.construct_seed(construct, seed);
         self.locals.truncate(mark);
         self.task_depth -= 1;
         self.task_mark = saved_mark;
         self.task_word = word;
+        self.server_branch = branch;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
         let ty = Ty::List(Shared::new(element)).with_label(&label);
@@ -1413,14 +1474,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                 }
                 HandlingKind::ErrorUse(value) => {
+                    let expected = current.clone();
+                    // The default runs only when the failure comes, so under the label that
+                    // decides it: raised before the clause's context copies the program counter
+                    // (#1674).
+                    let saved = decided
+                        .as_ref()
+                        .map(|label| self.raise_pc(label, decided_at));
                     let ctx = Ctx {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
                     };
-                    let expected = current.clone();
-                    let saved = decided
-                        .as_ref()
-                        .map(|label| self.raise_pc(label, decided_at));
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).

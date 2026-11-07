@@ -1113,3 +1113,151 @@ Items 1 to 4 are confirmed as written, with the notes each carries; item 10 stat
     - the contained faults of the run pass a fixed threshold, the same for every run (#1391 fixes its value; 64 is proposed).
 
     A panic inside the wheel or the readiness ends the thread (item 9). Contained steps do not print through the panic hook, so faults cannot flood the log. At S5 (#1007) the program reads the count of contained faults through `faults()`, and each contained fault is a trace event; until then they are counted and not shown. #1391 also closes the windows in which a contained fault leaves a slot or a peer's place held: a fault in a peer's admission after its place was taken, a fault in the hand-off before the connection reaches its owner's inbox, and a panic inside closing code. It states the error of a stop, and amends `spec/31 §6` rule 13 with this policy. Each callback is registered once per run; a second registration is a defined error (`AlreadyRegistered`) in every build and changes nothing, so S5 registers its callback once, not once per `next`.
+
+## Amendment (2026-11-05): the native move at `start`
+
+- Status: Accepted by the project on 2026-11-05. Drafted for issue #1571 (slice S5b) as `docs/plan/0123-s5b-native-move-amendment-draft.md`, which now points here. The wording of the cost and of the order was corrected afterwards to match the code (the pass runs after the copy succeeds, and native code walks every captured value); the corrected wording was confirmed by the project's decision of 2026-11-06. The accepted text of this record above this amendment is unchanged.
+- Concerns: rule 4 item 2 ("A task's reply rights are found by the walk that copies its captures, so the walk costs nothing in native code") and the Costs row "Move reply rights at `start`" ("native: none beyond the copy of the captures (ADR 0113)").
+
+### Why
+
+Both engines must move the rights that a `start`'s captures reach in one order: each marked capture in the order of its name, each value depth first, left to right, an object that several values share at its first meeting (`spec/31 §1` rule 3 item 2). That order decides the order of the started task's held list, and so the order of its auto-answers and of their `unanswered` events (rule 4 item 5).
+
+The copy of the captures that ADR 0113 makes in native code (`values::export`) walks its objects in another order: right to left, children before their parent, each step announced and checked against the memory budget before it allocates. Two ways to find the rights in the copy were considered:
+
+- **Reorder the copy.** The copy's order is where a copy is refused (U6003) and what keeps it deterministic. Reordering it would move the memory-refusal points of every program, servers or not, for a cost that only servers need. Rejected.
+- **Record the rights where the copy meets them.** In the copy's order, an object that several values share is reached at its last left-to-right meeting, not its first, so the order of moves, and with it the order of auto-answers and their events, would differ from the interpreter's whenever a right is shared. Rejected.
+
+So native code finds the rights with a pass of its own over the values of the closure that `start` copies, in the order above. The order of the steps is: the copy of ADR 0113, then the pass, then the task is queued. The pass runs after the copy succeeds and before the task is queued, so a refused copy moves no right to a task that never exists.
+
+### Amendment
+
+The Costs row "Move reply rights at `start`" reads, for native code: one extra pass, O(objects that the task's captured values reach), the same order as the copy itself, only at a `start` with at least one capture that can hold a `ReplyRight`; none otherwise. When any capture is marked, native code hands over every capture and walks all of them; the interpreter walks only the marked ones. Both engines move the same rights in the same order, because an unmarked capture holds no right. Rule 4 item 2's "so the walk costs nothing in native code" reads: native code finds the rights in a pass of its own over the captured values, in the order of the interpreter's walk, after the copy of ADR 0113 succeeds and before the task is queued; the copy's order and refusal points do not change. The order of moves and the result are the same in both engines.
+
+### Bounds
+
+- Time: each object that the captured values reach is looked at once (a set of the objects seen), so the pass is O(objects reached by the task's captures), the copy's own order of cost; a scaling test bounds it (`values::tests::the_walk_of_start_is_linear_in_the_values_it_reaches`).
+- Space: the pass's stack and its set of the objects seen, O(objects reached by the task's captures), released before the task is queued.
+- A `start` whose captures cannot hold a reply right, as Core IR marks it (`rights` empty), makes no pass at all.
+
+## Amendment (2026-11-06): what slice S5 settles, and the count of contained faults
+
+- Status: Accepted, by the project's decision of 2026-11-06 on the draft `docs/plan/0123-s5-amendment-draft.md`, which now points here. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs.
+- Issues: #1007 (the checks of slice S5) and #1571 (the operations in both engines). Design: `docs/plan/0123-s5-design.md`.
+
+### Why
+
+Implementing rules 0 to 5 and the Information flow of this record in the checker met one conflict with another normative text and several points the record leaves open. Each is settled here the conservative way. Sections A to H and J state what the implementation does; section I declares what a later part of #1571 shows to the program.
+
+### A. The field `query` of `Request`
+
+Rule 1 declares `Request` with a field `query: internal List[Param]`. `spec/01` reserves `query` in every edition ("reserved for v0.4 (platform)", U0103), so a field of that name cannot be declared, and `request.query` could never be read. The reservation is older than this record, which states that it "adds no reserved or contextual keyword"; the clash went unnoticed.
+
+The field is `params: internal List[Param]`, with the same meaning: the query's parameters, decoded, in order. Rule 1 and its examples read `params` for `query` where they name the field; the trace's reduced form ("the values of query parameters, in `query` and in `target`") reads "in `params` and in `target`". The word `query` stays reserved.
+
+### B. What `next` accepts
+
+Rule 1 declares `accepts internal` on `reply` and, in its prose, `public` only on `close`; it writes no `accepts` on `next`. Without one, a call of `next` under any program counter would be accepted. Whether a task takes a request off the queue decides which task holds its reply right and takes a `/once` slot that other tasks' deliveries wait for, so a call under a `secret` program counter would let `secret` data decide what other tasks observe.
+
+`next` accepts `internal`. An accept loop runs under a `public` program counter (IF1), and a request task under an `internal` one (IF7), so no server of this record's examples changes; only a call of `next` under a `secret` condition is U4003.
+
+### C. The function values of IF6
+
+IF6 checks a `start` whose captures can hold a `ReplyRight`, by their types, "or include a function value, which may have captured one". Read alone, the second clause would check every `start` that captures a function value in every package of edition `0.4`, servers or not, and refuse ones under a `secret` program counter that hold no reply right and never could.
+
+The clause applies in a package that imports `HttpServer`, `Exchange` or `ReplyRight` from `std.host`, the only names through which a value of the package can hold a reply right (a `ReplyRight` comes only from `next`, and later from `test_exchange`, whose types name them). The first clause, a capture whose type can hold a `ReplyRight`, applies everywhere.
+
+### D. U3033 through handlers
+
+Rule 5 forbids an operation of `HttpServer` in the effect set of a branch. A branch that calls an operation of another capability, `@orders.find()`, runs whatever handler serves that binding, and a handler's parameters may hold a reply right, so two branches could still answer one right in an order that timing decides.
+
+An operation, in a branch, of a capability that has a handler in the package whose `uses` hold `HttpServer` (or such a capability, to a fixpoint) is U3033, whatever handler serves it at run time.
+
+### E. `L_srv` with the preview's terms
+
+The amendment of 2026-11-02 (IF-S1) defines `L_srv` with `sfx(s)`, the statements that can run after a hand-off site, and `Suf*`, its closure along the call graph. The checker computes `sfx(s) ⊔ Suf*(node(s))` as `τ⁰` of the bodies of every ancestor of the function that holds the site, the rule `L_lim` already uses (`spec/27 §9` rule 5), with the preview's `τ_conc`. It is sound and coarser: code that runs only before the first server operation raises the label too, which section F.2 of that amendment says it does not. Under the preview's `τ_conc`, a server of the language form has `L_srv = ⊤` in any case, since its `next` stands in a `tasks` block.
+
+This stays until #1155 (P11's `Suf`) or a statement-level `sfx` lands, as `spec/31 §1` rule 5 item 7 states it: a preview over-approximation that MAY become more precise and MUST NOT become stricter.
+
+### F. Runs before the runtime
+
+Slice S5 lands in parts: the checks (#1007), then the operations in both engines (#1571), with the timing oracles that `spec/31 §6` requires before the serve threads meet a program. Between them a program can name `HttpServer` but not run it. `una run` and `una build` of a program whose entry function uses `HttpServer` are a usage error, exit code 2, before anything runs (`spec/31 §1` rule 10); `una check` and `una test`, whose tests install handlers with `given`, work as for any capability.
+
+### G. Two readings added after review
+
+- **`uses of` parameters in branches (rule 5).** A function that calls its `uses of` parameter in a branch runs code its callers choose, which the branch cannot see: in a program that imports a name of the server, such a call, or the passing on of the parameter, is U3033, failing closed.
+- **Type parameters (IF6).** A capture of a type parameter's type counts as one that can hold a reply right only in a package that imports `HttpServer`, `Exchange` or `ReplyRight`, as for function values (section C).
+
+### H. The reduced trace form
+
+Rule 1 states the reduced form of the events of `next` and `reply` and that "their values are redacted by their labels, as every event's are". Four details are settled (`spec/31 §1` rule 7, one implementation for both engines):
+
+1. A header is a credential by its name in any letter case: a reply's `Set-Cookie` is one, as a request's `cookie` is (requests carry names in lower case already). A header whose name is not a token, such as `"set-cookie "` or a name with a tab or a control byte, counts as a credential too, failing closed: the host refuses to send such a reply (`BadReply`), but its event still holds the value, and no spelling of a credential's name may escape the reduction.
+2. `<credential>` and `{"length": n, "hmac": "<hex>"}` are written bare in the value's Una form, as `<reply-right>` and `<redacted:level>` are, so they cannot be mistaken for a text of that content.
+3. In `target`, which stays a quoted text, each value of a query part `name=value`, split at its first `=`, is replaced by the body form of the value as received, before its percent-decoding; a part without `=` is a name and stays, as names stay in `params`. In `params` the body form is of the decoded value.
+4. The fail-closed rendering that the first part of the slice used until the reduced form landed, every argument of the host's `HttpServer` written as an `internal` value whatever its label, gives way to rule 1's own reading: redaction by labels, the reduced form beneath it. Since every field of `Request` and `Reply` is declared `internal`, a run's trace still shows no field of either; a `Reply` built from `public` data is written `Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)` instead of `<redacted:internal>`, which shows nothing but its static label. A run without the engine keeps the fail-closed rendering.
+
+The key of the HMAC is held by the engine of the run: all zeros under a script, and 32 bytes from the host's random source for the serve threads of a live run, where a host that gives none stops the run from starting, as for the placement key.
+
+### I. `faults()` and the event of a contained fault
+
+Decision 10 of the amendment of 2026-11-02 says that at S5 the program reads the count of contained faults through `faults()` and that each contained fault is a trace event, and the fault policy places both at the one point every contained fault passes. Neither text declared `faults()`, its type, its label, where it lives, or the event's form. They are:
+
+1. `faults` is a fourth operation of `HttpServer`: `op faults() -> internal Int`, the run's count of contained faults, `accepts internal`, no failure, never parking. It is `internal` because the count depends on what peers send and when (IF5). It is an operation rather than a function, because it reads the host's state, so it is an event and is refused in a branch of `together` by U3033 as the other operations are. A `serve:` grant allows it with the others. The per-grant counts stay in the event of item 2.
+2. Each contained fault appends a host event with no task and no operation, `{"seq": n, "outcome": {"kind": "fault", "site": "step" | "accept" | "peer-expiry" | "abandon", "listener": "<grant>"}}`, written at the program's next server operation after it (the events of serve threads are not in any task's order), before that operation's own event, so that a trace stays a function of a script under `--virtual-time`.
+3. Both land with a later part of #1571, in both engines. Until then, contained faults stay counted and unseen, as `spec/31 §6` rule 13 item 5 states.
+
+### J. The root's abort and `next`
+
+An abort of the root does not lower the run's cancellation entry: the root unwinds through its `tasks` statements, which cancel their tasks. A task waiting in `next` when the root aborts ends the operation `interrupted`, with its `cancelled` event, as a cancelled one does; only an abort by a started task ends a `next` with the run's abort. Both engines agree (`tests/serve_runs/aborted_root_ends_a_waiter`).
+
+## Amendment (2026-11-06): the depth of a request task in IF6
+
+- Status: Accepted, by the project's decision of 2026-11-06 on the draft `docs/plan/0123-if6-depth-amendment-draft.md`, which now points here. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs.
+- Issue: #1674, found by the security hunt of the serve engine (finding F1, Medium, both engines). Implemented by PR #1678, with `spec/31 §1` rule 5 item 6.
+
+### Why
+
+IF6 checks the auto-answer of a `start` that moves reply rights "under `pc ⊔ τ(e)` when it has `within`, and under `pc` otherwise, against `internal`", and says that "a reply inside `e` already meets the same bound under ADR 0117's timing floor, so this rejects only a `start` whose expression never replies".
+
+That leaves out how the task ends. ADR 0117 rule 7 makes a started task that runs past `--task-depth` end alone, and this record's rule 4 item 5 answers its rights `500`. Whether a peer gets the program's reply or the host's `500` then depends on how deep `e` recursed. A `reply` reached after a recursion on `secret` data runs under a `public` or `internal` program counter, so it is accepted, and the recursion only computes `secret` values, so it is legal too. The hunt's probe, a task that recursed `key - body.len` deep, recovered a secret integer exactly by a binary search on the body's length, in 14 requests, in both engines.
+
+`spec/07 §1` puts termination and stack exhaustion out of model, under termination-insensitive noninterference, which limits such a leak to about one bit per run because the run ends. A task that ends alone does not end the run: every request turns termination into a status the peer reads, as often as it likes. The model's reason for leaving termination out does not hold here.
+
+### A. The rule
+
+IF6 gains: a `start e` that moves reply rights is also U4003 at the `start` when both:
+
+1. **its task can push frames without a bound its code shows:** what `e` runs, along the call graph of ADR 0116 P1 with an edge from each policy to its `via` function, reaches a cycle (a function, a handler, a `via` or a lambda that can call itself again), a call of a function value or of a `uses of` parameter, or code whose calls the checker does not hold (a standard module other than the prelude, a dependency not checked with the package);
+2. **it can hold data above `internal`:** the program counter at the `start`, what `e` reads from outside, binds or receives from an operation, or what any node it reaches declares in its signature, binds, receives or, in a lambda, captures. A symbolic label `ℓ_T` counts as above `internal` in the `start`'s own data, since a `start` in a generic body takes the values of its type parameters from callers outside the task, and in the lambdas of the package when the task can be handed a function value made outside it; it does not count in a generic function the task reaches, whose type parameters take what the task passes.
+
+The last sentence of IF6 ("a reply inside `e` already meets the same bound ...") reads: "A reply inside `e` meets the bound of the program counter already; the depth of its task is bounded by the rule above."
+
+**Why it is sound.** A frame is pushed only by a call of Una code. If item 2 fails, nothing the task runs holds data above `internal`, so whatever decides its depth is at most `internal`, which the answer accepts. If item 1 fails, the task's calls form no cycle, call no function value and stay in code the checker holds, so its depth is bounded by the longest chain of calls that code shows. The prelude's functions are host code in both engines, which push no frame of Una code but through a function argument, itself a call of a function value; this assumes that host code does not exhaust a task's stack on data of its own.
+
+**Type parameters.** A rule that dropped every symbolic label, on the ground that callers count the values of a type parameter, holds for a generic function the task calls, whose callers are the task's code, and is false for a `start` in a generic body: the caller that instantiates `T` with `secret Int` is outside the task. The rule keeps the symbols of the `start`'s own data, and those of `Λ` when a lambda made outside the task can reach it.
+
+**What it does not cover yet.** With item 1 false the task still ends alone when the operator sets `--task-depth` below that longest chain, and which chain runs may depend on data above `internal`. The default `--task-depth` is 1000. Issue #1681 proposes that the engines refuse such a setting.
+
+**What it refuses.** The rule does not ask whether the data decides the recursion: a task that recurses on the request's length and also reads a `secret` key for a policy is refused. That is the price of a rule simple enough to be clearly sound and linear. Issue #1682 records a precise rule (what decides each call) as a later refinement, which MAY only accept more.
+
+**Why not a runtime fix.** The host cannot make a depth-aborted task's `500` look like the reply the task would have sent, so a uniform auto-answer does not close the channel. Leaving it out of model would weaken a public guarantee.
+
+### B. A correction found on the way
+
+The checker ran the default of `if error use` under the program counter from before the clause, not under the label that decides the failure, so its calls and effects were checked as if they ran whatever the failure, a gap of `spec/07 §3`. The implementation raises the program counter before the clause's context is taken. No accepted text changes for it.
+
+### C. Out of scope: other effects after a depth abort
+
+A task that ends alone also skips every effect it would have performed after the abort, which a public sink may see, and its `aborted` event and stderr line name it. Under `spec/07 §1` that is termination, out of model, as it is for an abort of the run. It is not observable by the peer through the reply right, which this amendment covers. Issue #1677 records it for a decision of the model.
+
+### Cost
+
+One graph of the package, one search for its cycles and two closures over its strongly connected components, O(V + E), at the first `start` that moves reply rights; then O(size of the seed of `e`) lookups per `start`. Recording what a node holds costs O(open sites + log n) per binding and per operation.
+
+## Amendment (2026-11-06): the kind `TestRequestError`
+
+- Status: Accepted, by the project's decision of 2026-11-06 on the draft `docs/plan/0123-s7-amendment-draft.md`, which now points here. The accepted text of this record above this amendment is unchanged.
+- Issue: #1009 (slice S7). Precedent: ADR 0117, "Amendment (2026-10-19): what slice S3 settles", item 7, which settled `Deadline = Expired` as `= | Expired` for the same reason.
+
+Rule 21's `pub kind TestRequestError = Refused` is declared `pub kind TestRequestError = | Refused`: a sum kind of one variant, since `= Refused` would name an alias of a type `Refused` (`spec/02 §2`, `alias_body`), which does not exist, and `fails` names a sum kind (`spec/06`, U2002 otherwise). `test_request` fails with `Refused` where the host would answer `400`, as rule 21 states. The variant and its meaning do not change (`spec/31 §8` rule 2).

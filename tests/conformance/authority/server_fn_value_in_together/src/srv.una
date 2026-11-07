@@ -1,0 +1,16 @@
+-- test: a call, in a branch of `together`, of a function value whose type's requirements hold `HttpServer` is U3033 at the call (spec/31 §1, ADR 0123 rule 5)
+-- spec: spec/31 §1
+-- expect: error U3033 at src/srv.una:15:18
+module srv
+
+import std.host (HttpServer)
+
+price(n: internal Int) -> internal Int = n * 3
+
+twice(n: internal Int, stop: fn() -> Unit uses @server: HttpServer[close]) -> Unit
+  uses @server: HttpServer[close]
+=
+  together
+    let total = price(n)
+    let closed = stop()
+  unit

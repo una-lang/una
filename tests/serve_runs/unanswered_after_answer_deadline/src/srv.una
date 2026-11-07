@@ -1,0 +1,13 @@
+module srv
+
+import std.host (HttpServer)
+
+--- The root task ends holding a right whose exchange the host's `answer` deadline ended: its
+--- auto-answer sends nothing, and its `unanswered` event is still in the trace, so the trace does
+--- not depend on timing (`spec/31 §1` rule 3 items 5 and 7).
+pub main() -> Unit
+  uses @server: HttpServer[next, close]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  @server.close()

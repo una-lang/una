@@ -250,6 +250,9 @@ pub enum Code {
     /// 58, ADR 0109 rule 5). Registered by ADR 0109 slice S1; reported once the clause lands
     /// with its slice.
     U3032,
+    /// An operation of `HttpServer` in a branch of `together`, `together for` or `first of`
+    /// (ADR 0123 rule 5).
+    U3033,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -318,7 +321,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 120] = [
+    pub const ALL: [Code; 121] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -408,6 +411,7 @@ impl Code {
         Code::U3028,
         Code::U3029,
         Code::U3032,
+        Code::U3033,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -902,6 +906,11 @@ impl Code {
                 code: "U3032",
                 domain: Domain::Authority,
                 meaning: "A `simd required` clause outside a `systems` package of edition `0.4`",
+            },
+            Code::U3033 => &Entry {
+                code: "U3033",
+                domain: Domain::Authority,
+                meaning: "An operation of `HttpServer` in the effect set of a `together` branch, a `together for` body, a `first of` branch, or `handle` or `on_stop` of a `serve` module",
             },
             Code::U4001 => &Entry {
                 code: "U4001",

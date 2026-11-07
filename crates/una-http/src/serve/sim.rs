@@ -43,10 +43,13 @@ impl Clock for SimClock {
     }
 }
 
-struct NoWake;
+/// A waker that only counts its wakes: the simulator drives its threads itself.
+struct CountWake(Arc<AtomicU64>);
 
-impl Waker for NoWake {
-    fn wake(&self) {}
+impl Waker for CountWake {
+    fn wake(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// The peer's side of a scripted connection.
@@ -65,6 +68,8 @@ pub struct Wire {
     pub closed: bool,
     /// When the server closed the connection, in nanoseconds.
     pub closed_at: Option<u64>,
+    /// The next write to the socket panics, as a socket's own code could.
+    panic_on_write: bool,
 }
 
 impl Wire {
@@ -103,8 +108,13 @@ impl Socket for SimSocket {
         Ok(n)
     }
 
+    #[allow(clippy::panic)]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut wire = lock(&self.wire);
+        if std::mem::take(&mut wire.panic_on_write) {
+            drop(wire);
+            panic!("a socket's write fails by a fault, for a test");
+        }
         if wire.allowance == 0 {
             return Err(io::ErrorKind::WouldBlock.into());
         }
@@ -171,6 +181,8 @@ pub struct Sim {
     by_address: BTreeMap<SocketAddr, u64>,
     /// Connections the server refused at accept, with the reason and the time.
     pub refused: Vec<(u64, AcceptRefusal, u64)>,
+    /// Wakes sent to the serve threads, over all of them.
+    pub wakes: Arc<AtomicU64>,
 }
 
 impl Sim {
@@ -182,8 +194,9 @@ impl Sim {
             .map(|spec| ServeGrant::parse(spec).expect("a valid serve grant"))
             .collect();
         let clock = Arc::new(SimClock::default());
+        let wakes = Arc::new(AtomicU64::new(0));
         let wakers: Vec<Box<dyn Waker>> = (0..threads)
-            .map(|_| Box::new(NoWake) as Box<dyn Waker>)
+            .map(|_| Box::new(CountWake(Arc::clone(&wakes))) as Box<dyn Waker>)
             .collect();
         let key = SipKey::from_bytes([0x42; 16]);
         let (shared, inboxes) = Shared::new(&grants, threads, key, clock.clone(), wakers);
@@ -198,6 +211,7 @@ impl Sim {
             peers: BTreeMap::new(),
             by_address: BTreeMap::new(),
             refused: Vec::new(),
+            wakes,
         }
     }
 
@@ -326,6 +340,13 @@ impl Sim {
         self.wake(k);
     }
 
+    /// The next write of the server to connection `k` panics inside the socket.
+    pub fn panic_on_next_write(&mut self, k: u64) {
+        if let Some(peer) = self.peers.get(&k) {
+            lock(&peer.wire).panic_on_write = true;
+        }
+    }
+
     /// Connection `k`'s peer closes its side.
     pub fn close_peer(&mut self, k: u64) {
         if let Some(peer) = self.peers.get(&k) {
@@ -416,7 +437,7 @@ impl Sim {
     pub fn deliver(&mut self) -> Option<Exchange> {
         match self.shared.next(self.clock.now()) {
             Next::Exchange(exchange) => Some(*exchange),
-            Next::Blocked(_) | Next::Empty => None,
+            Next::Blocked(_) | Next::Empty | Next::Failed(_) => None,
         }
     }
 
@@ -474,6 +495,21 @@ impl Sim {
     pub fn fault_in_step(&mut self, thread: usize) {
         if let Some(serve) = self.threads.get_mut(thread) {
             serve.fault_in_step();
+        }
+    }
+
+    /// The next `n` closes of connections of serve thread `thread` panic after their exchange
+    /// is given back and before their peer's place and their slot are.
+    pub fn fault_in_close(&mut self, thread: usize, n: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_close(n);
+        }
+    }
+
+    /// The next connection handed to serve thread `thread` panics before it is in its slot.
+    pub fn fault_in_adopt(&mut self, thread: usize) {
+        if let Some(serve) = self.threads.get_mut(thread) {
+            serve.fault_in_adopt();
         }
     }
 

@@ -89,7 +89,9 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
     # registry and Z3 are volumes, which keep the container's builds apart from the host's. The
     # release archive's entries take the commit's time (#679), which the container cannot read
-    # when the checkout is a worktree, whose .git links outside the mount.
+    # when the checkout is a worktree, whose .git links outside the mount. The Linux legs build the
+    # development profile unoptimized, as the release gates do (#1697), unless the caller sets
+    # CARGO_PROFILE_DEV_OPT_LEVEL.
     docker run --rm --platform "linux/$arch" \
         --user 1000:1000 \
         --volume "$root:/work" \
@@ -104,6 +106,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
         --env "UNA_RELEASE_CHECK_RETRY=$retry" \
         --env "CARGO_BUILD_JOBS=$jobs" \
+        --env "CARGO_PROFILE_DEV_OPT_LEVEL=${CARGO_PROFILE_DEV_OPT_LEVEL:-0}" \
         --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
         --env UNA_LOCAL_CI_ADVISORIES_ON_HOST=1 \

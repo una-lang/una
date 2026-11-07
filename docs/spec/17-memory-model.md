@@ -91,7 +91,7 @@ Core IR gains tuple types `(τ, ...)`, tuple construction `(a, ...)`, and the bi
 - A loop over a list visits the elements in order, and a loop over `a..<b` or `a..b` visits the integers in increasing order. The bounds are evaluated once, before the first iteration.
 - There is no `break` and no `continue`.
 - (ADR 0056, amendment of 2026-10-02.) Core IR represents the generated function as a `Loop` node with the same meaning, whose iterations are not calls: they do not count toward the call depth of `spec/11` (U6003). An inclusive range ends at its upper bound without computing its successor, so `a..b` up to the greatest value of a fixed-width type does not overflow.
-- **The loop variable** is a plain binding (U2019 on assignment). It carries the labels of the elements and the top label of the list, or the labels of the bounds. A range's bounds are integers of one type, `Int` or a fixed-width type, and a literal bound takes the type of the other.
+- **The loop variable** is a plain binding (U2019 on assignment). It has no `edit` form, so the message of U2019 on it says that it is read-only and suggests a separate `let edit` binding in the body, as `let edit next_x = x`; the variable of a `together for` (`spec/19 §1`) gets the same message. It carries the labels of the elements and the top label of the list, or the labels of the bounds. A range's bounds are integers of one type, `Int` or a fixed-width type, and a literal bound takes the type of the other.
 - **As a statement**, a loop has the value `unit`, also as the last line of a block.
 
 ## 5. Static semantics

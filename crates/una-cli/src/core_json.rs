@@ -214,6 +214,7 @@ impl Writer<'_> {
             Base::Text => node!(Text),
             Base::Unit => node!(Unit),
             Base::Hashed => node!(Hashed),
+            Base::ReplyRight => node!(ReplyRight),
             // ADR 0114 rule 17: the kind `f64`.
             Base::F64 => J::Obj(vec![("kind", s("f64"))]),
             // ADR 0120: the kind `decimal`, with its scale.
@@ -859,8 +860,9 @@ impl Writer<'_> {
                 "body" => self.expr(body),
                 "span" => self.span(*span),
             ),
-            Expr::Start { task, span } => node!(Start,
+            Expr::Start { task, rights, span } => node!(Start,
                 "task" => self.expr(task),
+                "rights" => list(rights, |name| s(name)),
                 "span" => self.span(*span),
             ),
             Expr::Quiet { body, timing, span } => node!(Quiet,

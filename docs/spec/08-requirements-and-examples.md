@@ -32,7 +32,7 @@ Rules:
 
 ## 2. Tests
 
-Tests are executable evidence. They live next to the code they exercise and run with `una test`. (v0.3, ADR 0105.) In edition `0.3` the declaration is written `test`; editions `0.1` and `0.2` write it `example`, with the same body, and every rule of this section holds of a declaration under either keyword. This chapter says "test" for both.
+Tests are executable evidence. They live next to the code they exercise and run with `una test`. (v0.3, ADR 0105.) In edition `0.3` the declaration is written `test`; editions `0.1` and `0.2` write it `example`, with the same body, and every rule of this section holds of a declaration under either keyword. (Edition 0.4, ADR 0105 amendment of 2026-11-05.) Edition `0.4` writes it `test` too, and there `example` is an identifier, not a declaration keyword (`spec/01 §5`). This chapter says "test" for both.
 
 ```una
 test "an unknown attendee fails and is not audited"

@@ -2323,7 +2323,12 @@ impl<'a> Parser<'a> {
                         "a block cannot end with `let`; its last line is its value",
                     );
                 }
-                Stmt::Together(_) if last => {
+                // A body with a statement other than `let` is U2024, which the checker reports
+                // wherever that statement stands, its last line included (`spec/19 §1` rule
+                // 3, #928).
+                Stmt::Together(together)
+                    if last && together.body.iter().all(|s| matches!(s, Stmt::Let(_))) =>
+                {
                     return self.fail(
                         first,
                         "a block cannot end with `together`; its last line is its value",
@@ -2336,11 +2341,16 @@ impl<'a> Parser<'a> {
                         BlockExpr::TogetherFor(_) => "a `together for`",
                         BlockExpr::FirstOf(_) => "a `first of`",
                     };
+                    // Edition 0.2 adds assignments, whose value may be a `block_expr` too
+                    // (`spec/17 §1`, `spec/19 §1` rule 2).
+                    let values = if self.v0_2 {
+                        "the value of a `let` or of an assignment"
+                    } else {
+                        "the value of a `let`"
+                    };
                     return self.fail(
                         first,
-                        format!(
-                            "{construct} must be the last line of its block or the value of a `let`"
-                        ),
+                        format!("{construct} must be the last line of its block or {values}"),
                     );
                 }
                 _ => {}

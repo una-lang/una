@@ -1,0 +1,16 @@
+-- test: an invariant type argument of a kind, one that a field reads and a function field takes, carries data both ways, so its labels must be equal: `Cell[Int]` from `init` into `step`'s `Cell[secret Int]` is U4001, although the label only rises (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:14:21
+module counter
+
+import std.drive (Tick)
+
+kind Cell[T]
+  value: T
+  apply: fn(T) -> T
+
+pub init() -> Cell[Int] = Cell(value: 1, apply: double)
+
+pub step(edit cell: Cell[secret Int], input: secret Tick) -> Unit = unit
+
+double(x: Int) -> Int = x * 2

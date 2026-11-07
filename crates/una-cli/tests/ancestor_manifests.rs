@@ -112,16 +112,16 @@ fn a_planted_manifest_reaches_an_unsealed_file_and_no_sealed_one() {
     let base = planted("explain");
     let failing = example(Code::U3014, "## Failing example");
     let fixed = example(Code::U3014, "## Fixed example");
-    // Unsealed, the file takes the planted edition 0.4, where `example` is written `test`: the
+    // Unsealed, the file takes the planted edition 0.4, where the test declaration is written
+    // `test` and `example` is an identifier (ADR 0105, amendment of 2026-11-05), so its
+    // `example "..."` line is the syntax error U0101 in place of the U3014 of edition 0.1: the
     // failure of #1560, which shows that the plant is effective.
     let unsealed = base.join("unsealed").join("failing.una");
     std::fs::create_dir_all(unsealed.parent().unwrap()).unwrap();
     std::fs::write(&unsealed, &failing).unwrap();
-    assert!(
-        codes(&unsealed).contains(&Code::U0103),
-        "{:?}",
-        codes(&unsealed)
-    );
+    let found = codes(&unsealed);
+    assert!(found.contains(&Code::U0101), "{found:?}");
+    assert!(!found.contains(&Code::U3014), "{found:?}");
     // Sealed, as `explain_examples` writes its examples, it keeps edition 0.1.
     let sealed = base.join("sealed");
     hermetic::seal(&sealed);
@@ -159,36 +159,38 @@ fn a_sealed_copy_of_the_corpus_ignores_a_planted_manifest() {
 }
 
 /// The test files that seal a temporary directory or read a sealed copy of the corpus, with
-/// how many calls of `hermetic::seal(` and of `hermetic::checkout(` each holds (#1560). A file
+/// how many calls of `hermetic::seal(`, of `hermetic::checkout(` and of
+/// `hermetic::checkout_case(` (a sealed copy of one case, #1652) each holds (#1560). A file
 /// that drops one fails here; a new call site is added to the table with the file.
-const CALL_SITES: [(&str, usize, usize); 13] = [
-    ("cli.rs", 0, 1),
-    ("conformance/main.rs", 0, 1),
-    ("core_symbols.rs", 0, 1),
-    ("demo_scripts.rs", 0, 1),
-    ("explain_examples.rs", 1, 0),
-    ("native.rs", 2, 0),
-    ("recovery.rs", 1, 0),
-    ("runtime.rs", 0, 1),
-    ("serve_grants.rs", 1, 0),
-    ("test_declaration.rs", 0, 1),
-    ("unknown_names.rs", 1, 0),
-    ("verification.rs", 0, 1),
-    ("widening_repairs.rs", 0, 1),
+const CALL_SITES: [(&str, usize, usize, usize); 13] = [
+    ("cli.rs", 0, 0, 1),
+    ("conformance/main.rs", 0, 0, 1),
+    ("core_symbols.rs", 0, 0, 1),
+    ("demo_scripts.rs", 0, 1, 0),
+    ("explain_examples.rs", 1, 0, 0),
+    ("native.rs", 2, 0, 0),
+    ("recovery.rs", 1, 0, 0),
+    ("runtime.rs", 0, 1, 0),
+    ("serve_grants.rs", 1, 0, 0),
+    ("test_declaration.rs", 1, 1, 0),
+    ("unknown_names.rs", 1, 0, 0),
+    ("verification.rs", 0, 1, 0),
+    ("widening_repairs.rs", 0, 1, 0),
 ];
 
 #[test]
 fn every_call_site_keeps_its_seal() {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    for (file, seals, checkouts) in CALL_SITES {
+    for (file, seals, checkouts, case_checkouts) in CALL_SITES {
         let text = std::fs::read_to_string(tests.join(file)).unwrap();
         assert_eq!(
             (
                 text.matches("hermetic::seal(").count(),
-                text.matches("hermetic::checkout(").count()
+                text.matches("hermetic::checkout(").count(),
+                text.matches("hermetic::checkout_case(").count()
             ),
-            (seals, checkouts),
-            "{file}: calls of hermetic::seal and hermetic::checkout"
+            (seals, checkouts, case_checkouts),
+            "{file}: calls of hermetic::seal, hermetic::checkout and hermetic::checkout_case"
         );
     }
 }

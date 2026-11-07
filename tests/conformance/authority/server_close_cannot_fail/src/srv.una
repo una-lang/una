@@ -1,0 +1,12 @@
+-- test: `close` cannot fail, so a handling clause on it is U3025 (spec/31 §1, ADR 0123 rule 1)
+-- spec: spec/31 §1
+-- expect: error U3025 at src/srv.una:12:5
+module srv
+
+import std.host (HttpServer)
+
+stop_serving() -> Unit
+  uses @server: HttpServer[close]
+=
+  @server.close()
+    if error use unit

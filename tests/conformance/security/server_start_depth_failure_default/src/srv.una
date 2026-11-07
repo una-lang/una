@@ -1,0 +1,38 @@
+-- test: a default of `if error use` runs only when the failure comes, so under the label that decides it: a `secret`-labeled read whose default recurses makes the task's depth depend on `secret` data, U4003 at the `start` (spec/31 §1, ADR 0123 IF6, #1674); in a program that starts tasks, the check point that `secret` data decide there is also U4002 (spec/27 §8 rule 5, #1684)
+-- spec: spec/31 §1
+-- expect: error U4003 at src/srv.una:35:11
+-- expect: error U4002 at src/srv.una:21:20
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+big(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + big(n - 1)
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+  uses @files: Files[read gives secret]
+=
+  let text = @files.read("flag")
+    if error use "{big(5000)}"
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @files: Files[read gives secret]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()

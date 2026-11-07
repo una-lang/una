@@ -1,4 +1,4 @@
--- test: `tasks` statements and `first of` blocks that quiet code runs under a `secret` program counter, in the root task and in a started one, stay legal and run as before, then public ones run; quiet code numbers its blocks apart, so the paths of the public tasks do not depend on the secret, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, spec/27 §6, §7, S-39)
+-- test: `tasks` statements and `first of` blocks that quiet code runs under a `secret` program counter, in the root task and in a started one, stay legal and run as before, then public ones run; quiet code numbers its blocks apart, so the paths of the public tasks do not depend on the secret, which the native tests compare across secrets in both engines (spec/26 §6 rule 4, spec/27 §6, §7, S-39); its data are `internal`, above `public` and so quiet, and at most the `internal` that the schedule of started tasks may depend on, since check points under a `secret` program counter are U4002 in a program that starts tasks (spec/27 §8 rule 5, #1684)
 -- spec: spec/26 §6
 -- grant: console
 -- expect: run-output "w 1"
@@ -22,7 +22,7 @@ worker(n: Int) -> Unit
 =
   @console.print("w {n}")
 
-inner(s: secret Int) -> Unit
+inner(s: internal Int) -> Unit
   uses @console: Console[print]
 =
   for i in 0..<3
@@ -35,7 +35,7 @@ inner(s: secret Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = 2
+  let s: internal Int = 2
   for i in 0..<3
     if s > i
       tasks

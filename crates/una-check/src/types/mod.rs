@@ -46,12 +46,14 @@ mod memory;
 mod priority;
 mod records;
 mod seq;
+mod server;
 mod set;
 mod shared;
 #[cfg(test)]
 mod sharing_tests;
 mod stmt;
 mod summary;
+mod switch;
 mod timing;
 mod ty;
 mod unify;
@@ -61,6 +63,7 @@ mod within;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
+pub use timing::{TimingEdge, TimingGraph, TimingNode, TimingPlace, TimingTarget};
 use una_diag::{
     Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair, Severity,
 };
@@ -83,6 +86,11 @@ const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
 /// methods resolve to (`spec/29 §17`, ADR 0120), then the functions of `F32` and the finite
 /// kinds (ADR 0120 rules 5 and 11), appended after those of edition 0.3.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
+
+/// The declarations of `HttpServer` that edition 0.4 adds to `std.host`, which is the prelude's
+/// host part (ADR 0123 rules 0 and 1, `spec/31 §1`), appended after those of [`PRELUDE_0_4`].
+/// Only an import from `std.host` brings their names into scope (`spec/10 §11` rule 10).
+const HOST_0_4: &str = include_str!("../std/host_0_4.una");
 
 /// The declaration of `HttpError` in `PRELUDE_0_2`, and the one edition 0.4 replaces it with,
 /// which adds `Interrupted` (ADR 0116 rule 12) and then `RateLimited` (ADR 0117 rule 8) last,
@@ -144,18 +152,21 @@ fn of_prelude() -> String {
 const TESTING: &str = include_str!("../std/testing.una");
 
 /// What edition 0.4 adds to `std.testing`: `elapse` (ADR 0116 rule 19), whose duration is in
-/// `Millisecond` of `std.time`.
+/// `Millisecond` of `std.time`, and `test_request` and `test_exchange` (ADR 0123 rule 21),
+/// over the server's kinds of `std.host`.
 const TESTING_0_4: &str = include_str!("../std/testing_0_4.una");
 
-/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time`.
+/// The line of `std.testing` after which edition 0.4 imports `Millisecond` from `std.time` and
+/// the server's kinds from `std.host`.
 const TESTING_MODULE_LINE: &str = "module std.testing\n";
 
-/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and adds `elapse`.
+/// `std.testing` in `edition`: in edition 0.4, it imports `Millisecond` and the server's kinds,
+/// and adds `elapse`, `test_request` and `test_exchange`.
 fn testing_source(edition: Edition) -> String {
     if edition >= Edition::V0_4 {
         let imported = TESTING.replacen(
             TESTING_MODULE_LINE,
-            "module std.testing\n\nimport std.time (Millisecond)\n",
+            "module std.testing\n\nimport std.host (Exchange, Method, Request)\nimport std.time (Millisecond)\n",
             1,
         );
         format!("{imported}{TESTING_0_4}")
@@ -282,7 +293,7 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     let (prelude, keywords) = if edition >= Edition::V0_4 {
         (
             format!(
-                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}",
+                "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}{HOST_0_4}",
                 of_prelude(),
                 PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
             ),
@@ -421,6 +432,27 @@ pub struct TypeCheck {
     /// with limits needs at most `internal`; `public` without such a request. `una build`
     /// embeds it, and `una run` checks a limited `--grant` against it (`spec/27 §9` rule 5).
     pub limit_label: una_core::Label,
+    /// The units of measure of the state types of the package's `[drive]` module, which Core
+    /// IR erases, for the shape check of `una run` and `una build` (`spec/26 §2` rule 2).
+    pub drive_units: Option<DriveUnits>,
+    /// The graph of ADR 0116 P1 and the construct trees of P3 as checking recorded them, for
+    /// the completeness test of P1.
+    pub timing_graph: TimingGraph,
+}
+
+/// The units of measure at each position of the state types of a `[drive]` module: the
+/// result of `init` and the state parameters of `step` and `on_stop`, each as the list of its
+/// measured positions with the normal form of their units (ADR 0104 rule 2). The host hands
+/// the state on unchanged, so these MUST be equal (`spec/26 §2` rule 2); the checker reports
+/// a difference as U2028, and `una run` and `una build` refuse one as a usage error.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DriveUnits {
+    /// The result of `init`.
+    pub init: String,
+    /// The state parameter of `step`, when the module has one.
+    pub step: Option<String>,
+    /// The state parameter of `on_stop`, when it takes one parameter.
+    pub on_stop: Option<String>,
 }
 
 /// A site with a deadline and its timing label (ADR 0116 IF5, rule 21).
@@ -451,6 +483,8 @@ impl Default for TypeCheck {
             index: Index::default(),
             timing: Vec::new(),
             limit_label: una_core::Label::public(),
+            timing_graph: TimingGraph::default(),
+            drive_units: None,
         }
     }
 }
@@ -542,6 +576,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .collect();
     env.project_code = package.settings.format.code();
     env.manifest_file = package.settings.format.file();
+    env.serve_driver = package
+        .settings
+        .serve
+        .as_ref()
+        .zip(package.manifest)
+        .map(|(serve, manifest)| Span::new(manifest, serve.at.start, serve.at.end));
+    env.drive_driver = package
+        .settings
+        .drive
+        .as_ref()
+        .zip(package.manifest)
+        .map(|(drive, manifest)| Span::new(manifest, drive.at.start, drive.at.end));
     env.trusted_dependencies = env
         .modules
         .iter()
@@ -568,6 +614,10 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // Every package, for the timing label of a handler's parameters (#1436): a parameter that
     // holds a function runs code its type does not bound.
     env.holds_function_kinds = crossing::function_kinds(&env);
+    // ADR 0123: the kinds that can hold a reply right (IF6), and the capabilities whose
+    // handlers can perform an operation of `HttpServer` (U3033).
+    env.holds_reply_kinds = server::reply_kinds(&env);
+    env.serving_capabilities = server::serving_capabilities(&env);
     let vias = via::plain_vias(&env, &report);
     env.plain_vias = vias.plain;
     env.blocked_vias = vias.blocked;
@@ -815,9 +865,14 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::drive_failures(&env, package.settings, &mut report);
+    authority::drive_state_labels(&env, package.settings, &mut report);
+    authority::drive_state_units(&env, package.settings, &mut report);
+    let drive_units = authority::drive_units(&env, package.settings);
+    authority::serve_functions(&env, package.settings, &mut report);
     // `L_res` of the checked package, computed once for every site that joins it (ADR 0116 P9).
     let residue = timing::residue_of(&env, &findings);
     authority::drive_timing(&env, &findings, package.settings, &residue, &mut report);
+    authority::serve_within(&env, &findings, package.settings, &residue, &mut report);
     let limit_label =
         authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
     authority::limiter_timing(&env, &findings, &residue, &mut report);
@@ -828,7 +883,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         &residue,
         &mut report,
     ));
+    // `spec/07 §5` rule 7: the timing sites a `via` function reaches (#1673).
+    authority::via_timing(&env, &findings, &mut report);
     timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
+    // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
+    server::start_rights(&env, &findings, &mut report);
+    // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684).
+    switch::switch_points(
+        &env,
+        &findings,
+        package.settings.serve.is_some(),
+        &mut report,
+    );
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -919,8 +985,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     } else {
         Vec::new()
     };
+    let timing_graph = timing::recorded_graph(&env, &findings);
     let check = TypeCheck {
         limit_label,
+        drive_units,
+        timing_graph,
         timing: timing_sites
             .into_iter()
             .map(|(construct, function, span, label)| TimingSite {
@@ -1117,6 +1186,11 @@ pub(crate) struct Findings {
     /// they apply to arguments whose code is not known at the call (#1436). Its `sources` and
     /// `unplaced` are not used.
     pub(crate) handler_seeds: std::collections::BTreeMap<usize, timing::TimingSeed>,
+    /// The join of `ℓ*` of every value each function's body computes, its lambdas' included,
+    /// symbolic labels dropped, by function; `None` or no entry while every value is `public`
+    /// (#1685). A site counts it for every function it reaches, so a value a callee labels
+    /// from literals raises the site's timing label as the same value passed in would.
+    pub(crate) body_labels: std::collections::BTreeMap<usize, Option<label::Label>>,
     /// The `for ever within` loops checked (ADR 0116 rule 11, IF8): each loop's span, its
     /// function, and the seed of its body's timing label.
     pub(crate) deadline_loops: Vec<DeadlineLoop>,
@@ -1134,31 +1208,54 @@ pub(crate) struct Findings {
     /// a timing floor: the operations they run append no event (S-42, #1515). Core marks the
     /// others `quiet` with `timing`.
     pub(crate) hushed: std::collections::BTreeSet<Span>,
-    /// The calls and the operations under a timing floor alone, which [`flow::close_quiet`]
-    /// marks `quiet` as S-39 did, and not `hushed`.
+    /// The calls under a timing floor alone, by span, with their callees, which
+    /// [`flow::close_quiet`] marks `quiet` as S-39 did, and not `hushed`.
     pub(crate) timing_calls: std::collections::BTreeMap<Span, usize>,
+    /// The operations under a timing floor alone, by span, which [`flow::close_quiet`] marks
+    /// `quiet`, and not `hushed`, when the package declares a handler: Core marks them `quiet`
+    /// with `timing`, and their events stay (S-42, `spec/27 §5` rule 7).
     pub(crate) timing_ops: std::collections::BTreeSet<Span>,
     /// The `within`s checked (ADR 0117 rule 5, IF2): each one's deadline, span, function and
     /// the seed of its timing label.
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The operations of the host's `HttpServer` checked, the hand-off sites of `L_srv` (ADR
+    /// 0123, S4 amendment IF-S1).
+    pub(crate) server_sites: Vec<timing::HttpSite>,
+    /// The `start`s whose captures can hold a reply right or a function value (ADR 0123 IF6).
+    pub(crate) server_starts: Vec<server::StartSite>,
+    /// For each `start`, by its word `start`, the source names of the captures that can hold a
+    /// reply right, which the engines walk for the rights that move (ADR 0123 rule 4.2).
+    pub(crate) start_rights: std::collections::BTreeMap<Span, std::collections::BTreeSet<String>>,
     /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
     /// the residue label `L_res` (ADR 0116 P9).
     pub(crate) tasks_sites: Vec<timing::TasksSite>,
+    /// The check points that data above `internal` can decide, reported when the package's
+    /// program can run started tasks (`spec/27 §8` rule 5, #1684).
+    pub(crate) switch_sites: Vec<switch::SwitchSite>,
+    /// The calls of generic functions, with the labels their type arguments can carry, for
+    /// the sites of `switch_sites` that only a type parameter decides (#1684).
+    pub(crate) switch_calls: Vec<switch::GenericCall>,
     /// The installations of `limiter` of `std.limit` by `with` or `given` (ADR 0117 rule 9,
     /// IF5): each one's binding, its function and the seed of the timing label of the statement
     /// it scopes over.
     pub(crate) limiter_sites: Vec<LimiterSite>,
-    /// The calls of the call graph of ADR 0116 P1: from a function's body, a handler's
-    /// operations or a lambda (`Λ`), to a function called or named.
-    pub(crate) calls: std::collections::BTreeSet<(timing::Caller, usize)>,
-    /// The nodes of that graph that call a function value, and so reach `Λ`.
-    pub(crate) value_calls: std::collections::BTreeSet<timing::Caller>,
-    /// The handlers each node of that graph installs.
-    pub(crate) caller_installs: std::collections::BTreeSet<(timing::Caller, usize)>,
-    /// The operations each node of that graph performs, those of lambdas included (#1148).
-    pub(crate) caller_ops: std::collections::BTreeSet<(timing::Caller, ty::CapId, String)>,
+    /// The edges of the call graph of ADR 0116 P1, recorded at their call sites, each with the node whose
+    /// code holds it (a function's body, a handler's operations, or `Λ` for a lambda's body)
+    /// and the innermost task construct whose part holds it (P3).
+    pub(crate) graph_edges: Vec<timing::GraphEdge>,
+    /// Each policy called, with its `via` function, which the call runs (`spec/07 §5`): an
+    /// edge from the policy to its `via` for the searches over `edges` that the timing label
+    /// (ADR 0116 IF5, IF6) and the quiet calls of S-39 make (#1673).
+    pub(crate) policy_vias: std::collections::BTreeSet<(usize, usize)>,
+    /// For each node of the graph of ADR 0116 P1, the join of the deep labels of what its code
+    /// binds, parameters included, and of the answers of the operations it performs: the data
+    /// it can hold, for the reach of a `start` (#1674).
+    pub(crate) reach_labels: std::collections::BTreeMap<timing::Caller, una_core::Label>,
+    /// The task constructs checked, the nodes of each body's construct tree (ADR 0116 P2, P3),
+    /// by the ids that edges and sites record.
+    pub(crate) constructs: Vec<timing::ConstructNode>,
     /// Names bound by selfified `let`s.
     pub(crate) selfified: Vec<Span>,
     /// The conditions of `for until` loops that are in the refinement language, which the
@@ -1740,10 +1837,13 @@ mod tests {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
                 // `HttpError` gains `Interrupted` and `RateLimited` (ADR 0116 rule 12, ADR 0117
-                // rule 8).
+                // rule 8), and `std.host` the server (ADR 0123 rule 1).
                 let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
                 (
-                    format!("{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}", of_prelude()),
+                    format!(
+                        "{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}{HOST_0_4}",
+                        of_prelude()
+                    ),
                     KeywordSet::V0_4,
                 )
             } else if *edition >= Edition::V0_3 {
@@ -1781,7 +1881,7 @@ mod tests {
         // a keyword used as a name does.
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
-        let v0_4 = format!("{v0_3}{PRELUDE_0_4}");
+        let v0_4 = format!("{v0_3}{PRELUDE_0_4}{HOST_0_4}");
         let testing_0_4 = testing_source(Edition::V0_4);
         assert!(testing_0_4.contains("import std.time (Millisecond)"));
         for (name, text, keywords) in [

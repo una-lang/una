@@ -55,6 +55,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let ty = self.infer_kind(expr, expected, site);
         self.ctx.rl = rl;
         self.typed(expr.span, &ty);
+        self.timing_value(&ty);
         ty
     }
 
@@ -490,6 +491,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // A parameter that an `of` clause names is only called or passed on for another `of`
         // parameter (ADR 0062, `spec/05 §9` rule 9).
         if let (Some(index), Some(ty)) = (self.of_param(name), self.local(name)) {
+            // ADR 0123 rule 5: a `uses of` parameter passed on in a branch runs there (U3033).
+            self.branch_server_of_param(name, ident.span);
             match self.of_argument.take() {
                 Some(slot) => {
                     let own = self.labeled(&ty).top_label();
@@ -864,7 +867,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.edges.push((current, callee, span));
         }
-        self.graph_call(callee);
+        self.graph_call(callee, span);
         // What can run beside a part of a task construct (ADR 0116 IF6): the block of a
         // `tasks` statement runs beside the tasks it starts (ADR 0117 rule 7).
         if self.task_depth > 0 || !self.tasks_frames.is_empty() {
@@ -1076,10 +1079,16 @@ impl<'a> Checker<'_, 'a, '_> {
         let operand = format!("an operand of `{symbol}`");
         match op {
             BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => {
-                for side in [left, right] {
-                    let found = self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
-                    self.operands.push(found);
-                }
+                let found = self.expr_as(left, Some(&Ty::Bool), Role::Condition(&operand));
+                // The right operand runs only as the left one decides: it short-circuits, as
+                // Core's `if` does, so its calls are check points under that label (`spec/27
+                // §8` rule 5, #1684). Operands have no effects and cannot fail (U3013).
+                let decided = self.deep(&found);
+                self.operands.push(found);
+                let saved = self.raise_pc(&decided, left.span);
+                let found = self.expr_as(right, Some(&Ty::Bool), Role::Condition(&operand));
+                self.restore_pc(saved);
+                self.operands.push(found);
                 Ty::Bool
             }
             BinaryOp::Eq | BinaryOp::NotEq => {
@@ -2127,6 +2136,9 @@ impl<'a> Checker<'_, 'a, '_> {
             };
         }
         let prelude_lambda = std::mem::replace(&mut self.prelude_lambda, prelude);
+        // A lambda's body is code of `Λ`, which runs wherever the lambda is called, not in the
+        // parts around the place it is written (ADR 0116 P1, P3).
+        let parts = std::mem::take(&mut self.parts);
         self.lambda_depth += 1;
         let frames_depth = std::mem::replace(&mut self.frames_depth, self.lambda_depth);
         let frames_lambda = self.frames_lambda.replace(span);
@@ -2154,6 +2166,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.parts = parts;
         self.statement = statement;
         self.frames_depth = frames_depth;
         self.frames_lambda = frames_lambda;

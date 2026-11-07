@@ -1050,6 +1050,15 @@ impl<'p, 'a> Checker<'p, 'a> {
                                 .extend(declared.variants.iter().copied());
                         }
                     }
+                    // ADR 0123 rule 1: an import of a sum kind of the server brings its variants,
+                    // as an import of a kind of the package does (ADR 0023 rule 2).
+                    Found::Standard if path == prelude::STD_HOST => {
+                        if let Some(variants) = prelude::server_variants(name)
+                            && let Some(table) = tables.get_mut(index)
+                        {
+                            table.imported_variants.extend(variants.iter().copied());
+                        }
+                    }
                     Found::Standard | Found::Unknown => {}
                 }
                 self.import_name(tables, index, ident, name);
@@ -1308,6 +1317,22 @@ impl<'p, 'a> Checker<'p, 'a> {
                     "{} `{}` is not a module of this package",
                     settings.format.section("[drive] module"),
                     drive.module.value
+                ),
+            );
+        }
+        // ADR 0123 rule 16: the `serve` section's module is a module of the package, as `run
+        // entry` is.
+        if let Some(serve) = &settings.serve
+            && !paths.contains_key(&serve.module.value)
+            && !unparsed_entry(&serve.module.value)
+        {
+            self.error(
+                settings.format.code(),
+                Span::new(manifest, serve.module.range.start, serve.module.range.end),
+                format!(
+                    "{} `{}` is not a module of this package",
+                    settings.format.section("[serve] module"),
+                    serve.module.value
                 ),
             );
         }

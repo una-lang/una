@@ -219,9 +219,10 @@ const DECLARATION_KEYWORDS: [&str; 11] = [
 
 /// Whether a lower-case word at column 1 starts a declaration: a declaration keyword, or a
 /// function name followed by `(`, or by `[` for a generic function; `test` is the test
-/// declaration of edition 0.3, under a keyword set that has it (ADR 0105), and a name before.
+/// declaration of edition 0.3, under a keyword set that has it (ADR 0105), and a name before;
+/// `example` is an identifier from edition 0.4 (ADR 0105, amendment of 2026-11-05).
 pub(crate) fn starts_declaration(word: &str, next: Option<char>, keywords: KeywordSet) -> bool {
-    DECLARATION_KEYWORDS.contains(&word)
+    (DECLARATION_KEYWORDS.contains(&word) && !(word == "example" && keywords >= KeywordSet::V0_4))
         || (word == "test" && keywords >= KeywordSet::V0_3)
         || matches!(next, Some('(' | '['))
 }
@@ -1173,9 +1174,10 @@ impl Lexer<'_> {
             && (self.after_for_ever() || self.after_expression());
         // Edition 0.3: the test declaration is written `test`, so `example` at column 1, where
         // a declaration starts, is U0103 with the exact rewrite (ADR 0105 rule 3); as a name it
-        // stays the reserved keyword it is in every edition (rule 2).
+        // stays the reserved keyword it is in editions 0.1 to 0.3 (rule 2). From edition 0.4 it
+        // is an identifier, with no U0103 and no rewrite (ADR 0105, amendment of 2026-11-05).
         if word == "example"
-            && self.out.keywords >= KeywordSet::V0_3
+            && self.out.keywords == KeywordSet::V0_3
             && (start == 0
                 || self
                     .text

@@ -1,0 +1,26 @@
+-- test: an operation, in a branch of `together`, of a capability that has a handler that performs an operation of `HttpServer` is U3033 at the operation, whatever handler serves it (spec/31 §1, ADR 0123 rule 5)
+-- spec: spec/31 §1
+-- expect: error U3033 at src/srv.una:25:16
+module srv
+
+import std.host (HttpServer, Reply, ReplyRight)
+
+pub capability Answer
+  op send(code: Int) -> Unit
+
+--- Answers the one reply right it holds.
+pub handler through(right: internal ReplyRight) for Answer
+  uses @server: HttpServer[reply]
+  op send(code) =
+    @server.reply(to: right, reply: Reply(status: 204, headers: [], body: ""))
+      if error use unit
+
+price(n: internal Int) -> internal Int = n * 3
+
+answer(n: internal Int) -> Unit
+  uses @answer: Answer[send]
+=
+  together
+    let total = price(n)
+    let sent = @answer.send(code: 204)
+  unit

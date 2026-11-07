@@ -13,7 +13,7 @@ use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
 use super::check::Checker;
 use super::env::{Entity, Env, FnAst};
-use super::ty::{CapId, FnUse, Ty, given};
+use super::ty::{CapId, Declared, FnUse, Ty, given};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
@@ -704,6 +704,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if !needs.is_empty() {
             self.note_effect();
         }
+        // ADR 0123 rule 5: nothing a branch runs can perform an operation of `HttpServer`.
+        self.branch_server_needs(callee, needs, span);
         let mut pure_reported = false;
         // A requirement whose capability is unknown was reported where it is declared or
         // inferred (U1001, U3001).
@@ -2394,12 +2396,18 @@ pub(crate) fn grants(
     run: Option<RunInput<'_>>,
     report: &mut Report<'_>,
 ) {
-    let (path, names): (&str, &[&str]) = match (run, &settings.entry, &settings.drive) {
-        (Some(run), _, _) => (run.entry, &["main"]),
-        (None, Some(entry), _) => (entry.value.as_str(), &["main"]),
-        (None, None, Some(drive)) => (drive.module.value.as_str(), &["init", "step", "on_stop"]),
-        (None, None, None) => return,
-    };
+    let (path, names): (&str, &[&str]) =
+        match (run, &settings.entry, &settings.drive, &settings.serve) {
+            // ADR 0123 rule 16: the functions of the `serve` module are called by the host, and
+            // `una run` checks them against its final grants as `main`'s (`spec/31 §7` rule 3).
+            (_, None, None, Some(serve)) => (serve.module.value.as_str(), &SERVED),
+            (Some(run), _, _, _) => (run.entry, &["main"]),
+            (None, Some(entry), _, _) => (entry.value.as_str(), &["main"]),
+            (None, None, Some(drive), _) => {
+                (drive.module.value.as_str(), &["init", "step", "on_stop"])
+            }
+            (None, None, None, None) => return,
+        };
     let Some(module) =
         (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == path))
     else {
@@ -2496,12 +2504,21 @@ fn function_grants(
             );
             // ADR 0097 rule 7: granting is the route, and it widens what the program may do
             // when it runs.
-            let mut grant = Report::advice(format!(
-                "grant {} of `{}` in {section} of `{}`, or with `--grant`",
-                missing.join(", "),
-                capability.name,
-                settings.format.file()
-            ));
+            // ADR 0123 rule 1: a server's grant names the address it listens on, which no repair
+            // can choose for the programmer, so the repair is a description only.
+            let mut grant = if capability.name == super::server::HTTP_SERVER {
+                Report::advice(format!(
+                    "grant the address the server listens on, `serve \"<scheme>://<address>:<port>\"` in {section} of `{}`, or `--grant serve:<scheme>://<address>:<port>`",
+                    settings.format.file()
+                ))
+            } else {
+                Report::advice(format!(
+                    "grant {} of `{}` in {section} of `{}`, or with `--grant`",
+                    missing.join(", "),
+                    capability.name,
+                    settings.format.file()
+                ))
+            };
             grant.widens = Some(Widening::Grant);
             diagnostic.repairs.push(grant);
             report.push(diagnostic);
@@ -2509,9 +2526,222 @@ fn function_grants(
     }
 }
 
+/// The functions of a `serve` module that the host calls (ADR 0123 rule 16).
+pub(crate) const SERVED: [&str; 2] = ["handle", "on_stop"];
+
+/// The checks of a `serve` module's functions (ADR 0123 rule 16, `spec/31 §7`):
+/// - U3029: `on_stop` declares no `fails`, since the host has no caller to give a failure to;
+///   `handle` may, and a failure of it becomes the host's `500`;
+/// - U3027: neither says `diverges`, so every request ends after finitely many steps;
+/// - U3033 (decision S6-D3): neither names `HttpServer`, or a capability whose handlers can
+///   perform one of its operations, in its `uses`. The host owns every exchange in this form
+///   and answers each request with the reply `handle` returns, so `handle` must not take,
+///   answer or close one. A public function's effect set is bounded by its declared `uses`
+///   (`spec/05 §3`), so refusing the binding refuses every operation of `HttpServer` in the
+///   effect set, through a callee, a function value or a handler included.
+///
+/// O(clauses + uses) of the two functions.
+pub(crate) fn serve_functions(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(serve) = &settings.serve else {
+        return;
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == serve.module.value)
+    }) else {
+        return;
+    };
+    if !env.reports(module) {
+        return;
+    }
+    for name in SERVED {
+        let Some(Entity::Function(id)) = env
+            .modules
+            .get(module)
+            .and_then(|m| m.lower.get(name).copied())
+        else {
+            continue;
+        };
+        let Some(def) = env.functions.get(id) else {
+            continue;
+        };
+        if let super::env::FnAst::Function(decl) = def.ast {
+            for clause in &decl.clauses {
+                match clause.kind {
+                    una_syntax::ast::ClauseKind::Fails(_) if name == "on_stop" => {
+                        let mut diagnostic = report.make(
+                            Code::U3029,
+                            clause.span,
+                            format!(
+                                "`on_stop` of the served module `{}` declares `fails`, but the host has no caller to give a failure to",
+                                serve.module.value
+                            ),
+                        );
+                        diagnostic.repairs.push(Report::advice(
+                            "handle each failure inside `on_stop`, with `if error use` or `attempt`, and remove the `fails` clause",
+                        ));
+                        report.push(diagnostic);
+                    }
+                    // `spec/31 §7` rule 2: the exact shape has no `requires`. The host calls
+                    // `handle` for every request it reads and `on_stop` at every stop, and no
+                    // call of the host establishes a precondition, so a `requires` would be a
+                    // fact the verifier assumes and nothing proves.
+                    una_syntax::ast::ClauseKind::Requires(_) => {
+                        let at = env.serve_driver.map_or(clause.span, |driver| {
+                            Span::new(
+                                driver.file,
+                                serve.module.range.start,
+                                serve.module.range.end,
+                            )
+                        });
+                        let mut diagnostic = report.make(
+                            Code::U7008,
+                            at,
+                            format!(
+                                "the `serve` section's module `{}` declares `requires` on `{name}`, which no call of the host establishes, so nothing would prove it",
+                                serve.module.value
+                            ),
+                        );
+                        diagnostic
+                            .related
+                            .push(report.related(clause.span, "the `requires` clause"));
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "remove the `requires` clause from `{name}` and check the condition in its body, answering a request that fails it"
+                        )));
+                        report.push(diagnostic);
+                    }
+                    una_syntax::ast::ClauseKind::Diverges => {
+                        report.error(
+                            Code::U3027,
+                            clause.span,
+                            format!(
+                                "`{name}` of the served module `{}` says `diverges`, but the host's loop is the only one that runs forever: every request, and the stop, must end after finitely many steps",
+                                serve.module.value
+                            ),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // `spec/31 §7` rule 2: the exact shape has no refinement. A refinement on a type of
+        // `handle` or `on_stop`, written there or carried by a refined kind such as
+        // `kind Full = Request where ...`, is a precondition that no call of the host
+        // establishes, as a `requires` is. Which kinds the types name is the shape's usage
+        // error at the run.
+        let positions = def
+            .params
+            .iter()
+            .map(|param| (&param.ty, param.span, "parameter"))
+            .chain([(&def.result, def.result_span, "result")]);
+        for (declared, span, what) in positions {
+            if unrefined(declared) {
+                continue;
+            }
+            let at = env.serve_driver.map_or(span, |driver| {
+                Span::new(
+                    driver.file,
+                    serve.module.range.start,
+                    serve.module.range.end,
+                )
+            });
+            let why = if what == "parameter" {
+                format!(
+                    "which the host cannot establish: it calls `{name}` with no fact about it, so the refinement would be a precondition nothing proves"
+                )
+            } else {
+                "but the shape of the host's functions is exact, with no refinement".to_owned()
+            };
+            let mut diagnostic = report.make(
+                Code::U7008,
+                at,
+                format!(
+                    "the `serve` section's module `{}` declares the {what} of `{name}` with a refined type, {why}",
+                    serve.module.value
+                ),
+            );
+            diagnostic
+                .related
+                .push(report.related(span, format!("the refined type of the {what}")));
+            diagnostic.repairs.push(Report::advice(format!(
+                "declare the {what} without a refinement, as `pub handle(request: internal Request) -> internal Reply` and `pub on_stop() -> Unit` are, and check the condition in the body of `{name}`"
+            )));
+            report.push(diagnostic);
+        }
+        for need in &def.uses {
+            let capability = need.usage.capability;
+            let serving = super::server::is_server(env, capability)
+                || capability.is_some_and(|id| env.serving_capabilities.contains(&id));
+            if !serving {
+                continue;
+            }
+            let shown = capability
+                .and_then(|id| env.capabilities.get(id))
+                .map_or("HttpServer", |c| c.name);
+            let mut diagnostic = report.make(
+                Code::U3033,
+                need.span,
+                format!(
+                    "`{name}` of the served module `{}` uses `@{}: {shown}`, but in the `serve` form the host owns every exchange and answers each request with the reply `handle` returns",
+                    serve.module.value, need.usage.name
+                ),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "remove the `uses` of `{shown}` from `{name}` and return the reply; a server that takes requests itself is written in the language form, with `next` in a `for ever` loop and no `serve` section"
+            )));
+            report.push(diagnostic);
+        }
+    }
+}
+
+/// Whether `declared` carries no refinement at any level of its top, labels aside: a refined
+/// kind is a refinement of its base (`spec/31 §7` rule 2). O(depth of the type's top).
+fn unrefined(declared: &Declared) -> bool {
+    if !declared.refinements.is_empty() {
+        return false;
+    }
+    let mut ty = &declared.base;
+    loop {
+        match ty {
+            Ty::Labeled(_, inner) => ty = inner,
+            Ty::Refined(..) => return false,
+            _ => return true,
+        }
+    }
+}
+
+/// Whether `declared` carries no refinement at any depth, labels aside: at its top, in a type
+/// argument of a list, a map, a dense value, a collection or a kind, in a measured magnitude,
+/// and in a parameter, the result or the failure kind of a function type (`spec/26 §2` rule 2).
+/// A kind's own fields are not looked into: their refinements are invariants that each
+/// construction proves. O(size of the type).
+fn unrefined_deep(declared: &Declared) -> bool {
+    fn plain(ty: &Ty) -> bool {
+        match ty {
+            Ty::Refined(..) => false,
+            Ty::Labeled(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => plain(inner),
+            Ty::Measured(_, inner) => plain(inner),
+            Ty::Map(keys, values) => plain(keys) && plain(values),
+            Ty::Coll(_, args) | Ty::Kind(_, args) => args.iter().all(plain),
+            Ty::Fn(function) => {
+                function.refinements.params.iter().all(Vec::is_empty)
+                    && function.refinements.result.is_empty()
+                    && function.params.iter().all(plain)
+                    && plain(&function.result)
+                    && function.fails.as_ref().is_none_or(plain)
+            }
+            _ => true,
+        }
+    }
+    declared.refinements.is_empty() && plain(&declared.base)
+}
+
 /// U3029: `step` and `on_stop` of a `[drive]` module handle every failure they meet, since the
 /// host has no caller to give a failure to (ADR 0116 rule 2); `init` may fail. Reported at the
-/// `fails` clause. And U3027: none of them says `diverges` (rule 8).
+/// `fails` clause. U3027: none of them says `diverges` (rule 8). And U7008 at the section's
+/// `module`: none of them declares `requires` or a refined parameter or result type, a
+/// precondition no call of the host establishes (`spec/26 §2` rule 2). O(clauses + params).
 pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
     let Some(drive) = &settings.drive else {
         return;
@@ -2555,6 +2785,16 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
         }
     }
     // ADR 0116 rule 8: none of the driven functions may say `diverges` (U3027).
+    // `spec/26 §2` rule 2: the shapes are exact, with no `requires` and no refinement (U7008).
+    let at = |span: Span| {
+        env.drive_driver.map_or(span, |driver| {
+            Span::new(
+                driver.file,
+                drive.module.range.start,
+                drive.module.range.end,
+            )
+        })
+    };
     for name in ["init", "step", "on_stop"] {
         let Some(Entity::Function(id)) = env
             .modules
@@ -2563,21 +2803,346 @@ pub(crate) fn drive_failures(env: &Env<'_>, settings: &Manifest, report: &mut Re
         else {
             continue;
         };
-        let Some(super::env::FnAst::Function(decl)) = env.functions.get(id).map(|f| f.ast) else {
+        let Some(def) = env.functions.get(id) else {
             continue;
         };
-        for clause in &decl.clauses {
-            if matches!(clause.kind, una_syntax::ast::ClauseKind::Diverges) {
-                report.error(
-                    Code::U3027,
-                    clause.span,
-                    format!(
-                        "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
-                        drive.module.value
-                    ),
-                );
+        if let super::env::FnAst::Function(decl) = def.ast {
+            for clause in &decl.clauses {
+                match clause.kind {
+                    una_syntax::ast::ClauseKind::Diverges => {
+                        report.error(
+                            Code::U3027,
+                            clause.span,
+                            format!(
+                                "`{name}` of the driven module `{}` says `diverges`, but the host's loop is the only one that runs forever: each call of `{name}` must end",
+                                drive.module.value
+                            ),
+                        );
+                    }
+                    // The host calls `init` once, `step` for every tick and `on_stop` at the
+                    // stop, and no call of the host establishes a precondition, so a `requires`
+                    // would be a fact the verifier assumes and nothing proves.
+                    una_syntax::ast::ClauseKind::Requires(_) => {
+                        let mut diagnostic = report.make(
+                            Code::U7008,
+                            at(clause.span),
+                            format!(
+                                "the `drive` section's module `{}` declares `requires` on `{name}`, which no call of the host establishes, so nothing would prove it",
+                                drive.module.value
+                            ),
+                        );
+                        diagnostic
+                            .related
+                            .push(report.related(clause.span, "the `requires` clause"));
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "remove the `requires` clause from `{name}` and check the condition in its body"
+                        )));
+                        report.push(diagnostic);
+                    }
+                    _ => {}
+                }
             }
         }
+        // A refinement on a type of `init`, `step` or `on_stop`, at any depth of it, written
+        // there or carried by a refined kind, is a precondition that no call of the host establishes, as a `requires`
+        // is: the host gives `step` each tick with no fact about it, and hands the state from
+        // one function to the next by its type `S` alone, whose refinements the usage check of
+        // the shapes does not compare. Labels stay allowed (IF7 labels `input`).
+        let positions = def
+            .params
+            .iter()
+            .map(|param| (&param.ty, param.span, "parameter"))
+            .chain([(&def.result, def.result_span, "result")]);
+        for (declared, span, what) in positions {
+            if unrefined_deep(declared) {
+                continue;
+            }
+            let mut diagnostic = report.make(
+                Code::U7008,
+                at(span),
+                format!(
+                    "the `drive` section's module `{}` declares the {what} of `{name}` with a refined type, or a type with a refinement inside it, but the host calls `{name}` with no fact it establishes and the shapes are exact, with no refinement",
+                    drive.module.value
+                ),
+            );
+            diagnostic
+                .related
+                .push(report.related(span, format!("the refined type of the {what}")));
+            diagnostic.repairs.push(Report::advice(format!(
+                "declare the {what} without a refinement, as in `pub init() -> S`, `pub step(edit state: S, input: Tick) -> Unit` and `pub on_stop(state: S) -> Unit`, and check the condition in the body of `{name}`"
+            )));
+            report.push(diagnostic);
+        }
+    }
+}
+
+/// A hand-off of a driven module's state by the host: the type it comes from, with where it
+/// is written and how a message names it, the state parameter it goes to, and the name of
+/// that parameter's function.
+type Handoff<'e, 'a> = (
+    (&'e Ty, Span, &'static str),
+    &'e super::env::ParamDef<'a>,
+    &'static str,
+);
+
+/// The hand-offs of the state of the package's `[drive]` module (`spec/26 §2` rule 2): the
+/// result of `init` into the state parameter of `step` and of `on_stop`, and the state of
+/// `step` into that of `on_stop`. `None` without a driven module that reports, or without an
+/// `init` that takes no parameter. Which shapes the module has is the usage error of `una run`
+/// and `una build`; only a pair whose positions exist is listed. O(1).
+fn drive_handoffs<'e, 'a>(env: &'e Env<'a>, settings: &Manifest) -> Option<Vec<Handoff<'e, 'a>>> {
+    let drive = settings.drive.as_ref()?;
+    let module = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    })?;
+    if !env.reports(module) {
+        return None;
+    }
+    let function = |name: &str| match env
+        .modules
+        .get(module)
+        .and_then(|m| m.lower.get(name).copied())
+    {
+        Some(Entity::Function(id)) => env.functions.get(id),
+        _ => None,
+    };
+    let init = function("init").filter(|init| init.params.is_empty())?;
+    let step = function("step").and_then(|step| step.params.first());
+    let on_stop = function("on_stop").and_then(|on_stop| match on_stop.params.as_slice() {
+        [state] => Some(state),
+        _ => None,
+    });
+    let from_init = (&init.result.base, init.result_span, "the result of `init`");
+    let mut pairs = Vec::new();
+    if let Some(state) = step {
+        pairs.push((from_init, state, "step"));
+    }
+    if let Some(state) = on_stop {
+        pairs.push((from_init, state, "on_stop"));
+        if let Some(held) = step {
+            let from_step = (&held.ty.base, held.span, "the state parameter of `step`");
+            pairs.push((from_step, state, "on_stop"));
+        }
+    }
+    Some(pairs)
+}
+
+/// U4001 at the state parameter of `step` or `on_stop` of a `[drive]` module whose declared
+/// type the state the host hands it does not flow into (`spec/26 §2` rule 2): the result of
+/// `init` into the state of `step` and of `on_stop`, and the state of `step` into that of
+/// `on_stop`. The host is a caller that no label rule checks, so without this a `secret`
+/// state would reach a parameter that is not, and from there any sink. Labels are compared
+/// at every position of the type, by the rule of every flow into a declared type
+/// ([`super::flow::violation`]). A flow to a higher label stays legal. O(size of the types).
+pub(crate) fn drive_state_labels(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(pairs) = drive_handoffs(env, settings) else {
+        return;
+    };
+    let top = Label::top(&env.categories);
+    // One diagnostic per parameter: `on_stop`'s is reported for the first source that does
+    // not flow into it.
+    let mut reported = BTreeSet::new();
+    for ((found, from_span, from_what), state, name) in pairs {
+        if reported.contains(name) {
+            continue;
+        }
+        let Some(super::flow::Violation {
+            from,
+            to,
+            covariant,
+            invariant,
+        }) = super::flow::flow_violation(found, &state.ty.base, true, &top, &env.kind_labels)
+        else {
+            continue;
+        };
+        reported.insert(name);
+        let param = state.name;
+        // At a covariant position the source's data flows into the parameter. At a
+        // contravariant one, a parameter of a function type, the data flows the other way: the
+        // parameter's function would pass data labeled `from` to the source's function, which
+        // takes `to` there. In an argument of an invariant kind parameter, data flows both
+        // ways, so its labels must be equal.
+        let (message, related, repair) = if invariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and an invariant type argument of a kind carries data both ways, so its labels must be equal: `{param}` has `{from}` where {from_what} has `{to}`, a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{to}` in that type argument"),
+                format!(
+                    "make the labels of that type argument equal in {from_what} and in the type of `{param}`"
+                ),
+            )
+        } else if covariant {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, which carries `{from}` where `{param}` is `{to}`: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, labeled `{from}` there"),
+                format!(
+                    "label the state parameter `{param}` of `{name}` at least `{from}` at that position, as the state is declared where the host takes it from"
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "the host hands `{name}` its state `{param}` from {from_what}, and through `{param}` the code would pass `{from}` data to the function in {from_what}, which takes `{to}` there: a flow from `{from}` to `{to}`"
+                ),
+                format!("{from_what}, a function that takes `{to}` there"),
+                format!(
+                    "label that parameter position in {from_what} at least `{from}`, or lower it to `{to}` in the type of `{param}`"
+                ),
+            )
+        };
+        let mut diagnostic = report.make(Code::U4001, state.span, message);
+        diagnostic.related.push(report.related(from_span, related));
+        diagnostic.repairs.push(Report::advice(repair));
+        report.push(diagnostic);
+    }
+}
+
+/// U2028 at the state parameter of `step` or `on_stop` of a `[drive]` module whose declared
+/// type differs from the type the host hands it only in units of measure, at any position
+/// (`spec/26 §2` rule 2, `spec/25 §2` rule 4): the same hand-offs as
+/// [`drive_state_labels`]. Core IR erases units, so the shape that `una run` and `una build`
+/// compare does not see them; without this, `init() -> Int of Second = 7` would reach
+/// `step(edit state: Int of Millisecond, ...)` as 7 milliseconds. One diagnostic per
+/// parameter. O(size of the types).
+pub(crate) fn drive_state_units(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
+    let Some(pairs) = drive_handoffs(env, settings) else {
+        return;
+    };
+    let mut reported = BTreeSet::new();
+    for ((found, from_span, from_what), state, name) in pairs {
+        if reported.contains(name) || units_agree(found, &state.ty.base) {
+            continue;
+        }
+        reported.insert(name);
+        let param = state.name;
+        let (shown_from, shown_to) = (env.show_plain(found), env.show_plain(&state.ty.base));
+        let mut diagnostic = report.make(
+            Code::U2028,
+            state.span,
+            format!(
+                "the host hands `{name}` its state `{param}` from {from_what}, of type `{shown_from}`, but `{param}` is `{shown_to}`: the units of measure differ"
+            ),
+        );
+        diagnostic
+            .related
+            .push(report.related(from_span, format!("{from_what}, of type `{shown_from}`")));
+        diagnostic.repairs.push(Report::advice(format!(
+            "declare the state parameter `{param}` of `{name}` with the units of {from_what}, since the host hands the value on unchanged, and convert it in the body with `convert()` where another unit is needed"
+        )));
+        report.push(diagnostic);
+    }
+}
+
+/// Whether `found` and `expected` have the same units of measure at every position they
+/// share, labels and refinements aside (ADR 0104 rule 2). A position whose types differ in
+/// more than their units is not a unit mismatch: that is a different shape, the usage error
+/// of `una run` and `una build` (`spec/26 §2` rule 2), so it agrees here. O(size of the
+/// types).
+fn units_agree(found: &Ty, expected: &Ty) -> bool {
+    fn bare(mut ty: &Ty) -> &Ty {
+        while let Ty::Labeled(_, inner) | Ty::Refined(_, inner) = ty {
+            ty = inner;
+        }
+        ty
+    }
+    let all = |xs: &[Ty], ys: &[Ty]| {
+        xs.len() != ys.len() || xs.iter().zip(ys).all(|(x, y)| units_agree(x, y))
+    };
+    match (bare(found), bare(expected)) {
+        (Ty::Error(_) | Ty::Never, _) | (_, Ty::Error(_) | Ty::Never) => true,
+        (Ty::Measured(u, a), Ty::Measured(v, b)) => u == v || bare(a) != bare(b),
+        (Ty::Measured(_, magnitude), other) | (other, Ty::Measured(_, magnitude)) => {
+            bare(magnitude) != other
+        }
+        (Ty::List(a), Ty::List(b)) => units_agree(a, b),
+        (Ty::Dense(x, a), Ty::Dense(y, b)) => x != y || units_agree(a, b),
+        (Ty::Map(k, v), Ty::Map(l, w)) => units_agree(k, l) && units_agree(v, w),
+        (Ty::Coll(c, xs), Ty::Coll(d, ys)) => c != d || all(xs, ys),
+        (Ty::Kind(i, xs), Ty::Kind(j, ys)) => i != j || all(xs, ys),
+        (Ty::Fn(f), Ty::Fn(g)) => {
+            all(&f.params, &g.params)
+                && units_agree(&f.result, &g.result)
+                && match (&f.fails, &g.fails) {
+                    (Some(x), Some(y)) => units_agree(x, y),
+                    _ => true,
+                }
+        }
+        _ => true,
+    }
+}
+
+/// The units of measure at each position of the state types of the package's `[drive]`
+/// module, for the shape check of `una run` and `una build`, whose Core IR has no units
+/// (`spec/26 §2` rule 2). `None` without a driven module that reports, or without an `init`
+/// that takes no parameter. O(size of the types).
+pub(crate) fn drive_units(env: &Env<'_>, settings: &Manifest) -> Option<super::DriveUnits> {
+    let pairs = drive_handoffs(env, settings)?;
+    let key = |ty: &Ty| {
+        let mut out = String::new();
+        unit_positions(ty, &mut String::new(), &mut out);
+        out
+    };
+    let mut units = super::DriveUnits::default();
+    for ((found, _, from_what), state, name) in pairs {
+        if from_what == "the result of `init`" {
+            units.init = key(found);
+        }
+        match name {
+            "step" => units.step = Some(key(&state.ty.base)),
+            _ => units.on_stop = Some(key(&state.ty.base)),
+        }
+    }
+    if units.step.is_none() && units.on_stop.is_none() {
+        // `init` alone: nothing is handed on, and `una run` refuses the module anyway.
+        return None;
+    }
+    Some(units)
+}
+
+/// Appends to `out` each measured position of `ty`, by its path of child indices from the top,
+/// with the normal form of its unit (ADR 0104 rule 2); labels and refinements are not
+/// positions. Two types with the same shape have equal results exactly when their units agree
+/// at every position. O(size of the type).
+fn unit_positions(ty: &Ty, path: &mut String, out: &mut String) {
+    use std::fmt::Write as _;
+    fn child(index: &str, ty: &Ty, path: &mut String, out: &mut String) {
+        let length = path.len();
+        path.push('.');
+        path.push_str(index);
+        unit_positions(ty, path, out);
+        path.truncate(length);
+    }
+    match ty {
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) => unit_positions(inner, path, out),
+        Ty::Measured(unit, magnitude) => {
+            let _ = write!(out, "{path}={unit:?};");
+            child("m", magnitude, path, out);
+        }
+        Ty::List(element) | Ty::Dense(_, element) => child("0", element, path, out),
+        Ty::Map(key, value) => {
+            child("0", key, path, out);
+            child("1", value, path, out);
+        }
+        Ty::Coll(_, args) | Ty::Kind(_, args) => {
+            for (index, arg) in args.iter().enumerate() {
+                child(&index.to_string(), arg, path, out);
+            }
+        }
+        Ty::Fn(function) => {
+            for (index, param) in function.params.iter().enumerate() {
+                child(&format!("p{index}"), param, path, out);
+            }
+            child("r", &function.result, path, out);
+            if let Some(fails) = &function.fails {
+                child("f", fails, path, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2670,6 +3235,89 @@ pub(crate) fn drive_timing(
         "label `{}` at least `{tau}`, as `{}: {tau} Tick`",
         input.name, input.name
     )));
+    report.push(diagnostic);
+}
+
+/// IF6 (ADR 0123) at the driver of a `serve` section with `within` (rule 16): its `start
+/// answer(exchange) within w` moves the exchange's reply right to the request's task, whose end
+/// answers it through the host when the deadline cuts it (`503`), and that answer accepts
+/// `internal`. So `τ(e)` of the started expression, the timing of `handle` joined with `L_res`
+/// (which holds `L_srv`) and the preview's `τ_conc`, `⊤` for a task beside the driver's other
+/// tasks, must flow to `internal`: U4003 at the `within` line of `ita.una` otherwise. As every
+/// timing label of the preview it is an over-approximation that MAY become less strict and MUST
+/// NOT become stricter; while `L_srv` of a `serve` package is `⊤` (IF-S1), every `within` of
+/// the section is refused, as the language form's `start ... within` is. O(functions + call
+/// edges + operations).
+pub(crate) fn serve_within(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) {
+    let (Some(serve), Some(driver)) = (&settings.serve, env.serve_driver) else {
+        return;
+    };
+    let Some(within) = &serve.within_at else {
+        return;
+    };
+    let span = Span::new(driver.file, within.start, within.end);
+    let handle = (0..env.prelude)
+        .find(|m| {
+            env.modules
+                .get(*m)
+                .is_some_and(|m| m.path == serve.module.value)
+        })
+        .and_then(
+            |module| match env.modules.get(module)?.lower.get("handle") {
+                Some(Entity::Function(id)) => Some(*id),
+                _ => None,
+            },
+        );
+    // A module that is not in the package, or without `handle`, is reported already (U7008 or
+    // the run's usage error); the deadline is only checked for a section that can run.
+    let Some(handle) = handle else {
+        return;
+    };
+    let seed = super::timing::TimingSeed {
+        callees: BTreeSet::from([handle]),
+        unplaced: true,
+        ..super::timing::TimingSeed::default()
+    };
+    let concurrent = super::timing::concurrent_functions(findings);
+    let timing = super::timing::timing(
+        env,
+        findings,
+        &seed,
+        None,
+        super::timing::HostHandlers::Installed,
+        &concurrent,
+    );
+    let timing = residue.join_into(timing);
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let tau = timing.label.clone();
+    if tau.flows_to(&internal) {
+        return;
+    }
+    let culprit = timing.culprit(&internal);
+    let culprit = if culprit.is_empty() {
+        "the requests the other tasks of the server handle beside it".to_owned()
+    } else {
+        culprit
+    };
+    let mut diagnostic = report.make(
+        Code::U4003,
+        span,
+        format!(
+            "the `within` of the `serve` section cuts each request's task, whose reply right the host then answers with `503`, which accepts `internal` data; the deadline's timing label is `{tau}`, raised by {culprit}, which that answer would reveal"
+        ),
+    );
+    diagnostic.repairs.push(Report::advice(
+        "remove `within` from the `serve` section: the host's `answer` deadline of the grant already bounds what each peer waits",
+    ));
     report.push(diagnostic);
 }
 
@@ -2877,6 +3525,27 @@ pub(crate) fn limiter_timing(
     }
 }
 
+/// `τ(e)` of a `within` or a `first of`, before `L_res`: a `within` takes the precise
+/// `τ_conc` of `spec/27 §11` (ADR 0116, amendment of 2026-10-25, P4), a `first of` the
+/// preview's until slice 4 of the plan on #1087.
+fn within_site_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    site: &super::within::WithinSite,
+    concurrent: &BTreeSet<usize>,
+    concurrency: &super::timing::Concurrency,
+) -> super::timing::Timing {
+    let host = super::timing::HostHandlers::All;
+    match site.construct {
+        super::within::Construct::Within => {
+            super::timing::timing_precise(env, findings, &site.seed, host, concurrency)
+        }
+        super::within::Construct::FirstOf => {
+            super::timing::timing(env, findings, &site.seed, site.function, host, concurrent)
+        }
+    }
+}
+
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
 /// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
 /// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass
@@ -2890,17 +3559,11 @@ pub(crate) fn within_labels(
         return (BTreeMap::new(), super::timing::Residue::none());
     }
     let concurrent = super::timing::concurrent_functions(findings);
+    let concurrency = super::timing::concurrency_of(env, findings);
     let residue = super::timing::residue_of(env, findings);
     let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
     for site in &findings.withins {
-        let timing = super::timing::timing(
-            env,
-            findings,
-            &site.seed,
-            site.function,
-            super::timing::HostHandlers::All,
-            &concurrent,
-        );
+        let timing = within_site_timing(env, findings, site, &concurrent, &concurrency);
         let timing = residue.join_into(timing);
         // A site checked twice, as an `attempt` inside a probe, keeps the join.
         let label = match labels.get(&site.key) {
@@ -2931,19 +3594,13 @@ pub(crate) fn within_timing(
         return Vec::new();
     }
     let concurrent = super::timing::concurrent_functions(findings);
+    let concurrency = super::timing::concurrency_of(env, findings);
     let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.key);
     let mut entries = Vec::new();
     for site in sites {
-        let timing = super::timing::timing(
-            env,
-            findings,
-            &site.seed,
-            site.function,
-            super::timing::HostHandlers::All,
-            &concurrent,
-        );
+        let timing = within_site_timing(env, findings, site, &concurrent, &concurrency);
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let used = env
@@ -3004,6 +3661,153 @@ pub(crate) fn within_timing(
         }
     }
     entries
+}
+
+/// `spec/07 §5` rule 7 (ADR 0098, amendment of 2026-11-06, #1673): a deadline or race outcome
+/// may reach the result of a `via` function only if its concurrent label is `public`. No label
+/// is checked in a `via` body (rule 3), so every outcome of a timing site that the body reaches
+/// counts as reaching the result: each `within` (with `start ... within`), `first of`, `for ever
+/// within` and statement a `limiter` installation scopes over, in a `via` body or in code it
+/// reaches along the graph of ADR 0116 P1, is U4001 at the site when its concurrent label is
+/// above `public`.
+///
+/// The concurrent label is the site's `τ_conc`, the preview's ([`timing::preview_concurrent`]),
+/// as every timing site's label uses it until the precise one of ADR 0116's amendment of
+/// 2026-10-25 lands: `⊤` inside a lambda, a task or a handler's operation, or in a function a
+/// part of a task construct can reach, `public` otherwise. `L_res` is not joined, and nothing
+/// else of the site's timing label is checked: the rest is the `via`'s own data, which rule 3
+/// trusts it to release.
+///
+/// **Reach** ([`timing::via_reach`]): a lambda's code counts with the function or handler it is
+/// written in, and the code of every lambda, with every function named as a value, only when
+/// a reached node calls a function value or applies one whose code is not known at the call.
+///
+/// O(F + H + C + O + E) for the graph and one search of it from every `via` function at once,
+/// O(F + E) for [`timing::concurrent_functions`], and O(S log S + S log F) to sort the `S`
+/// sites and look each up. A site that would be reported first scans the diagnostics reported
+/// so far for a U4001 at its span, O(D) for `D` of them, so the reported sites cost O(R × D)
+/// more, on the error path only. No work at all in a package without a `via` function.
+///
+/// [`timing::preview_concurrent`]: super::timing::preview_concurrent
+/// [`timing::via_reach`]: super::timing::via_reach
+/// [`timing::concurrent_functions`]: super::timing::concurrent_functions
+pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
+    if env.vias.is_empty() {
+        return;
+    }
+    // Each site: its words, what its outcome is, its span, its function and its seed.
+    let mut sites: Vec<(
+        &'static str,
+        &'static str,
+        Span,
+        Option<usize>,
+        &super::timing::TimingSeed,
+    )> = Vec::new();
+    let mut withins: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
+    withins.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    withins.dedup_by_key(|site| site.key);
+    for site in withins {
+        let what = match site.construct {
+            super::within::Construct::Within => "whether it meets its deadline",
+            super::within::Construct::FirstOf => "which branch wins",
+        };
+        sites.push((
+            site.construct.words(),
+            what,
+            site.span,
+            site.function,
+            &site.seed,
+        ));
+    }
+    for site in &findings.deadline_loops {
+        sites.push((
+            "for ever within",
+            "when its deadline ends it",
+            site.span,
+            site.function,
+            &site.seed,
+        ));
+    }
+    for site in &findings.limiter_sites {
+        sites.push((
+            "limiter",
+            "whether `acquire` finds a token",
+            site.span,
+            site.function,
+            &site.seed,
+        ));
+    }
+    if sites.is_empty() {
+        return;
+    }
+    sites.sort_by_key(|(_, _, span, _, _)| (span.file, span.start, span.end));
+    sites.dedup_by_key(|(_, _, span, _, _)| *span);
+    let reach = super::timing::via_reach(env, findings);
+    let concurrent = super::timing::concurrent_functions(findings);
+    let top = Label::top(&env.categories);
+    let qualified = |id: usize| {
+        env.functions
+            .get(id)
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default()
+    };
+    for (words, what, span, function, seed) in sites {
+        let Some((via, path)) = reach.via_of(seed) else {
+            continue;
+        };
+        if !super::timing::preview_concurrent(seed, function, &concurrent) {
+            continue;
+        }
+        // A site already refused with U4001 at its own span keeps that one diagnostic: a
+        // `limiter` that can run beside other tasks always is, by `spec/27 §10`, since the
+        // preview's `τ_conc` there is `⊤`, above `internal`. A flow of a site's outcome into a
+        // binding labeled too low is reported at the operand, not at the site, so it does not
+        // match here, and the site gets the U4001 of this rule beside it.
+        if report.has(Code::U4001, span) {
+            continue;
+        }
+        let via_name = qualified(via);
+        let policy = env.vias.get(&via).copied();
+        let policy_name = policy
+            .and_then(|id| env.functions.get(id))
+            .map_or_else(String::new, |def| def.name.to_owned());
+        let through = match path {
+            super::timing::ViaPath::Body => String::new(),
+            super::timing::ViaPath::Calls => " through the code it calls".to_owned(),
+            super::timing::ViaPath::Lambda => format!(
+                " through a function value: `{via_name}`, or code it calls, calls a function value or applies one whose code is not known at the call, so every lambda's code, and every function named as a value, counts as code it reaches, this site's included"
+            ),
+        };
+        let mut diagnostic = report.make(
+            Code::U4001,
+            span,
+            format!(
+                "this `{words}` can run beside other tasks of the program, so its concurrent label is `{top}`, above `public`: {what} depends on their timing, and its outcome can reach the result of the `via` function `{via_name}`{through}; no label is checked there, so the policy `{policy_name}` would release that timing (`spec/07 §5` rule 7)"
+            ),
+        );
+        if let Some(FnAst::Policy(decl)) = policy
+            .and_then(|id| env.functions.get(id))
+            .map(|def| def.ast)
+        {
+            diagnostic.related.push(report.related(
+                decl.via.span,
+                format!("the policy `{policy_name}` runs `{via_name}`"),
+            ));
+        }
+        if path == super::timing::ViaPath::Lambda {
+            diagnostic.repairs.push(Report::advice(format!(
+                "in `{via_name}` and the code it calls, pass only lambdas written at the call to functions such as `map`, and call no function value, so that only the lambdas written there count; or run this `{words}` where no part of a task construct runs beside it"
+            )));
+        } else {
+            diagnostic.repairs.push(Report::advice(format!(
+                "call the policy `{policy_name}` outside every part of a task construct, so that no task runs beside it, or move the `{words}` out of the `via` function and the code it calls"
+            )));
+        }
+        report.push(diagnostic);
+    }
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the

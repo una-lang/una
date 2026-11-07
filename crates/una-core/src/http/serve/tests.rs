@@ -405,6 +405,8 @@ fn hosts_lists_registered_names() {
         "hosts=a,,b",
         "hosts=0x7f",
         "hosts=a.0x10",
+        "hosts=a.0x",
+        "hosts=1.2.3.0X",
         "hosts=*.",
         "hosts=**",
     ] {

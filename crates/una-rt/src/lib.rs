@@ -20,6 +20,7 @@ use cap::Cap;
 
 pub mod deadline;
 pub mod decimal;
+mod driver;
 #[allow(unsafe_code)]
 pub mod ffi;
 pub mod generic;
@@ -30,6 +31,7 @@ mod reactor;
 pub mod render;
 pub mod runtime;
 mod sched;
+pub mod serve;
 mod sockets;
 mod started;
 pub mod tasks;

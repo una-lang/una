@@ -1,7 +1,9 @@
 //! The conformance runner (`compiler/testing.md §2`, ADR 0013). It discovers the cases under
 //! `tests/conformance/`, validates their directives, runs the compiler in-process and compares
 //! the outcome with the expectations. Run it with `cargo test -p una-cli --test conformance`;
-//! add `-- --nocapture` to see the summary.
+//! add `-- --nocapture` to see the summary. Each case is a test of its own, `case::<name>`,
+//! generated from the list that `una-test-cases` builds from the corpus (#1652); the test
+//! `conformance_suite` checks the layout of the corpus and holds that list to it.
 
 // Tests may unwrap, index, panic and print freely (compiler/conventions.md §1).
 #![allow(
@@ -28,8 +30,8 @@ use una_diag::{Code, Domain};
 use crate::directives::{
     Case, CheckExpectation, ExpectedError, SpecIndex, TestExpectation, parse_case,
 };
-use crate::discovery::{discover, read_case_files};
-use crate::outcome::{RunResult, TestResult, Verdict, classify, mismatches, reported};
+use crate::discovery::{CaseKind, CaseLocation, discover, read_case_files};
+use crate::outcome::{RunResult, TestResult, Verdict, classify, mismatches, repeated, reported};
 
 /// Whether `code` is implemented: its explain text is no longer the stub of `spec/13 §4`.
 fn implemented(code: Code) -> bool {
@@ -372,140 +374,191 @@ fn unencodable_locks(checked: &una_cli::Checked) -> Vec<String> {
         .collect()
 }
 
+/// The outcome of one conformance case (`compiler/testing.md §2`, "Pending cases").
+enum Outcome {
+    /// The outcome matches every expectation.
+    Pass,
+    /// A pending case that does not match yet, as the runner lists it.
+    Pending(String),
+    /// A failure, with its reason.
+    Fail(String),
+}
+
+/// Runs the case at `location` under the conformance root `root`, with the spec index `specs`.
+fn run_one(root: &Path, location: &CaseLocation, specs: &SpecIndex) -> Outcome {
+    let files = read_case_files(root, location);
+    let case = match parse_case(location.kind, &files, specs) {
+        Ok(case) => case,
+        Err(errors) => {
+            return Outcome::Fail(format!(
+                "{}: malformed directives\n    {}",
+                location.path,
+                errors.join("\n    ")
+            ));
+        }
+    };
+    let tier = match case.check {
+        CheckExpectation::Tier0Ok => Tier::Zero,
+        _ => Tier::One,
+    };
+    let path = root.join(&location.path);
+    let (diagnostics, solver_errors, unencodable) = match una_cli::check(&path, tier) {
+        Ok(checked) => {
+            let errors = solver_errors(&checked);
+            let unencodable = unencodable_locks(&checked);
+            (checked.diagnostics, errors, unencodable)
+        }
+        Err(error) => {
+            return Outcome::Fail(format!("{}: {error}", location.path));
+        }
+    };
+    // ADR 0095 rule 8: the repairs of every diagnostic of every case, as `--json` prints
+    // them, keep escapes last and say what they cost.
+    // A single-file case is its own package root (ADR 0015).
+    let package_root = if path.is_dir() {
+        path.clone()
+    } else {
+        path.parent().map(Path::to_path_buf).unwrap_or_default()
+    };
+    let ranking = escape_ranking(&diagnostics, &package_root);
+    if !ranking.is_empty() {
+        return Outcome::Fail(format!("{}: {}", location.path, ranking.join("; ")));
+    }
+    // #932: `una check` reports each diagnostic once, whatever the case expects.
+    let repeats = repeated(&diagnostics);
+    if !repeats.is_empty() {
+        return Outcome::Fail(format!(
+            "{}: reported more than once: {}",
+            location.path,
+            repeats.join("; ")
+        ));
+    }
+    // ADR 0101: an error of the solver after `sat` means the generated script asks for
+    // something it cannot answer. No case may have one, whatever its outcome (#668).
+    if !solver_errors.is_empty() {
+        return Outcome::Fail(format!(
+            "{}: the solver gave no values: {}",
+            location.path,
+            solver_errors.join("; ")
+        ));
+    }
+    // #638: the checker rejects a locked condition outside the encoding as U7002, so no
+    // case may reach the verifier with one.
+    if !unencodable.is_empty() {
+        return Outcome::Fail(format!(
+            "{}: the checker admitted a locked condition the verifier does not encode: {}",
+            location.path,
+            unencodable.join("; ")
+        ));
+    }
+    // `una run` and `una test` report the errors of the checks again, and their own.
+    let mut errors = reported(&diagnostics);
+    let run = needs_run(&case).then(|| {
+        let (run, run_errors) = run_case(&path, &case);
+        errors.extend(run_errors);
+        run
+    });
+    let test = (case.test_outcome != TestExpectation::Unspecified).then(|| {
+        let (test, test_errors) = test_case(&path);
+        errors.extend(test_errors);
+        test
+    });
+    // A case fails when it reports an implemented code that it does not
+    // expect, even while it is pending on a later milestone. A code is implemented once
+    // its explain text is no longer a stub.
+    let expected: Vec<Code> = match &case.check {
+        CheckExpectation::Errors(errors) => errors.iter().map(|error| error.code).collect(),
+        _ => Vec::new(),
+    };
+    let unexpected: Vec<String> = errors
+        .iter()
+        .filter(|error| implemented(error.code) && !expected.contains(&error.code))
+        .map(ToString::to_string)
+        .collect();
+    if !unexpected.is_empty() {
+        return Outcome::Fail(format!(
+            "{}: implemented codes it does not expect: {}",
+            location.path,
+            unexpected.join("; ")
+        ));
+    }
+    match classify(
+        case.pending,
+        mismatches(&case, &errors, run.as_ref(), test.as_ref()),
+    ) {
+        Verdict::Pass => Outcome::Pass,
+        Verdict::Pending {
+            milestone,
+            mismatches,
+        } => Outcome::Pending(format!(
+            "M{milestone}  {}  {} ({}): {}",
+            location.path,
+            case.test,
+            case.spec,
+            mismatches.join("; ")
+        )),
+        Verdict::Fail(reasons) => {
+            Outcome::Fail(format!("{}: {}", location.path, reasons.join("; ")))
+        }
+    }
+}
+
+/// Runs the case at `path`, relative to `tests/conformance`, from a sealed copy of it: no
+/// manifest above the checkout changes the edition of a single-file case (#1560). A pending case
+/// that does not match passes and prints its line of the runner's summary; a failure fails the
+/// test with the runner's message.
+fn conformance_case(path: &str) {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let copy = hermetic::checkout_case(&[&format!("tests/conformance/{path}")]);
+    let root = copy.root.join("tests/conformance");
+    let specs = SpecIndex::load(&repository.join("docs/spec"));
+    let kind = if root.join(path).is_dir() {
+        CaseKind::Directory
+    } else {
+        CaseKind::Single
+    };
+    let location = CaseLocation {
+        path: path.to_owned(),
+        kind,
+    };
+    match run_one(&root, &location, &specs) {
+        Outcome::Pass => {}
+        Outcome::Pending(line) => println!("  pending {line}"),
+        Outcome::Fail(failure) => panic!("1 conformance failure(s):\n  {failure}"),
+    }
+}
+
+/// One test per conformance case (#1652), `case::<name>`, so that a test runner spreads the
+/// cases over all cores.
+macro_rules! conformance_tests {
+    ($($name:ident => $path:literal [],)*) => {
+        /// Every conformance case matches its expectations, or is pending.
+        mod case {
+            $(
+                #[test]
+                fn $name() {
+                    super::conformance_case($path);
+                }
+            )*
+            /// The generated cases, in path order.
+            pub const CASES: &[&str] = &[$($path),*];
+        }
+    };
+}
+
+una_test_cases::conformance_cases!(conformance_tests);
+
+/// The conformance corpus is well formed and the generated tests are its cases: every entry
+/// under `tests/conformance/` is an area or a case (`compiler/testing.md §2`, "Discovery"), the
+/// run discovers at least one case, and the cases are those of the generated tests, path for
+/// path, so that a case added, removed or renamed without a rebuild of `una-test-cases` fails
+/// here, never goes untested.
 #[test]
 fn conformance_suite() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    // The cases run from a sealed copy of the corpus: no manifest above the checkout changes
-    // the edition of a single-file case (#1560).
-    let root = hermetic::checkout(&["tests/conformance"]).join("tests/conformance");
-    let specs = SpecIndex::load(&repository.join("docs/spec"));
-    let (cases, mut failures) = discover(&root);
-    let mut passed = 0;
-    let mut pending = Vec::new();
-    for location in &cases {
-        let files = read_case_files(&root, location);
-        let case = match parse_case(location.kind, &files, &specs) {
-            Ok(case) => case,
-            Err(errors) => {
-                failures.push(format!(
-                    "{}: malformed directives\n    {}",
-                    location.path,
-                    errors.join("\n    ")
-                ));
-                continue;
-            }
-        };
-        let tier = match case.check {
-            CheckExpectation::Tier0Ok => Tier::Zero,
-            _ => Tier::One,
-        };
-        let path = root.join(&location.path);
-        let (diagnostics, solver_errors, unencodable) = match una_cli::check(&path, tier) {
-            Ok(checked) => {
-                let errors = solver_errors(&checked);
-                let unencodable = unencodable_locks(&checked);
-                (checked.diagnostics, errors, unencodable)
-            }
-            Err(error) => {
-                failures.push(format!("{}: {error}", location.path));
-                continue;
-            }
-        };
-        // ADR 0095 rule 8: the repairs of every diagnostic of every case, as `--json` prints
-        // them, keep escapes last and say what they cost.
-        // A single-file case is its own package root (ADR 0015).
-        let package_root = if path.is_dir() {
-            path.clone()
-        } else {
-            path.parent().map(Path::to_path_buf).unwrap_or_default()
-        };
-        let ranking = escape_ranking(&diagnostics, &package_root);
-        if !ranking.is_empty() {
-            failures.push(format!("{}: {}", location.path, ranking.join("; ")));
-            continue;
-        }
-        // ADR 0101: an error of the solver after `sat` means the generated script asks for
-        // something it cannot answer. No case may have one, whatever its outcome (#668).
-        if !solver_errors.is_empty() {
-            failures.push(format!(
-                "{}: the solver gave no values: {}",
-                location.path,
-                solver_errors.join("; ")
-            ));
-            continue;
-        }
-        // #638: the checker rejects a locked condition outside the encoding as U7002, so no
-        // case may reach the verifier with one.
-        if !unencodable.is_empty() {
-            failures.push(format!(
-                "{}: the checker admitted a locked condition the verifier does not encode: {}",
-                location.path,
-                unencodable.join("; ")
-            ));
-            continue;
-        }
-        // `una run` and `una test` report the errors of the checks again, and their own.
-        let mut errors = reported(&diagnostics);
-        let run = needs_run(&case).then(|| {
-            let (run, run_errors) = run_case(&path, &case);
-            errors.extend(run_errors);
-            run
-        });
-        let test = (case.test_outcome != TestExpectation::Unspecified).then(|| {
-            let (test, test_errors) = test_case(&path);
-            errors.extend(test_errors);
-            test
-        });
-        // A case fails when it reports an implemented code that it does not
-        // expect, even while it is pending on a later milestone. A code is implemented once
-        // its explain text is no longer a stub.
-        let expected: Vec<Code> = match &case.check {
-            CheckExpectation::Errors(errors) => errors.iter().map(|error| error.code).collect(),
-            _ => Vec::new(),
-        };
-        let unexpected: Vec<String> = errors
-            .iter()
-            .filter(|error| implemented(error.code) && !expected.contains(&error.code))
-            .map(ToString::to_string)
-            .collect();
-        if !unexpected.is_empty() {
-            failures.push(format!(
-                "{}: implemented codes it does not expect: {}",
-                location.path,
-                unexpected.join("; ")
-            ));
-            continue;
-        }
-        match classify(
-            case.pending,
-            mismatches(&case, &errors, run.as_ref(), test.as_ref()),
-        ) {
-            Verdict::Pass => passed += 1,
-            Verdict::Pending {
-                milestone,
-                mismatches,
-            } => pending.push(format!(
-                "M{milestone}  {}  {} ({}): {}",
-                location.path,
-                case.test,
-                case.spec,
-                mismatches.join("; ")
-            )),
-            Verdict::Fail(reasons) => {
-                failures.push(format!("{}: {}", location.path, reasons.join("; ")));
-            }
-        }
-    }
-    println!(
-        "conformance: {} cases, {} passed, {} pending, {} failures",
-        cases.len(),
-        passed,
-        pending.len(),
-        failures.len()
-    );
-    for line in &pending {
-        println!("  pending {line}");
-    }
+    let root = repository.join("tests/conformance");
+    let (cases, failures) = discover(&root);
+    println!("conformance: {} cases", cases.len());
     assert!(
         !cases.is_empty(),
         "no conformance case discovered under {}",
@@ -517,6 +570,8 @@ fn conformance_suite() {
         failures.len(),
         failures.join("\n  ")
     );
+    let discovered: Vec<&str> = cases.iter().map(|case| case.path.as_str()).collect();
+    pretty_assertions::assert_eq!(case::CASES, discovered.as_slice());
 }
 
 /// Advertised support must name a non-pending positive case discovered by this

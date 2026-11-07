@@ -1,0 +1,14 @@
+-- test: a function-typed state may be labeled higher in `step` and `on_stop` than in the result of `init` at a covariant position, its result, and the driver runs it, since the host's shape check compares the state with labels aside at every position of a function type (spec/26 §2, issue #1644)
+-- spec: spec/26 §2
+-- expect: ok
+module counter
+
+import std.drive (Tick)
+
+pub init() -> fn(Int) -> Int = double
+
+pub step(edit f: fn(Int) -> secret Int, input: Tick) -> Unit = unit
+
+pub on_stop(f: fn(Int) -> secret Int) -> Unit = unit
+
+double(x: Int) -> Int = x * 2

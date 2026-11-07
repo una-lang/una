@@ -1,0 +1,8 @@
+-- test: the status of a `Reply` is a `Status`, from 200 to 599, a refinement the verifier checks where the reply is made: 700 is U5001 (spec/31 §1, ADR 0123 rule 3)
+-- spec: spec/31 §1
+-- expect: error U5001 at src/srv.una:8:36
+module srv
+
+import std.host (Reply)
+
+pub odd() -> Reply = Reply(status: 700, headers: [], body: "")

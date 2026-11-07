@@ -206,13 +206,36 @@ pub(crate) fn failed(word: i64) -> i64 {
 pub fn host_failed() -> i64 {
     with_state(|state| {
         let failed = std::mem::take(&mut state.host_failed);
-        if state.interrupted {
+        // An operation that stopped its task in progress, its event left `aborted`: a `next` of
+        // `HttpServer` once the run aborted (`crate::serve`).
+        let stopped = std::mem::take(&mut state.op_stopped);
+        if state.interrupted || stopped {
             2
         } else {
             i64::from(failed)
         }
     })
     .unwrap_or(0)
+}
+
+/// Runs `job`, an interruptible operation of `Http` or of `std.limit`, on a helper of the I/O
+/// pool while the task parks ([`sched::blocking_interruptible`]), `abandoned` raised when a
+/// cancellation of `entries` interrupts it. `None` when such a cancellation interrupted it: the
+/// operation ends `interrupted`. A deadline's cut of the task's `tasks` statement is not one
+/// (`spec/27 §2` rule 4, #1266): a job that has begun is waited for, and one still queued, which
+/// the cut takes off the queue unsent, fails with `TimedOut`, the failure that the same
+/// deadline gives a job that runs, so the outcome never depends on the pool's load. The cut
+/// comes once the `within`'s timer has fired, at or after the deadline that covers the job.
+fn on_helper<T: Send + 'static>(
+    entries: &[crate::runtime::Cancel],
+    abandoned: crate::interrupt::Wake,
+    job: impl FnOnce() -> Result<T, una_http::client::Error> + Send + 'static,
+) -> Option<Result<T, una_http::client::Error>> {
+    match sched::blocking_interruptible(Pool::Io, entries, Some(abandoned), job) {
+        Some(done) => Some(done),
+        None if crate::interrupt::cut_only(entries) => Some(Err(una_http::client::Error::TimedOut)),
+        None => None,
+    }
 }
 
 /// The word an interrupted operation returns: the stop of a task in the generated code
@@ -499,7 +522,10 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
     };
     let entries = crate::runtime::interruptible_entries();
     let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
-    let acquired = match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
+    // A deadline's cut of the task's `tasks` statement that takes a call still queued for a
+    // helper makes it fail with `RateLimited`, as its deadline makes a call that waits fail,
+    // never `interrupted` (`spec/27 §2` rule 4, §10, #1266).
+    let acquired = match on_helper(&entries, abandoned, job) {
         Some(acquired) => acquired,
         None => {
             with_state(|state| state.interrupted = true);
@@ -558,6 +584,17 @@ pub fn event(site: i64, instance: i64) -> i64 {
     .unwrap_or(-1)
 }
 
+/// Whether the event at `slot`, of operation `op`, is one of the host's `HttpServer`, whose
+/// values are written in the reduced form of ADR 0123 rule 1.
+fn server_event(state: &crate::runtime::State, op: &OpSite, slot: usize) -> bool {
+    op.capability == "HttpServer"
+        && state
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.get(slot))
+            .is_some_and(|event| event.instance == "host:HttpServer")
+}
+
 /// Records argument `index` of the event at `slot`, of operation `site`.
 pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     let (Ok(site), Ok(slot), Ok(index)) = (
@@ -569,6 +606,7 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
     };
     // An argument that holds an integer too long for text aborts the run at the operation
     // (`spec/11 §7`, #923), its event left `aborted`.
+    let trace = crate::serve::trace();
     let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
@@ -578,9 +616,26 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             .get(index)
             .cloned()
             .unwrap_or_else(|| format!("arg{index}"));
-        let shown = match op.args.get(index) {
-            Some(arg) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
-            None => Some("?".to_owned()),
+        // ADR 0123 rule 1 (`spec/31 §1` rule 7): the values of the events of the host's
+        // `HttpServer` are redacted by their labels, as every event's are, and are written in
+        // the reduced form whatever their labels, under the run's trace key, as in the
+        // interpreter. Without the run's engine every argument is written as an `internal`
+        // value is, redacted, failing closed.
+        let server = server_event(state, op, slot);
+        let shown = match (op.args.get(index), server.then_some(trace).flatten()) {
+            // The toolchain's tests only: the reduced form without the labels' redaction.
+            (Some(arg), Some((key, true))) => state.types.server_written(arg.ty, value, &key),
+            (Some(arg), Some((key, false))) => {
+                state
+                    .types
+                    .server_redacted(arg.ty, value, arg.redacted.as_deref(), &key)
+            }
+            (Some(arg), None) if server => {
+                let level = arg.redacted.as_deref().unwrap_or("internal");
+                state.types.redacted(arg.ty, value, Some(level))
+            }
+            (Some(arg), None) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
+            (None, _) => Some("?".to_owned()),
         };
         let Some(shown) = shown else {
             return true;
@@ -629,19 +684,33 @@ fn end_event(site: usize, slot: usize, value: i64, (failed, interrupted): (i64, 
     }
     // An outcome that holds an integer too long for text aborts the run at the operation
     // (`spec/11 §7`, #923), its event left `aborted`.
+    let trace = crate::serve::trace();
     let too_long = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
         };
+        // The outcome of an event of the host's `HttpServer`, in the reduced form of ADR 0123
+        // rule 1, as its arguments are.
+        let trace = trace.filter(|_| server_event(state, op, slot));
+        let revealed = matches!(trace, Some((_, true)));
         // S-45 (#1552): an outcome labeled above `public` is written as `redacted`, from the
         // site's static level alone; no text is built from the value, so it raises no abort.
-        let outcome = if let Some(level) = &op.outcome {
+        let outcome = if let Some(level) = op.outcome.as_ref().filter(|_| !revealed) {
             Some(EventOutcome::Redacted(level.clone()))
         } else if failed == 0 {
-            state
-                .types
-                .redacted(op.result.ty, value, op.result.redacted.as_deref())
-                .map(EventOutcome::Ok)
+            match trace {
+                Some((key, true)) => state.types.server_written(op.result.ty, value, &key),
+                Some((key, false)) => state.types.server_redacted(
+                    op.result.ty,
+                    value,
+                    op.result.redacted.as_deref(),
+                    &key,
+                ),
+                None => state
+                    .types
+                    .redacted(op.result.ty, value, op.result.redacted.as_deref()),
+            }
+            .map(EventOutcome::Ok)
         } else {
             let ty = op.error.unwrap_or(usize::MAX);
             let variant = state.types.variant_name(ty, value);
@@ -841,7 +910,9 @@ fn http(
         // parks the task on the reactor, so no thread waits for the server (ADR 0117 rule 3,
         // slice S7); resolution and connection go to a helper of the I/O pool. A cancellation
         // that comes while it waits ends it `interrupted`, its connection closed, and the task
-        // stops (rule 4). Only when no grant carries limits: a wait at a limit parks its thread
+        // stops (rule 4); a deadline's cut of its `tasks` statement does not, and the request
+        // ends at that deadline, its own, with `TimedOut`, as on a helper (#1266). Only when no
+        // grant carries limits: a wait at a limit parks its thread
         // (rule 8), which must never be a worker, so a run with limits sends on a helper.
         let entries = crate::runtime::interruptible_entries();
         let parked = crate::reactor::Parked::new(reactor, stop, &entries);
@@ -908,7 +979,11 @@ fn http(
         // sent is an effect in doubt.
         let entries = crate::runtime::interruptible_entries();
         let abandoned: crate::interrupt::Wake = Arc::new(move || abandon.abandon());
-        match sched::blocking_interruptible(Pool::Io, &entries, Some(abandoned), job) {
+        // A deadline's cut of the task's `tasks` statement that takes a request still queued
+        // for a helper makes it fail with `TimedOut`, never sent, the outcome its deadline gives
+        // a request that runs, on a helper or on the reactor, never `interrupted` (`spec/27 §2`
+        // rule 4, #1266).
+        match on_helper(&entries, abandoned, job) {
             Some(sent) => sent,
             None => {
                 with_state(|state| state.interrupted = true);
@@ -1025,6 +1100,114 @@ pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
 mod tests {
     use super::http_error_index;
     use una_http::client::Error;
+
+    #[test]
+    fn an_operation_site_without_its_outcome_label_fails_to_load() {
+        // S-45 (#1552, `spec/11 §5`), review L3 of #1562: the native description's `outcome`
+        // key is required. `null` is an outcome in clear and a string is the level it is
+        // redacted at; a site that lacks the key, or gives a value that is neither `null` nor a
+        // string, fails to load, so the executable never shows an outcome in clear by default.
+        let site = |outcome: Option<serde_json::Value>| {
+            let mut value = serde_json::json!({
+                "capability": "Console",
+                "op": "print",
+                "params": [],
+                "args": [],
+                "result": {"type": 0},
+            });
+            if let (Some(outcome), Some(fields)) = (outcome, value.as_object_mut()) {
+                fields.insert("outcome".to_owned(), outcome);
+            }
+            super::OpSite::parse(&value)
+        };
+        assert_eq!(site(None).map(|op| op.outcome), None);
+        assert_eq!(site(Some(serde_json::json!(1))).map(|op| op.outcome), None);
+        assert_eq!(
+            site(Some(serde_json::Value::Null)).map(|op| op.outcome),
+            Some(None)
+        );
+        assert_eq!(
+            site(Some(serde_json::json!("internal"))).map(|op| op.outcome),
+            Some(Some("internal".to_owned()))
+        );
+    }
+
+    /// Starts, on `sched`, a task whose operation runs on a helper of the I/O pool through
+    /// [`super::on_helper`] until `gate` opens, its cancellation entry that of `scope`'s tasks;
+    /// the receiver gives what [`super::on_helper`] gave.
+    fn on_a_helper(
+        sched: &crate::sched::Scheduler,
+        scope: &crate::started::StartScope,
+        gate: std::sync::mpsc::Receiver<()>,
+    ) -> std::sync::mpsc::Receiver<Option<Result<i32, Error>>> {
+        let (outcome, seen) = std::sync::mpsc::channel();
+        let entries = vec![(
+            std::sync::Arc::clone(&scope.cancel),
+            crate::tasks::RACE_ENTRY | 1,
+        )];
+        sched
+            .spawn(
+                1,
+                256 * 1024,
+                move || {
+                    let abandoned: crate::interrupt::Wake = std::sync::Arc::new(|| {});
+                    let done = super::on_helper(&entries, abandoned, move || {
+                        let _ = gate.recv();
+                        Ok(7)
+                    });
+                    let _ = outcome.send(done);
+                },
+                || {},
+            )
+            .unwrap();
+        seen
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn a_cut_fails_a_queued_operation_timed_out_and_a_failure_interrupts_it() {
+        // #1266, `spec/27 §2` rule 4: behind the only helper, a deadline's cut of the `tasks`
+        // statement takes a queued operation off the queue unsent, and it fails with
+        // `TimedOut` (`RateLimited` for `acquire`), as the job that runs does at the same
+        // deadline, never `interrupted`; a failure of the block interrupts it (`None`). Before
+        // the fix the cut ended the queued one `interrupted` too, which depended on the load
+        // of the pool. `Http` and `limit_acquire` both map their helper's wait through it.
+        let sched = crate::sched::Scheduler::new(una_interp::Concurrency {
+            workers: 1,
+            task_depth: 10,
+            io_threads: 1,
+            file_threads: 1,
+        });
+        let wait = std::time::Duration::from_millis(100);
+        let long = std::time::Duration::from_secs(10);
+        for by_deadline in [true, false] {
+            let scope = crate::started::StartScope::new("s1".to_owned(), 2);
+            let (release, gate) = std::sync::mpsc::channel();
+            let running = on_a_helper(&sched, &scope, gate);
+            std::thread::sleep(wait);
+            let (never, queued_gate) = std::sync::mpsc::channel::<()>();
+            let queued = on_a_helper(&sched, &scope, queued_gate);
+            std::thread::sleep(wait);
+            crate::started::cancel_tasks(&scope, by_deadline);
+            let queued = queued.recv_timeout(long).unwrap();
+            if by_deadline {
+                assert_eq!(queued, Some(Err(Error::TimedOut)));
+                // The running job is waited for, and gives its own result.
+                assert!(
+                    running.recv_timeout(wait).is_err(),
+                    "woken before its helper"
+                );
+                release.send(()).unwrap();
+                assert_eq!(running.recv_timeout(long).unwrap(), Some(Ok(7)));
+            } else {
+                assert_eq!(queued, None);
+                assert_eq!(running.recv_timeout(long).unwrap(), None);
+                let _ = release.send(());
+                std::thread::sleep(wait);
+            }
+            drop(never);
+        }
+    }
 
     #[test]
     fn http_error_codes_follow_the_declaration_order() {

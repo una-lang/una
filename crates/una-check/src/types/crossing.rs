@@ -373,6 +373,21 @@ impl Checker<'_, '_, '_> {
     /// what the lambda receives or computes, which is checked where it is written.
     pub(crate) fn captured_value(&mut self, name: &str, span: Span) {
         self.timing_read(name);
+        // ADR 0123 IF6 (#1674): a lambda holds what it captures, which no binding of its own
+        // shows.
+        if self.lambda_depth > 0
+            && let Some(ty) = self.locals.find(name).map(|local| local.ty.clone())
+        {
+            let label = self.deep(&ty);
+            self.reach_label(&label);
+        }
+        // ADR 0123 IF6: a capture of an open `start`.
+        if !self.start_captures.is_empty()
+            && let Some(position) = self.locals.position(name)
+            && let Some(ty) = self.locals.get(position).map(|local| local.ty.clone())
+        {
+            self.start_capture_read(position, &ty);
+        }
         if self.pass != Pass::Check {
             return;
         }
@@ -1532,22 +1547,33 @@ fn all_ops(env: &Env<'_>, capability: CapId) -> Vec<String> {
 /// or of a type that holds one (rule 8). One pass over the fields and one search over the kinds
 /// that use each kind, linear in the size of the declarations.
 pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
-    /// Whether `ty` is or holds a function type directly; the kinds it names go to `kinds`.
-    fn walk(ty: &Ty, kinds: &mut Vec<usize>) -> bool {
+    kinds_holding(env, &|ty: &Ty| matches!(ty, Ty::Fn(_)))
+}
+
+/// For each kind, whether a value of it may hold a value whose type `leaf` accepts, through a
+/// field at any depth: [`function_kinds`] for function types, and the kinds that can hold a
+/// `ReplyRight` (ADR 0123 IF6). One pass over the fields, then the users of each kind found:
+/// O(kinds + fields).
+pub(crate) fn kinds_holding(env: &Env<'_>, leaf: &dyn Fn(&Ty) -> bool) -> Vec<bool> {
+    /// Whether `ty` is or holds a type `leaf` accepts directly; the kinds it names go to
+    /// `kinds`.
+    fn walk(ty: &Ty, kinds: &mut Vec<usize>, leaf: &dyn Fn(&Ty) -> bool) -> bool {
+        if leaf(ty) {
+            return true;
+        }
         match ty {
-            Ty::Fn(_) => true,
             Ty::List(inner)
             | Ty::Dense(_, inner)
             | Ty::Labeled(_, inner)
-            | Ty::Refined(_, inner) => walk(inner, kinds),
+            | Ty::Refined(_, inner) => walk(inner, kinds, leaf),
             Ty::Map(key, value) => {
-                let key = walk(key, kinds);
-                walk(value, kinds) || key
+                let key = walk(key, kinds, leaf);
+                walk(value, kinds, leaf) || key
             }
             Ty::Coll(_, args) => {
                 let mut found = false;
                 for arg in args.iter() {
-                    found |= walk(arg, kinds);
+                    found |= walk(arg, kinds, leaf);
                 }
                 found
             }
@@ -1556,7 +1582,7 @@ pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
                 // Every argument is walked, for the kinds it names.
                 let mut found = false;
                 for arg in args.iter() {
-                    found |= walk(arg, kinds);
+                    found |= walk(arg, kinds, leaf);
                 }
                 found
             }
@@ -1576,7 +1602,7 @@ pub(crate) fn function_kinds(env: &Env<'_>) -> Vec<bool> {
         let mut named = Vec::new();
         let mut direct = false;
         for field in fields {
-            direct |= walk(&field.ty.base, &mut named);
+            direct |= walk(&field.ty.base, &mut named, leaf);
         }
         for used in named {
             if let Some(list) = users.get_mut(used) {

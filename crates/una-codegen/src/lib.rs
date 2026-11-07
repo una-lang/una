@@ -54,8 +54,10 @@ mod describe;
 mod lower;
 mod owned;
 mod range;
+mod serve;
 
 pub use range::{machine_width, proven_range};
+pub use serve::compile_serve;
 
 use lower::Body;
 
@@ -500,7 +502,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_first_of", 2, true),
     ("una_rt_together_status", 0, true),
     ("una_rt_tasks_begin", 3, true),
-    ("una_rt_start_task", 2, true),
+    ("una_rt_start_task", 3, true),
     ("una_rt_tasks_end", 1, false),
     ("una_rt_range", 4, true),
     ("una_rt_clock_now", 0, true),
@@ -509,6 +511,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_files_write", 2, true),
     ("una_rt_keys_hmac", 2, true),
     ("una_rt_http_enable", 0, false),
+    ("una_rt_serve_enable", 0, false),
     ("una_rt_http_get", 4, true),
     ("una_rt_http_post", 5, true),
     ("una_rt_http_put", 5, true),
@@ -523,6 +526,11 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_handler_instance", 1, true),
     ("una_rt_limiter_instance", 3, true),
     ("una_rt_limit_acquire", 2, true),
+    ("una_rt_serve_next", 1, true),
+    ("una_rt_serve_reply", 3, true),
+    ("una_rt_serve_close", 1, true),
+    ("una_rt_serve_drive", 3, true),
+    ("una_rt_serve_answer", 5, true),
     ("una_rt_event", 2, true),
     ("una_rt_push_op", 2, false),
     ("una_rt_event_arg", 4, false),
@@ -728,6 +736,10 @@ struct Emitter<'p> {
     /// Whether an operation of `Http` was compiled: the C `main` then calls
     /// `una_rt_http_enable`, the only path to the TLS stack (ADR 0074 H7, #1148).
     http: bool,
+    /// Whether an operation of `HttpServer` was compiled: the C `main` then calls
+    /// `una_rt_serve_enable`, the only path to the serve threads from the runtime's start, so an
+    /// executable that serves nothing carries none of them (ADR 0074 H7).
+    serve: bool,
 }
 
 impl<'p> Emitter<'p> {
@@ -763,6 +775,7 @@ impl<'p> Emitter<'p> {
             hashing: false,
             threads: false,
             http: false,
+            serve: false,
         })
     }
 
@@ -1300,6 +1313,9 @@ impl<'p> Emitter<'p> {
             let una_main_address = builder.ins().func_addr(pointer, una_main_ref);
             if self.http {
                 self.runtime_call(&mut builder, "una_rt_http_enable", &[])?;
+            }
+            if self.serve {
+                self.runtime_call(&mut builder, "una_rt_serve_enable", &[])?;
             }
             let start_ref = self.module.declare_func_in_func(start, builder.func);
             let call = builder.ins().call(

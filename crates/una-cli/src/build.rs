@@ -106,7 +106,45 @@ pub(crate) fn build_command(
     // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
     // whose `main` runs.
     let (manifest, _) = crate::package::project(&package);
-    let (entry, main, started) = if let Some(driven) = &manifest.drive {
+    // The host-driven form of a server (ADR 0123 rule 16): the module's shapes are a usage
+    // error; then the driver, whose operations of `HttpServer` run only in the toolchain's own
+    // test builds (`spec/31 §1` rule 10), fails closed in every other build. The grants of the
+    // executable may come from its flags, so a build does not require a `serve:` grant.
+    #[cfg(feature = "test-hooks")]
+    let test_server =
+        crate::variable(options.environment, "UNA_TEST_BUILD_SERVER").as_deref() == Some("1");
+    #[cfg(not(feature = "test-hooks"))]
+    let test_server = false;
+    if let Some(serve) = &manifest.serve {
+        let module = serve.module.value.as_str();
+        let refused = match crate::runtime::served_module(&analysis, &package.sources, module) {
+            Err(message) => Some(message),
+            Ok(()) if !test_server => Some(crate::runtime::serve_pending(module)),
+            // `within` is U4003 under the preview's `L_srv` (`spec/31 §7` rule 3 item 7), so a
+            // package that checks has none; the driver never runs without the deadline it
+            // names.
+            Ok(()) if serve.within.is_some() => Some(format!(
+                "the `within` of the `serve` section of module `{module}` does not run in this release yet"
+            )),
+            Ok(()) => None,
+        };
+        if let Some(message) = refused {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
+    let (entry, main, started) = if let Some(serve) = &manifest.serve {
+        // Its shapes were checked above: `handle` is there.
+        let module = serve.module.value.clone();
+        let Some(handle) = crate::runtime::function_of(&analysis.program, &module, "handle") else {
+            writeln!(
+                stderr,
+                "error: the module `{module}` has no `handle` to run"
+            )?;
+            return Ok(ExitStatus::Usage);
+        };
+        (module, handle, ["handle", "on_stop"].as_slice())
+    } else if let Some(driven) = &manifest.drive {
         let module = driven.module.value.clone();
         match driven_init(&analysis, &package.sources, &module) {
             Ok(init) => (module, init, ["init", "step", "on_stop"].as_slice()),
@@ -132,6 +170,15 @@ pub(crate) fn build_command(
         };
         (entry, main, ["main"].as_slice())
     };
+    // The toolchain's own test builds build a program that serves when `UNA_TEST_BUILD_SERVER`
+    // is 1, for the runs of `tests/serve_runs/` in native code, which its runtime's test hook
+    // feeds with a script (ADR 0123 rule 21); every other build keeps the usage error of
+    // `spec/31 §1` rule 10.
+    let pending = !test_server;
+    if pending && let Some(message) = crate::runtime::server_pending(&analysis, &entry, started) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // The description the executable reads at start: `[run] grants`, and every `uses` of
     // `main`, or of the driven functions, with where it is written, for U3012 (`spec/16 §3`).
     let modules = Modules {
@@ -194,14 +241,16 @@ pub(crate) fn build_command(
     // that exceeds the maximum depth, the types the runtime renders, the operations a trace
     // records, and where `main`, or `init`, is named, for U6001.
     let main_location = package.sources.location(main.span);
+    let serving = manifest.serve.as_ref();
     let stops = takes_stops(
         &analysis,
         &package.sources,
         &entry,
-        manifest.drive.is_some(),
+        manifest.drive.is_some() || serving.is_some(),
     );
-    // A program with a `tasks` statement runs `main` as a coroutine (ADR 0117 rule 11).
-    let tasks = una_core::has_tasks(&analysis.program);
+    // A program with a `tasks` statement runs `main` as a coroutine (ADR 0117 rule 11), as the
+    // driver of a `serve` section, whose loop is the block of one, runs.
+    let tasks = una_core::has_tasks(&analysis.program) || serving.is_some();
     let meta = |described: &una_codegen::Described<'_>| {
         let sites: Vec<una_diag::Location> = described
             .sites
@@ -247,7 +296,14 @@ pub(crate) fn build_command(
         if manifest.edition >= una_project::Edition::V0_4
             && let Some(object) = meta.as_object_mut()
         {
-            object.insert("serve".to_owned(), json!(true));
+            object.insert("serve_grants".to_owned(), json!(true));
+        }
+        // ADR 0123 rule 16: the section the executable's driver runs.
+        if let (Some(serve), Some(object)) = (serving, meta.as_object_mut()) {
+            object.insert(
+                "serve".to_owned(),
+                json!({ "module": serve.module.value, "within": serve.within }),
+            );
         }
         // ADR 0116 amendment, P8 (#1145): a program with a task construct or a `for ever`
         // starts its workers and helper pools before `main`, so no thread starts inside a
@@ -286,7 +342,9 @@ pub(crate) fn build_command(
         }
         meta.to_string()
     };
-    let compiled = if manifest.drive.is_some() {
+    let compiled = if serving.is_some() {
+        una_codegen::compile_serve(&analysis.program, &entry, &meta)
+    } else if manifest.drive.is_some() {
         una_codegen::compile_drive(&analysis.program, &entry, &meta)
     } else {
         una_codegen::compile(&analysis.program, &entry, &meta)

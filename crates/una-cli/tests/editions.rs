@@ -428,6 +428,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/m.una:6:22")],
     },
+    // ADR 0123 rule 0 (`spec/31 §1`): `std.host` exports `HttpServer` from edition 0.4.
+    Difference04 {
+        case: "names/host_server_import_0_3",
+        added: &[],
+        removed: &[("U1001", "src/m.una:6:18")],
+    },
     // ADR 0116 rule 12: `HttpError.Interrupted` is a variant from edition 0.4, and so is
     // `RateLimited` (ADR 0117 rule 8), which the `when` then lacks.
     Difference04 {
@@ -447,6 +453,13 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         case: "names/limit_0_3",
         added: &[],
         removed: &[("U1001", "src/gate.una:6:8")],
+    },
+    // ADR 0123 rule 21 (`spec/31 §8`): `test_request` is a name of `std.testing` from edition
+    // 0.4.
+    Difference04 {
+        case: "names/test_request_import_0_3",
+        added: &[],
+        removed: &[("U1001", "src/m.una:6:21")],
     },
     // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
     Difference04 {
@@ -502,6 +515,30 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
             ("U0103", "src/simd03.una:9:7"),
             ("U0103", "src/simd03.una:10:3"),
         ],
+    },
+    // ADR 0105, amendment of 2026-11-05 (`spec/01 §5`): `example` is reserved in edition 0.3
+    // and an identifier from edition 0.4. A name `example` is accepted there, and an `example`
+    // declaration loses its U0103 and rewrite: it is the ordinary syntax error of a name at
+    // column 1 followed by a text literal, and its body is no longer read as a test's.
+    Difference04 {
+        case: "fmt/example_in_0_3_untouched",
+        added: &[("U0101", "src/m.una:8:9")],
+        removed: &[("U0103", "src/m.una:8:1")],
+    },
+    Difference04 {
+        case: "names/example_name_0_3",
+        added: &[],
+        removed: &[("U0101", "src/m.una:8:7")],
+    },
+    Difference04 {
+        case: "syntax/example_in_0_3",
+        added: &[("U0101", "src/m.una:8:9")],
+        removed: &[("U0103", "src/m.una:8:1")],
+    },
+    Difference04 {
+        case: "syntax/example_recovery_0_3",
+        added: &[("U0101", "src/m.una:9:9")],
+        removed: &[("U0103", "src/m.una:9:1"), ("U1001", "src/m.una:11:20")],
     },
     // ADR 0116 rule 19: an example's `stop after` line exists from edition 0.4.
     Difference04 {

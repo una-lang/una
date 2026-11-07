@@ -222,3 +222,119 @@ fn on_the_real_clock_the_clock_reads_the_wall_clock() {
     // `Clock.now` reads the world's wall clock, and the first tick is at 0.
     assert_eq!(lines, ["step 1 at 0 missed 0 now 1234"].map(str::to_owned));
 }
+
+/// The messages of U4001 of the driven state's hand-offs (`spec/26 §2` rule 2), in the
+/// conformance case `name`.
+fn state_label_messages(name: &str) -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/security")
+        .join(name);
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == una_diag::Code::U4001)
+        .map(|d| {
+            let repairs: Vec<String> = d.repairs.iter().map(|r| r.description.clone()).collect();
+            format!("{} | {}", d.message, repairs.join(" | "))
+        })
+        .collect()
+}
+
+#[test]
+fn a_state_hand_off_says_which_way_its_data_goes() {
+    let invariant = state_label_messages("drive_state_label_invariant");
+    assert_eq!(invariant.len(), 1, "{invariant:?}");
+    assert!(
+        invariant[0].contains("an invariant type argument of a kind carries data both ways")
+            && invariant[0].contains("make the labels of that type argument equal"),
+        "{invariant:?}"
+    );
+    assert!(!invariant[0].contains("function"), "{invariant:?}");
+    let function = state_label_messages("drive_state_label_function");
+    assert_eq!(function.len(), 1, "{function:?}");
+    assert!(
+        function[0].contains("would pass `secret` data to the function in the result of `init`")
+            && function[0].contains("label that parameter position in the result of `init`"),
+        "{function:?}"
+    );
+    let step = state_label_messages("drive_state_label_step");
+    assert_eq!(step.len(), 1, "{step:?}");
+    assert!(
+        step[0].contains("which carries `secret` where `count` is `public`"),
+        "{step:?}"
+    );
+}
+
+/// The messages of U2028 of the driven state's hand-offs (`spec/26 §2` rule 2), in the
+/// conformance case `name`.
+fn state_unit_messages(name: &str) -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/security")
+        .join(name);
+    let checked = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == una_diag::Code::U2028)
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// Issue #1647: Core IR erases units of measure, so before the fix an `Int of Second` start
+/// checked clean against an `Int of Millisecond` state and `una run` took 7 seconds as 7
+/// milliseconds. Each hand-off now compares units at every position, once per parameter, and
+/// equal units pass.
+#[test]
+fn a_state_hand_off_compares_units_at_every_position() {
+    for (name, needle) in [
+        (
+            "drive_state_units_step",
+            "from the result of `init`, of type `Int of Second`, but `state` is `Int of Second / 1000`",
+        ),
+        ("drive_state_units_unitless", "of type `Int`, but"),
+        ("drive_state_units_option", "`Option[Int of Second]`"),
+        ("drive_state_units_list", "`List[Int of Second]`"),
+        ("drive_state_units_record", "`Clock[Int of Second]`"),
+        (
+            "drive_state_units_on_stop",
+            "the host hands `on_stop` its state",
+        ),
+    ] {
+        let messages = state_unit_messages(name);
+        assert_eq!(messages.len(), 1, "{name}: {messages:?}");
+        assert!(
+            messages[0].contains(needle) && messages[0].contains("the units of measure differ"),
+            "{name}: {messages:?}"
+        );
+    }
+    assert!(state_unit_messages("drive_state_units_equal").is_empty());
+}
+
+/// Issue #1647, end to end: `una run` of a module whose state changes units at a hand-off
+/// prints nothing of the steps and exits with the checker's error, where it printed `8`, `9`
+/// and `10` before.
+#[test]
+fn una_run_refuses_a_state_hand_off_in_other_units() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/security/drive_state_units_step");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+        .args([
+            "run",
+            "--virtual-time",
+            "--stop-after-iterations",
+            "3",
+            "--grant",
+            "console",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains('8'), "{stdout}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("U2028"),
+        "{output:?}"
+    );
+}

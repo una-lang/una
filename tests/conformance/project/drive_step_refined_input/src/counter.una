@@ -1,0 +1,24 @@
+-- test: the host gives `step` each tick with no fact about it, so a refined type of `input`, here carried by a refined kind, is a precondition nothing proves, as a `requires` is: U7008 at the `drive` section's module (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U7008 at ita.una:6:10
+module counter
+
+import std.drive (Tick)
+
+--- A tick that cannot exist.
+kind Never = Tick where it.missed == 0 and it.missed == 1
+
+--- Needs the impossible.
+impossible(input: Tick) -> Unit
+  requires 1 == 2
+=
+  unit
+
+--- Starts the count.
+pub init() -> Int = 0
+
+--- Counts each tick, through the impossible, which the refinement would prove.
+pub step(edit count: Int, input: Never) -> Unit
+=
+  impossible(input)
+  count = count + 1

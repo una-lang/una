@@ -351,8 +351,11 @@ fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
     span.map_or(f64::INFINITY, |span| span as f64 / 1000.0)
 }
 
-/// The program of #1146: a `secret` key, `key`, decides whether a task is started before a
-/// public race between a long branch, listed first, and a short one; the race prints its winner.
+/// The program of #1146: a key, `key`, decides whether a task is started before a public race
+/// between a long branch, listed first, and a short one; the race prints its winner. The key is
+/// `internal`, above `public`: since #1684 a check point under a program counter above
+/// `internal` is U4002 in a program that starts tasks (`spec/27 §8` rule 5), and the slicer
+/// reads no label.
 ///
 /// It checks: the `start` runs under the key's program counter, as a task's body does (IF1),
 /// and `noop` has no effect to label. The race stands in `main`, outside any `tasks` block,
@@ -363,7 +366,7 @@ fn span(dir: &Path, spans: &Mutex<Vec<u128>>) -> f64 {
 /// no step drops it.
 fn slicer_program(key: u8) -> String {
     format!(
-        "module leak\n\nnoop() -> Unit = unit\n\nkey() -> secret Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
+        "module leak\n\nnoop() -> Unit = unit\n\nkey() -> internal Int = {key}\n\nwork(n: Int, answer: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  answer\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  if key() > 0\n    tasks\n      start noop()\n  let w = first of\n    work(300000000, answer: 1)\n    work(20000, answer: 2)\n  @console.print(\"{{w}}\")\n"
     )
 }
 
@@ -847,4 +850,307 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
     for dir in &dirs {
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+/// The program of the oracles of `L_srv`'s narrowing (ADR 0123, S4 amendment IF-S1; S4 design
+/// §11.5): after `public` set-up work of about 300 ms, which lets the early peers of
+/// `serve_prefix_early_peers` arrive before the set-up ends for both keys, so that the stream is
+/// the same relative to the program's steps, a `secret` key decides whether set-up work of
+/// about 300 ms more runs before the first server operation; the program then prints `ready`, a `public` line before any server
+/// operation, and serves, a task per request. A request to `/probe` runs `work` iterations of
+/// `public` work before its reply; any other request is answered at once.
+///
+/// The design's probe answers whether a `within` over its work passed its deadline. Under the
+/// preview's terms of `L_srv` (`spec/31 §1` rule 5 item 7, draft amendment E of
+/// `docs/plan/0123-s5-amendment-draft.md`), a server whose `next` stands in a `tasks` block has
+/// `L_srv = ⊤`, and the set-up's `secret` raises it in any case, so `una check` refuses a reply
+/// that carries a deadline's outcome. The oracle measures the probe's time from its request to
+/// its reply instead, which is finer than the outcome of a deadline over the same work. The key
+/// is `internal`, which raises `L_srv` too: since #1684 a loop whose bound is above `internal`
+/// is U4002 in a program that starts tasks (`spec/27 §8` rule 5), and the slicer reads no label.
+fn prefix_program(key: u8, work: u64) -> String {
+    format!(
+        r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+key() -> internal Int = {key}
+
+setup(n: internal Int) -> internal Int
+=
+  let edit total: internal Int = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+work(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> ""
+  let done = if first == "probe"
+    work({work})
+  else
+    0
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "p"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let base = work(3000000)
+  let n = if key() > 0 then 3000000 else 0
+  let spent = setup(n)
+  @console.print("ready")
+  tasks at most 4096 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+"#
+    )
+}
+
+/// A package of edition `0.4` named `name` whose entry module is `program`, granted `console`
+/// and `serve` on `port` with room for the early peers of [`serve_prefix_run`] (no share per
+/// peer, since every peer is `127.0.0.1`), built by a `una` of the toolchain's tests, which
+/// builds a program that serves while `spec/31 §1` rule 10 stands (`UNA_TEST_BUILD_SERVER`).
+fn serve_package(name: &str, port: u16, program: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n      connections at most 4096\n      peer none\n      peer_buffers none\n      peer_replies none\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/serve_runs/language_form/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    native_build::runtime();
+    let built = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("UNA_TEST_BUILD_SERVER", "1")
+        .env("NO_COLOR", "1")
+        .args(["build", "."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
+    dir
+}
+
+/// A port on `127.0.0.1` that nothing listens on now.
+fn serve_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// The early peers of `serve_prefix_early_peers`: how many connect, and the body each sends.
+const EARLY_PEERS: usize = 512;
+const EARLY_BODY: usize = 64 * 1024;
+
+/// One run of the executable `name` in `dir`, serving on `port`: with `early`, the harness opens
+/// [`EARLY_PEERS`] connections as soon as the listener is bound, each sending a request with a
+/// body of [`EARLY_BODY`] bytes, before the set-up ends. Once the program prints `ready`, the
+/// harness sends `/probe` and times its reply. Returns the time to `ready` and the probe's
+/// time, in milliseconds, and its body; then the host stop ends the run, which must end with 0.
+fn serve_prefix_run(dir: &Path, name: &str, port: u16, early: bool) -> (f64, f64, String) {
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpStream;
+    let began = Instant::now();
+    let mut child = Command::new(dir.join("target/una").join(name))
+        .args(["--stop-grace", "10"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let connect = move || loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .unwrap();
+                return stream;
+            }
+            Err(_) if began.elapsed() < Duration::from_secs(30) => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(_) => {
+                return TcpStream::connect(("127.0.0.1", port)).expect("cannot connect to the run");
+            }
+        }
+    };
+    let peers = early.then(|| {
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            let request = format!(
+                "POST /early HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {EARLY_BODY}\r\n\r\n{}",
+                "x".repeat(EARLY_BODY)
+            );
+            for _ in 0..EARLY_PEERS {
+                let mut stream = connect();
+                // The kernel takes what its buffers hold; the rest waits in this thread.
+                stream.set_nonblocking(true).unwrap();
+                let sent = stream.write(request.as_bytes()).unwrap_or(0);
+                stream.set_nonblocking(false).unwrap();
+                held.push((stream, sent));
+            }
+            for (stream, sent) in &mut held {
+                let _ = stream.write_all(&request.as_bytes()[*sent..]);
+            }
+            held
+        })
+    });
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    while line.trim() != "ready" {
+        line.clear();
+        assert!(
+            stdout.read_line(&mut line).unwrap() > 0,
+            "{name}: no `ready`"
+        );
+    }
+    let ready = began.elapsed().as_secs_f64() * 1000.0;
+    let mut probe = connect();
+    let sent = Instant::now();
+    probe
+        .write_all(b"GET /probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut answer = Vec::new();
+    let _ = probe.read_to_end(&mut answer);
+    let took = sent.elapsed().as_secs_f64() * 1000.0;
+    let answer = String::from_utf8_lossy(&answer).into_owned();
+    let body = answer.rsplit("\r\n\r\n").next().unwrap_or("").to_owned();
+    if let Some(peers) = peers {
+        drop(peers.join().unwrap());
+    }
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let ended = child.wait_with_output().unwrap();
+    assert_eq!(ended.status.code(), Some(0), "{name}: {ended:?}");
+    (ready, took, body)
+}
+
+/// The oracle of `serve_prefix_secret` and `serve_prefix_early_peers`: key 0 and key 1 run 20
+/// times each, alternating, with key 1 measured again as the control; the probe's times are
+/// judged by the rank test of the header, and every probe must be answered. The set-up of key 1 must have taken at least 100 ms more than key 0's, so
+/// that the input compared is the channel's.
+#[allow(clippy::print_stderr)]
+fn serve_prefix_oracle(label: &str, early: bool) {
+    let port = serve_port();
+    // The probe's work: some milliseconds, so that the serve threads' work, when it lands
+    // inside it for one input only, shifts its time.
+    let work = 200_000;
+    let names = [format!("{label}key0"), format!("{label}key1")];
+    let dirs = [
+        serve_package(&names[0], port, &prefix_program(0, work)),
+        serve_package(&names[1], port, &prefix_program(1, work)),
+    ];
+    let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut readies: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
+    let mut bodies = std::collections::BTreeSet::new();
+    for run in 0..20 {
+        for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
+            let (ready, took, body) = serve_prefix_run(&dirs[key], &names[key], port, early);
+            eprintln!("run {run} key {key}: ready at {ready:.1} ms, probe {took:.2} ms, {body}");
+            readies[key].push(ready);
+            samples[sample].push(took);
+            bodies.insert(body);
+        }
+    }
+    let median = |values: &[f64]| {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        sorted[sorted.len() / 2]
+    };
+    let (ready0, ready1) = (median(&readies[0]), median(&readies[1]));
+    eprintln!("median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms");
+    assert!(
+        ready1 - ready0 >= 100.0,
+        "the set-up of key 1 did not take longer: the input compared is not the channel's"
+    );
+    assert_eq!(
+        bodies.into_iter().collect::<Vec<_>>(),
+        ["p"],
+        "a probe was not answered"
+    );
+    let secret = mann_whitney(&samples[0], &samples[1]);
+    let control = mann_whitney(&samples[1], &samples[2]);
+    eprintln!(
+        "key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; {:?} against {:?}",
+        secret.u, secret.z, secret.p, samples[0], samples[1]
+    );
+    eprintln!(
+        "control, key 1 against key 1: U = {}, z = {:.3}, p = {:.3e}",
+        control.u, control.z, control.p
+    );
+    assert!(
+        control.p >= 0.001,
+        "the control failed: the machine's noise alone separates one input from itself"
+    );
+    assert!(
+        secret.p >= 0.001,
+        "key 0 and key 1 differ: p = {:.3e}; the serve threads' work depends on the set-up",
+        secret.p
+    );
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_prefix_secret() {
+    // ADR 0123, S4 amendment IF-S1 and S4 design §11.5, on the real clock: the narrowing of
+    // `L_srv`. Code that runs only before the run's first server operation, here set-up work
+    // that a `secret` key makes 0 or about 300 ms long, is outside `L_srv`, so `una check`
+    // accepts the program, and the probe's `within` over `public` work, after the program
+    // printed `ready`, must not see the set-up: the probe's time and outcome are the same for
+    // both keys. The harness connects only after `ready`, so the stream is fixed relative to
+    // the program's steps.
+    serve_prefix_oracle("prefixsecret", false);
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_prefix_early_peers() {
+    // SC9 (finding A of the S4 design), as `serve_prefix_secret`, with 512 connections that each
+    // send a request with a 64 KiB body as soon as the process starts, before the set-up ends:
+    // the `public` set-up of about 300 ms that both keys run first gives them the time to
+    // arrive, so the stream is the same relative to the program's steps for both keys (a first
+    // version without it measured the harness: with no set-up at all, key 0 began serving
+    // while the peers were still connecting).
+    // On a design that accepted before the first server operation, the serve threads would read
+    // and parse those requests during the set-up of 300 ms but not during the one of 0 ms, and
+    // the probe, served after them, would take less time for key 1. With accepting at the
+    // first server operation, every connection waits in the kernel's backlog for both keys,
+    // and the probe's times and outcomes do not differ.
+    serve_prefix_oracle("prefixearly", true);
 }

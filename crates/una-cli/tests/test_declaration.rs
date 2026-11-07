@@ -178,6 +178,82 @@ fn an_example_in_edition_0_3_is_rewritten_to_test_by_una_fix() {
     assert_eq!(fmt.status.code(), Some(0), "{fmt:?}");
 }
 
+/// `package` moved to edition 0.4: `ita.una` and the conformance cases' `ita.lock` (ADR 0122)
+/// in place of `una.toml` and `verification.lock`.
+fn package_0_4(name: &str, source: &str) -> PathBuf {
+    let root = package(name, "0.3", source);
+    std::fs::remove_file(root.join("una.toml")).unwrap();
+    std::fs::remove_file(root.join("verification.lock")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        format!(
+            "ita {}\n  version 0.1.0\n  edition 0.4\n",
+            name.replace('-', "_")
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        root.join("ita.lock"),
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn una_fix_rewrites_example_only_in_edition_0_3() {
+    // ADR 0105, amendment of 2026-11-05: from edition 0.4 `example` is an identifier, so an
+    // `example` declaration is an ordinary syntax error with no U0103 and no rewrite, and `una
+    // fix` leaves it; in editions 0.1 and 0.2 it is the declaration, which `una fix` leaves too.
+    hermetic::seal(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("test_declaration"));
+    let source = doubling("example");
+    let root = package_0_4("example-0-4", &source);
+    let document = json(&una_in(&root, &["--json", "check", "."]));
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert!(!diagnostics.is_empty(), "{document:#?}");
+    for diagnostic in diagnostics {
+        assert_ne!(diagnostic["code"], "U0103", "{diagnostic:#?}");
+        assert!(
+            !diagnostic["message"]
+                .as_str()
+                .unwrap()
+                .contains("written `test`"),
+            "{diagnostic:#?}"
+        );
+        for repair in diagnostic["repairs"].as_array().unwrap() {
+            assert_ne!(repair["edit"]["replacement"], "test", "{repair:#?}");
+        }
+    }
+    assert_eq!(document["fixable"], 0);
+    let fix = una_in(&root, &["fix", "."]);
+    assert_ne!(fix.status.code(), Some(0), "{fix:?}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/m.una")).unwrap(),
+        source
+    );
+    // The same package written with `test` checks and runs in edition 0.4.
+    let root = package_0_4("test-0-4", &doubling("test"));
+    let output = una_in(&root, &["test", "."]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    for edition in ["0.1", "0.2"] {
+        let root = package(&format!("example-{edition}"), edition, &source);
+        let document = json(&una_in(&root, &["--json", "check", "."]));
+        assert_eq!(
+            document["diagnostics"],
+            Value::Array(Vec::new()),
+            "{edition}"
+        );
+        assert_eq!(document["fixable"], 0);
+        let fix = una_in(&root, &["fix", "."]);
+        assert_eq!(fix.status.code(), Some(0), "{edition}: {fix:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/m.una")).unwrap(),
+            source
+        );
+    }
+}
+
 #[test]
 fn a_name_test_in_edition_0_3_is_renamed_or_advised() {
     // ADR 0105 rule 4 with ADR 0096: a local gets the exact scoped rename to `test_value`; a

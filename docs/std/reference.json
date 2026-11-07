@@ -70,8 +70,19 @@
   "prelude parse_f64",
   "prelude tensor",
   "prelude tensor_filled",
+  "std.host Exchange",
+  "std.host HttpServer",
+  "std.host Method",
+  "std.host Param",
+  "std.host Reply",
+  "std.host Request",
+  "std.host ServeError",
+  "std.host Status",
+  "std.testing TestRequestError",
   "std.testing elapse",
-  "std.testing fake_hash"
+  "std.testing fake_hash",
+  "std.testing test_exchange",
+  "std.testing test_request"
  ],
  "entries": [
   {

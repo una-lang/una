@@ -57,6 +57,14 @@ pretty_assertions.workspace = true
 # constant-hash mode and a missing random source, for in-process tests only. A dev-dependency
 # never reaches a shipped `una`.
 una-hash = { workspace = true, features = ["test-hooks"] }
+# The case lists of the tests that run one test per case (#1652): the conformance cases, the
+# native differential's programs, the determinism targets and the Core IR corpus. Generated at
+# build time from the corpus; a dev-dependency never reaches a shipped `una`.
+una-test-cases.workspace = true
+# The scripted serve engine (ADR 0123 rule 21, `una_http::serve::sim`), which the runs of
+# `tests/serve_runs.rs` feed in place of live peers. A dev-dependency never reaches a shipped
+# `una`.
+una-http = { workspace = true, features = ["test-hooks"] }
 # The label counters of ADR 0077, for the scaling test of label inference
 # (`tests/gives_scaling.rs`). The counts never reach any output.
 una-core = { workspace = true, features = ["counters"] }

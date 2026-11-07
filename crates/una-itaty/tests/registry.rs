@@ -277,3 +277,216 @@ fn a_store_changed_by_hand_refuses_to_open() {
     store.put("tile/entries/000.p/2", &swapped).unwrap();
     assert!(Registry::open(shared, &config, Arc::new(Fixed(1_000))).is_err());
 }
+
+/// Root version 2 of the store `open` makes: signed by its root key, with the log's key
+/// rotated to `itaty.test/log2` (seed 7).
+fn rotate(store: &MemoryStore) -> (String, Config) {
+    let root = signer("root.0", 1);
+    let log = signer("itaty.test/log2", 7);
+    let text = format!(
+        "ita-root/1\nsource itaty\nversion 2\nexpires 4000000000\nroot 1\nkey {}\nlog {}\nwitnesses 2\nkey {}\nkey {}\nsecurity 1\nkey {}\nitauna 1\nkey {}\n",
+        key_line(&root),
+        key_line(&log),
+        key_line(&signer("witness.0", 3)),
+        key_line(&signer("witness.1", 4)),
+        key_line(&signer("security.0", 5)),
+        key_line(&signer("itauna.0", 6))
+    );
+    let document = note(&text, &[&root]);
+    store.put("root/2", document.as_bytes()).unwrap();
+    let first = String::from_utf8(store.get("root/1", 1 << 20).unwrap().unwrap()).unwrap();
+    (
+        root_digest(&document),
+        Config {
+            pin: root_digest(&first),
+            log_seed: [7; 32],
+        },
+    )
+}
+
+fn root_line(store: &MemoryStore, size: u64) -> String {
+    let document =
+        String::from_utf8(store.get(&checkpoint_path(size), 1 << 20).unwrap().unwrap()).unwrap();
+    let text = parse_note(&document).unwrap().text;
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("ita-root "))
+        .collect();
+    assert_eq!(lines.len(), 1, "one `ita-root` line in {text}");
+    lines[0].to_owned()
+}
+
+#[test]
+fn a_size_signed_again_after_a_rotation_keeps_its_first_root() {
+    let (store, mut registry, config, _) = open();
+    let first = String::from_utf8(store.get("root/1", 1 << 20).unwrap().unwrap()).unwrap();
+    let first = root_digest(&first);
+    let a = signer("acme.a", 10);
+    register(&mut registry, "acme", &[&a], 1);
+    assert_eq!(root_line(&store, 1), format!("ita-root 1 {first}"));
+    let stored = store.get(&checkpoint_path(1), 1 << 20).unwrap().unwrap();
+    drop(registry);
+    // The root rotates, the log's key with it, and the service restarts: size 1 keeps the
+    // checkpoint signed under version 1, byte for byte, and witnesses are served it.
+    let (second, rotated) = rotate(&store);
+    let shared: Arc<dyn Store> = store.clone();
+    let mut registry = Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap();
+    assert_eq!(registry.root().version, 2);
+    assert_eq!(
+        store.get(&checkpoint_path(1), 1 << 20).unwrap().unwrap(),
+        stored
+    );
+    assert_eq!(store.get(WITNESS_NEXT, 1 << 20).unwrap().unwrap(), stored);
+    // The rotation takes effect from the checkpoint of the next entry.
+    let b = signer("zenith.a", 11);
+    register(&mut registry, "zenith", &[&b], 1);
+    assert_eq!(root_line(&store, 2), format!("ita-root 2 {second}"));
+    assert_eq!(root_line(&store, 1), format!("ita-root 1 {first}"));
+    drop(registry);
+    // The old log key no longer opens the store.
+    assert!(Registry::open(shared, &config, Arc::new(Fixed(1_000))).is_err());
+}
+
+#[test]
+fn a_size_first_signed_after_a_rotation_names_the_new_root() {
+    let (store, mut registry, _, _) = open();
+    let a = signer("acme.a", 10);
+    register(&mut registry, "acme", &[&a], 1);
+    drop(registry);
+    // A crash before the checkpoint of size 1 was stored: it was never signed, so it is
+    // signed under the version in force when the service opens.
+    store.remove(&checkpoint_path(1)).unwrap();
+    let (second, rotated) = rotate(&store);
+    let shared: Arc<dyn Store> = store.clone();
+    Registry::open(shared, &rotated, Arc::new(Fixed(1_000))).unwrap();
+    assert_eq!(root_line(&store, 1), format!("ita-root 2 {second}"));
+}
+
+#[test]
+fn a_stored_checkpoint_naming_another_root_refuses_to_open() {
+    let (store, mut registry, _, _) = open();
+    let a = signer("acme.a", 10);
+    register(&mut registry, "acme", &[&a], 1);
+    drop(registry);
+    let (second, rotated) = rotate(&store);
+    let path = checkpoint_path(1);
+    let document = String::from_utf8(store.get(&path, 1 << 20).unwrap().unwrap()).unwrap();
+    let text = parse_note(&document).unwrap().text;
+    let line = root_line(&store, 1);
+    let shared: Arc<dyn Store> = store.clone();
+    // Version 2's line under the old log key, a version past the chain, a wrong digest, a
+    // line removed: each is a store changed by hand.
+    let old_log = signer("itaty.test/log", 2);
+    let new_log = signer("itaty.test/log2", 7);
+    let bad = [
+        note(
+            &text.replace(&line, &format!("ita-root 2 {second}")),
+            &[&old_log],
+        ),
+        note(
+            &text.replace(&line, &format!("ita-root 3 {second}")),
+            &[&new_log],
+        ),
+        note(
+            &text.replace(&line, &format!("ita-root 1 sha256:{}", "0".repeat(64))),
+            &[&old_log],
+        ),
+        note(&text.replace(&format!("{line}\n"), ""), &[&old_log]),
+        // The log's exact text under version 1, signed by another key: the signature only.
+        note(&text, &[&signer("itaty.test/log", 9)]),
+        // Version 1's line and key, with one more extension line: the text only.
+        note(&format!("{text}ita-extra x\n"), &[&old_log]),
+    ];
+    for document in bad {
+        store.put(&path, document.as_bytes()).unwrap();
+        assert!(Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).is_err());
+    }
+}
+
+#[test]
+fn a_store_whose_earlier_checkpoint_names_a_root_no_longer_served_refuses_to_open() {
+    let (store, mut registry, _, _) = open();
+    register(&mut registry, "acme", &[&signer("acme.a", 10)], 1);
+    drop(registry);
+    let (_, rotated) = rotate(&store);
+    let shared: Arc<dyn Store> = store.clone();
+    let mut registry = Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap();
+    register(&mut registry, "zenith", &[&signer("zenith.a", 11)], 1);
+    register(&mut registry, "nadir", &[&signer("nadir.a", 12)], 1);
+    drop(registry);
+    // A crash before checkpoint/3 was stored, and root/2 restored away: checkpoint/2 names a
+    // version the chain no longer has, so the service must not sign size 3 under version 1.
+    store.remove(&checkpoint_path(3)).unwrap();
+    let document_2 = store.get("root/2", 1 << 20).unwrap().unwrap();
+    store.remove("root/2").unwrap();
+    let first = String::from_utf8(store.get("root/1", 1 << 20).unwrap().unwrap()).unwrap();
+    let back = Config {
+        pin: root_digest(&first),
+        log_seed: [2; 32],
+    };
+    assert!(Registry::open(shared.clone(), &back, Arc::new(Fixed(1_000))).is_err());
+    assert!(store.get(&checkpoint_path(3), 1 << 20).unwrap().is_none());
+    // With root/2 back, it opens and signs size 3 under version 2.
+    store.put("root/2", &document_2).unwrap();
+    Registry::open(shared, &rotated, Arc::new(Fixed(1_000))).unwrap();
+    assert!(root_line(&store, 3).starts_with("ita-root 2 "));
+}
+
+#[test]
+fn stored_checkpoints_never_name_a_lower_version_as_the_size_grows() {
+    let (store, mut registry, _, _) = open();
+    register(&mut registry, "acme", &[&signer("acme.a", 10)], 1);
+    drop(registry);
+    let (_, rotated) = rotate(&store);
+    let shared: Arc<dyn Store> = store.clone();
+    let mut registry = Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap();
+    register(&mut registry, "zenith", &[&signer("zenith.a", 11)], 1);
+    register(&mut registry, "nadir", &[&signer("nadir.a", 12)], 1);
+    drop(registry);
+    // checkpoint/3 replaced by the log's own text of size 3 under version 1, signed by version
+    // 1's log key: a valid checkpoint of the chain, below the version 2 of size 2.
+    let first = String::from_utf8(store.get("root/1", 1 << 20).unwrap().unwrap()).unwrap();
+    let path = checkpoint_path(3);
+    let document = String::from_utf8(store.get(&path, 1 << 20).unwrap().unwrap()).unwrap();
+    let text = parse_note(&document).unwrap().text;
+    let line = root_line(&store, 3);
+    let lowered = text
+        .replace("itaty.test/log2\n", "itaty.test/log\n")
+        .replace(&line, &format!("ita-root 1 {}", root_digest(&first)));
+    store
+        .put(
+            &path,
+            note(&lowered, &[&signer("itaty.test/log", 2)]).as_bytes(),
+        )
+        .unwrap();
+    let refused = Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap_err();
+    assert!(refused.contains("below"), "{refused}");
+    // An earlier checkpoint missing: refused too.
+    store.put(&path, document.as_bytes()).unwrap();
+    Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap();
+    store.remove(&checkpoint_path(1)).unwrap();
+    assert!(Registry::open(shared, &rotated, Arc::new(Fixed(1_000))).is_err());
+}
+
+#[test]
+fn a_store_written_before_checkpoints_named_their_root_refuses_to_open() {
+    let (store, mut registry, config, _) = open();
+    register(&mut registry, "acme", &[&signer("acme.a", 10)], 1);
+    drop(registry);
+    let path = checkpoint_path(1);
+    let line = root_line(&store, 1);
+    let document = String::from_utf8(store.get(&path, 1 << 20).unwrap().unwrap()).unwrap();
+    let text = parse_note(&document)
+        .unwrap()
+        .text
+        .replace(&format!("{line}\n"), "");
+    store
+        .put(
+            &path,
+            note(&text, &[&signer("itaty.test/log", 2)]).as_bytes(),
+        )
+        .unwrap();
+    let shared: Arc<dyn Store> = store.clone();
+    let refused = Registry::open(shared, &config, Arc::new(Fixed(1_000))).unwrap_err();
+    assert!(refused.contains("names no root version"), "{refused}");
+}

@@ -7,6 +7,8 @@
 
 This note fixes how S5 is built, and lists the decisions it takes where the records leave a choice. Each decision takes the most secure option the records allow.
 
+**First part, landed with #1007:** the declarations, U3033, IF1 to IF7 with IF6 and `L_srv` (§2, §6, §7) in the checker, with runs refused until the operations land (`spec/31 §1` rule 10). The points where the implementation departs from this note or from ADR 0123, the field `params` for `query` among them, are in `docs/plan/0123-s5-amendment-draft.md`. §3 to §5 and the runs of §9 are the second part.
+
 ## 1. What this slice delivers, and what it leaves
 
 | Part | This slice | Later |

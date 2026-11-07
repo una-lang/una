@@ -28,6 +28,8 @@ una-report = { path = "crates/una-report" }
 una-rt = { path = "crates/una-rt" }
 una-syntax = { path = "crates/una-syntax" }
 una-sys = { path = "crates/una-sys" }
+# The case lists of the tests of una-cli (#1652), a dev-dependency only.
+una-test-cases = { path = "crates/una-test-cases" }
 una-verify = { path = "crates/una-verify" }
 una-z3 = { path = "crates/una-z3" }
 # External crates, only from the allowlist of compiler/architecture.md §7.
@@ -94,6 +96,27 @@ todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
 unwrap_used = "deny"
+
+# The tests run the development build of `una` tens of thousands of times, so it is built at
+# opt-level 1 (#1697: the full nextest run went from 998 s to 778 s). Debug assertions and overflow
+# checks stay on, as at opt-level 0, so the semantics under test are those of every development build.
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
+
+# The crates `una-rt` and `una-http` stay at opt-level 0: tests of `crates/una-cli/tests/http.rs` read
+# the symbols that a built program links, and inlining removes names they look for (`Server::stop` at
+# opt-level 1; the TLS stack's names when the dependencies are at opt-level 2, so they stay at 1). The
+# other crates of the runtime archive `libuna_rt.a` (una-interp, una-sys, una-core, una-hash, cap,
+# rustls) build at opt-level 1. The release gates keep opt-level 0: `scripts/sanitize.sh` and
+# `scripts/release-gates.sh` export `CARGO_PROFILE_DEV_OPT_LEVEL=0`, and `scripts/local-ci.sh` passes it
+# into the container of the Linux legs (0 when unset), which sets the profile-wide value and leaves the
+# per-package values below as they are.
+[profile.dev.package.una-rt]
+opt-level = 0
+[profile.dev.package.una-http]
+opt-level = 0
 
 # The internal linker reads and hashes the whole runtime archive (tens of MB) on every
 # `una build`; the tests build hundreds of executables, so a development build optimizes it and

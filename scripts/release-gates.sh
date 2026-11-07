@@ -86,6 +86,10 @@
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
+# The test profile of the per-PR gate is opt-level 1 for speed (#1697); the release evidence keeps
+# the unoptimized build it always had. Crates with their own opt-level in Cargo.toml (una-rt and
+# una-http at 0, una-link, object and sha2 at 3) keep it: the variable sets the profile-wide value only.
+export CARGO_PROFILE_DEV_OPT_LEVEL=0
 # A trace would print the patterns below, and a startup file could read them: refuse a trace,
 # whether `bash -x` or an exported SHELLOPTS turned it on (SHELLOPTS itself is read-only, and
 # holds no xtrace once this check passes), drop the startup files the shells of the gates would
@@ -464,12 +468,28 @@ gate_determinism() {
     run determinism bash -c '
         set -e
         cargo build --quiet -p una-cli
-        first=$(cargo test --quiet -p una-cli --test conformance -- --nocapture 2>&1 | grep "conformance:")
-        second=$(cargo test --quiet -p una-cli --test conformance -- --nocapture 2>&1 | grep "conformance:")
-        echo "conformance, run 1: $first"
-        echo "conformance, run 2: $second"
+        # One test per case (#1652): no failure is the exit status of cargo test; the summary
+        # compared between the runs is the case count, the sorted pending lines and the libtest
+        # result line without its time.
+        suite() {
+            log=$(mktemp)
+            if ! cargo test --quiet -p una-cli --test conformance -- --nocapture > "$log" 2>&1; then
+                cat "$log" >&2
+                echo "the conformance suite failed" >&2
+                exit 1
+            fi
+            # libtest --quiet prints its dots on the line before a line a test prints.
+            grep -o "conformance: [0-9]* cases" "$log"
+            { grep -o "  pending M[0-9]*  .*" "$log" || true; } | LC_ALL=C sort
+            grep "^test result: " "$log" | sed -E "s/; finished in .*//"
+            rm -f "$log"
+        }
+        first=$(suite)
+        second=$(suite)
+        echo "conformance, run 1:"; echo "$first"
+        echo "conformance, run 2:"; echo "$second"
+        [ -n "$first" ]
         [ "$first" = "$second" ]
-        case "$first" in *" 0 failures"*) ;; *) exit 1 ;; esac
         hashes() {
             {
                 find tests/conformance examples -name una.toml -exec dirname {} \;
@@ -490,8 +510,10 @@ gate_native() {
     # The equivalence test of spec/16 §5: every runnable program of the repository (the
     # examples, the conformance cases that run, the review corpora), in the interpreter and as
     # a native executable, with the rules of spec/19 §8 rule 4 for tasks and the clock read
-    # aside. One test, so the gate and `cargo test` cannot drift apart.
-    run native sh -c 'cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter -- --exact --nocapture'
+    # aside. One test per program (`interpreter::<name>`, #1652), with the tests that hold the
+    # generated list to the programs on disk and the lists of tests/native to the programs, so
+    # the gate and `cargo test` cannot drift apart.
+    run native sh -c 'cargo test -p una-cli --test native -- interpreter:: the_generated_programs_are_the_runnable_programs_on_disk the_native_lists_name_runnable_programs_only --nocapture'
 }
 
 gate_hunt() {

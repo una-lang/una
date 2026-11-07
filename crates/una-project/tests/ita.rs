@@ -338,6 +338,70 @@ fn a_drive_section_maps_into_the_manifest_with_its_ranges() {
 }
 
 #[test]
+fn a_serve_section_maps_into_the_manifest_with_its_ranges() {
+    // ADR 0123 rule 16, `spec/31 §7` rule 1: the host-driven form of a server.
+    let manifest = parse_ita_manifest(&format!(
+        "{HEAD}\nserve\n  within 10000\n  module shop.api\n"
+    ))
+    .0;
+    let serve = manifest.serve.unwrap();
+    assert_eq!(serve.module.value, "shop.api");
+    assert_eq!(serve.within, Some(10_000));
+    let manifest = parse_ita_manifest(&format!("{HEAD}\nserve\n  module shop.api\n")).0;
+    assert_eq!(manifest.serve.unwrap().within, None);
+    for within in ["0", "86400001"] {
+        let text = format!("{HEAD}\nserve\n  module main\n  within {within}\n");
+        has(&text, Code::U7008, "`within` is a number of milliseconds");
+        assert!(parse_ita_manifest(&text).0.serve.is_none(), "{within}");
+    }
+    assert_eq!(
+        parse_ita_manifest(&format!(
+            "{HEAD}\nserve\n  module main\n  within 86400000\n"
+        ))
+        .0
+        .serve
+        .unwrap()
+        .within,
+        Some(86_400_000)
+    );
+    has(
+        &format!("{HEAD}\nserve\n  within 10\n"),
+        Code::U7008,
+        "has no `module`",
+    );
+    has(
+        &format!("{HEAD}\nrun\n  entry main\n\nserve\n  module main\n"),
+        Code::U7008,
+        "a `serve` section or a `run entry`, not both",
+    );
+    has(
+        &format!("{HEAD}\ndrive\n  module main\n  ticks 16\n\nserve\n  module main\n"),
+        Code::U7008,
+        "a `serve` section or a `drive` section, not both",
+    );
+    has(
+        &format!("{HEAD}\nserve\n  module main\n  module other\n"),
+        Code::U7008,
+        "`module` appears twice",
+    );
+    has(
+        &format!("{HEAD}\nserve\n  module main\n  within 5\n  within 6\n"),
+        Code::U7008,
+        "`within` appears twice",
+    );
+    has(
+        &format!("{HEAD}\nserve\n  module main\n  workers 4\n"),
+        Code::U7008,
+        "the lines of `serve` are `module` and `within`",
+    );
+    has(
+        &format!("{HEAD}\nserve\n  module main\n\ndrive\n  module main\n  ticks 16\n"),
+        Code::U7008,
+        "out of order",
+    );
+}
+
+#[test]
 fn boundaries_keep_their_rules_with_u7008() {
     let text = format!("{HEAD}\ntrusted\n  a.b\n\nboundaries\n  a\n  a.c\n\nrun\n  entry a.d\n");
     let found = errors(&text);

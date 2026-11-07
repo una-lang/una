@@ -253,7 +253,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(current) = self.current {
                     self.findings.value_callers.insert(current);
                 }
-                self.graph_value_call();
+                // `call_value` recorded the call's edge to `Λ` (ADR 0116 P1), once per site.
                 self.timing_value_call();
                 // S-39: a function value may run any construct.
                 self.quiet_site(span);
@@ -440,6 +440,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     // A parameter that an `of` clause names runs the effects of its argument
                     // (ADR 0062).
                     let own = self.labeled(&ty).top_label();
+                    // ADR 0123 rule 5: a `uses of` parameter called in a branch (U3033).
+                    if self.of_param(name).is_some() {
+                        self.branch_server_of_param(name, ident.span);
+                    }
                     let of = self.of_param(name).map(|index| {
                         self.run_of_param(name, index, ident.span, &Label::public(), &own)
                     });
@@ -566,7 +570,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(current) = self.current {
             self.findings.value_callers.insert(current);
         }
-        self.graph_value_call();
+        self.graph_value_call(span);
         self.timing_value_call();
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
@@ -617,6 +621,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // the call stands under `pc ⊔ l_f` with the decisions of its arguments (T-App below),
         // and is quiet when that is above `public`, at a `public` program counter too (round 4).
         self.quiet_site_under(span, &value_label);
+        // `spec/27 §8` rule 5: which code runs, and so how many check points, `l_f` decides.
+        self.switch_site(span, &value_label, || {
+            format!("which code this call of {what} runs, and whether it runs,")
+        });
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
@@ -955,6 +963,13 @@ impl<'a> Checker<'_, 'a, '_> {
             if !trusted_policy {
                 self.release_site(span);
             }
+            // The call runs the policy's `via` function (`spec/07 §5`): an edge of the graph
+            // of ADR 0116 P1 at the call site, and, for the timing label's search over the call
+            // edges and the quiet calls of S-39, the policy's own edge to it (#1673).
+            if let Some(via) = self.env.via_of(id) {
+                self.graph_call(via, span);
+                self.findings.policy_vias.insert((id, via));
+            }
             let result = self.call_policy(&def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
                 let granting = Granting {
@@ -1090,6 +1105,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // under a raised program counter. Only edition 0.1 raises a call so, and no construct
         // that appends events of its own exists there, so this is defensive (round 4).
         self.quiet_call_site_under(span, id, &decided);
+        // `spec/27 §8` rule 5: a check point of the schedule of started tasks (#1684).
+        self.switch_call(span, id, &def, &checked);
         let result = if prelude_labeled(self.env.prelude, &def)
             || collections_labeled(self.env.collections, &def)
         {
@@ -1599,14 +1616,21 @@ impl<'a> Checker<'_, 'a, '_> {
             });
         }
         let resolved = self.op_site(cap, op);
+        // ADR 0123: no operation of `HttpServer` in a branch (U3033, rule 5), and each one is a
+        // hand-off site of the serve threads (`L_srv`).
+        self.branch_server_op(resolved, cap_name, op_name, span);
+        self.server_site(resolved, span);
         // S-39, S-42: the operation's event, and those of a handler that serves it, would show
         // that it ran.
         self.quiet_op_site(span);
+        self.switch_site(span, &Label::public(), || {
+            format!("whether this operation `@{cap_name}.{op_name}` runs")
+        });
         if let Some(id) = resolved {
             self.timing_op(id, op_name);
             // The edge of ADR 0116 P1 from the node whose code holds the operation, a lambda's
             // included, to the operation: every operation call, whatever `uses` names (#1148).
-            self.graph_op(id, op_name);
+            self.graph_op(id, op_name, span);
         }
         let capability = resolved
             .and_then(|id| self.env.capabilities.get(id))
@@ -1781,6 +1805,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
             }
         }
+        // ADR 0123 IF3 (`spec/31 §1`): whether `reply` fails also depends on which reply rights
+        // the task holds, which the program's order of `next`, `start` and `reply` decides, so
+        // its failure is labeled `internal` at least, as `Http`'s are. O(1) per operation site.
+        if host && capability.name == "HttpServer" && op_name == "reply" {
+            decided = decided.join(&Label {
+                level: una_syntax::ast::Level::Internal,
+                ..Label::public()
+            });
+        }
         if let Some(fails) = &def.fails {
             // Whether a host operation fails, and how, is labeled like the arguments that
             // decide it, as a prelude function's failure is (`spec/07 §7`): its
@@ -1808,6 +1841,9 @@ impl<'a> Checker<'_, 'a, '_> {
         } else {
             result.raise_deep(&gives)
         };
+        // ADR 0123 IF6 (#1674): the answer is data the code holds, bound or not.
+        let answer = self.deep(&result);
+        self.reach_label(&answer);
         if self.pass == super::authority::Pass::Check {
             self.outcome_site(span, &capability, &decided, def.fails.as_ref(), &result);
         }
@@ -2532,8 +2568,8 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// Whether `expr` is an integer literal, possibly negated, or a constructor application,
-    /// whose type an expected type decides.
+    /// Whether `expr` is an integer literal, possibly negated, a constructor application or a
+    /// list literal, whose type an expected type decides.
     fn literal_or_constructor(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Paren(inner) => Self::literal_or_constructor(inner),
@@ -2541,6 +2577,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 super::fixed::literal_value(expr).is_some()
             }
             ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::UpperName(_)),
+            // ADR 0103 rules 3 and 5: `Box(v: [5])` where a `Box[List[Pos]]` is expected is a
+            // literal at `List[Pos]`, one obligation per element (#1657).
+            ExprKind::List(_) => true,
             _ => false,
         }
     }
@@ -2719,14 +2758,27 @@ impl<'a> Checker<'_, 'a, '_> {
                 field: field.name,
                 kind: constructor,
             };
-            // A literal, or a constructor, given for a field of a type parameter that the
-            // expected type fixes takes that type, as `Some(3)` where an `Option[U8]` is
-            // expected (`spec/18 §2.1`, #187). The parameter then takes the value's type.
-            let hinted = match (&field.ty.base, hint) {
-                (Ty::Param(param), Some(hint)) if Self::literal_or_constructor(&arg.value) => hint
-                    .get(*param)
-                    .filter(|ty| !holds_var(ty))
-                    .map(|ty| ty.unlabeled().clone()),
+            // A literal, a constructor or a list literal, given for a field whose type holds a
+            // type parameter that the expected type fixes, takes the field's type at those
+            // arguments, as `Some(3)` where an `Option[U8]` is expected (`spec/18 §2.1`, #187),
+            // and `Box(v: [5])` or `Bag(items: [5])` where a `Box[List[Pos]]` or a `Bag[Pos]`
+            // is (ADR 0103 rule 5, #1657). The parameters then take the value's type. A field
+            // of a parameter takes the argument without its top label and refinement, which
+            // the field's own flow and obligation check; a field that holds a parameter at a
+            // nested position keeps the refinement there, since only the literal's elements
+            // can prove it.
+            let hinted = match hint {
+                Some(hint) if Self::literal_or_constructor(&arg.value) => match &field.ty.base {
+                    Ty::Param(param) => hint
+                        .get(*param)
+                        .filter(|ty| !holds_var(ty))
+                        .map(|ty| ty.unlabeled().clone()),
+                    base if holds_param(base) => {
+                        let hint: Vec<Ty> = hint.iter().map(without_top_label).collect();
+                        Some(base.substitute(&hint)).filter(|ty| !holds_var(ty))
+                    }
+                    _ => None,
+                },
                 _ => None,
             };
             let found = match hinted {
@@ -3050,10 +3102,13 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
 /// fails, and how (`spec/07 §7`, S-15): every argument of `Http`, since the server
 /// receives them all;
 /// the path of `Files`, not the content, besides the file-state label of every `Files` operation
-/// (ADR 0085); the key name of `Keys`, not the data.
+/// (ADR 0085); the key name of `Keys`, not the data; both arguments of `HttpServer.reply` (ADR
+/// 0123 IF3).
 fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
     match (capability, op) {
         ("Http", _) => true,
+        // ADR 0123 IF3: `NotHeld` and `BadReply` are decided by the reply right and the reply.
+        ("HttpServer", "reply") => true,
         ("Files", _) => param == "path",
         ("Keys", "hmac") => param == "key_name",
         _ => false,
@@ -3129,6 +3184,32 @@ fn covariant_in(ty: &Ty, kinds: &KindLabels) -> bool {
         }),
         Ty::Fn(_) => no_params(ty),
         _ => true,
+    }
+}
+
+/// `ty` without the label at its top, its refinements kept.
+fn without_top_label(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Labeled(_, inner) => (**inner).clone(),
+        other => other.clone(),
+    }
+}
+
+/// Whether `ty` names a type parameter at some position. O(size of `ty`).
+fn holds_param(ty: &Ty) -> bool {
+    match ty {
+        Ty::Param(_) => true,
+        Ty::Labeled(_, inner) | Ty::Refined(_, inner) | Ty::List(inner) | Ty::Dense(_, inner) => {
+            holds_param(inner)
+        }
+        Ty::Map(key, value) => holds_param(key) || holds_param(value),
+        Ty::Kind(_, args) | Ty::Coll(_, args) => args.iter().any(holds_param),
+        Ty::Fn(function) => {
+            function.params.iter().any(holds_param)
+                || holds_param(&function.result)
+                || function.fails.as_ref().is_some_and(holds_param)
+        }
+        _ => false,
     }
 }
 

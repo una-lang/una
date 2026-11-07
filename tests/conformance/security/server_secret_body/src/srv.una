@@ -1,0 +1,15 @@
+-- test: a `secret` value in the body of a `Reply`, whose fields are `internal`, is U4001 where the reply is made (spec/31 §1, ADR 0123 IF2)
+-- spec: spec/31 §1
+-- expect: error U4001 at src/srv.una:14:82
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+pub kind Account
+  cents: secret Int
+
+balance(exchange: internal Exchange, account: Account) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "{account.cents}"))
+    if error use unit

@@ -1,0 +1,15 @@
+trusted module release
+
+pub policy key_of
+  from internal Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function calls a function value, whose code it does not show.
+reveal_it(t: internal Int) -> Int = twice(f: bump, x: t)
+
+twice(f: fn(internal Int) -> internal Int, x: internal Int) -> internal Int = f(f(x))
+
+bump(x: internal Int) -> internal Int = x + 1
