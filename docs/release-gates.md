@@ -17,6 +17,7 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
    - Every tag and release also needs an explicit approval, recorded in the release issue before the tag.
 3. **A release** publishes the archives that the `release` gate built (`OUT/clone/target/local-release/v<version>/`), whose digests the summary lists. The archives are reproducible (#679): two builds of one commit give the same bytes for each target, which the `reproducible` gate checks with a second build from cold. A published archive can therefore be rebuilt from its commit and checked against the summary's digest. The summary and the published `.sha256` files MUST agree.
 4. **`.github/workflows` is not a gate.** The files stay in the repository, but no merge, tag or release waits for them or reads their results.
+5. **Version numbers** (ADR 0139). Release R0.N is tagged `v0.N.0`, and its patches `v0.N.x`. When R0.N closes edition `0.N`, its release pull request carries the stabilizing record of ADR 0121 rule 15 (as its amendment of 2026-11-06 extends it), and the gates that rule names pass before the tag. A toolchain release (R0.7, R0.9) closes no edition.
 
 ## 2. The gates
 

@@ -403,3 +403,7 @@ Each slice is a card in Needs spec, to start after this record is accepted:
 - B05 (example 6) and element facts (slice 8).
 - Fact definitions in handlers (rule 12).
 - The places where each contextual word is a word, in `spec/01` and `spec/02` (slice 1, #1325); the words themselves were decided on acceptance.
+
+## Amendment (2026-11-06): the target is edition `0.8` (ADR 0139)
+
+The Target line reads: edition `0.8`, closed by release R0.8, as a preview under the terms of ADR 0121 as its amendment of 2026-11-06 extends them. Editions `0.1` to `0.6` do not change. No other rule changes.
