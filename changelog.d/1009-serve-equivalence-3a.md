@@ -1,0 +1,1 @@
+- **Pipelined requests and every refusal of a request run alike in both engines** (#1009, ADR 0123 rules 8, 10 to 12 and 21, `spec/31 §3`, `§4`): scripted runs of pipelined requests answered in order and of 23 refused requests, each with its status and closed connection, give the same bytes, output and trace in the interpreter and in native code.
