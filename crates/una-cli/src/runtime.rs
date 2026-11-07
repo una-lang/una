@@ -581,27 +581,37 @@ pub(crate) fn run_command(
     };
     // A script of connections stands for the peers of the `serve:` grants (ADR 0123 rule 21):
     // it is read and checked in full after the key files, as the executable reads them, and
-    // before anything is made or runs; its connections do not run in this release yet
-    // (`spec/31 §8`).
-    if let Some(script) = options.serve_script {
-        let listeners: Vec<String> = grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Serve { grant, .. } => Some(grant.listener()),
-                _ => None,
-            })
-            .collect();
-        let message = match una_http::serve::script_file::load(script, &listeners) {
-            Ok(_) => una_http::serve::script_file::PENDING.to_owned(),
-            Err(message) => message,
-        };
-        writeln!(stderr, "error: {message}")?;
+    // before anything is made or runs. Its connections run only in the toolchain's own test
+    // builds (`scripted`); elsewhere they do not run yet (`spec/31 §8`).
+    let served_grants: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
+        .iter()
+        .map(|input| input.grant.clone())
+        .collect();
+    let script = match options.serve_script {
+        Some(script) => {
+            let listeners: Vec<String> = served_grants.iter().map(|g| g.listener()).collect();
+            match una_http::serve::script_file::load(script, &listeners) {
+                Ok(events) => Some(events),
+                Err(message) => {
+                    writeln!(stderr, "error: {message}")?;
+                    return Ok(ExitStatus::Usage);
+                }
+            }
+        }
+        None => None,
+    };
+    let script_runs = script.is_some()
+        && cfg!(feature = "test-hooks")
+        && crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() == Some("1");
+    if script.is_some() && !script_runs {
+        writeln!(stderr, "error: {}", una_http::serve::script_file::PENDING)?;
         return Ok(ExitStatus::Usage);
     }
     // Live peers send in real time, which virtual time cannot place: a run under
     // `--virtual-time` takes no `serve:` grant without `--serve-script` (ADR 0123, S4
     // amendment C).
     if options.virtual_time
+        && script.is_none()
         && grants
             .iter()
             .any(|grant| matches!(grant, Grant::Serve { .. }))
@@ -636,12 +646,14 @@ pub(crate) fn run_command(
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
     let serve_threads =
         una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
-    let served: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
-        .iter()
-        .map(|input| input.grant.clone())
-        .collect();
+    // A scripted run binds no listener: the script's connections take their place.
+    let inputs = if script_runs {
+        Vec::new()
+    } else {
+        serve_inputs(&grants)
+    };
     let listeners = match una_http::serve::prepare(
-        &serve_inputs(&grants),
+        &inputs,
         serve_threads,
         options
             .tasks
@@ -677,7 +689,7 @@ pub(crate) fn run_command(
     let live = if serves && !listeners.listeners.is_empty() {
         // The engine's panic hook, from this thread, before any serve thread starts.
         una_http::serve::install_panic_hook();
-        match una_http::serve::live::Live::start(listeners, &served, serve_threads) {
+        match una_http::serve::live::Live::start(listeners, &served_grants, serve_threads) {
             Ok(live) => Some(std::sync::Arc::new(live)),
             Err(message) => {
                 writeln!(stderr, "error: {message}")?;
@@ -699,6 +711,9 @@ pub(crate) fn run_command(
         drive.is_some() || serving,
     );
     let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    let engine = script.as_deref().and_then(|events| {
+        crate::scripted::Engine::start(options.environment, &served_grants, events, &stop)
+    });
     // The serve engine learns of the host stop and of the hard stop from the run's watcher
     // (ADR 0123 rule 18).
     if let Some(live) = &live {
@@ -755,9 +770,12 @@ pub(crate) fn run_command(
     let host = &host;
     let max_depth = options.max_depth;
     let mut limits = limits(&options, Some(&stop));
-    limits.serve = live
-        .as_deref()
-        .map(|live| live as &dyn una_http::serve::program::Port);
+    limits.serve = match &engine {
+        Some(engine) => Some(engine.port()),
+        None => live
+            .as_deref()
+            .map(|live| live as &dyn una_http::serve::program::Port),
+    };
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
@@ -827,6 +845,21 @@ pub(crate) fn run_command(
         );
     }
     drop(watching);
+    // The scripted engine ends with the run, and `--serve-out` gets what each connection
+    // received; a file that cannot be written is a usage error after the run, as for `--trace`.
+    if let Some(engine) = &engine {
+        let out = engine.end();
+        if let Some(path) = options.serve_out
+            && let Err(error) = std::fs::write(path, out)
+        {
+            writeln!(
+                stderr,
+                "error: cannot write the connections to `{}`: {error}",
+                path.display()
+            )?;
+            return Ok(ExitStatus::Usage);
+        }
+    }
     let (evaluated, traced) = match evaluated {
         Ok((run, traced)) => (Ok(run), traced),
         Err(error) => (Err(error), None),

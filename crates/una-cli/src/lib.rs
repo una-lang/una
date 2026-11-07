@@ -23,6 +23,7 @@ mod registry;
 mod report;
 mod runtime;
 mod runtime_archive;
+mod scripted;
 mod std_builtins;
 mod std_listing;
 mod trace;
