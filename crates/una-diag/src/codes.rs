@@ -246,7 +246,7 @@ pub enum Code {
     U3028,
     /// A failure that must be handled where it is not.
     U3029,
-    /// A `simd required` clause outside a `systems` package of edition `0.4` (ADR 0120 rule
+    /// A `simd required` clause outside a `systems` package of edition `0.5` (ADR 0120 rule
     /// 58, ADR 0109 rule 5). Registered by ADR 0109 slice S1; reported once the clause lands
     /// with its slice.
     U3032,
@@ -905,7 +905,7 @@ impl Code {
             Code::U3032 => &Entry {
                 code: "U3032",
                 domain: Domain::Authority,
-                meaning: "A `simd required` clause outside a `systems` package of edition `0.4`",
+                meaning: "A `simd required` clause outside a `systems` package of edition `0.5`",
             },
             Code::U3033 => &Entry {
                 code: "U3033",

@@ -222,7 +222,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3027 | authority | Code that may run forever where it is not allowed to |
 | U3028 | authority | A function that says `diverges`, used as a value |
 | U3029 | authority | A failure that must be handled where it is not |
-| U3032 | authority | A `simd required` clause outside a `systems` package of edition `0.4` |
+| U3032 | authority | A `simd required` clause outside a `systems` package of edition `0.5` |
 | U3033 | authority | An operation of `HttpServer` in the effect set of a `together` branch, a `together for` body, a `first of` branch, or `handle` or `on_stop` of a `serve` module |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
