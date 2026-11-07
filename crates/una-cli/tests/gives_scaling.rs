@@ -3,11 +3,15 @@
 //! next grows linearly with the chain. Only the check is timed, and a miss is measured twice
 //! more (#341). The inference of labels is counted first (ADR 0077): the process-wide counter
 //! `gives_steps` counts the calls to inferring functions taken from its worklist, which only
-//! the second test's helpers are, so the first test never moves it.
+//! the second test's helpers are, so the first test never moves it. The second test runs each
+//! check in a child of the test binary, which prints the count, and times it by the child's
+//! processor time (`common/cpu.rs`, #1662).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/timing.rs"]
 mod timing;
 
@@ -118,17 +122,23 @@ fn inferred_chain(n: usize, labeled: bool, reversed: bool) -> String {
 }
 
 /// The label inference steps of a tier-0 check of `source`, the same in each of three runs,
-/// and its seconds, the best of three.
-fn inferred_check(dir: &Path, source: &str) -> (usize, f64) {
+/// and its processor seconds, the best of three. Each run is a child of the test binary
+/// (`common/cpu.rs`, #1662), which prints its steps; `idle`, the processor seconds of a child
+/// that checks nothing, is taken off, so the seconds are the check's alone, as when it was
+/// timed in process.
+fn inferred_check(dir: &Path, source: &str, idle: f64) -> (usize, f64) {
     package(dir, source);
     let runs: Vec<(usize, f64)> = (0..3)
         .map(|_| {
-            let steps = una_core::label_counters::gives_steps();
-            let started = Instant::now();
-            let checked = una_cli::check(dir, Tier::Zero).unwrap();
-            let took = started.elapsed().as_secs_f64();
-            assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-            (una_core::label_counters::gives_steps() - steps, took)
+            let (output, took) = cpu::in_child_output(INFERRING, &dir.display().to_string());
+            let printed = String::from_utf8_lossy(&output.stdout);
+            // The line may follow libtest's `test ... ` on the same line.
+            let steps = printed
+                .split("gives steps: ")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .unwrap_or_else(|| panic!("no steps in: {printed}"));
+            (steps.parse().unwrap(), took - idle)
         })
         .collect();
     // The count is deterministic: the same in every run.
@@ -137,8 +147,33 @@ fn inferred_check(dir: &Path, source: &str) -> (usize, f64) {
     (runs[0].0, best)
 }
 
+/// The measured step, in the child: a tier-0 check of the package in `dir`, and its label
+/// inference steps printed.
+fn inferred_check_here(dir: &Path) {
+    let steps = una_core::label_counters::gives_steps();
+    let checked = una_cli::check(dir, Tier::Zero).unwrap();
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    println!(
+        "gives steps: {}",
+        una_core::label_counters::gives_steps() - steps
+    );
+}
+
+/// The name of the test below, which its children run.
+const INFERRING: &str =
+    "inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share_of_cpu_time";
+
 #[test]
-fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share() {
+fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share_of_cpu_time() {
+    // A child with an empty argument checks nothing: the start of the test binary, `idle`.
+    if let Some(dir) = cpu::child() {
+        if !dir.is_empty() {
+            inferred_check_here(Path::new(&dir));
+        }
+        cpu::ran();
+        return;
+    }
+    let idle = timing::best_of_three(|| cpu::in_child(INFERRING, ""));
     // The labels flow from the entry point down the chain over a worklist of calls, linear in
     // the calls. Counted first: each call to a helper is taken once, and once more when its
     // caller's labels change, so the labeled chain takes at most about two steps per call in
@@ -152,8 +187,9 @@ fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share() {
     for reversed in [false, true] {
         let mut counted = Vec::new();
         for n in [200, 1_600] {
-            let (_, mut plain) = inferred_check(&dir, &inferred_chain(n, false, reversed));
-            let (steps, mut labeled) = inferred_check(&dir, &inferred_chain(n, true, reversed));
+            let (_, mut plain) = inferred_check(&dir, &inferred_chain(n, false, reversed), idle);
+            let (steps, mut labeled) =
+                inferred_check(&dir, &inferred_chain(n, true, reversed), idle);
             let calls = n;
             assert!(
                 steps >= calls,
@@ -166,9 +202,10 @@ fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share() {
             counted.push(steps);
             if labeled > 2.0 * plain + 0.05 {
                 for _ in 0..2 {
-                    plain = plain.min(inferred_check(&dir, &inferred_chain(n, false, reversed)).1);
-                    labeled =
-                        labeled.min(inferred_check(&dir, &inferred_chain(n, true, reversed)).1);
+                    plain = plain
+                        .min(inferred_check(&dir, &inferred_chain(n, false, reversed), idle).1);
+                    labeled = labeled
+                        .min(inferred_check(&dir, &inferred_chain(n, true, reversed), idle).1);
                 }
             }
             assert!(

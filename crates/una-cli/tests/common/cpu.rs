@@ -18,8 +18,26 @@
 //! their mean: within 10 ms over the whole loop, at most 2.5% of it. The output returned is the
 //! first run's. The loop adds the shell's fork per run, well under a millisecond, to the
 //! smaller sizes only. Sizes, bounds and floors stay the tests' own.
+//!
+//! A test that measures work in its own process (a check, the interpreter) runs that work in a
+//! child of its test binary ([`in_child`]): the test, run again alone with an argument that
+//! names one measurement, makes it and exits, and the parent reads that child's processor time
+//! as for a run of `una`. A clock or a counter of the test's own process could not stand in for
+//! it: the elapsed time grows with the load, and the test process's own processor time counts
+//! every test thread beside it under `cargo test`.
+
+// Each test file uses its own subset of these helpers.
+#![allow(dead_code)]
 
 use std::process::{Command, Output};
+
+/// Names, in a child of the test binary that [`in_child`] runs, the argument of the one
+/// measurement it makes.
+const CHILD: &str = "UNA_CPU_TIME_CHILD";
+
+/// What a child prints once its measurement has passed, so that the parent knows its filter
+/// named the test.
+const RAN: &str = "una cpu-time child: ran";
 
 /// The `time -p` utility.
 const TIME: &str = "/usr/bin/time";
@@ -46,6 +64,43 @@ pub fn cpu_output(command: &Command) -> (Output, f64) {
     let (again, total) = timed(command, runs);
     assert!(again.status.success(), "{runs} runs in a row: {again:?}");
     (output, total / runs as f64)
+}
+
+/// For a test whose claim is about work done in its own process (a check, the interpreter): the
+/// argument of the measurement this process makes when it is a child that [`in_child`] runs,
+/// else `None`. The test then makes that one measurement, calls [`ran`] and returns.
+pub fn child() -> Option<String> {
+    // A test reads the variable its own parent set; no library code reads it.
+    #[allow(clippy::disallowed_methods)]
+    std::env::var(CHILD).ok()
+}
+
+/// Says, in a child, that its measurement has passed.
+pub fn ran() {
+    println!("{RAN}");
+}
+
+/// The processor seconds of a child of this test binary that runs only `test`, which makes the
+/// measurement `argument` names ([`child`]), under [`cpu_output`]. The child's work is in its
+/// own process, so its user and system time count it whatever runs beside it, as for a run of
+/// `una`; what the start of the test binary adds is a fixed cost, which the tests measure on a
+/// tiny size the same way. Asserts that the child ran the test and passed.
+pub fn in_child(test: &str, argument: &str) -> f64 {
+    in_child_output(test, argument).1
+}
+
+/// [`in_child`], with the output of the child's first run ([`cpu_output`]).
+pub fn in_child_output(test: &str, argument: &str) -> (Output, f64) {
+    let mut command = Command::new(std::env::current_exe().expect("the test binary"));
+    command
+        .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+        .env(CHILD, argument);
+    let (output, seconds) = cpu_output(&command);
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains(RAN),
+        "{test} in a child, {argument}: {output:?}"
+    );
+    (output, seconds)
 }
 
 /// The output and processor seconds of `runs` runs of `command` under one `time -p`: the run
