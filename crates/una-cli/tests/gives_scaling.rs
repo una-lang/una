@@ -137,8 +137,9 @@ fn inferred_check(dir: &Path, source: &str, idle: f64) -> (usize, f64) {
                 .split("gives steps: ")
                 .nth(1)
                 .and_then(|rest| rest.split_whitespace().next())
-                .unwrap_or_else(|| panic!("no steps in: {printed}"));
-            (steps.parse().unwrap(), took - idle)
+                .and_then(|steps| steps.parse().ok());
+            assert!(steps.is_some(), "no steps in: {printed}");
+            (steps.unwrap_or_default(), took - idle)
         })
         .collect();
     // The count is deterministic: the same in every run.
@@ -148,7 +149,8 @@ fn inferred_check(dir: &Path, source: &str, idle: f64) -> (usize, f64) {
 }
 
 /// The measured step, in the child: a tier-0 check of the package in `dir`, and its label
-/// inference steps printed.
+/// inference steps printed, for the parent to read.
+#[allow(clippy::print_stdout)]
 fn inferred_check_here(dir: &Path) {
     let steps = una_core::label_counters::gives_steps();
     let checked = una_cli::check(dir, Tier::Zero).unwrap();

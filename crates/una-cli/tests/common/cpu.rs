@@ -75,7 +75,8 @@ pub fn child() -> Option<String> {
     std::env::var(CHILD).ok()
 }
 
-/// Says, in a child, that its measurement has passed.
+/// Says, in a child, that its measurement has passed: its standard output is the parent's to read.
+#[allow(clippy::print_stdout)]
 pub fn ran() {
     println!("{RAN}");
 }
