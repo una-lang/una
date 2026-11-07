@@ -1,0 +1,1 @@
+- **The script of connections of `--serve-script`, read and checked** (#1009, ADR 0123 rule 21, `spec/31 §8` rule 6): one JSON object per line in four forms, opening, bytes in padded base64, paced reads and closing, checked in full with times that never decrease and each refusal named by its line, in O(n) of the script, for the flags that take it next.
