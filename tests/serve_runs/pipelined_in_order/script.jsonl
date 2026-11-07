@@ -1,0 +1,7 @@
+{"at": 0, "connection": 1, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"}
+{"at": 1, "connection": 1, "text": "GET /one HTTP/1.1\r\nHost: localhost\r\n\r\nGET /two HTTP/1.1\r\nHost: localhost\r\n\r\nPOST /three HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhelloGET /four HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"}
+{"at": 100, "connection": 2, "grant": "127.0.0.1:8080", "peer": "192.0.2.2", "reads": "eager"}
+{"at": 101, "connection": 2, "text": "GET /tick0 HTTP/1.1\r\nHost: localhost\r\n\r\n"}
+{"at": 201, "connection": 2, "text": "GET /tick1 HTTP/1.1\r\nHost: localhost\r\n\r\n"}
+{"at": 301, "connection": 2, "text": "GET /tick2 HTTP/1.1\r\nHost: localhost\r\n\r\n"}
+{"at": 401, "connection": 2, "text": "GET /tick3 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"}
