@@ -799,6 +799,37 @@ pub(crate) mod script {
         Ok(true)
     }
 
+    /// Where `--serve-out` writes, set once by [`install_from_script`].
+    static OUT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+    /// Installs the scripted engine over the checked events of `--serve-script` (`spec/31 §8`
+    /// rule 6) when the environment says `UNA_TEST_RUN_SERVER=1`, as `una run` of the same
+    /// test build does: whether it did. `out` is the file of `--serve-out`.
+    pub(crate) fn install_from_script(
+        grants: &[una_core::http::serve::ServeGrant],
+        events: &[una_http::serve::script_file::Event],
+        out: Option<std::path::PathBuf>,
+    ) -> bool {
+        #[allow(clippy::disallowed_methods)]
+        if std::env::var_os("UNA_TEST_RUN_SERVER").is_none_or(|v| v != "1") {
+            return false;
+        }
+        let port = Arc::new(una_http::serve::script::ScriptPort::from_script(
+            grants,
+            events,
+            Box::new(|| {
+                if let Some(stop) = crate::runtime::run_stop() {
+                    stop.request_local();
+                }
+            }),
+        ));
+        let _ = OUT.set(out);
+        let mut serving = Serving::new(Arc::clone(&port) as Arc<dyn Port + Send + Sync>);
+        serving.script = Some(port);
+        *lock(&SERVING) = Some(Arc::new(serving));
+        true
+    }
+
     /// Ends the scripted engine at the run's end and writes what each connection received, one
     /// JSON line each, then `{"rights_left": n, "problems": [...]}`, to the file that
     /// `UNA_TEST_SERVE_WIRE` names.
@@ -808,6 +839,11 @@ pub(crate) mod script {
         };
         let left = live();
         let ended = port.end();
+        // `--serve-out`: the wire in the script's form. A file that cannot be written fails the
+        // test that reads it.
+        if let Some(Some(path)) = OUT.get() {
+            let _ = std::fs::write(path, una_http::serve::script::out_text(&ended.wire));
+        }
         #[allow(clippy::disallowed_methods)]
         let Some(path) = std::env::var_os("UNA_TEST_SERVE_WIRE") else {
             return;
