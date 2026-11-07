@@ -3205,14 +3205,15 @@ pub(crate) fn drive_timing(
         callees: BTreeSet::from([step]),
         ..super::timing::TimingSeed::default()
     };
-    let concurrent = super::timing::concurrent_functions(findings);
-    let timing = super::timing::timing(
+    // ADR 0116 C: `conc(step)`, the labels of the work that can run beside a call of `step`
+    // anywhere in the package (`spec/27 §11`), keeping `HostHandlers::Installed`.
+    let concurrency = super::timing::concurrency_of(env, findings);
+    let timing = super::timing::timing_with(
         env,
         findings,
         &seed,
-        Some(step),
         super::timing::HostHandlers::Installed,
-        &concurrent,
+        concurrency.conc_of_function(step),
     );
     // ADR 0116 P9 and C: the residue of cancelled requests slows the step, through its
     // requests and through the helpers' work on the machine's cores, and so the tick.
@@ -3418,18 +3419,18 @@ pub(crate) fn deadline_timing(
     if findings.deadline_loops.is_empty() {
         return Vec::new();
     }
-    let concurrent = super::timing::concurrent_functions(findings);
+    // ADR 0116 C: `τ_conc` taken at the loop (`spec/27 §11`).
+    let concurrency = super::timing::concurrency_of(env, findings);
     let mut loops: Vec<&super::DeadlineLoop> = findings.deadline_loops.iter().collect();
     loops.sort_by_key(|site| (site.span.file, site.span.start));
     let mut sites = Vec::new();
     for site in loops {
-        let timing = super::timing::timing(
+        let timing = super::timing::timing_precise(
             env,
             findings,
             &site.seed,
-            site.function,
             super::timing::HostHandlers::All,
-            &concurrent,
+            &concurrency,
         );
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);

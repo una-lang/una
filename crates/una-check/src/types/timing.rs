@@ -2493,7 +2493,7 @@ pub(crate) fn timing_precise(
 
 /// [`timing`] with `beside` as `τ_conc`, `None` when no part of a construct can run beside the
 /// site.
-fn timing_with(
+pub(crate) fn timing_with(
     env: &Env<'_>,
     findings: &Findings,
     seed: &TimingSeed,
@@ -2684,6 +2684,16 @@ impl Concurrency {
                 .cloned()
                 .unwrap_or_else(|| self.top.clone())
         })
+    }
+
+    /// `conc` of the function `f` (P3), `None` when no part of a construct reaches it: the label
+    /// a tick of a driven `step` takes (ADR 0116 C), since every call of `step` counts.
+    pub(crate) fn conc_of_function(&self, f: usize) -> Option<Label> {
+        if f < self.functions {
+            self.conc.get(f).cloned().flatten()
+        } else {
+            Some(self.top.clone())
+        }
     }
 
     /// `τ_conc` of a site whose checking recorded `seed` (P4): `conc` of its node joined with
