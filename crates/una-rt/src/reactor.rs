@@ -459,7 +459,7 @@ impl Reactor {
     /// `arm` hands its wake to wakes it (`Ready`). `arm` runs once the wait is registered; it
     /// returns true when what the wait is for has come already, and the task does not park.
     /// O(1), besides the registration of `entries` ([`crate::interrupt`]).
-    fn wait_on(
+    pub(crate) fn wait_on(
         &self,
         fd: Option<(BorrowedFd<'_>, Interest)>,
         timeout: Duration,

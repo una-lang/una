@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use una_diag::{Code, Location};
-use una_http::serve::program::{Port, Waited, peer_text};
+use una_http::serve::program::{Look, Port, Waited, peer_text};
 use una_http::serve::rights::{Rights, Task, Word};
 use una_http::serve::run::{Exchange, Next, Sent};
 use una_http::serve::trace::TraceKey;
@@ -541,10 +541,14 @@ pub fn next(site: i64) -> i64 {
             serving.port.wait(epoch, retry, deadline, &move || {
                 host_stopped() || watched.aborted() || cancelled(&entries)
             })
+        } else if let Some(waited) = crate::reactor::parks()
+            .and_then(|reactor| parked_wait(reactor, &serving, &entries, epoch, retry, deadline))
+        {
+            waited
         } else {
-            // On a helper of the I/O pool while the task parks (ADR 0117 rule 3): a
-            // cancellation or an abort of the run wakes the task, and the helper's wait ends
-            // at its next look at its stop.
+            // On a helper of the I/O pool while the task parks (ADR 0117 rule 3), only when the
+            // reactor is not there or cannot hold the wait: a cancellation or an abort of the
+            // run wakes the task, and the helper's wait ends at its next look at its stop.
             let woken = Arc::new(AtomicBool::new(false));
             let raised = Arc::clone(&woken);
             let also: crate::interrupt::Wake =
@@ -580,6 +584,69 @@ pub fn next(site: i64) -> i64 {
                     return timed_out(covering.bound);
                 }
             }
+        }
+    }
+}
+
+/// The wait of a task's `next` parked on the reactor, under the real clock (#1723): the task
+/// holds no thread while it waits, so no number of waiting tasks takes a helper of the I/O pool
+/// from the operations of the tasks that answer, as `Http`'s lookups and connections, or from
+/// `std.limit`'s waits. Each pass looks at the engine once ([`Port::look`]), then parks with its
+/// wake left with the engine, registered under the lock the engine's signals are sent under, so
+/// no signal sent after the look is lost; the park ends at that wake, at the look's slice (at
+/// most [`una_http::serve::live::LOOK`], the deadline, or a rate's retry time), or at a
+/// cancellation of the task or an abort of the run, which [`next`] sees at its loop's head. A
+/// deadline's cut of a `tasks` statement wakes it not, as it wakes no wait that began on a
+/// helper (#1148). `None` when the engine has no such waits or the reactor cannot hold the
+/// wait: the caller waits on a helper. O(log p) a pass for the p parked waiters.
+fn parked_wait(
+    reactor: &'static crate::reactor::Reactor,
+    serving: &Serving,
+    entries: &[Cancel],
+    epoch: u64,
+    retry: Option<u64>,
+    deadline: Option<std::time::Instant>,
+) -> Option<Waited> {
+    let stopped = || host_stopped() || serving.aborted() || cancelled(entries);
+    let mut all = entries.to_vec();
+    all.push((Arc::clone(&serving.entry), RUN_ENTRY));
+    loop {
+        let slice = match serving.port.look(epoch, retry, deadline, &stopped, None)? {
+            Look::Done(waited) => return Some(waited),
+            Look::Park { slice, .. } => slice,
+        };
+        let ticket = std::cell::Cell::new(None);
+        let done = std::cell::Cell::new(None);
+        let woken = reactor.wait_on(None, slice, None, &all, |ready| {
+            match serving
+                .port
+                .look(epoch, retry, deadline, &stopped, Some(Arc::clone(ready)))
+            {
+                Some(Look::Done(waited)) => {
+                    done.set(Some(waited));
+                    true
+                }
+                Some(Look::Park { ticket: held, .. }) => {
+                    ticket.set(held);
+                    false
+                }
+                None => true,
+            }
+        });
+        if let Some(held) = ticket.get() {
+            serving.port.unpark(held);
+        }
+        if let Some(waited) = done.get() {
+            return Some(waited);
+        }
+        match woken {
+            // The loop's head of `next` says by what: a cancellation or an abort of the run.
+            crate::reactor::Woken::Cancelled => return Some(Waited::Changed),
+            crate::reactor::Woken::Failed => return None,
+            // The engine's wake, the slice's end: the next look tells.
+            crate::reactor::Woken::Ready
+            | crate::reactor::Woken::TimedOut
+            | crate::reactor::Woken::Stopped => {}
         }
     }
 }
