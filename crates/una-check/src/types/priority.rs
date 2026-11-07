@@ -43,7 +43,7 @@ pub(crate) const PRIORITY_METHODS: [PriorityMethod; 6] = [
 ];
 
 impl Checker<'_, '_, '_> {
-    /// `q.op(args)` when `q` is a `PriorityQueue` in edition 0.4 and `op` is one of its
+    /// `q.op(args)` when `q` is a `PriorityQueue` in edition 0.5 and `op` is one of its
     /// built-in methods (`spec/28 §8`); `None` otherwise, so the call resolves as before.
     /// `place` is the type of the receiver as a place, when it is written `edit q.push(...)`.
     /// Each method is checked in O(1) besides its arguments.
@@ -58,7 +58,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);

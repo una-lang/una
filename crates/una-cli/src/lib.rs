@@ -199,8 +199,8 @@ fn analyze_and(
     {
         return (environment_failure(probe), Vec::new());
     }
-    // ADR 0120 rule 5: edition 0.4 adds the binary32 probes, for its `F32` literals.
-    if manifest.edition >= una_project::Edition::V0_4
+    // ADR 0120 rule 5: edition 0.5 adds the binary32 probes, for its `F32` literals.
+    if manifest.edition.has_collections_and_numerics()
         && let Err(probe) = una_core::float32::probe_environment()
     {
         return (environment_failure(probe), Vec::new());
@@ -1984,6 +1984,7 @@ fn keyword_set(edition: una_project::Edition) -> KeywordSet {
         una_project::Edition::V0_2 => KeywordSet::V0_2,
         una_project::Edition::V0_3 => KeywordSet::V0_3,
         una_project::Edition::V0_4 => KeywordSet::V0_4,
+        una_project::Edition::V0_5 => KeywordSet::V0_5,
     }
 }
 

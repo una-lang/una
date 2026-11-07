@@ -145,7 +145,7 @@ impl Checker<'_, '_, '_> {
         self.needs.push((value.clone(), Constraint::Eq, span));
     }
 
-    /// `m.op(args)` when `m` is a `HashMap` in edition 0.4 and `op` is one of its built-in
+    /// `m.op(args)` when `m` is a `HashMap` in edition 0.5 and `op` is one of its built-in
     /// methods (`spec/28 §7`); `None` otherwise, so the call resolves as before. `place` is the
     /// type of the receiver as a place, when it is written `edit m.set(...)` or
     /// `edit m.remove(...)`. O(1) besides its arguments.
@@ -160,7 +160,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);
@@ -293,7 +293,7 @@ impl Checker<'_, '_, '_> {
         Some(Ty::Unit)
     }
 
-    /// `s.op(args)` when `s` is a `HashSet` in edition 0.4 and `op` is one of its built-in
+    /// `s.op(args)` when `s` is a `HashSet` in edition 0.5 and `op` is one of its built-in
     /// methods (`spec/28 §7`); `None` otherwise, so the call resolves as before. `place` is the
     /// type of the receiver as a place, when it is written `edit s.add(...)` or
     /// `edit s.remove(...)`. O(1) besides its arguments.
@@ -308,7 +308,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);

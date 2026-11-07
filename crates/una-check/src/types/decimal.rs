@@ -1,4 +1,4 @@
-//! `Decimal[s]` of edition 0.4 (`spec/29 §16`, ADR 0120 rules 12 to 18): literals typed by
+//! `Decimal[s]` of edition 0.5 (`spec/29 §16`, ADR 0120 rules 12 to 18): literals typed by
 //! their context and never rounded (U2037), the operators and their scales, the methods with
 //! literal scales and written roundings, the prelude functions whose result's scale is their
 //! `scale:` literal, and the conversions.
@@ -156,7 +156,7 @@ impl Checker<'_, '_, '_> {
     /// scale of its own digits, since a comparison is exact across scales. A literal whose own
     /// scale is above 38 is U2037.
     pub(crate) fn comparison_literal(&mut self, literal: &Expr, other: &Ty) -> Ty {
-        if self.env.edition >= Edition::V0_4
+        if self.env.edition >= Edition::V0_5
             && self.is_decimal(&self.number_of(other))
             && let Some(text) = float_text(literal)
         {
@@ -368,7 +368,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// `e.m(args)` when `e` is a `Decimal[a]` and `m` one of its methods, or `e` an integer or
-    /// an `F64` and `m` is `to_decimal`, in edition 0.4 (ADR 0120 rule 15). `None` when it is
+    /// an `F64` and `m` is `to_decimal`, in edition 0.5 (ADR 0120 rule 15). `None` when it is
     /// neither, so the call resolves as before.
     pub(crate) fn decimal_method(
         &mut self,
@@ -377,7 +377,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let receiver = self.resolve(target);
@@ -688,7 +688,7 @@ fn symbol(op: BinaryOp) -> &'static str {
 
 impl Checker<'_, '_, '_> {
     /// The type of a call of the function `id`, `ty` as `call_function` checked it: for the
-    /// prelude's `parse_decimal` and `as_decimal` in edition 0.4, at the scale of their
+    /// prelude's `parse_decimal` and `as_decimal` in edition 0.5, at the scale of their
     /// `scale:` literal, and for `json_decimal`, after the check that its argument is a decimal
     /// (ADR 0120 rules 16 and 17). A package's function of one of these names is its own.
     pub(crate) fn decimal_call(
@@ -699,7 +699,7 @@ impl Checker<'_, '_, '_> {
         span: Span,
         ty: Ty,
     ) -> Ty {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return ty;
         }
         let Some(def) = self.env.functions.get(id) else {
@@ -727,10 +727,10 @@ impl Checker<'_, '_, '_> {
 
 impl Checker<'_, '_, '_> {
     /// U2037 when the prelude's `parse_decimal`, `as_decimal` or `json_decimal` is used as a
-    /// value in edition 0.4: the scale of their result is the literal of each call (ADR 0120
+    /// value in edition 0.5: the scale of their result is the literal of each call (ADR 0120
     /// rules 16 and 17), which a function value cannot carry.
     pub(crate) fn decimal_function_value(&mut self, id: usize, span: Span) {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return;
         }
         let Some(def) = self.env.functions.get(id) else {

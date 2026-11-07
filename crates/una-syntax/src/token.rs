@@ -331,9 +331,12 @@ pub enum KeywordSet {
     /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`), and `test` (ADR 0105).
     V0_3,
     /// Edition 0.4: the keywords of edition 0.3, with `diverges` and `within` reserved
-    /// (`spec/26 §1`, ADR 0116 rule 0), `simd` no longer reserved (ADR 0120 rule 1), and
-    /// `example` an identifier (ADR 0105, amendment of 2026-11-05).
+    /// (`spec/26 §1`, ADR 0116 rule 0), and `example` an identifier (ADR 0105, amendment of 2026-11-05).
     V0_4,
+    /// Edition 0.5: the keywords of edition 0.4, with `simd` no longer reserved and `with` and
+    /// `and` argument labels of the dense methods (ADR 0120 rule 1, which ADR 0139 rule 6
+    /// moves here from edition 0.4).
+    V0_5,
 }
 
 /// The kind of a token.

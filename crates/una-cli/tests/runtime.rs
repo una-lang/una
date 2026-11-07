@@ -1989,7 +1989,7 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n_in_cpu_time() {
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2063,7 +2063,7 @@ fn hash_table_updates_lookups_and_operations_scale_linearly_in_cpu_time() {
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2137,7 +2137,7 @@ fn priority_queue_pushes_and_pops_scale_as_n_log_n_in_cpu_time() {
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();

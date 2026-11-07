@@ -8803,7 +8803,7 @@ pub fn unwrap_layout(text: &str) -> String {
     let file = sources.add("<obligation-text>", text.as_bytes());
     let source = sources.file(file);
     let mut interner = Interner::new();
-    let lexed = lex_in(source, file, &mut interner, KeywordSet::V0_4);
+    let lexed = lex_in(source, file, &mut interner, KeywordSet::V0_5);
     let closers = lexed
         .tokens
         .iter()

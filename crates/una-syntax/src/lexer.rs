@@ -1136,10 +1136,10 @@ impl Lexer<'_> {
         if word == "from" && self.out.keywords >= KeywordSet::V0_3 && self.peek() == Some(':') {
             self.out.from_label = Some(self.interner.intern("from"));
         }
-        // Edition 0.4: `with` and `and` right before `:` may be argument labels of the dense
-        // methods (ADR 0120); they stay keywords, which the parser accepts as labels in a
-        // call's arguments only.
-        if self.out.keywords >= KeywordSet::V0_4 && self.peek() == Some(':') {
+        // Edition 0.5: `with` and `and` right before `:` may be argument labels of the dense
+        // methods (ADR 0120, moved to edition 0.5 by ADR 0139); they stay keywords, which the
+        // parser accepts as labels in a call's arguments only.
+        if self.out.keywords >= KeywordSet::V0_5 && self.peek() == Some(':') {
             match word.as_str() {
                 "with" => self.out.with_label = Some(self.interner.intern("with")),
                 "and" => self.out.and_label = Some(self.interner.intern("and")),

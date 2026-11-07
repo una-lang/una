@@ -1207,7 +1207,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 // in the refinement language (ADR 0114 rule 8.4).
                 let literal = |e: &Expr| {
                     int_literal(e).is_some()
-                        || (self.env.edition >= Edition::V0_4
+                        || (self.env.edition >= Edition::V0_5
                             && super::decimal::is_float_literal(e))
                 };
                 // A complex product reported its own U2014 (ADR 0120 V3). A measured product
@@ -1272,9 +1272,9 @@ impl<'a> Checker<'_, 'a, '_> {
         op: BinaryOp,
     ) -> Ty {
         let clause = self.in_clause();
-        // Edition 0.4: a float literal is typed after the other operand, whose decimal scale it
+        // Edition 0.5: a float literal is typed after the other operand, whose decimal scale it
         // takes (ADR 0120 rule 12).
-        let decimals = self.env.edition >= Edition::V0_4;
+        let decimals = self.env.edition >= Edition::V0_5;
         let float = |e: &Expr| decimals && super::decimal::is_float_literal(e);
         let constant = (
             fixed::is_constant(left) || float(left),
@@ -1524,9 +1524,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The types of the operands of a comparison: the side that is not a literal first, so a
     /// literal takes the other side's type.
     fn operand_pair(&mut self, left: &Expr, right: &Expr) -> (Ty, Ty) {
-        // Edition 0.4: a float literal beside a decimal takes the scale of its own digits
+        // Edition 0.5: a float literal beside a decimal takes the scale of its own digits
         // (ADR 0120 rule 12).
-        let decimals = self.env.edition >= Edition::V0_4;
+        let decimals = self.env.edition >= Edition::V0_5;
         let constant =
             |e: &Expr| fixed::is_constant(e) || (decimals && super::decimal::is_float_literal(e));
         if constant(left) && !constant(right) {
