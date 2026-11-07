@@ -111,3 +111,7 @@ F-C is more precise, since a read before every labeled write would stay public. 
 
 - F-A, F-B and F-C, above.
 - **Label header values by the expressions that build them**, so a request with public header values keeps a public failure. `Header` declares its value `internal`, so the label at the call is `internal` whatever was put in. Telling them apart would need a different `Header` type. Deferred: no program of the corpus needs it.
+
+## Note (2026-11-06): the outcomes of `Files` operations in a run's trace (ADR 0032, S-45)
+
+Accepted with the amendment of ADR 0032 of 2026-11-06, by the project's decision of 2026-11-06. The file-state label also labels the outcome of every `Files` operation in a run's trace: in a package where a write can run under an `internal` program counter or with an `internal` path, every `Files` outcome is `redacted`, public writes included. No rule of ADR 0085 changes; a flow-sensitive file-state label (its option F-C) would redact fewer outcomes.
