@@ -572,9 +572,17 @@ pub(crate) fn run_command(
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
+    let keys = match load_keys(&grants) {
+        Ok(keys) => keys,
+        Err(message) => {
+            writeln!(stderr, "error: {message}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
     // A script of connections stands for the peers of the `serve:` grants (ADR 0123 rule 21):
-    // it is read and checked in full before anything runs, and its connections do not run in
-    // this release yet (`spec/31 §8`).
+    // it is read and checked in full after the key files, as the executable reads them, and
+    // before anything is made or runs; its connections do not run in this release yet
+    // (`spec/31 §8`).
     if let Some(script) = options.serve_script {
         let listeners: Vec<String> = grants
             .iter()
@@ -601,13 +609,6 @@ pub(crate) fn run_command(
         writeln!(stderr, "error: {}", una_interp::VIRTUAL_SERVE)?;
         return Ok(ExitStatus::Usage);
     }
-    let keys = match load_keys(&grants) {
-        Ok(keys) => keys,
-        Err(message) => {
-            writeln!(stderr, "error: {message}")?;
-            return Ok(ExitStatus::Usage);
-        }
-    };
     // ADR 0116 amendment, P8 (#1148): the client's TLS settings are built before `main` when
     // the grants include `Http`, as a native executable builds them, never at a first request.
     if grants

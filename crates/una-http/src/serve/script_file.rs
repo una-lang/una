@@ -101,16 +101,53 @@ pub fn check_flags(script: bool, out: bool, virtual_time: bool) -> Result<(), &'
     Ok(())
 }
 
+/// The largest script `--serve-script` reads, in bytes: 64 MiB.
+pub const MAX_SCRIPT: u64 = 64 * 1024 * 1024;
+
 /// The script of the file at `path`, read and checked for a run whose `serve:` grants have the
 /// addresses `listeners`, or the message of the usage error: [`NEEDS_GRANT`] when there are
-/// none, a file that cannot be read, or the first line that cannot be followed.
+/// none, a file that is not a regular file (a FIFO or a device would block or never end), one
+/// larger than [`MAX_SCRIPT`], one that cannot be read or is not UTF-8, or the first line that
+/// cannot be followed. The file is checked before it is opened and again once open, and read
+/// through a bound, so a read takes at most `MAX_SCRIPT + 1` bytes.
 pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, String> {
+    use std::io::Read;
     if listeners.is_empty() {
         return Err(NEEDS_GRANT.to_owned());
     }
     let shown = path.display();
-    let text = std::fs::read_to_string(path).map_err(|error| {
+    let cannot = |error: std::io::Error| {
         format!("cannot read the script `{shown}` of `--serve-script`: {error}")
+    };
+    let regular = |metadata: std::fs::Metadata| {
+        if !metadata.is_file() {
+            return Err(format!(
+                "the script `{shown}` of `--serve-script` is not a regular file"
+            ));
+        }
+        if metadata.len() > MAX_SCRIPT {
+            return Err(format!(
+                "the script `{shown}` of `--serve-script` is larger than {} MiB",
+                MAX_SCRIPT / (1024 * 1024)
+            ));
+        }
+        Ok(())
+    };
+    regular(std::fs::metadata(path).map_err(cannot)?)?;
+    let file = std::fs::File::open(path).map_err(cannot)?;
+    regular(file.metadata().map_err(cannot)?)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_SCRIPT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(cannot)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SCRIPT {
+        return Err(format!(
+            "the script `{shown}` of `--serve-script` is larger than {} MiB",
+            MAX_SCRIPT / (1024 * 1024)
+        ));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| {
+        format!("cannot read the script `{shown}` of `--serve-script`: it is not UTF-8")
     })?;
     parse(&text, listeners)
         .map_err(|why| format!("the script `{shown}` of `--serve-script`, {why}"))

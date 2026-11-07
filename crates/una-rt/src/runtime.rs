@@ -896,6 +896,13 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
         }
     }
+    // ADR 0123 rule 21: the flags of a script need one another, checked first, as `una run`
+    // checks them before any other value.
+    una_http::serve::script_file::check_flags(
+        options.serve_script.is_some(),
+        options.serve_out.is_some(),
+        options.virtual_time,
+    )?;
     let [workers, task_depth, io_threads, file_threads, serve_threads] = tasks;
     options.concurrency = una_interp::Concurrency::from_flags(
         options.max_depth,
@@ -905,12 +912,6 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         file_threads,
     )?;
     options.serve_threads = una_interp::concurrency::serve_threads(serve_threads)?;
-    // ADR 0123 rule 21: the flags of a script need one another.
-    una_http::serve::script_file::check_flags(
-        options.serve_script.is_some(),
-        options.serve_out.is_some(),
-        options.virtual_time,
-    )?;
     Ok(options)
 }
 
@@ -2084,25 +2085,6 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if options.virtual_time {
         options.concurrency.workers = 1;
     }
-    // The trace file is made before `main` starts, and written as the run goes (ADR 0117 rule
-    // 10): one that cannot be made is a usage error.
-    let shared = match &options.trace {
-        Some(path) => match crate::started::RunShared::tracing(path) {
-            Ok(shared) => {
-                let _ = TRACE_FILE.set(path.clone());
-                shared
-            }
-            Err(error) => {
-                let _ = writeln!(
-                    stderr,
-                    "error: cannot write the trace to `{}`: {error}",
-                    path.display()
-                );
-                return USAGE;
-            }
-        },
-        None => crate::started::RunShared::new(),
-    };
     // The run's host stop state is made first, so a signal that comes while the handlers are
     // installed counts for the run.
     let stop = RunStop::new(
@@ -2219,7 +2201,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         return USAGE;
     }
     // Live peers send in real time, which virtual time cannot place: a run under
-    // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment
+    // `--virtual-time` takes no `serve:` grant without `--serve-script` (ADR 0123, S4 amendment
     // C). The scripted engine of the tests stands for such a script.
     if options.virtual_time
         && !scripted
@@ -2230,6 +2212,27 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         let _ = writeln!(stderr, "error: {}", una_interp::VIRTUAL_SERVE);
         return USAGE;
     }
+    // The trace file is made before `main` starts, and written as the run goes (ADR 0117 rule
+    // 10): one that cannot be made is a usage error. It is made after the usage errors of the
+    // grants, the key files and the script, as `una run` makes it, so a run those refuse
+    // touches no file.
+    let shared = match &options.trace {
+        Some(path) => match crate::started::RunShared::tracing(path) {
+            Ok(shared) => {
+                let _ = TRACE_FILE.set(path.clone());
+                shared
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "error: cannot write the trace to `{}`: {error}",
+                    path.display()
+                );
+                return USAGE;
+            }
+        },
+        None => crate::started::RunShared::new(),
+    };
     let listeners = match serve(
         if scripted { &[] } else { &grants },
         options.serve_threads.max(1),
