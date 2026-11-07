@@ -165,18 +165,25 @@ pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, 
         .map_err(|why| format!("the script `{shown}` of `--serve-script`, {why}"))
 }
 
-/// Writes the text of `--serve-out` to `path`: made with mode 0600 when it does not exist, since
-/// it holds what the program sent, `internal` data and credentials included, unredacted
-/// (`spec/31 §8` rule 6); an existing file is truncated.
+/// Writes the text of `--serve-out` to `path`, which holds what the program sent, `internal`
+/// data and credentials included, unredacted (`spec/31 §8` rule 6): the last component of the
+/// path is never followed as a symbolic link, the open never blocks (a FIFO with no reader is
+/// refused), a file that is not a regular file is refused, and the file's mode is 0600, an
+/// existing file's included, before it is truncated and written.
 pub fn write_out(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
         .mode(0o600)
+        .custom_flags(una_sys::server::WRITE_FLAGS)
         .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("it is not a regular file"));
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.set_len(0)?;
     file.write_all(text.as_bytes())
 }
 

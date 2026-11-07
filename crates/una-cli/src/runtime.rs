@@ -845,27 +845,9 @@ pub(crate) fn run_command(
         );
     }
     drop(watching);
-    // The scripted engine ends with the run, and `--serve-out` gets what each connection
-    // received; a file that cannot be written is a usage error after the run, as for `--trace`.
-    if let Some(engine) = &engine {
-        let (out, problems) = engine.end();
-        for problem in problems {
-            writeln!(
-                stderr,
-                "warning: the scripted engine at the end of the run: {problem}"
-            )?;
-        }
-        if let Some(path) = options.serve_out
-            && let Err(error) = una_http::serve::script_file::write_out(path, &out)
-        {
-            writeln!(
-                stderr,
-                "error: {}",
-                una_http::serve::script_file::out_error(path, &error)
-            )?;
-            return Ok(ExitStatus::Usage);
-        }
-    }
+    // The scripted engine ends with the run; what it leaves and `--serve-out` are reported
+    // after the run's own diagnostics, as the executable reports them (`scripted_end`).
+    let ended = engine.as_ref().map(crate::scripted::Engine::end);
     let (evaluated, traced) = match evaluated {
         Ok((run, traced)) => (Ok(run), traced),
         Err(error) => (Err(error), None),
@@ -917,7 +899,7 @@ pub(crate) fn run_command(
         }
         writeln!(stderr, "error: cannot write the output: {error}")?;
         stderr.flush()?;
-        return Ok(ExitStatus::Usage);
+        return scripted_end(ended, options.serve_out, stderr, ExitStatus::Usage);
     }
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
@@ -956,14 +938,51 @@ pub(crate) fn run_command(
         diagnostics: in_output_order(&diagnostics),
         trace: run.trace.iter().map(EventDoc::from).collect(),
     };
-    finish(
+    let serve_out = options.serve_out;
+    let status = finish(
         &document,
         &diagnostics,
         &package.sources,
         options,
-        (stdout, stderr),
+        (stdout, &mut *stderr),
         status,
-    )
+    )?;
+    scripted_end(ended, serve_out, stderr, status)
+}
+
+/// After a scripted run's own diagnostics, as the executable orders them (`spec/31 §8` rule
+/// 6): what the engine left not at rest, as warnings, then `--serve-out`, whose file that
+/// cannot be written is a usage error; the exit code is the higher of the run's and 2.
+fn scripted_end(
+    ended: Option<(String, Vec<String>)>,
+    serve_out: Option<&Path>,
+    stderr: &mut dyn Write,
+    status: ExitStatus,
+) -> io::Result<ExitStatus> {
+    let Some((out, problems)) = ended else {
+        return Ok(status);
+    };
+    for problem in problems {
+        writeln!(
+            stderr,
+            "warning: the scripted engine at the end of the run: {problem}"
+        )?;
+    }
+    if let Some(path) = serve_out
+        && let Err(error) = una_http::serve::script_file::write_out(path, &out)
+    {
+        writeln!(
+            stderr,
+            "error: {}",
+            una_http::serve::script_file::out_error(path, &error)
+        )?;
+        return Ok(if status.code() > ExitStatus::Usage.code() {
+            status
+        } else {
+            ExitStatus::Usage
+        });
+    }
+    Ok(status)
 }
 
 /// Prints `document` as JSON on stdout, or `diagnostics` for people on stderr, and returns
