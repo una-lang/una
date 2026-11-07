@@ -160,6 +160,23 @@ impl Grant {
         }
     }
 
+    /// The bound of the `tasks` statement of a `serve` section's driver (`spec/31 §7` rule 4,
+    /// decision S6-D6, #1724): the sum of `/once` over the `serve:` grants among `grants`,
+    /// saturating, and at least 1. The grants' `/once` bounds the exchanges open; this bound
+    /// makes it bound the started tasks too, so a task's place is given back when its `handle`
+    /// ends, not when its exchange ends, as when the peer leaves or `answer` passes. The same
+    /// in both engines. O(g) for the g grants.
+    pub fn serve_driver_bound(grants: &[Grant]) -> usize {
+        let once = grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Serve { grant, .. } => Some(grant.limits.once),
+                _ => None,
+            })
+            .fold(0u64, u64::saturating_add);
+        usize::try_from(once).unwrap_or(usize::MAX).max(1)
+    }
+
     /// Whether the grant carries limits (ADR 0117 rule 8, `spec/27 §9`).
     pub fn limited(&self) -> bool {
         matches!(self, Grant::Http(http) if http.limits().any())
@@ -649,6 +666,25 @@ mod tests {
         assert!(parse_keys("phone_pepper = 3\n").is_err());
         assert!(parse_keys("phone_pepper = \"*\"\n").is_err());
         assert!(parse_keys("= broken").is_err());
+    }
+
+    #[test]
+    fn the_serve_driver_is_bounded_by_the_sum_of_once() {
+        // #1724, decision S6-D6: the driver's `tasks` statement holds at most the sum of the
+        // grants' `/once`; other grants add nothing, and a run with none still has a bound.
+        let base = Path::new("/work/app");
+        let grants: Vec<Grant> = [
+            "serve:http://127.0.0.1:8080;2/once",
+            "console",
+            "serve:http://127.0.0.1:8081;5/once",
+        ]
+        .iter()
+        .map(|spec| Grant::parse(spec, base).unwrap())
+        .collect();
+        assert_eq!(Grant::serve_driver_bound(&grants), 7);
+        let plain = [Grant::parse("serve:http://127.0.0.1:8080", base).unwrap()];
+        assert_eq!(Grant::serve_driver_bound(&plain), 256);
+        assert_eq!(Grant::serve_driver_bound(&[Grant::Console]), 1);
     }
 
     #[test]

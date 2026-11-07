@@ -162,6 +162,19 @@ pub fn tasks_begin(bound: i64, bounded: i64, _site: usize) -> i64 {
     if opened == Some(true) { 0 } else { 2 }
 }
 
+/// [`tasks_begin`] with the bound `bound`, at least 1, as the engine's own code opens a statement
+/// (the driver of a `serve` section). 0, or 2 when the task stops instead.
+pub(crate) fn tasks_begin_at_most(bound: usize) -> i64 {
+    let opened = with_state(|state| {
+        if state.stopped.is_some() {
+            return false;
+        }
+        state.open_tasks(Some(bound.max(1)));
+        true
+    });
+    if opened == Some(true) { 0 } else { 2 }
+}
+
 /// Ends the innermost `tasks` statement of the task the thread runs, once its block has ended:
 /// when `cancel` is 1, the block failed or stops, and its tasks are cancelled first
 /// ([`cancel_tasks`]). Parks until every task it started has ended.
