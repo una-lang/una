@@ -57,6 +57,19 @@ fn package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
 /// [`package`], whose `ita.una` has, when `served`, a `serve` section that names `srv` in
 /// place of the `run entry`.
 fn package_with(name: &str, port: u16, program: &str, engine: Engine, served: bool) -> PathBuf {
+    let grants = format!("    serve \"http://127.0.0.1:{port}\"\n");
+    package_granted(name, &grants, program, engine, served)
+}
+
+/// [`package_with`], whose `grants` are `console` and the lines `grants`, each indented by four
+/// spaces and ending with a newline.
+fn package_granted(
+    name: &str,
+    grants: &str,
+    program: &str,
+    engine: Engine,
+    served: bool,
+) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "una-serve-live-{name}-{engine:?}-{}",
         std::process::id()
@@ -67,11 +80,11 @@ fn package_with(name: &str, port: u16, program: &str, engine: Engine, served: bo
         dir.join("ita.una"),
         if served {
             format!(
-                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n{grants}\nserve\n  module srv\n"
             )
         } else {
             format!(
-                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n"
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n{grants}"
             )
         },
     )
@@ -120,6 +133,20 @@ impl Running {
                         self.what, self.seen
                     );
                 }
+            }
+        }
+    }
+
+    /// Collects the lines the run prints for `wait`.
+    fn collect_for(&mut self, wait: Duration) {
+        let end = Instant::now() + wait;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            if let Ok(next) = self.lines.recv_timeout(left) {
+                self.seen.push(next);
             }
         }
     }
@@ -935,6 +962,44 @@ fn internal_twin(name: &str, program: &str, long: usize, engine: Engine) {
         assert_eq!(code, Some(0), "{engine:?}: {stderr}");
         assert_eq!(output(&lines), ["serving", "stopped"], "{engine:?}");
         assert!(stderr.contains("ended alone"), "{engine:?}: {stderr}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// #1724 (the hunt of #1011, H2): the `serve` section's `tasks` statement is bounded by the sum
+/// of `/once` over the run's `serve:` grants (`spec/31 §7` rule 4, decision S6-D6), so a place
+/// of the driver's tasks is given back only when `handle`'s task ends, not when its exchange
+/// ends. Before, a peer that left freed its exchange's `/once` place while `handle` kept
+/// running, and with `at most 2 at once` ten requests closed early left ten `handle` tasks
+/// running at once, in both engines. Now two run, and the driver waits at `start` for a place.
+#[test]
+fn the_serve_section_runs_no_more_handle_tasks_than_once() {
+    for engine in ENGINES {
+        let port = free_port();
+        let program = SERVED.replace("COUNT", "100000000000");
+        let grants = format!("    serve \"http://127.0.0.1:{port}\"\n      at most 2 at once\n");
+        let dir = package_granted("served_once", &grants, &program, engine, true);
+        let mut run = start(&dir, "served_once", engine, &["--stop-grace", "1"]);
+        for _ in 0..10 {
+            let mut stream = connect(port);
+            stream
+                .write_all(b"GET /a HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            drop(stream);
+        }
+        run.expect("handling");
+        run.collect_for(Duration::from_secs(1));
+        let handling = run.seen.iter().filter(|line| *line == "handling").count();
+        assert_eq!(
+            handling, 2,
+            "{engine:?}: {handling} `handle` tasks ran under `at most 2 at once`"
+        );
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(1), "{engine:?}: {stderr}");
+        assert!(stderr.contains("[U6007]"), "{engine:?}: {stderr}");
+        assert_eq!(output(&lines), ["handling", "handling"], "{engine:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
