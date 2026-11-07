@@ -1,0 +1,26 @@
+-- test: the twin of `tconc_map_in_part`: the `map` runs before the `together`, so the branches handle only `public` data and the print is accepted
+-- spec: spec/27 §11
+-- expect: ok
+module report
+
+import std.time (millisecond)
+
+step(n: Int) -> Int = n + 1
+
+--- Prints whether `step(n)` met its deadline: the value carries the deadline's timing label.
+report(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let v = step(n) within 10 * millisecond
+    if error use 0
+  @console.print("{v}")
+
+--- The same `map` runs before the `together`, outside every part.
+pub both(xs: List[Int], n: Int) -> List[Int]
+  uses @console: Console[print]
+=
+  let ys = xs.map(each: fn(x: Int) -> x + 1)
+  together
+    let c = step(n)
+    let r = report(n)
+  ys

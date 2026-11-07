@@ -15,3 +15,16 @@ The board was audited: 34 closed issues set to Done, 6 open issues added, the Ag
 - Merged today: ADR 0124 step 3 (#1208 internal macOS linker, PR #1369; card stays open for fuzz/oracle/macos-oldest), #1100 own TLS crypto slices 1-7 (PRs #1370-#1374: una-crypto SHA-2/HMAC/HKDF/ChaCha20-Poly1305/X25519/AES-GCM/Ed25519/ECDSA/RSA verify + own rustls provider behind features; ring still default; ADR 0133 Proposed; slice 7b switch and slice 8 review wait for the owner), ADR 0123 S4 serve engine (#1006, PR #1375; follow-ups #1376). #522 closed (C backend withdrawn).
 - In flight: #1341 (native text reads in place), worktree .claude/worktrees/1341. Planned: #1209 (Linux linker; plan in ops/coordination/builder-notes/1209-plan.md; worktree .claude/worktrees/1209 and run 20261101T115937Z-1209-3418c4 prepared).
 - Main at b3188f335. Owner decisions pending: ADRs 0127-0133 acceptance, ADR 0133 open questions, S4 amendment of ADR 0123, N-480/481/489 assumptions, N-499..N-504 in ops/coordination/OWNER-DECISIONS-OVERNIGHT.md.
+
+## Numbering (ADR 0139, accepted 2026-11-06)
+One number for releases, compiler versions and editions: release R0.N ships compiler `v0.N.0` (patches `v0.N.x`); edition `0.N` is named by, and closed (made stable) at, release R0.N; only releases that change syntax create an edition; `main` serves at most two editions (the stable one and the current preview), older ones leaving by an accepted plan each (#1585 for `0.1` and `0.2`). Today `main` is at `0.3.x` and serves editions `0.1` to `0.4`; the move of collections and numerics to edition `0.5` is #1621.
+
+| Release | Compiler | Edition it closes | Contents |
+| --- | --- | --- | --- |
+| R0.4 | `v0.4.0` | `0.4` | Long-running programs (ADR 0116), tasks, `within` and `first of` (ADR 0117), HTTP servers (ADR 0123), the core of Itá (ADR 0122) |
+| R0.5 | `v0.5.0` | `0.5` | Collections (ADR 0119) and the numeric foundation (ADR 0120), moved from `0.4`; module constants (ADR 0126); `const` and `var` (ADR 0137) |
+| R0.6 | `v0.6.0` | `0.6` | Data-driven and multi-step tests (the testing family, #1590 to #1594) |
+| R0.7 | `v0.7.0` | none | A toolchain release |
+| R0.8 | `v0.8.0` | `0.8` | General protocols and typestate (ADR 0130); the laws record (#1623) is planned for R0.8 |
+| R0.9 | `v0.9.0` | none | A toolchain release |
+| 1.0 | `v1.0.0` | | The last closed edition becomes the stable edition |

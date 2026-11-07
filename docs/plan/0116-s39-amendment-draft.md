@@ -1,6 +1,6 @@
 # ADR 0116 amendment draft: the trace's own events under a raised program counter (S-39)
 
-Status: Proposed (draft for the project's decision; it is appended to docs/adr/0116-long-running-programs.md only once accepted, with the date of its acceptance). Security fix of #1507; the behaviour is already implemented in the pull request. Until then `spec/09 §2` and `spec/26 §6` rule 4 cite it as proposed.
+Status: Accepted by the project on 2026-11-06; its text is now ADR 0116's amendment "Amendment (2026-11-06): the trace's own events under a raised program counter (S-39)", at the end of `docs/adr/0116-long-running-programs.md`, which governs. This draft is kept as the record of the proposal.
 
 ## Amendment (proposed 2026-11-02): the trace's own events under a raised program counter (S-39)
 

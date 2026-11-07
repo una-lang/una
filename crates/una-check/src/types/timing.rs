@@ -1470,19 +1470,19 @@ impl Residue {
     }
 }
 
-/// `L_res` of the package (ADR 0116 P9), with the preview's `τ_conc`, as slice 4 of the
-/// amendment of 2026-10-25 lands it (issue #1148). It is the join of:
+/// `L_res` of the package (ADR 0116 P9), as slice 4 of the amendment of 2026-10-25 lands it
+/// (issue #1148), with the precise `τ_conc` of slice 4 of the plan on #1087. It is the join of:
 /// - over every `tasks` statement `T` whose parts can reach an operation of `Http`,
 ///   `κ(T) ⊔ τ_conc(T)`;
 /// - over every `first of` `F` whose branches can reach an operation of `Http`,
 ///   `t(F) ⊔ τ_conc(F)`, which is at least `internal`, from `ρ` of `Http`.
 ///
-/// **The preview's terms.** `κ` and `t` are `τ⁰` of the whole construct from its seed, closed
-/// over the graph of P1 ([`seed_label`]), so the reach of `Http` goes through handlers,
-/// capabilities and `Λ`. `τ_conc` is the preview's: `⊤` for a construct inside a lambda, a task,
-/// the block of a `tasks` statement or a handler's operation, or in a function that a part of a
-/// task construct can reach (`concurrent`), `public` otherwise. `L_res` contains neither itself
-/// nor any timing label that joins it, so it needs no fixpoint.
+/// **The terms.** `κ` and `t` are `τ⁰` of the whole construct from its seed, closed over the
+/// graph of P1 ([`seed_label`]), so the reach of `Http` goes through handlers, capabilities and
+/// `Λ`. `τ_conc` is that of the construct's own site, from [`Concurrency`] (`spec/27 §11`):
+/// `conc` of its node joined with `ctx` at it, `⊤` in no node. `L_res` joins no timing label
+/// directly; it reaches one only through the values of item 7, which the probe of pass 2 raises
+/// to their fixpoint with the labels of the sites.
 ///
 /// **Conservative.** It counts every such statement, not only one whose block can fail, since a
 /// cancellation from outside it cancels its tasks too, and every such race. A `within`'s cut
@@ -1495,9 +1495,8 @@ pub(crate) fn residue(
     env: &Env<'_>,
     findings: &Findings,
     graph: &Graph,
-    concurrent: &BTreeSet<usize>,
+    concurrency: &Concurrency,
 ) -> Residue {
-    let top = Label::top(&env.categories);
     let name = |function: Option<usize>| -> String {
         function.and_then(|id| env.functions.get(id)).map_or_else(
             || "a handler's operation".to_owned(),
@@ -1528,13 +1527,9 @@ pub(crate) fn residue(
     for (label, source) in outside {
         add(label, source, &mut residue);
     }
-    let conc = |seed: &TimingSeed, function: Option<usize>| {
-        if seed.unplaced || function.is_some_and(|f| concurrent.contains(&f)) {
-            top.clone()
-        } else {
-            Label::public()
-        }
-    };
+    // The precise `τ_conc` of the construct's own site (`spec/27 §11`, P9: "the analysis then
+    // computes `L_res` with P4's labels").
+    let conc = |seed: &TimingSeed| concurrency.tau_conc(seed).unwrap_or_else(Label::public);
     let mut tasks: Vec<&TasksSite> = findings.tasks_sites.iter().collect();
     tasks.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     for site in tasks {
@@ -1542,7 +1537,7 @@ pub(crate) fn residue(
         if !http {
             continue;
         }
-        let label = kappa.join(&conc(&site.seed, site.function));
+        let label = kappa.join(&conc(&site.seed));
         add(
             label,
             format!(
@@ -1563,7 +1558,7 @@ pub(crate) fn residue(
         if !http {
             continue;
         }
-        let label = t.join(&conc(&site.seed, site.function));
+        let label = t.join(&conc(&site.seed));
         add(
             label,
             format!(
@@ -1883,12 +1878,14 @@ fn outside_constructs(env: &Env<'_>, graph: &Graph) -> Vec<(Label, String)> {
     out
 }
 
-/// `L_res` of the package (ADR 0116 P9), with its graph built and `τ_conc` of the preview
-/// computed here: O(V + E + size of the seeds).
+/// `L_res` of the package (ADR 0116 P9), with its graph built and the precise `τ_conc` of its
+/// constructs computed here (`spec/27 §11`): O(V + E log E + F + size of the seeds). `L_srv`
+/// keeps the preview's `τ_conc` (`concurrent`) until slice 6 of the plan on #1087.
 pub(crate) fn residue_of(env: &Env<'_>, findings: &Findings) -> Residue {
     let graph = graph(env, findings);
     let concurrent = concurrent_functions(findings);
-    let residue = residue(env, findings, &graph, &concurrent);
+    let concurrency = concurrency(env, findings, &graph);
+    let residue = residue(env, findings, &graph, &concurrency);
     server_label(env, findings, &graph, &concurrent, residue)
 }
 
@@ -2723,9 +2720,10 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 ///   reaches `n`, `n` included: one pass of [`close`] over the reversed graph, whose strongly
 ///   connected components share one label (a cycle of calls shares one `conc`). O(V + E) joins.
 ///
-/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within`
-/// sites take their `τ_conc` from it ([`timing_precise`], slice 3 of the plan on #1087); the
-/// other sites keep the preview's until their slices.
+/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within` and
+/// `first of` sites take their `τ_conc` from it ([`timing_precise`], slices 3 and 4 of the plan
+/// on #1087), and so do the constructs `L_res` counts ([`residue`]); `for ever within`, the
+/// tick, limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let kappa: Vec<Label> = findings
         .constructs

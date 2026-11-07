@@ -23,6 +23,7 @@ pub mod rights;
 pub mod run;
 #[cfg(feature = "test-hooks")]
 pub mod script;
+pub mod script_file;
 pub mod server;
 #[cfg(feature = "test-hooks")]
 pub mod sim;
