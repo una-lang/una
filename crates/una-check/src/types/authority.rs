@@ -3421,17 +3421,23 @@ pub(crate) fn deadline_timing(
     }
     // ADR 0116 C: `τ_conc` taken at the loop (`spec/27 §11`).
     let concurrency = super::timing::concurrency_of(env, findings);
+    // `τ` from the summaries (slice 7 of #1087); the search runs only for a loop it reports.
+    let summaries = super::timing::summaries(env, findings);
     let mut loops: Vec<&super::DeadlineLoop> = findings.deadline_loops.iter().collect();
     loops.sort_by_key(|site| (site.span.file, site.span.start));
     let mut sites = Vec::new();
+    let count = loops.len();
     for site in loops {
-        let timing = super::timing::timing_precise(
-            env,
-            findings,
-            &site.seed,
-            super::timing::HostHandlers::All,
-            &concurrency,
-        );
+        let timing = summaries.timing(env, &site.seed, concurrency.tau_conc(&site.seed));
+        super::timing::cross_check(env, count, &timing, || {
+            super::timing::timing_precise(
+                env,
+                findings,
+                &site.seed,
+                super::timing::HostHandlers::All,
+                &concurrency,
+            )
+        });
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let function = site
@@ -3455,7 +3461,17 @@ pub(crate) fn deadline_timing(
         });
         if let Some((op, bound)) = interrupted {
             let tau = &timing.label;
-            let culprit = timing.culprit(&bound);
+            // The search, for the sources the message names (E, the error path).
+            let explained = residue.join_into(super::timing::timing_precise(
+                env,
+                findings,
+                &site.seed,
+                super::timing::HostHandlers::All,
+                &concurrency,
+            ));
+            // INVARIANT: the summaries give the label of the search (`timing::Summaries`).
+            debug_assert_eq!(&explained.label, tau, "summary and search disagree");
+            let culprit = explained.culprit(&bound);
             let mut diagnostic = report.make(
                 Code::U4001,
                 site.span,
@@ -3497,21 +3513,41 @@ pub(crate) fn limiter_timing(
     let mut sites: Vec<&super::LimiterSite> = findings.limiter_sites.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.span);
+    // `τ` from the summaries (slice 7 of #1087), with the preview's `τ_conc`; the search runs
+    // only for a site it reports.
+    let summaries = super::timing::summaries(env, findings);
+    let top = Label::top(&env.categories);
+    let count = sites.len();
     for site in sites {
-        let timing = super::timing::timing(
+        let beside = super::timing::preview_concurrent(&site.seed, site.function, &concurrent)
+            .then(|| top.clone());
+        let fast = summaries.timing(env, &site.seed, beside);
+        super::timing::cross_check(env, count, &fast, || {
+            super::timing::timing(
+                env,
+                findings,
+                &site.seed,
+                site.function,
+                super::timing::HostHandlers::All,
+                &concurrent,
+            )
+        });
+        let timing = residue.join_into(fast);
+        if timing.label.flows_to(&internal) {
+            continue;
+        }
+        let tau = &timing.label;
+        let explained = residue.join_into(super::timing::timing(
             env,
             findings,
             &site.seed,
             site.function,
             super::timing::HostHandlers::All,
             &concurrent,
-        );
-        let timing = residue.join_into(timing);
-        if timing.label.flows_to(&internal) {
-            continue;
-        }
-        let tau = &timing.label;
-        let culprit = timing.culprit(&internal);
+        ));
+        // INVARIANT: the summaries give the label of the search (`timing::Summaries`).
+        debug_assert_eq!(&explained.label, tau, "summary and search disagree");
+        let culprit = explained.culprit(&internal);
         let mut diagnostic = report.make(
             Code::U4001,
             site.span,
@@ -3535,7 +3571,21 @@ pub(crate) fn limiter_timing(
 /// captures (#1023, the refinement F item 7 of the amendment leaves to a separate issue), joined
 /// with `τ_conc(F)` at the race's own site, is `t`. The coarser `κ` of [`Concurrency`], `⊤` for a
 /// branch that calls `map`, is the one the sites inside the branches take through `ctx`.
+///
+/// **From the summaries** (slice 7 of #1087): the label and the operations of `Http`, without
+/// the sources, which [`within_site_explained`] adds for a site that is reported.
 fn within_site_timing(
+    env: &Env<'_>,
+    site: &super::within::WithinSite,
+    concurrency: &super::timing::Concurrency,
+    summaries: &super::timing::Summaries,
+) -> super::timing::Timing {
+    summaries.timing(env, &site.seed, concurrency.tau_conc(&site.seed))
+}
+
+/// [`within_site_timing`] by the search over the graph, with the sources a message names: the
+/// same label (`timing::Summaries`), computed only for a site that is reported.
+fn within_site_explained(
     env: &Env<'_>,
     findings: &Findings,
     site: &super::within::WithinSite,
@@ -3558,10 +3608,11 @@ pub(crate) fn within_labels(
         return (BTreeMap::new(), super::timing::Residue::none());
     }
     let concurrency = super::timing::concurrency_of(env, findings);
+    let summaries = super::timing::summaries(env, findings);
     let residue = super::timing::residue_of(env, findings);
     let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
     for site in &findings.withins {
-        let timing = within_site_timing(env, findings, site, &concurrency);
+        let timing = within_site_timing(env, site, &concurrency, &summaries);
         let timing = residue.join_into(timing);
         // A site checked twice, as an `attempt` inside a probe, keeps the join.
         let label = match labels.get(&site.key) {
@@ -3592,12 +3643,17 @@ pub(crate) fn within_timing(
         return Vec::new();
     }
     let concurrency = super::timing::concurrency_of(env, findings);
+    let summaries = super::timing::summaries(env, findings);
     let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.key);
     let mut entries = Vec::new();
+    let count = sites.len();
     for site in sites {
-        let timing = within_site_timing(env, findings, site, &concurrency);
+        let timing = within_site_timing(env, site, &concurrency, &summaries);
+        super::timing::cross_check(env, count, &timing, || {
+            within_site_explained(env, findings, site, &concurrency)
+        });
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let used = env
@@ -3640,7 +3696,12 @@ pub(crate) fn within_timing(
         });
         if let Some((op, bound)) = interrupted {
             let tau = &timing.label;
-            let culprit = timing.culprit(&bound);
+            // The search, for the sources the message names (E, the error path).
+            let explained =
+                residue.join_into(within_site_explained(env, findings, site, &concurrency));
+            // INVARIANT: the summaries give the label of the search (`timing::Summaries`).
+            debug_assert_eq!(&explained.label, tau, "summary and search disagree");
+            let culprit = explained.culprit(&bound);
             let mut diagnostic = report.make(
                 Code::U4001,
                 site.span,
