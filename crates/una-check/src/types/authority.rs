@@ -3430,12 +3430,16 @@ pub(crate) fn deadline_timing(
     let mut sites = Vec::new();
     let count = loops.len();
     for site in loops {
-        let timing = summaries.timing(env, &site.seed, concurrency.tau_conc(&site.seed));
+        let timing = summaries.timing(
+            env,
+            &findings.frames.seed(site.frame),
+            concurrency.tau_conc(&findings.frames.seed(site.frame)),
+        );
         super::timing::cross_check(env, count, &timing, || {
             super::timing::timing_precise(
                 env,
                 findings,
-                &site.seed,
+                &findings.frames.seed(site.frame),
                 super::timing::HostHandlers::All,
                 &concurrency,
             )
@@ -3467,7 +3471,7 @@ pub(crate) fn deadline_timing(
             let explained = residue.join_into(super::timing::timing_precise(
                 env,
                 findings,
-                &site.seed,
+                &findings.frames.seed(site.frame),
                 super::timing::HostHandlers::All,
                 &concurrency,
             ));
@@ -3523,14 +3527,18 @@ pub(crate) fn limiter_timing(
     let top = Label::top(&env.categories);
     let count = sites.len();
     for site in sites {
-        let beside = super::timing::preview_concurrent(&site.seed, site.function, &concurrent)
-            .then(|| top.clone());
-        let fast = summaries.timing(env, &site.seed, beside);
+        let beside = super::timing::preview_concurrent(
+            &findings.frames.seed(site.frame),
+            site.function,
+            &concurrent,
+        )
+        .then(|| top.clone());
+        let fast = summaries.timing(env, &findings.frames.seed(site.frame), beside);
         super::timing::cross_check(env, count, &fast, || {
             super::timing::timing(
                 env,
                 findings,
-                &site.seed,
+                &findings.frames.seed(site.frame),
                 site.function,
                 super::timing::HostHandlers::All,
                 &concurrent,
@@ -3544,7 +3552,7 @@ pub(crate) fn limiter_timing(
         let explained = residue.join_into(super::timing::timing(
             env,
             findings,
-            &site.seed,
+            &findings.frames.seed(site.frame),
             site.function,
             super::timing::HostHandlers::All,
             &concurrent,
@@ -3580,11 +3588,13 @@ pub(crate) fn limiter_timing(
 /// the sources, which [`within_site_explained`] adds for a site that is reported.
 fn within_site_timing(
     env: &Env<'_>,
+    findings: &Findings,
     site: &super::within::WithinSite,
     concurrency: &super::timing::Concurrency,
     summaries: &super::timing::Summaries,
 ) -> super::timing::Timing {
-    summaries.timing(env, &site.seed, concurrency.tau_conc(&site.seed))
+    let seed = findings.frames.seed(site.frame);
+    summaries.timing(env, &seed, concurrency.tau_conc(&seed))
 }
 
 /// [`within_site_timing`] by the search over the graph, with the sources a message names: the
@@ -3596,7 +3606,13 @@ fn within_site_explained(
     concurrency: &super::timing::Concurrency,
 ) -> super::timing::Timing {
     let host = super::timing::HostHandlers::All;
-    super::timing::timing_precise(env, findings, &site.seed, host, concurrency)
+    super::timing::timing_precise(
+        env,
+        findings,
+        &findings.frames.seed(site.frame),
+        host,
+        concurrency,
+    )
 }
 
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
@@ -3616,7 +3632,7 @@ pub(crate) fn within_labels(
     let residue = super::timing::residue_of(env, findings);
     let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
     for site in &findings.withins {
-        let timing = within_site_timing(env, site, &concurrency, &summaries);
+        let timing = within_site_timing(env, findings, site, &concurrency, &summaries);
         let timing = residue.join_into(timing);
         // A site checked twice, as an `attempt` inside a probe, keeps the join.
         let label = match labels.get(&site.key) {
@@ -3655,7 +3671,7 @@ pub(crate) fn within_timing(
     let mut entries = Vec::new();
     let count = sites.len();
     for site in sites {
-        let timing = within_site_timing(env, site, &concurrency, &summaries);
+        let timing = within_site_timing(env, findings, site, &concurrency, &summaries);
         super::timing::cross_check(env, count, &timing, || {
             within_site_explained(env, findings, site, &concurrency)
         });
@@ -3758,13 +3774,13 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
     if env.vias.is_empty() {
         return;
     }
-    // Each site: its words, what its outcome is, its span, its function and its seed.
+    // Each site: its words, what its outcome is, its span, its function and its frame.
     let mut sites: Vec<(
         &'static str,
         &'static str,
         Span,
         Option<usize>,
-        &super::timing::TimingSeed,
+        super::timing::TimingFrame,
     )> = Vec::new();
     let mut withins: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     withins.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
@@ -3779,7 +3795,7 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
             what,
             site.span,
             site.function,
-            &site.seed,
+            site.frame,
         ));
     }
     for site in &findings.deadline_loops {
@@ -3788,7 +3804,7 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
             "when its deadline ends it",
             site.span,
             site.function,
-            &site.seed,
+            site.frame,
         ));
     }
     for site in &findings.limiter_sites {
@@ -3797,7 +3813,7 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
             "whether `acquire` finds a token",
             site.span,
             site.function,
-            &site.seed,
+            site.frame,
         ));
     }
     if sites.is_empty() {
@@ -3817,7 +3833,8 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
             })
             .unwrap_or_default()
     };
-    for (words, what, span, function, seed) in sites {
+    for (words, what, span, function, frame) in sites {
+        let seed = &findings.frames.seed(frame);
         let Some((via, path)) = reach.via_of(seed) else {
             continue;
         };

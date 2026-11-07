@@ -192,8 +192,9 @@ pub(crate) struct ConstructNode {
     pub(crate) node: Option<Caller>,
     /// The innermost construct whose part holds it.
     pub(crate) parent: Option<usize>,
-    /// The seed of `κ`, `τ⁰` of the whole construct (P2): its parts, its list and its bound.
-    pub(crate) seed: TimingSeed,
+    /// The frame of `κ`, `τ⁰` of the whole construct (P2): its parts, its list and its bound;
+    /// `None` until it is recorded, which counts as `⊤` (fail closed).
+    pub(crate) frame: Option<TimingFrame>,
 }
 
 /// What checking records for the open sites, in the innermost one (ADR 0116 amendment of
@@ -232,31 +233,32 @@ struct FrameNode {
     events: Vec<(u64, Event)>,
 }
 
-/// The frames of the sites being checked: a tree by nesting, with the open ones on a stack,
-/// innermost last. Each item checking records goes once into the innermost open frame, not into
-/// every open frame, and the seed of a frame is rebuilt from its subtree when it ends. The tree
-/// is cleared whenever no frame is open, so it holds the frames of one outermost site at most.
+/// A frame of [`TimingFrames`]: the site whose checking recorded it, by its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TimingFrame(usize);
+
+/// The frames of the sites a pass checked (ADR 0116 amendment of 2026-10-25, E): a tree by
+/// nesting for each body. Each item checking records goes once into the innermost open frame,
+/// not into every open frame ([`Checker::timing_start`]), and a site keeps its frame, whose seed
+/// is rebuilt from its subtree when a consumer asks for it ([`TimingFrames::seed`]).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TimingFrames {
     tree: Vec<FrameNode>,
-    stack: Vec<usize>,
     next: u64,
 }
 
 impl TimingFrames {
-    /// Records `event` in the innermost open frame, if any.
-    fn record(&mut self, event: Event) {
-        if let Some(&at) = self.stack.last()
-            && let Some(frame) = self.tree.get_mut(at)
-        {
+    /// Records `event` in the frame `at`, the innermost open one.
+    fn record(&mut self, at: usize, event: Event) {
+        if let Some(frame) = self.tree.get_mut(at) {
             frame.events.push((self.next, event));
             self.next += 1;
         }
     }
 
-    /// Whether a frame is open.
-    fn is_open(&self) -> bool {
-        !self.stack.is_empty()
+    /// The seed of `frame`, rebuilt from its subtree ([`TimingFrames::seed_of`]).
+    pub(crate) fn seed(&self, frame: TimingFrame) -> TimingSeed {
+        self.seed_of(frame.0)
     }
 
     /// The seed of the frame `at`, rebuilt from the items of its subtree in the order checking
@@ -332,23 +334,31 @@ impl Checker<'_, '_, '_> {
             construct: self.parts.last().copied(),
             ..TimingSeed::default()
         };
-        let at = self.timing.tree.len();
-        if let Some(&parent) = self.timing.stack.last()
-            && let Some(frame) = self.timing.tree.get_mut(parent)
+        let frames = &mut self.findings.frames;
+        let at = frames.tree.len();
+        if let Some(&parent) = self.timing.last()
+            && let Some(frame) = frames.tree.get_mut(parent)
         {
             frame.children.push(at);
         }
-        self.timing.tree.push(FrameNode {
+        frames.tree.push(FrameNode {
             mark: self.locals.len(),
             children: Vec::new(),
             seed: std::mem::take(&mut seed),
             events: Vec::new(),
         });
-        self.timing.stack.push(at);
-        self.timing.record(Event::Source(
+        self.timing.push(at);
+        self.timing_record(Event::Source(
             self.ctx.pc.clone(),
             "the program counter".to_owned(),
         ));
+    }
+
+    /// Records `event` in the innermost open frame, if any: once, not in every open frame.
+    fn timing_record(&mut self, event: Event) {
+        if let Some(&at) = self.timing.last() {
+            self.findings.frames.record(at, event);
+        }
     }
 
     /// Whether code checked here runs where the structure of its function does not show what
@@ -430,7 +440,7 @@ impl Checker<'_, '_, '_> {
                 .or_insert_with(Label::public);
             *slot = slot.join(label);
         }
-        self.timing.record(Event::Bound(label.clone()));
+        self.timing_record(Event::Bound(label.clone()));
     }
 
     /// Records that the code being checked installs the handler `handler` at `span`.
@@ -448,23 +458,17 @@ impl Checker<'_, '_, '_> {
             span,
             node: self.caller(),
             parent: self.parts.last().copied(),
-            // `⊤` until `construct_seed` records the seed, so a construct whose seed is never
+            // `⊤` until `construct_seed` records the frame, so a construct whose frame is never
             // recorded fails closed (P4, F item 6).
-            seed: TimingSeed {
-                sources: vec![(
-                    Label::top(&self.env.categories),
-                    "a construct whose seed was not recorded".to_owned(),
-                )],
-                ..TimingSeed::default()
-            },
+            frame: None,
         });
         id
     }
 
-    /// Records `seed`, that of `κ` (P2), for the construct `id`, once its parts are checked.
-    pub(crate) fn construct_seed(&mut self, id: usize, seed: TimingSeed) {
+    /// Records `frame`, that of `κ` (P2), for the construct `id`, once its parts are checked.
+    pub(crate) fn construct_seed(&mut self, id: usize, frame: TimingFrame) {
         if let Some(construct) = self.findings.constructs.get_mut(id) {
-            construct.seed = seed;
+            construct.frame = Some(frame);
         }
     }
 
@@ -496,35 +500,37 @@ impl Checker<'_, '_, '_> {
     /// a test runs alone, so nothing runs beside it, as nothing runs beside `main` (ADR 0116
     /// IF6); the code of a task or a lambda inside it stays unplaced by its own sites.
     pub(crate) fn timing_placed(&mut self) {
-        if let Some(&at) = self.timing.stack.last()
-            && let Some(frame) = self.timing.tree.get_mut(at)
+        if let Some(&at) = self.timing.last()
+            && let Some(frame) = self.findings.frames.tree.get_mut(at)
         {
             frame.seed.unplaced = false;
         }
     }
 
-    /// Ends the innermost site of [`Self::timing_start`] and returns its seed, rebuilt from the
-    /// items of its subtree ([`TimingFrames`]).
-    pub(crate) fn timing_end(&mut self) -> TimingSeed {
-        let Some(at) = self.timing.stack.pop() else {
-            return TimingSeed::default();
-        };
-        let seed = self.timing.seed_of(at);
-        if !self.timing.is_open() {
-            self.timing.tree.clear();
+    /// Ends the innermost site of [`Self::timing_start`] and returns its frame, whose seed the
+    /// consumers rebuild from its subtree ([`TimingFrames::seed`]). Without an open site, a
+    /// frame with no item.
+    pub(crate) fn timing_end(&mut self) -> TimingFrame {
+        match self.timing.pop() {
+            Some(at) => TimingFrame(at),
+            None => {
+                let frames = &mut self.findings.frames;
+                let at = frames.tree.len();
+                frames.tree.push(FrameNode::default());
+                TimingFrame(at)
+            }
         }
-        seed
     }
 
     /// Adds `label` from `source` to the innermost site, such as a deadline's label (IF5 item
     /// 5).
     pub(crate) fn timing_source(&mut self, label: Label, source: String) {
-        self.timing.record(Event::Source(label, source));
+        self.timing_record(Event::Source(label, source));
     }
 
     /// Records a read of the local `name` in every site it is free in (IF5 item 2).
     pub(crate) fn timing_read(&mut self, name: &str) {
-        if !self.timing.is_open() {
+        if self.timing.is_empty() {
             return;
         }
         let Some(position) = self.locals.position(name) else {
@@ -534,8 +540,7 @@ impl Checker<'_, '_, '_> {
             return;
         };
         let label = self.deep(&ty);
-        self.timing
-            .record(Event::Read(label, name.to_owned(), position));
+        self.timing_record(Event::Read(label, name.to_owned(), position));
     }
 
     /// Records a value of type `ty` computed by the code being checked (#1685): `ℓ*` of `ty`,
@@ -555,7 +560,7 @@ impl Checker<'_, '_, '_> {
                 None => *values = Some(label.clone()),
             }
         }
-        self.timing.record(Event::Value(label.clone()));
+        self.timing_record(Event::Value(label.clone()));
         if let Some(current) = self.current {
             let body = self.findings.body_labels.entry(current).or_insert(None);
             raise(body, &label);
@@ -576,7 +581,7 @@ impl Checker<'_, '_, '_> {
     /// Records a call of, or a reference to, the function `callee` in every open site, and in
     /// the seed of the handler being checked.
     pub(crate) fn timing_callee(&mut self, callee: usize) {
-        self.timing.record(Event::Callee(callee));
+        self.timing_record(Event::Callee(callee));
         if let Some(seed) = self.handler_seed() {
             seed.callees.insert(callee);
         }
@@ -585,7 +590,7 @@ impl Checker<'_, '_, '_> {
     /// Records the operation `op` of `capability` in every open site, and in the seed of the
     /// handler being checked.
     pub(crate) fn timing_op(&mut self, capability: CapId, op: &str) {
-        self.timing.record(Event::Op(capability, op.to_owned()));
+        self.timing_record(Event::Op(capability, op.to_owned()));
         if let Some(seed) = self.handler_seed() {
             seed.ops.insert((capability, op.to_owned()));
         }
@@ -594,7 +599,7 @@ impl Checker<'_, '_, '_> {
     /// Records the installation of the handler `handler` in every open site, and in the seed
     /// of the handler being checked.
     pub(crate) fn timing_install(&mut self, handler: usize) {
-        self.timing.record(Event::Install(handler));
+        self.timing_record(Event::Install(handler));
         if let Some(seed) = self.handler_seed() {
             seed.handlers.insert(handler);
         }
@@ -603,7 +608,7 @@ impl Checker<'_, '_, '_> {
     /// Records a call of a function value in every open site (IF5 item 4), and in the seed of
     /// the handler being checked (#1436).
     pub(crate) fn timing_value_call(&mut self) {
-        self.timing.record(Event::ValueCall);
+        self.timing_record(Event::ValueCall);
         if let Some(seed) = self.handler_seed() {
             seed.value_call = true;
         }
@@ -617,7 +622,7 @@ impl Checker<'_, '_, '_> {
         if let Some(current) = self.current {
             self.findings.opaque_applies.insert((current, callee));
         }
-        self.timing.record(Event::Opaque(callee));
+        self.timing_record(Event::Opaque(callee));
         if let Some(seed) = self.handler_seed() {
             seed.opaque_applies.insert(callee);
         }
@@ -1534,8 +1539,8 @@ pub(crate) struct TasksSite {
     pub(crate) span: una_syntax::Span,
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
-    /// The seed of `κ(T)`, recorded while the statement was checked.
-    pub(crate) seed: TimingSeed,
+    /// The frame of `κ(T)`, recorded while the statement was checked.
+    pub(crate) frame: TimingFrame,
 }
 
 /// The residue label `L_res` of ADR 0116 P9, with each construct that raises it, as a message
@@ -1642,11 +1647,11 @@ pub(crate) fn residue(
     let mut tasks: Vec<&TasksSite> = findings.tasks_sites.iter().collect();
     tasks.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     for site in tasks {
-        let (kappa, http) = seed_label(env, graph, &site.seed);
+        let (kappa, http) = seed_label(env, graph, &findings.frames.seed(site.frame));
         if !http {
             continue;
         }
-        let label = kappa.join(&conc(&site.seed));
+        let label = kappa.join(&conc(&findings.frames.seed(site.frame)));
         add(
             label,
             format!(
@@ -1663,11 +1668,11 @@ pub(crate) fn residue(
         .collect();
     races.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     for site in races {
-        let (t, http) = seed_label(env, graph, &site.seed);
+        let (t, http) = seed_label(env, graph, &findings.frames.seed(site.frame));
         if !http {
             continue;
         }
-        let label = t.join(&conc(&site.seed));
+        let label = t.join(&conc(&findings.frames.seed(site.frame)));
         add(
             label,
             format!(
@@ -3192,7 +3197,11 @@ pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> 
     let kappa: Vec<Label> = findings
         .constructs
         .iter()
-        .map(|c| seed_label(env, graph, &c.seed).0)
+        .map(|c| match c.frame {
+            Some(frame) => seed_label(env, graph, &findings.frames.seed(frame)).0,
+            // A construct whose frame was not recorded fails closed (P4, F item 6).
+            None => Label::top(&env.categories),
+        })
         .collect();
     let mut ctx: Vec<Label> = Vec::with_capacity(kappa.len());
     let top = Label::top(&env.categories);
@@ -3378,19 +3387,26 @@ pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph 
     let mut sites: Vec<TimingPlace> = findings
         .withins
         .iter()
-        .map(|site| place(site.construct.words(), site.span, &site.seed))
+        .map(|site| {
+            place(
+                site.construct.words(),
+                site.span,
+                &findings.frames.seed(site.frame),
+            )
+        })
         .collect();
-    sites.extend(
-        findings
-            .deadline_loops
-            .iter()
-            .map(|site| place("for ever within", site.span, &site.seed)),
-    );
+    sites.extend(findings.deadline_loops.iter().map(|site| {
+        place(
+            "for ever within",
+            site.span,
+            &findings.frames.seed(site.frame),
+        )
+    }));
     sites.extend(
         findings
             .tasks_sites
             .iter()
-            .map(|site| place("tasks", site.span, &site.seed)),
+            .map(|site| place("tasks", site.span, &findings.frames.seed(site.frame))),
     );
     TimingGraph {
         edges,

@@ -1253,6 +1253,9 @@ pub(crate) struct Findings {
     /// binds, parameters included, and of the answers of the operations it performs: the data
     /// it can hold, for the reach of a `start` (#1674).
     pub(crate) reach_labels: std::collections::BTreeMap<timing::Caller, una_core::Label>,
+    /// The frames of the timing sites checked, a tree by nesting per body, each item recorded
+    /// once (ADR 0116 amendment of 2026-10-25, E); a site keeps its frame.
+    pub(crate) frames: timing::TimingFrames,
     /// The task constructs checked, the nodes of each body's construct tree (ADR 0116 P2, P3),
     /// by the ids that edges and sites record.
     pub(crate) constructs: Vec<timing::ConstructNode>,
@@ -2476,8 +2479,8 @@ pub(crate) struct DeadlineLoop {
     pub(crate) span: Span,
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
-    /// The seed of the timing label of its body, the deadline's label included.
-    pub(crate) seed: timing::TimingSeed,
+    /// The frame of the timing label of its body, the deadline's label included.
+    pub(crate) frame: timing::TimingFrame,
 }
 
 /// An installation of `limiter` of `std.limit` (ADR 0117 rule 9, IF5): whether a token is left
@@ -2490,6 +2493,6 @@ pub(crate) struct LimiterSite {
     pub(crate) span: Span,
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
-    /// The seed of the timing label of the statement, the handlers it installs included.
-    pub(crate) seed: timing::TimingSeed,
+    /// The frame of the timing label of the statement, the handlers it installs included.
+    pub(crate) frame: timing::TimingFrame,
 }
