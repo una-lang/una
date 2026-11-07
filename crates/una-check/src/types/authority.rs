@@ -3525,25 +3525,23 @@ pub(crate) fn limiter_timing(
     }
 }
 
-/// `τ(e)` of a `within` or a `first of`, before `L_res`: a `within` takes the precise
-/// `τ_conc` of `spec/27 §11` (ADR 0116, amendment of 2026-10-25, P4), a `first of` the
-/// preview's until slice 4 of the plan on #1087.
+/// `τ(e)` of a `within` or a `first of`, before `L_res`, with the precise `τ_conc` of
+/// `spec/27 §11` (ADR 0116, amendment of 2026-10-25, P4 and C).
+///
+/// **A race.** C gives `t = κ(F) ⊔ τ_conc(F)`, since every branch runs beside the others.
+/// `κ(F)` is `τ⁰` of the whole race (P2), which is `τ⁰` of the race's own seed over every
+/// branch, so `τ⁰` of that seed, by IF5 with the lambdas written at a call counted by their
+/// captures (#1023, the refinement F item 7 of the amendment leaves to a separate issue), joined
+/// with `τ_conc(F)` at the race's own site, is `t`. The coarser `κ` of [`Concurrency`], `⊤` for a
+/// branch that calls `map`, is the one the sites inside the branches take through `ctx`.
 fn within_site_timing(
     env: &Env<'_>,
     findings: &Findings,
     site: &super::within::WithinSite,
-    concurrent: &BTreeSet<usize>,
     concurrency: &super::timing::Concurrency,
 ) -> super::timing::Timing {
     let host = super::timing::HostHandlers::All;
-    match site.construct {
-        super::within::Construct::Within => {
-            super::timing::timing_precise(env, findings, &site.seed, host, concurrency)
-        }
-        super::within::Construct::FirstOf => {
-            super::timing::timing(env, findings, &site.seed, site.function, host, concurrent)
-        }
-    }
+    super::timing::timing_precise(env, findings, &site.seed, host, concurrency)
 }
 
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
@@ -3558,12 +3556,11 @@ pub(crate) fn within_labels(
     if findings.withins.is_empty() {
         return (BTreeMap::new(), super::timing::Residue::none());
     }
-    let concurrent = super::timing::concurrent_functions(findings);
     let concurrency = super::timing::concurrency_of(env, findings);
     let residue = super::timing::residue_of(env, findings);
     let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
     for site in &findings.withins {
-        let timing = within_site_timing(env, findings, site, &concurrent, &concurrency);
+        let timing = within_site_timing(env, findings, site, &concurrency);
         let timing = residue.join_into(timing);
         // A site checked twice, as an `attempt` inside a probe, keeps the join.
         let label = match labels.get(&site.key) {
@@ -3593,14 +3590,13 @@ pub(crate) fn within_timing(
     if findings.withins.is_empty() {
         return Vec::new();
     }
-    let concurrent = super::timing::concurrent_functions(findings);
     let concurrency = super::timing::concurrency_of(env, findings);
     let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.key);
     let mut entries = Vec::new();
     for site in sites {
-        let timing = within_site_timing(env, findings, site, &concurrent, &concurrency);
+        let timing = within_site_timing(env, findings, site, &concurrency);
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let used = env
