@@ -771,3 +771,86 @@ fn a_serve_section_takes_constant_time_per_request() {
     timing::assert_growth("native requests", &sizes, fixed, 1e-3, 8.0, native);
     drop(scratch);
 }
+
+/// The script of the case `dir` in the form of `--serve-script` (`spec/31 §8` rule 6): its
+/// `text` lines as `bytes`, each line one compact JSON object.
+fn flag_script(dir: &Path) -> String {
+    script::out_text(&lines(&dir.join("script.jsonl")))
+}
+
+/// Runs `command` with the flags of a script in `package`, `UNA_TEST_RUN_SERVER=1` and a
+/// trace: its exit code, its output lines, its trace and what `--serve-out` wrote.
+fn run_flags(
+    mut command: std::process::Command,
+    package: &Path,
+) -> (i32, Vec<String>, Vec<Value>, String) {
+    let script = package.join("flag-script.jsonl");
+    std::fs::write(&script, flag_script(package)).unwrap();
+    let out = package.join("serve-out.jsonl");
+    let trace = package.join("flag-trace.json");
+    let ran = command
+        .env("UNA_TEST_RUN_SERVER", "1")
+        .env("NO_COLOR", "1")
+        .args(["--virtual-time", "--serve-script"])
+        .arg(&script)
+        .arg("--serve-out")
+        .arg(&out)
+        .arg("--trace")
+        .arg(&trace)
+        .current_dir(package)
+        .output()
+        .unwrap();
+    let output = String::from_utf8_lossy(&ran.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()));
+    let wire = std::fs::read_to_string(&out).unwrap_or_default();
+    (
+        ran.status.code().unwrap_or(-1),
+        output,
+        events.as_array().cloned().unwrap_or_default(),
+        wire,
+    )
+}
+
+#[test]
+fn a_script_runs_through_the_flags_alike_in_both_engines() {
+    // ADR 0123 rule 21, `spec/31 §8` rule 6: in the toolchain's own test builds, `una run` and an
+    // executable given `--serve-script` serve the script's connections in place of listeners,
+    // and `--serve-out` writes what each connection received, in the script's form. Both give the
+    // bytes, output and trace that the harness's own runs of the case recorded, byte for byte.
+    for case in [
+        "worker_pool",
+        "cancelled_task_503",
+        "reply_after_answer_deadline",
+    ] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/serve_runs")
+            .join(case);
+        let recorded = lines(&dir.join("run.jsonl"));
+        assert_eq!(recorded[0]["completion"], json!({"ok": "unit"}), "{case}");
+        let output: Vec<String> = recorded[0]["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap().to_owned())
+            .collect();
+        let wire = script::out_text(&lines(&dir.join("expected.jsonl")));
+        let (scratch, package, name) = build_native(&dir, "-flags");
+        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        interpreter
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .arg("run");
+        let native = std::process::Command::new(package.join("target/una").join(&name));
+        for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+            let (code, printed, trace, out) = run_flags(command, &package);
+            assert_eq!(code, 0, "{case} {engine}");
+            assert_eq!(printed, output, "{case} {engine}");
+            assert_eq!(trace, recorded[1..], "{case} {engine}");
+            assert_eq!(out, wire, "{case} {engine}");
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
