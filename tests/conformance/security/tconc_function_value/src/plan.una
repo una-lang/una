@@ -1,4 +1,4 @@
--- test: precise `τ_conc` through `Λ` (ADR 0116 P1, P3): a branch calls `apply(route, x: 3)`, beside a branch that works on a `secret`; the call of a function value reaches `Λ`, and `Λ` every function named as a value, so the `within` of `plan_route` runs beside the race's parts, whose `κ` is `⊤` (IF5 item 4), and passing its `TimedOut` on is U4002
+-- test: precise `τ_conc` through `Λ` (ADR 0116 P1, P3): a branch calls `apply(route, x: 3)`, beside a branch that works on a `secret`; the call of a function value reaches `Λ`, and `Λ` every function named as a value, so the `within` of `plan_route` runs beside the parts of the `together`, whose `κ` is `⊤` (IF5 item 4), and passing its `TimedOut` on is U4002
 -- spec: spec/27 §11
 -- expect: error U4002 at src/plan.una:17:5
 module plan
