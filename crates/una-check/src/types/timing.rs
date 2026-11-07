@@ -2720,9 +2720,10 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 ///   reaches `n`, `n` included: one pass of [`close`] over the reversed graph, whose strongly
 ///   connected components share one label (a cycle of calls shares one `conc`). O(V + E) joins.
 ///
-/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within`
-/// sites take their `τ_conc` from it ([`timing_precise`], slice 3 of the plan on #1087); the
-/// other sites keep the preview's until their slices.
+/// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within` and
+/// `first of` sites take their `τ_conc` from it ([`timing_precise`], slices 3 and 4 of the plan
+/// on #1087), and so do the constructs `L_res` counts ([`residue`]); `for ever within`, the
+/// tick, limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let kappa: Vec<Label> = findings
         .constructs
