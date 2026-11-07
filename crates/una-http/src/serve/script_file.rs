@@ -72,6 +72,50 @@ enum State {
     Closed,
 }
 
+/// `--serve-script` without `--virtual-time` (ADR 0123 rule 21).
+pub const NEEDS_VIRTUAL_TIME: &str =
+    "`--serve-script` needs `--virtual-time`: its times are virtual milliseconds";
+
+/// `--serve-out` without `--serve-script`.
+pub const NEEDS_SCRIPT: &str =
+    "`--serve-out` needs `--serve-script`: it writes what the scripted connections received";
+
+/// `--serve-script` in a run with no `serve:` grant.
+pub const NEEDS_GRANT: &str =
+    "`--serve-script` replaces the listeners of the run's `serve:` grants, and the run has none";
+
+/// A run whose script was read and checked: its connections do not run in this release yet
+/// (`spec/31 §8`), as a program that serves does not (`spec/31 §1` rule 10).
+pub const PENDING: &str =
+    "the scripted connections of `--serve-script` do not run in this release yet";
+
+/// The usage error of `--serve-script` and `--serve-out` as given, before anything else is
+/// read: `--serve-script` needs `--virtual-time`, and `--serve-out` needs `--serve-script`.
+pub fn check_flags(script: bool, out: bool, virtual_time: bool) -> Result<(), &'static str> {
+    if script && !virtual_time {
+        return Err(NEEDS_VIRTUAL_TIME);
+    }
+    if out && !script {
+        return Err(NEEDS_SCRIPT);
+    }
+    Ok(())
+}
+
+/// The script of the file at `path`, read and checked for a run whose `serve:` grants have the
+/// addresses `listeners`, or the message of the usage error: [`NEEDS_GRANT`] when there are
+/// none, a file that cannot be read, or the first line that cannot be followed.
+pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, String> {
+    if listeners.is_empty() {
+        return Err(NEEDS_GRANT.to_owned());
+    }
+    let shown = path.display();
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        format!("cannot read the script `{shown}` of `--serve-script`: {error}")
+    })?;
+    parse(&text, listeners)
+        .map_err(|why| format!("the script `{shown}` of `--serve-script`, {why}"))
+}
+
 /// The events of the script `text`, for a run whose `serve:` grants have the addresses
 /// `listeners` (as `ServeGrant::listener` writes them), or why it cannot be followed: the
 /// message names the line, counted from 1.

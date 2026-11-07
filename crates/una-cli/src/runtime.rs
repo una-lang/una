@@ -84,6 +84,11 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) stop_grace: u64,
     /// `--trace <file>`: the trace, written to the file as it happens (ADR 0117 rule 10).
     pub(crate) trace: Option<&'a Path>,
+    /// `--serve-script <file>`: the connections that replace the listeners of the `serve:`
+    /// grants (ADR 0123 rule 21, `spec/31 §8`).
+    pub(crate) serve_script: Option<&'a Path>,
+    /// `--serve-out <file>`: where what the scripted connections received is written.
+    pub(crate) serve_out: Option<&'a Path>,
 }
 
 /// The flags of tasks as given on the command line, each `None` when absent (ADR 0117).
@@ -364,6 +369,15 @@ pub(crate) fn run_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
+    // ADR 0123 rule 21: the flags of a script need one another, before the package is read.
+    if let Err(message) = una_http::serve::script_file::check_flags(
+        options.serve_script.is_some(),
+        options.serve_out.is_some(),
+        options.virtual_time,
+    ) {
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     let package = match crate::package::load_in(
         path,
         &std::collections::BTreeMap::new(),
@@ -558,8 +572,27 @@ pub(crate) fn run_command(
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
+    // A script of connections stands for the peers of the `serve:` grants (ADR 0123 rule 21):
+    // it is read and checked in full before anything runs, and its connections do not run in
+    // this release yet (`spec/31 §8`).
+    if let Some(script) = options.serve_script {
+        let listeners: Vec<String> = grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Serve { grant, .. } => Some(grant.listener()),
+                _ => None,
+            })
+            .collect();
+        let message = match una_http::serve::script_file::load(script, &listeners) {
+            Ok(_) => una_http::serve::script_file::PENDING.to_owned(),
+            Err(message) => message,
+        };
+        writeln!(stderr, "error: {message}")?;
+        return Ok(ExitStatus::Usage);
+    }
     // Live peers send in real time, which virtual time cannot place: a run under
-    // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment C).
+    // `--virtual-time` takes no `serve:` grant without `--serve-script` (ADR 0123, S4
+    // amendment C).
     if options.virtual_time
         && grants
             .iter()

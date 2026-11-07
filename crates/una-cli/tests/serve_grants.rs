@@ -406,3 +406,122 @@ fn the_core_of_a_package_that_imports_no_server_name_names_nothing_of_the_server
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_script_of_connections_is_checked_before_main_in_both_engines() {
+    // ADR 0123 rule 21, `spec/31 §8`: `--serve-script` needs `--virtual-time`, `--serve-out`
+    // needs `--serve-script`, and the script is read and checked in full before anything runs;
+    // its connections do not run in this release yet, so every run that gives it ends with a
+    // usage error, exit code 2, with no output and no listener bound.
+    runtime();
+    let dir = package("script", "");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let exe = dir.join("target/una/app");
+    let port = free_port();
+    let grant = format!("serve:http://127.0.0.1:{port}");
+    let open = format!(
+        "{{\"at\": 0, \"connection\": 1, \"grant\": \"127.0.0.1:{port}\", \"peer\": \"192.0.2.1\", \"reads\": \"paced\"}}\n"
+    );
+    let write = |name: &str, text: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        path.to_str().unwrap().to_owned()
+    };
+    let valid = write(
+        "valid.jsonl",
+        &format!(
+            "{open}{{\"at\": 3, \"connection\": 1, \"bytes\": \"R0VUIC8gSFRUUC8xLjENCkhvc3Q6IGxvY2FsaG9zdA0KDQo=\"}}\n{{\"at\": 3, \"connection\": 1, \"read\": 4096}}\n{{\"at\": 9, \"connection\": 1, \"close\": true}}\n"
+        ),
+    );
+    let earlier = write(
+        "earlier.jsonl",
+        &format!(
+            "{}{}",
+            open.replace("\"at\": 0", "\"at\": 9"),
+            open.replace("\"at\": 0", "\"at\": 5")
+                .replace("\"connection\": 1", "\"connection\": 2")
+        ),
+    );
+    let missing = dir.join("missing.jsonl");
+    let missing = missing.to_str().unwrap();
+    let cases: Vec<(Vec<&str>, String)> = vec![
+        (
+            vec!["--grant", &grant, "--serve-script", &valid],
+            "`--serve-script` needs `--virtual-time`".to_owned(),
+        ),
+        (
+            vec!["--virtual-time", "--serve-out", "out.jsonl"],
+            "`--serve-out` needs `--serve-script`".to_owned(),
+        ),
+        (
+            vec!["--virtual-time", "--serve-script", &valid],
+            "the run has none".to_owned(),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                missing,
+            ],
+            format!("cannot read the script `{missing}` of `--serve-script`"),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &earlier,
+            ],
+            "line 2: `at` is 5, before the line above it, at 9".to_owned(),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &valid,
+                "--serve-out",
+                "out.jsonl",
+            ],
+            "the scripted connections of `--serve-script` do not run in this release yet"
+                .to_owned(),
+        ),
+        // Without a script, virtual time still takes no `serve:` grant.
+        (
+            vec!["--virtual-time", "--grant", &grant],
+            "live peers send in real time".to_owned(),
+        ),
+    ];
+    for (args, wanted) in cases {
+        let native = Command::new(&exe)
+            .args(&args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let mut run = vec!["run"];
+        run.extend_from_slice(&args);
+        let interpreted = una(&dir, &run);
+        for (engine, output) in [("native", &native), ("interpreter", &interpreted)] {
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{engine} {args:?}: {output:?}"
+            );
+            assert!(
+                stderr(output).contains(&wanted),
+                "{engine} {args:?}: {}",
+                stderr(output)
+            );
+            assert_eq!(stdout(output), "", "{engine} {args:?}");
+        }
+    }
+    assert!(!dir.join("out.jsonl").exists());
+    // No listener was bound: the port is still free.
+    TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

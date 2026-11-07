@@ -744,6 +744,11 @@ pub struct Options {
     /// `--serve-threads` (ADR 0123 rule 20), from 1 to 256: the serve threads of a run that
     /// serves; 0 until the command line is read.
     pub serve_threads: usize,
+    /// `--serve-script <file>`: the connections that replace the listeners of the `serve:`
+    /// grants (ADR 0123 rule 21, `spec/31 §8`).
+    pub serve_script: Option<PathBuf>,
+    /// `--serve-out <file>`: where what the scripted connections received is written.
+    pub serve_out: Option<PathBuf>,
 }
 
 /// The options with the package's declared budget applied (ADR 0109 rule 4): without
@@ -789,6 +794,8 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         match flag {
             "--grant" => options.grants.push(value()?),
             "--trace" => options.trace = Some(PathBuf::from(value()?)),
+            "--serve-script" => options.serve_script = Some(PathBuf::from(value()?)),
+            "--serve-out" => options.serve_out = Some(PathBuf::from(value()?)),
             "--max-depth" => {
                 let text = value()?;
                 options.max_depth = text
@@ -884,7 +891,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n>, --file-threads <n> and --serve-threads <n>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n>, --file-threads <n>, --serve-threads <n>, --serve-script <file> and --serve-out <file>"
                 ));
             }
         }
@@ -898,6 +905,12 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         file_threads,
     )?;
     options.serve_threads = una_interp::concurrency::serve_threads(serve_threads)?;
+    // ADR 0123 rule 21: the flags of a script need one another.
+    una_http::serve::script_file::check_flags(
+        options.serve_script.is_some(),
+        options.serve_out.is_some(),
+        options.virtual_time,
+    )?;
     Ok(options)
 }
 
@@ -2187,6 +2200,24 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     #[cfg(not(feature = "test-hooks"))]
     let scripted = false;
+    // A script of connections stands for the peers of the `serve:` grants (ADR 0123 rule 21):
+    // it is read and checked in full before `main`, and its connections do not run in this
+    // release yet (`spec/31 §8`), as for `una run`.
+    if let Some(script) = &options.serve_script {
+        let listeners: Vec<String> = grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Serve { grant, .. } => Some(grant.listener()),
+                _ => None,
+            })
+            .collect();
+        let message = match una_http::serve::script_file::load(script, &listeners) {
+            Ok(_) => una_http::serve::script_file::PENDING.to_owned(),
+            Err(message) => message,
+        };
+        let _ = writeln!(stderr, "error: {message}");
+        return USAGE;
+    }
     // Live peers send in real time, which virtual time cannot place: a run under
     // `--virtual-time` takes no `serve:` grant until `--serve-script` (ADR 0123, S4 amendment
     // C). The scripted engine of the tests stands for such a script.
