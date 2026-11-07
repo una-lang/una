@@ -2203,13 +2203,20 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                     return USAGE;
                 }
             };
-            #[cfg(feature = "test-hooks")]
-            let runs = !scripted
-                && crate::serve::script::install_from_script(
-                    &served,
-                    &events,
-                    options.serve_out.clone(),
+            // The test hook and the flag cannot both name a script.
+            if scripted {
+                let _ = writeln!(
+                    stderr,
+                    "error: `--serve-script` and `UNA_TEST_SERVE_SCRIPT` both name a script"
                 );
+                return USAGE;
+            }
+            #[cfg(feature = "test-hooks")]
+            let runs = crate::serve::script::install_from_script(
+                &served,
+                &events,
+                options.serve_out.clone(),
+            );
             #[cfg(not(feature = "test-hooks"))]
             let runs = {
                 let _ = (&served, &events);
@@ -2641,7 +2648,10 @@ fn finish(mut state: State) -> i32 {
     // The scripted engine of the tests ends with the run, after every answer (ADR 0123 rule
     // 21).
     #[cfg(feature = "test-hooks")]
-    crate::serve::script::end();
+    if let Err(message) = crate::serve::script::end() {
+        let _ = writeln!(stderr, "error: {message}");
+        code = USAGE;
+    }
     // The serve threads write what the run answered, then end (ADR 0123 rule 18); after an
     // abort that ends the process at once, `abort_run` made the hard stop already.
     end_serving(

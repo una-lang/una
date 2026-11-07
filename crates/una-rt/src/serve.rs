@@ -799,6 +799,8 @@ pub(crate) mod script {
         Ok(true)
     }
 
+    use std::io::Write as _;
+
     /// Where `--serve-out` writes, set once by [`install_from_script`].
     static OUT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
 
@@ -832,21 +834,33 @@ pub(crate) mod script {
 
     /// Ends the scripted engine at the run's end and writes what each connection received, one
     /// JSON line each, then `{"rights_left": n, "problems": [...]}`, to the file that
-    /// `UNA_TEST_SERVE_WIRE` names.
-    pub(crate) fn end() {
+    /// `UNA_TEST_SERVE_WIRE` names. A run of `--serve-script` reports what the engine left not
+    /// at rest as warnings and writes `--serve-out`, as `una run` does: the message of a file
+    /// that cannot be written is the `Err`, a usage error.
+    pub(crate) fn end() -> Result<(), String> {
         let Some(port) = serving().and_then(|serving| serving.script.clone()) else {
-            return;
+            return Ok(());
         };
         let left = live();
         let ended = port.end();
-        // `--serve-out`: the wire in the script's form. A file that cannot be written fails the
-        // test that reads it.
-        if let Some(Some(path)) = OUT.get() {
-            let _ = std::fs::write(path, una_http::serve::script::out_text(&ended.wire));
+        let mut written = Ok(());
+        if let Some(out) = OUT.get() {
+            let mut stderr = std::io::stderr();
+            for problem in &ended.problems {
+                let _ = writeln!(
+                    stderr,
+                    "warning: the scripted engine at the end of the run: {problem}"
+                );
+            }
+            if let Some(path) = out {
+                let text = una_http::serve::script::out_text(&ended.wire);
+                written = una_http::serve::script_file::write_out(path, &text)
+                    .map_err(|error| una_http::serve::script_file::out_error(path, &error));
+            }
         }
         #[allow(clippy::disallowed_methods)]
         let Some(path) = std::env::var_os("UNA_TEST_SERVE_WIRE") else {
-            return;
+            return written;
         };
         let mut text = String::new();
         for line in &ended.wire {
@@ -858,6 +872,7 @@ pub(crate) mod script {
         );
         text.push('\n');
         let _ = std::fs::write(path, text);
+        written
     }
 }
 

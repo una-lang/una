@@ -18,7 +18,8 @@
 //! given twice are refused. A script with no lines opens no connection.
 //!
 //! The times never decrease from a line to the next, and lines of equal `at` take effect in
-//! their order. A connection is opened once, before its other lines. Reading is O(n) in the
+//! their order. A connection is opened once, before its other lines, and one peer address
+//! opens at most 64,512 connections. Reading is O(n) in the
 //! bytes of the file, with one hash lookup per line.
 
 use std::collections::HashMap;
@@ -101,6 +102,10 @@ pub fn check_flags(script: bool, out: bool, virtual_time: bool) -> Result<(), &'
     Ok(())
 }
 
+/// The connections a script may open from one peer address: one per port from 1024 to 65535,
+/// which the engine gives them in order.
+pub const PEER_CONNECTIONS: u32 = 64_512;
+
 /// The largest script `--serve-script` reads, in bytes: 64 MiB.
 pub const MAX_SCRIPT: u64 = 64 * 1024 * 1024;
 
@@ -160,6 +165,29 @@ pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, 
         .map_err(|why| format!("the script `{shown}` of `--serve-script`, {why}"))
 }
 
+/// Writes the text of `--serve-out` to `path`: made with mode 0600 when it does not exist, since
+/// it holds what the program sent, `internal` data and credentials included, unredacted
+/// (`spec/31 §8` rule 6); an existing file is truncated.
+pub fn write_out(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(text.as_bytes())
+}
+
+/// The message of a `--serve-out` that cannot be written, the same in both engines.
+pub fn out_error(path: &std::path::Path, error: &std::io::Error) -> String {
+    format!(
+        "cannot write the connections to `{}`: {error}",
+        path.display()
+    )
+}
+
 /// The events of the script `text`, for a run whose `serve:` grants have the addresses
 /// `listeners` (as `ServeGrant::listener` writes them), or why it cannot be followed: the
 /// message names the line, counted from 1.
@@ -170,13 +198,14 @@ pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, 
 pub fn parse(text: &str, listeners: &[String]) -> Result<Vec<Event>, String> {
     let mut events = Vec::new();
     let mut connections: HashMap<u64, State> = HashMap::new();
+    let mut per_peer: HashMap<IpAddr, u32> = HashMap::new();
     let mut last = 0u64;
     if text.is_empty() {
         return Ok(events);
     }
     let body = text.strip_suffix('\n').unwrap_or(text);
     for (index, line) in body.split('\n').enumerate() {
-        let event = event(line, listeners, &mut connections, last)
+        let event = event(line, listeners, &mut connections, &mut per_peer, last)
             .map_err(|why| format!("line {}: {why}", index + 1))?;
         last = event.at;
         events.push(event);
@@ -269,6 +298,7 @@ fn event(
     line: &str,
     listeners: &[String],
     connections: &mut HashMap<u64, State>,
+    per_peer: &mut HashMap<IpAddr, u32>,
     last: u64,
 ) -> Result<Event, String> {
     let object = object(line)?;
@@ -319,6 +349,13 @@ fn event(
             "paced" => PeerReads::Paced,
             other => return Err(format!("`reads` is `{other}`, not `eager` or `paced`")),
         };
+        let opened = per_peer.entry(peer).or_insert(0u32);
+        if *opened == PEER_CONNECTIONS {
+            return Err(format!(
+                "`{peer}` opens more than {PEER_CONNECTIONS} connections, one per port it has"
+            ));
+        }
+        *opened += 1;
         connections.insert(connection, State::Open(reads));
         Action::Open { grant, peer, reads }
     } else {

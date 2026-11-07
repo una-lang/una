@@ -80,13 +80,15 @@ pub fn lines(text: &str) -> Result<Vec<Value>, String> {
         .collect()
 }
 
-fn peer_address(peer: &str, k: u64) -> String {
-    let ip: std::net::IpAddr = peer.parse().expect("a peer address");
-    match ip {
-        std::net::IpAddr::V4(_) => format!("{ip}:{}", 20_000 + k),
-        std::net::IpAddr::V6(_) => format!("[{ip}]:{}", 20_000 + k),
-    }
-}
+/// The first port of a scripted peer's connections: each peer address numbers its own, in the
+/// order the script opens them, so no connection number can make a port overflow.
+const FIRST_PORT: u16 = 1024;
+
+/// The ports a scripted peer address has, `FIRST_PORT` to 65535: at most this many connections
+/// per peer address in a script, which `script_file` checks.
+pub const PEER_PORTS: u32 = super::script_file::PEER_CONNECTIONS;
+
+const _: () = assert!(FIRST_PORT as u32 + PEER_PORTS == 65_536);
 
 /// The engine of a run over a script: the serve thread, its clock and the script's events,
 /// which the program's waits advance.
@@ -101,6 +103,8 @@ struct Scripted {
     stop: Box<dyn Fn() + Send>,
     /// The last time the script named, in milliseconds.
     last: u64,
+    /// The connections each peer address opened so far, which give the next one its port.
+    ports: std::collections::HashMap<std::net::IpAddr, u32>,
 }
 
 impl Scripted {
@@ -126,7 +130,15 @@ impl Scripted {
                 .iter()
                 .position(|l| Some(l.as_str()) == grant.as_str())
                 .expect("a grant of the case");
-            let from = peer_address(event["peer"].as_str().expect("peer"), k);
+            let ip: std::net::IpAddr = event["peer"]
+                .as_str()
+                .and_then(|peer| peer.parse().ok())
+                .expect("a peer address");
+            let opened = self.ports.entry(ip).or_insert(0);
+            let port = u16::try_from(u32::from(FIRST_PORT) + *opened)
+                .expect("at most PEER_PORTS connections from one peer address");
+            *opened += 1;
+            let from = std::net::SocketAddr::new(ip, port).to_string();
             let reads = match event["reads"].as_str() {
                 Some("paced") => Reads::Paced,
                 _ => Reads::Eager,
@@ -210,6 +222,7 @@ impl ScriptPort {
             stopped: false,
             stop,
             last: 0,
+            ports: std::collections::HashMap::new(),
         });
         ScriptPort {
             scripted,
@@ -261,7 +274,7 @@ impl ScriptPort {
         }
         let mut out: Vec<(u64, u64, u8, Value)> = Vec::new();
         for (k, why, at) in &sim.refused {
-            let reason = format!("{why:?}").to_lowercase();
+            let reason = refusal_name(*why);
             out.push((
                 at / 1_000_000,
                 *k,
@@ -304,6 +317,20 @@ impl ScriptPort {
             wire: out.into_iter().map(|(_, _, _, v)| v).collect(),
             problems,
         }
+    }
+}
+
+/// The name of an accept refusal on the wire (`spec/31 §8` rule 6), one fixed word each.
+fn refusal_name(why: super::grant::AcceptRefusal) -> &'static str {
+    use super::grant::AcceptRefusal as R;
+    match why {
+        R::Full => "full",
+        R::PeerLimit => "peerlimit",
+        R::Handshakes => "handshakes",
+        R::PeerHandshakes => "peerhandshakes",
+        R::NoThread => "nothread",
+        R::Fault => "fault",
+        R::Failed => "failed",
     }
 }
 

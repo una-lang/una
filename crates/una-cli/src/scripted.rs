@@ -59,10 +59,18 @@ impl Engine {
         match *self {}
     }
 
-    /// Ends the engine once the program has ended, and gives the text of `--serve-out`.
-    pub(crate) fn end(&self) -> String {
+    /// Ends the engine once the program has ended: the text of `--serve-out`, and what the
+    /// engine left not at rest (counters, peers, timers, connections accepted before any server
+    /// operation), which the run reports as warnings.
+    pub(crate) fn end(&self) -> (String, Vec<String>) {
         #[cfg(feature = "test-hooks")]
-        return una_http::serve::script::out_text(&self.0.end().wire);
+        return {
+            let ended = self.0.end();
+            (
+                una_http::serve::script::out_text(&ended.wire),
+                ended.problems,
+            )
+        };
         #[cfg(not(feature = "test-hooks"))]
         match *self {}
     }

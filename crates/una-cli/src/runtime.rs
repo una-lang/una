@@ -848,14 +848,20 @@ pub(crate) fn run_command(
     // The scripted engine ends with the run, and `--serve-out` gets what each connection
     // received; a file that cannot be written is a usage error after the run, as for `--trace`.
     if let Some(engine) = &engine {
-        let out = engine.end();
+        let (out, problems) = engine.end();
+        for problem in problems {
+            writeln!(
+                stderr,
+                "warning: the scripted engine at the end of the run: {problem}"
+            )?;
+        }
         if let Some(path) = options.serve_out
-            && let Err(error) = std::fs::write(path, out)
+            && let Err(error) = una_http::serve::script_file::write_out(path, &out)
         {
             writeln!(
                 stderr,
-                "error: cannot write the connections to `{}`: {error}",
-                path.display()
+                "error: {}",
+                una_http::serve::script_file::out_error(path, &error)
             )?;
             return Ok(ExitStatus::Usage);
         }
