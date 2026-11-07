@@ -1,0 +1,33 @@
+-- test: the twin of `tconc_within_tasks`: the started task works on `public` data, so `κ` of the statement, and the `within`'s `τ_conc`, are `public`, and the print is accepted
+-- spec: spec/27 §11
+-- expect: ok
+module report
+
+import std.time (millisecond)
+
+crunch_open(n: Int) -> Int = n * 3
+
+--- Work on `public` data, which a started task runs.
+churn_open(n: Int) -> Unit
+=
+  let spent = crunch_open(n)
+  unit
+
+step(n: Int) -> Int = n + 1
+
+--- Prints whether `step(n)` met its deadline: the value carries the deadline's timing label.
+report(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let v = step(n) within 10 * millisecond
+    if error use 0
+  @console.print("{v}")
+
+--- Starts `churn_open(m)`, and starts `report(n)`, beside it.
+pub serve(m: Int, n: Int) -> Unit
+  uses @console: Console[print]
+=
+  tasks
+    start churn_open(m)
+    start report(n)
+  unit

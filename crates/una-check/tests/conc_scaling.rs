@@ -1,12 +1,14 @@
 //! Scaling of the labels of concurrent work (ADR 0116 P2 to P4, slice 2 of #1087): `κ` of each
 //! construct from its seed, `ctx` down each body's construct tree, and `conc` of every node in one
 //! pass over the strongly connected components of the reversed graph, O(V + E + F) joins in all.
-//! Three shapes, each at four sizes: a chain of `n` functions, each holding a `together` whose
-//! branch calls the next; one function holding `n` constructs one after another; and one
+//! Four shapes, each at four sizes: a chain of `n` functions, each holding a `together` whose
+//! branch calls the next; the same chain whose last branch reaches one `within`, so that every
+//! round of the probe of pass 2 computes the labels (slice 3); one function holding `n`
+//! constructs one after another; and one
 //! function holding `together for`s nested `d` deep, one call at each level, where a `ctx` that
 //! walked the parents of each construct would take O(d²). Counted first (ADR 0077): the package
 //! pass steps, which the process-wide counter `pass_steps` counts, must at most double with each
-//! doubling, with a margin of 10 %. The first two shapes are also timed, as a fallback, over a
+//! doubling, with a margin of 10 %. The first three shapes are also timed, as a fallback, over a
 //! span of 8 times the size, by the shared helper of `una-cli/tests/common/timing.rs` (#1197).
 //! The nested shape is counted only: checking nested bodies is superlinear in time already,
 //! before this analysis (the copying of items into every open frame, amendment E, which slice 8
@@ -38,6 +40,26 @@ fn chain(n: usize) -> String {
             "\npub f{i}(n: Int) -> Int\n=\n  together\n    let a = {call}\n    let b = step(n)\n  a + b\n"
         ));
     }
+    text
+}
+
+/// [`chain`] whose last branch calls one function with a `within`, which a part of every
+/// construct reaches: each round of the probe of pass 2 computes `κ`, `ctx` and `conc` of the
+/// whole package for it (slice 3 of #1087), O(V + E + F) per round, and the one site's `τ` costs
+/// O(V + E).
+fn chain_within(n: usize) -> String {
+    let text = chain(n).replacen(
+        "module app\n\n",
+        "module app\n\nimport std.time (millisecond)\n\n",
+        1,
+    );
+    let mut text = text.replace(
+        "    let a = step(n)\n    let b = step(n)\n",
+        "    let a = timed(n)\n    let b = step(n)\n",
+    );
+    text.push_str(
+        "\ntimed(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n",
+    );
     text
 }
 
@@ -123,6 +145,7 @@ fn the_labels_of_concurrent_work_scale_linearly() {
     for (shape, make) in [
         ("a chain", chain as fn(usize) -> String),
         ("many constructs", many),
+        ("a chain with a `within`", chain_within),
     ] {
         let counts: Vec<usize> = sizes
             .iter()
