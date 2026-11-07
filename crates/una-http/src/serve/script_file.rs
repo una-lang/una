@@ -13,6 +13,10 @@
 //! - `{"at", "connection", "close": true}` closes the peer's side; nothing follows it on that
 //!   connection.
 //!
+//! Lines end with LF, the last one optionally, and each is one JSON object, each key once, with
+//! nothing before its `{` or after its `}`: an empty line, a line of spaces, a CR and a key
+//! given twice are refused. A script with no lines opens no connection.
+//!
 //! The times never decrease from a line to the next, and lines of equal `at` take effect in
 //! their order. A connection is opened once, before its other lines. Reading is O(n) in the
 //! bytes of the file, with one hash lookup per line.
@@ -20,6 +24,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
+use serde::de::{DeserializeSeed, Deserializer, Error as _, MapAccess, Visitor};
 use serde_json::{Map, Value};
 
 /// How a scripted peer reads the bytes the host sends it.
@@ -70,14 +75,19 @@ enum State {
 /// The events of the script `text`, for a run whose `serve:` grants have the addresses
 /// `listeners` (as `ServeGrant::listener` writes them), or why it cannot be followed: the
 /// message names the line, counted from 1.
+///
+/// Lines end with LF, the last one optionally; every line is one JSON object with nothing
+/// before its `{` or after its `}`, so an empty line, a line of spaces and a CR, CRLF line
+/// ends included, are refused. A script with no lines opens no connection.
 pub fn parse(text: &str, listeners: &[String]) -> Result<Vec<Event>, String> {
     let mut events = Vec::new();
     let mut connections: HashMap<u64, State> = HashMap::new();
     let mut last = 0u64;
-    for (index, line) in text.lines().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
+    if text.is_empty() {
+        return Ok(events);
+    }
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    for (index, line) in body.split('\n').enumerate() {
         let event = event(line, listeners, &mut connections, last)
             .map_err(|why| format!("line {}: {why}", index + 1))?;
         last = event.at;
@@ -86,19 +96,106 @@ pub fn parse(text: &str, listeners: &[String]) -> Result<Vec<Event>, String> {
     Ok(events)
 }
 
+/// The keys a line of a script may have.
+const KEYS: [&str; 8] = [
+    "at",
+    "connection",
+    "grant",
+    "peer",
+    "reads",
+    "bytes",
+    "read",
+    "close",
+];
+
+/// A JSON object whose keys are among [`KEYS`] and each appear once: the first key that is not
+/// one of them, or that appears again, is refused at once, with its message in `refused`. The
+/// object so holds at most 8 entries, and reading it is O(n) in the line.
+struct Once<'a> {
+    refused: &'a mut Option<String>,
+}
+
+impl<'de> DeserializeSeed<'de> for Once<'_> {
+    type Value = Map<String, Value>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Once<'_> {
+    type Value = Map<String, Value>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+        let mut object = Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            let why = if !KEYS.contains(&key.as_str()) {
+                Some(format!("`{key}` is not a key of this line"))
+            } else if object.contains_key(&key) {
+                Some(format!("`{key}` appears twice"))
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                let error = A::Error::custom(&why);
+                *self.refused = Some(why);
+                return Err(error);
+            }
+            let value: Value = access.next_value()?;
+            object.insert(key, value);
+        }
+        Ok(object)
+    }
+}
+
+/// The JSON object of `line`, its keys among [`KEYS`] and each once, with nothing before or
+/// after it.
+fn object(line: &str) -> Result<Map<String, Value>, String> {
+    if line.contains('\r') {
+        return Err("the line holds a CR; lines end with LF alone".to_owned());
+    }
+    if !line.starts_with('{') || !line.ends_with('}') {
+        return Err("not a JSON object alone on its line".to_owned());
+    }
+    let mut refused = None;
+    let mut deserializer = serde_json::Deserializer::from_str(line);
+    let parsed = Once {
+        refused: &mut refused,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|object| deserializer.end().map(|()| object));
+    match (parsed, refused) {
+        (_, Some(why)) => Err(why),
+        (Ok(object), None) => Ok(object),
+        (Err(error), None) => Err(format!("not a JSON object: {error}")),
+    }
+}
+
 /// One line, checked against the connections before it and the time `last` of the line
-/// before it.
+/// before it: its form and keys first, then its numbers, then its place in the script.
 fn event(
     line: &str,
     listeners: &[String],
     connections: &mut HashMap<u64, State>,
     last: u64,
 ) -> Result<Event, String> {
-    let value: Value =
-        serde_json::from_str(line).map_err(|error| format!("not a JSON object: {error}"))?;
-    let Value::Object(object) = value else {
-        return Err("not a JSON object".to_owned());
+    let object = object(line)?;
+    let form: &[&str] = if object.contains_key("grant") {
+        &["grant", "peer", "reads"]
+    } else if object.contains_key("bytes") {
+        &["bytes"]
+    } else if object.contains_key("read") {
+        &["read"]
+    } else if object.contains_key("close") {
+        &["close"]
+    } else {
+        return Err("the line has none of `grant`, `bytes`, `read` and `close`".to_owned());
     };
+    keys(&object, form)?;
     let number = |key: &str| {
         object
             .get(key)
@@ -117,8 +214,7 @@ fn event(
             .ok_or_else(|| format!("`{key}` is not a text"))
     };
     let state = connections.get(&connection).copied();
-    let action = if object.contains_key("grant") {
-        keys(&object, &["grant", "peer", "reads"])?;
+    let action = if form == ["grant", "peer", "reads"] {
         if state.is_some() {
             return Err(format!("connection {connection} is opened twice"));
         }
@@ -145,11 +241,9 @@ fn event(
             }
             None => return Err(format!("connection {connection} is not open")),
         };
-        if object.contains_key("bytes") {
-            keys(&object, &["bytes"])?;
+        if form == ["bytes"] {
             Action::Bytes(base64(text("bytes")?).ok_or("`bytes` is not base64 text")?)
-        } else if object.contains_key("read") {
-            keys(&object, &["read"])?;
+        } else if form == ["read"] {
             if reads != PeerReads::Paced {
                 return Err(format!(
                     "connection {connection} reads eagerly, so it takes no `read`"
@@ -159,15 +253,12 @@ fn event(
                 0 => return Err("`read` is 0; give at least 1".to_owned()),
                 n => Action::Read(n),
             }
-        } else if object.contains_key("close") {
-            keys(&object, &["close"])?;
+        } else {
             if object.get("close") != Some(&Value::Bool(true)) {
                 return Err("`close` is not `true`".to_owned());
             }
             connections.insert(connection, State::Closed);
             Action::Close
-        } else {
-            return Err("the line has none of `grant`, `bytes`, `read` and `close`".to_owned());
         }
     };
     Ok(Event {

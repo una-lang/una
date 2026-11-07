@@ -34,6 +34,8 @@ zeroize = { workspace = true, optional = true }
 # The script of connections of `--serve-script` (`serve::script_file`), and the scripted engine
 # of the test hooks (`serve::script`).
 serde_json.workspace = true
+# The visitor that refuses a key given twice in a line of a script.
+serde.workspace = true
 
 # The tests use the test-only hooks; a dev-dependency never reaches a shipped build.
 [dev-dependencies]
