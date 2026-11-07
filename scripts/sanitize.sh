@@ -99,14 +99,14 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # than 19,997, and a history of 500 cancelled timers rather than 10,000, one mention for both,
 # and maps of 16 and 64 keys built rather than up to 65,536 (#886), one mention,
 # and two fresh chains of 64 and 256 levels compared rather than up to 100,000 (#926), one
-# mention. Their full sizes run in the ordinary tests. And four tests of the debug credit of
-# the quarantine (#1506), seven mentions, whose bounds are those of a quarantine of 65,536
-# slots: one runs with 70 live and 60 churned objects rather than 70,000 and 60,000 and skips
-# its two checks of exact table sizes, three mentions; one skips its check that more than
-# 60,000 slots are credited, one mention; and three, of 10,000 to 100,000 objects, return at
-# once under Miri as in a release build, one mention each, so Miri counts them as passed and
-# only this count sees them. They run in full in the ordinary tests and under AddressSanitizer
-# below. And one constant: the
+# mention. Their full sizes run in the ordinary tests. And two tests of the debug credit of
+# the quarantine (#1506), four mentions, whose bounds are those of a quarantine of 65,536
+# slots: one runs with 70 live and 60 churned objects rather than 70,000 and 60,000, and skips
+# its check of the exact table sizes and of no credit and its check that more churn is
+# credited, three mentions; the other skips only its check that more than 60,000 slots are
+# credited, one mention. Their full checks run in the ordinary tests and under
+# AddressSanitizer below; the three credit tests that check only full-size tables are ignored
+# under Miri by name, in scripts/sanitize-miri-ignored.txt. And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
 # Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
@@ -116,7 +116,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # Miri does not run: una-http forbids `unsafe` through the workspace lints, so Miri would check
 # only the standard library and the dependencies beneath it there (#1432).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 26 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 26"
+[ "$reduced" = 23 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 23"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"

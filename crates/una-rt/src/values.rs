@@ -3763,13 +3763,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "full-size debug quarantine sizes; Miri has 64 slots")]
     fn an_import_that_reserves_more_than_twice_its_table_moves_the_release_bound() {
         // #1506, review round 2, finding 1: 10,002 live, 2 freed, an import of 30,000 objects,
         // then live objects up to 80,001 and churn. The import reserves its exact length in
         // each build, a few slots apart, so the debug table's doublings come at other lengths
         // than a release build's: 80,004 slots against 160,000 at the peak. The credit is
         // bounded by twice what a release build ever needed, so it never covers its table.
-        if !cfg!(debug_assertions) || cfg!(miri) {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut parked = Slots::default();
@@ -3798,12 +3799,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "full-size debug quarantine sizes; Miri has 64 slots")]
     fn a_reservation_left_unused_still_bounds_the_credit() {
         // #1506, review round 2, finding 3: an import that reserves room for 100,000 objects and
         // then makes none, as a refused import may, grows a release build's table to 101,000
         // slots as it grows the debug one. Churn after it stays within that table, so nothing
         // is credited: without the reservation in `release_need`, 65,537 slots would be.
-        if !cfg!(debug_assertions) || cfg!(miri) {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut parked = Slots::default();
@@ -3826,13 +3828,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "full-size debug quarantine sizes; Miri has 64 slots")]
     fn a_reservation_within_the_debug_table_still_lowers_the_credit() {
         // #1506, review round 3, finding 1: 16,385 live objects, then churn past the quarantine:
         // the debug table has room for an import of 16,384 objects, so `reserve_slots` returns
         // early, but a release build's table must double for it, to 65,536 slots. The credit
         // must follow at once, before any allocation, since the import checks the budget
         // before it allocates.
-        if !cfg!(debug_assertions) || cfg!(miri) {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut parked = Slots::default();
