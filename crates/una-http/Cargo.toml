@@ -10,7 +10,7 @@ publish.workspace = true
 # The toolchain's own test builds only (#1148): a lookup and a connect function a test can put in
 # place of the system's, to make them hang, and a pool started on a client's first request for
 # the tests that call the client directly. No shipped `una` or `libuna_rt.a` enables it.
-test-hooks = ["dep:serde_json"]
+test-hooks = []
 # The TLS provider (ADR 0133 rule 17). `ring` is the default until the independent review of
 # ADR 0133 slice 8 allows the switch; it needs `ring`'s C and assembly.
 default = ["ring"]
@@ -31,8 +31,11 @@ webpki-roots.workspace = true
 una-crypto = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
-# The script of `serve::script`, read only by the test hooks.
-serde_json = { workspace = true, optional = true }
+# The script of connections of `--serve-script` (`serve::script_file`), and the scripted engine
+# of the test hooks (`serve::script`).
+serde_json.workspace = true
+# The visitor that refuses a key given twice in a line of a script.
+serde.workspace = true
 
 # The tests use the test-only hooks; a dev-dependency never reaches a shipped build.
 [dev-dependencies]

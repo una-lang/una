@@ -4,7 +4,7 @@
 -- expect: run-output "won 5"
 -- expect: run-output "failed Slow"
 -- expect: run-output "same 4"
--- expect: run-output "deep done"
+-- expect: run-output "deep 4"
 module race
 
 pub kind FetchError = Unreachable | Slow
@@ -45,20 +45,20 @@ all_fail() -> Int
 
 double(n: Int) -> Int = n * 2
 
-leaf(n: Int) -> restricted Int
+leaf(n: Int) -> Int
 =
   first of
     double(n)
     double(n)
 
-middle(n: Int) -> restricted Int
+middle(n: Int) -> Int
 =
   together
     let a = leaf(n)
     let b = leaf(n)
   a + b
 
-top(n: Int) -> restricted Int
+top(n: Int) -> Int
 =
   first of
     middle(n)
@@ -79,7 +79,7 @@ pub main() -> Unit
     double(2)
     double(2)
   @console.print("same {same}")
-  -- A race inside a task's function is timed by the tasks beside it (`τ_conc`, ADR 0116 IF6),
-  -- so `deep` is `restricted`: its value is checked by `runtime/first_of_virtual`.
+  -- A race inside a task's function is timed by the tasks beside it (`τ_conc`, `spec/27 §11`),
+  -- which handle only `public` data here, so `deep` is `public` and may be printed.
   let deep = top(1)
-  @console.print("deep done")
+  @console.print("deep {deep}")

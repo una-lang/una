@@ -1486,6 +1486,13 @@ It was accepted before this amendment and is U4001 under item 7. A callee that n
 
 **Costs.** One `ℓ*` of the type of each expression checked, O(size of the type), the order of the type record beside it. Each site then makes O(F + H) joins for the F functions and H handlers it already visits, and the call graph O(F + H) joins once per package: linear in the size of the bodies. The scaling tests of the timing label pass unchanged.
 
+## Amendment (2026-11-06): the constants of `std.time` are module constants (ADR 0126)
+
+- Status: Accepted (2026-11-06), by the project's decision of 2026-11-06 that accepted ADR 0126 and ADR 0137; Appendix A of ADR 0126 states this amendment.
+- This amendment adds to the accepted text above, which is unchanged; where the two differ, this amendment governs.
+
+The amendment of 2026-10-19 made `millisecond`, `second` and `minute` built-in names of `std.time`. Under ADR 0126 they are declared in `std.time` itself, as `pub const` constants of type `Int of Millisecond`, in edition `0.5`, with the same values.
+
 ## Amendment (2026-11-06): the trace's own events under a raised program counter (S-39)
 
 - Status: Accepted (2026-11-06), by the project's decision of 2026-11-06 on the draft `docs/plan/0116-s39-amendment-draft.md`, with its additions for S-40, S-41, S-42 and S-44 and the operations of handlers that quiet code installs (#1544).
