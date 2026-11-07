@@ -1,8 +1,8 @@
 # 0126. Module constants: named values declared at the top level
 
-- Status: Proposed
+- Status: Accepted (2026-11-06), accepted by the project's decision of 2026-11-06, together with ADR 0137.
 - Date: 2026-10-27 (revised 2026-11-04: ownership, authority, the costs of each option, Questions 7 and 8; revised 2026-11-05: the syntax `const` under ADR 0137, edition `0.5`, the decisions of the questions)
-- Deciders:
+- Deciders: Una project (accepted on 2026-11-06)
 - Resolves: issue #949
 - Related:
   - ADR 0137 (`const` and `var` replace `let` and `let edit`), which makes `const` the word of every immutable binding, and with which this record is accepted;
