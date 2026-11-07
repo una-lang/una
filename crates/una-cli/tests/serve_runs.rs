@@ -772,29 +772,122 @@ fn a_serve_section_takes_constant_time_per_request() {
     drop(scratch);
 }
 
-/// The script of the case `dir` in the form of `--serve-script` (`spec/31 §8` rule 6): its
-/// `text` lines as `bytes`, each line one compact JSON object.
-fn flag_script(dir: &Path) -> String {
-    script::out_text(&lines(&dir.join("script.jsonl")))
+/// The lines of the case `dir`'s script in the form of `--serve-script` (`spec/31 §8` rule
+/// 6): `text` as `bytes` in base64, each connection number mapped by `renumber`.
+fn flag_script(dir: &Path, renumber: &dyn Fn(u64) -> u64) -> String {
+    let mut text = String::new();
+    for mut line in lines(&dir.join("script.jsonl")) {
+        let object = line.as_object_mut().unwrap();
+        if let Some(Value::String(sent)) = object.remove("text") {
+            object.insert("bytes".to_owned(), json!(script::encode(sent.as_bytes())));
+        }
+        let k = object["connection"].as_u64().unwrap();
+        object.insert("connection".to_owned(), json!(renumber(k)));
+        text.push_str(&line.to_string());
+        text.push('\n');
+    }
+    text
+}
+
+/// One line of the wire, as the test reads it from `expected.jsonl` or `--serve-out` itself:
+/// `(at, connection, kind, bytes or value)`.
+type WireLine = (u64, u64, String, Value);
+
+/// The order rule 6 gives the kinds of lines of one time and connection.
+fn kind_rank(kind: &str) -> usize {
+    ["bytes", "shutdown", "closed", "refused"]
+        .iter()
+        .position(|k| *k == kind)
+        .unwrap()
+}
+
+/// The lines of `expected.jsonl` of the case `dir`, each connection number mapped by `renumber`,
+/// in the order of rule 6: time, then connection, then kind.
+fn expected_wire(dir: &Path, renumber: &dyn Fn(u64) -> u64) -> Vec<WireLine> {
+    let mut wire: Vec<WireLine> = lines(&dir.join("expected.jsonl"))
+        .into_iter()
+        .map(|line| {
+            let at = line["at"].as_u64().unwrap();
+            let k = renumber(line["connection"].as_u64().unwrap());
+            let object = line.as_object().unwrap();
+            if let Some(Value::String(sent)) = object.get("text") {
+                return (at, k, "bytes".to_owned(), json!(sent.as_bytes()));
+            }
+            let (kind, value) = object
+                .iter()
+                .find(|(key, _)| *key != "at" && *key != "connection")
+                .unwrap();
+            if kind == "bytes" {
+                let bytes = una_http::serve::script_file::base64(value.as_str().unwrap()).unwrap();
+                return (at, k, "bytes".to_owned(), json!(bytes));
+            }
+            (at, k, kind.clone(), value.clone())
+        })
+        .collect();
+    wire.sort_by_key(|(at, k, kind, _)| (*at, *k, kind_rank(kind)));
+    wire
+}
+
+/// The lines of a `--serve-out` text, checked against rule 6 of `spec/31 §8` independently of
+/// the writer: each line LF-ended, its keys `at`, `connection` and exactly one of `bytes`,
+/// `shutdown`, `closed` and `refused`, in lexicographic order and compact, `bytes` decoded as
+/// padded standard base64.
+fn read_out(text: &str) -> Vec<WireLine> {
+    assert!(text.is_empty() || text.ends_with('\n'), "{text:?}");
+    text.lines()
+        .map(|line| {
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(serde_json::to_string(&value).unwrap(), line);
+            let object = value.as_object().unwrap();
+            let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+            let kind = keys
+                .iter()
+                .find(|key| **key != "at" && **key != "connection")
+                .copied()
+                .unwrap();
+            let mut wanted = vec!["at", "connection", kind];
+            wanted.sort_unstable();
+            assert_eq!(keys, wanted, "{line}");
+            let at = object["at"].as_u64().unwrap();
+            let k = object["connection"].as_u64().unwrap();
+            let value = match kind {
+                "bytes" => json!(
+                    una_http::serve::script_file::base64(object["bytes"].as_str().unwrap())
+                        .unwrap()
+                ),
+                "shutdown" | "closed" => {
+                    assert_eq!(object[kind], json!(true), "{line}");
+                    json!(true)
+                }
+                "refused" => object[kind].clone(),
+                other => panic!("`{other}` is not a kind of rule 6: {line}"),
+            };
+            (at, k, kind.to_owned(), value)
+        })
+        .collect()
 }
 
 /// Runs `command` with the flags of a script in `package`, `UNA_TEST_RUN_SERVER=1` and a
-/// trace: its exit code, its output lines, its trace and what `--serve-out` wrote.
+/// trace, `--serve-out` to `out`: its exit code, its output lines, its stderr, its trace and
+/// what `--serve-out` wrote.
 fn run_flags(
     mut command: std::process::Command,
     package: &Path,
-) -> (i32, Vec<String>, Vec<Value>, String) {
-    let script = package.join("flag-script.jsonl");
-    std::fs::write(&script, flag_script(package)).unwrap();
-    let out = package.join("serve-out.jsonl");
+    script: &str,
+    out: &Path,
+) -> (i32, Vec<String>, String, Vec<Value>, String) {
+    let script_path = package.join("flag-script.jsonl");
+    std::fs::write(&script_path, script).unwrap();
     let trace = package.join("flag-trace.json");
+    let _ = std::fs::remove_file(&trace);
+    let _ = std::fs::remove_file(out);
     let ran = command
         .env("UNA_TEST_RUN_SERVER", "1")
         .env("NO_COLOR", "1")
         .args(["--virtual-time", "--serve-script"])
-        .arg(&script)
+        .arg(&script_path)
         .arg("--serve-out")
-        .arg(&out)
+        .arg(out)
         .arg("--trace")
         .arg(&trace)
         .current_dir(package)
@@ -806,10 +899,11 @@ fn run_flags(
         .collect();
     let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap_or_default())
         .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()));
-    let wire = std::fs::read_to_string(&out).unwrap_or_default();
+    let wire = std::fs::read_to_string(out).unwrap_or_default();
     (
         ran.status.code().unwrap_or(-1),
         output,
+        String::from_utf8_lossy(&ran.stderr).into_owned(),
         events.as_array().cloned().unwrap_or_default(),
         wire,
     )
@@ -820,7 +914,13 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
     // ADR 0123 rule 21, `spec/31 §8` rule 6: in the toolchain's own test builds, `una run` and an
     // executable given `--serve-script` serve the script's connections in place of listeners,
     // and `--serve-out` writes what each connection received, in the script's form. Both give the
-    // bytes, output and trace that the harness's own runs of the case recorded, byte for byte.
+    // bytes, output and trace that the harness's own runs of the case recorded, read here
+    // independently of the writer, for any connection numbers, the largest included.
+    let renumberings: [(&str, &dyn Fn(u64) -> u64); 3] = [
+        ("as written", &|k| k),
+        ("from 50000", &|k| 50_000 + k),
+        ("at the top", &|k| u64::MAX - k),
+    ];
     for case in [
         "worker_pool",
         "cancelled_task_503",
@@ -837,20 +937,47 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
             .iter()
             .map(|line| line.as_str().unwrap().to_owned())
             .collect();
-        let wire = script::out_text(&lines(&dir.join("expected.jsonl")));
         let (scratch, package, name) = build_native(&dir, "-flags");
-        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
-        interpreter
-            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .arg("run");
-        let native = std::process::Command::new(package.join("target/una").join(&name));
-        for (engine, command) in [("interpreter", interpreter), ("native", native)] {
-            let (code, printed, trace, out) = run_flags(command, &package);
-            assert_eq!(code, 0, "{case} {engine}");
-            assert_eq!(printed, output, "{case} {engine}");
-            assert_eq!(trace, recorded[1..], "{case} {engine}");
-            assert_eq!(out, wire, "{case} {engine}");
+        let engines = || {
+            let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+            interpreter
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .arg("run");
+            let native = std::process::Command::new(package.join("target/una").join(&name));
+            [("interpreter", interpreter), ("native", native)]
+        };
+        for (numbering, renumber) in renumberings {
+            let script = flag_script(&dir, renumber);
+            let wire = expected_wire(&dir, renumber);
+            assert!(!wire.is_empty(), "{case}");
+            for (engine, command) in engines() {
+                let out = package.join("serve-out.jsonl");
+                let (code, printed, stderr, trace, text) =
+                    run_flags(command, &package, &script, &out);
+                let at = format!("{case} {numbering} {engine}");
+                assert_eq!(code, 0, "{at}: {stderr}");
+                assert!(!stderr.contains("warning:"), "{at}: {stderr}");
+                assert_eq!(printed, output, "{at}");
+                assert_eq!(trace, recorded[1..], "{at}");
+                assert_eq!(read_out(&text), wire, "{at}");
+            }
         }
+        // A `--serve-out` that cannot be written is the same usage error in both engines,
+        // after the run.
+        let script = flag_script(&dir, &|k| k);
+        let unwritable = package.join("missing-dir/serve-out.jsonl");
+        let mut messages = Vec::new();
+        for (engine, command) in engines() {
+            let (code, _, stderr, _, _) = run_flags(command, &package, &script, &unwritable);
+            assert_eq!(code, 2, "{case} {engine}: {stderr}");
+            let line = stderr
+                .lines()
+                .find(|line| line.contains("cannot write the connections to"))
+                .unwrap_or_else(|| panic!("{case} {engine}: {stderr}"))
+                .to_owned();
+            messages.push(line);
+        }
+        assert_eq!(messages[0], messages[1], "{case}");
         let _ = std::fs::remove_dir_all(&scratch);
     }
 }
