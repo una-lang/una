@@ -108,8 +108,9 @@ pub const MAX_SCRIPT: u64 = 64 * 1024 * 1024;
 /// addresses `listeners`, or the message of the usage error: [`NEEDS_GRANT`] when there are
 /// none, a file that is not a regular file (a FIFO or a device would block or never end), one
 /// larger than [`MAX_SCRIPT`], one that cannot be read or is not UTF-8, or the first line that
-/// cannot be followed. The file is checked before it is opened and again once open, and read
-/// through a bound, so a read takes at most `MAX_SCRIPT + 1` bytes.
+/// cannot be followed. The file is opened without blocking (a FIFO's open would wait for a
+/// writer) and checked on its open descriptor, so what is read is what was checked, and it is
+/// read through a bound, so a read takes at most `MAX_SCRIPT + 1` bytes.
 pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, String> {
     use std::io::Read;
     if listeners.is_empty() {
@@ -133,8 +134,14 @@ pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, 
         }
         Ok(())
     };
-    regular(std::fs::metadata(path).map_err(cannot)?)?;
-    let file = std::fs::File::open(path).map_err(cannot)?;
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(una_sys::server::OPEN_FLAGS)
+            .open(path)
+            .map_err(cannot)?
+    };
     regular(file.metadata().map_err(cannot)?)?;
     let mut bytes = Vec::new();
     file.take(MAX_SCRIPT + 1)
