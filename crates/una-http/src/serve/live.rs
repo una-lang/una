@@ -18,6 +18,13 @@
 //!   wakes per request, not one per waiter. A wait also ends at its deadline, at a rate's retry
 //!   time, and when its `stopped` test holds, which it reads at least every [`LOOK`]. It takes
 //!   no request (rule 4.7).
+//! - **Parked waiters.** A waiter that holds no thread while it waits, as a task of the native
+//!   runtime parked on its reactor (#1723), makes the same tests one look at a time
+//!   ([`Port::look`]) and leaves a wake with the engine, under the lock its signals are sent
+//!   under. A signal for one waiter calls the oldest such wake, besides waking one waiter that
+//!   sleeps on the condition, and a stop calls every one; a parked waiter still looks at least
+//!   every [`LOOK`]. So a wait for a request never takes a helper that other operations need,
+//!   however many tasks wait.
 //! - **Stopping.** A host stop ([`Live::host_stop`]) closes the listeners at once, refuses what
 //!   was not delivered with `503` and lets the open exchanges drain (rule 18); the hard stop
 //!   ([`Live::hard_stop`]) answers every open exchange `503` in one non-blocking write and closes
@@ -25,6 +32,7 @@
 //!   time, then makes the hard stop, and waits for the serve threads, so that the answers the
 //!   run gave are written before the process ends.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -32,7 +40,7 @@ use std::time::{Duration, Instant};
 use una_core::http::serve::ServeGrant;
 
 use super::Prepared;
-use super::program::{Port, Waited};
+use super::program::{Look, Port, Waited, Waker};
 use super::run::{Next, Wake};
 use super::server::Server;
 use super::trace::TraceKey;
@@ -57,7 +65,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// up to `e` are never claimed by it: its attempt came after them and found nothing it could
 /// deliver, so a signal that no waiter needed is dropped by the next waiter instead of waking
 /// one more. A stop is a signal too, and every waiter that read an epoch before it sees it.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Signals {
     /// The number of the last signal sent.
     sent: u64,
@@ -65,6 +73,11 @@ struct Signals {
     claimed: u64,
     /// The number of the last stop.
     all: u64,
+    /// The wakes of the waiters parked outside the engine ([`Port::look`]), oldest first, by
+    /// ticket: insert, remove and the oldest are O(log p) for their p.
+    parked: BTreeMap<u64, Waker>,
+    /// The ticket of the next parked wake.
+    tickets: u64,
 }
 
 impl Signals {
@@ -83,19 +96,28 @@ impl Signals {
 /// The engine's signals and the condition its waiters sleep on.
 type Epoch = Arc<(Mutex<Signals>, Condvar)>;
 
-/// Sends one signal: one waiter wakes for [`Wake::One`], every waiter for [`Wake::All`].
+/// Sends one signal: for [`Wake::One`], one waiter that sleeps on the condition and the oldest
+/// parked waiter wake, of which at most one claims it; for [`Wake::All`], every waiter. The
+/// wakes are called after the lock is let go. O(log p) for the p parked waiters, O(p) at a stop.
 fn signal(epoch: &Epoch, wake: Wake) {
     let (signals, changed) = &**epoch;
-    {
+    let (oldest, every) = {
         let mut signals = lock(signals);
         signals.sent = signals.sent.wrapping_add(1);
-        if wake == Wake::All {
-            signals.all = signals.sent;
+        match wake {
+            Wake::One => (signals.parked.pop_first(), BTreeMap::new()),
+            Wake::All => {
+                signals.all = signals.sent;
+                (None, std::mem::take(&mut signals.parked))
+            }
         }
-    }
+    };
     match wake {
         Wake::One => changed.notify_one(),
         Wake::All => changed.notify_all(),
+    }
+    for (_, waker) in oldest.into_iter().chain(every) {
+        waker();
     }
 }
 
@@ -194,6 +216,47 @@ impl Live {
     }
 }
 
+impl Live {
+    /// One pass of a wait's tests, under the lock of the signals: how the wait ends, or how
+    /// long it may sleep before its next pass. O(1).
+    fn tests(
+        &self,
+        signals: &mut Signals,
+        epoch: u64,
+        retry: Option<u64>,
+        deadline: Option<Instant>,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Waited, Duration> {
+        if signals.all > epoch {
+            return Ok(Waited::Changed);
+        }
+        // The stop test comes before a claim, so a waiter that is leaving takes no signal
+        // another waiter needs.
+        if stopped() {
+            return Ok(Waited::Stopped);
+        }
+        if signals.claim(epoch) {
+            return Ok(Waited::Changed);
+        }
+        let now = Instant::now();
+        if deadline.is_some_and(|deadline| now >= deadline) {
+            return Ok(Waited::TimedOut);
+        }
+        let engine = self.server.now();
+        if retry.is_some_and(|retry| engine >= retry) {
+            return Ok(Waited::Changed);
+        }
+        let mut slice = LOOK;
+        if let Some(deadline) = deadline {
+            slice = slice.min(deadline.saturating_duration_since(now));
+        }
+        if let Some(retry) = retry {
+            slice = slice.min(Duration::from_nanos(retry.saturating_sub(engine)));
+        }
+        Err(slice)
+    }
+}
+
 impl Port for Live {
     fn begin(&self) {
         self.server.begin();
@@ -229,37 +292,46 @@ impl Port for Live {
         let (signals, changed) = &*self.epoch;
         let mut guard = lock(signals);
         loop {
-            if guard.all > epoch {
-                return Waited::Changed;
-            }
-            // The stop test comes before a claim, so a waiter that is leaving takes no signal
-            // another waiter needs.
-            if stopped() {
-                return Waited::Stopped;
-            }
-            if guard.claim(epoch) {
-                return Waited::Changed;
-            }
-            let now = Instant::now();
-            if deadline.is_some_and(|deadline| now >= deadline) {
-                return Waited::TimedOut;
-            }
-            let engine = self.server.now();
-            if retry.is_some_and(|retry| engine >= retry) {
-                return Waited::Changed;
-            }
-            let mut slice = LOOK;
-            if let Some(deadline) = deadline {
-                slice = slice.min(deadline.saturating_duration_since(now));
-            }
-            if let Some(retry) = retry {
-                slice = slice.min(Duration::from_nanos(retry.saturating_sub(engine)));
-            }
+            let slice = match self.tests(&mut guard, epoch, retry, deadline, stopped) {
+                Ok(waited) => return waited,
+                Err(slice) => slice,
+            };
             guard = match changed.wait_timeout(guard, slice) {
                 Ok((guard, _)) => guard,
                 Err(poisoned) => poisoned.into_inner().0,
             };
         }
+    }
+
+    fn look(
+        &self,
+        epoch: u64,
+        retry: Option<u64>,
+        deadline: Option<Instant>,
+        stopped: &dyn Fn() -> bool,
+        wake: Option<Waker>,
+    ) -> Option<Look> {
+        let mut guard = lock(&self.epoch.0);
+        Some(
+            match self.tests(&mut guard, epoch, retry, deadline, stopped) {
+                Ok(waited) => Look::Done(waited),
+                Err(slice) => {
+                    let ticket = wake.map(|wake| {
+                        let ticket = guard.tickets;
+                        guard.tickets = ticket.wrapping_add(1);
+                        guard.parked.insert(ticket, wake);
+                        ticket
+                    });
+                    Look::Park { ticket, slice }
+                }
+            },
+        )
+    }
+
+    fn unpark(&self, ticket: u64) {
+        let gone = lock(&self.epoch.0).parked.remove(&ticket);
+        // The wake is dropped after the lock is let go.
+        drop(gone);
     }
 
     fn close(&self) {
@@ -272,5 +344,69 @@ impl Port for Live {
 
     fn trace_key(&self) -> TraceKey {
         self.key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::sync::atomic::AtomicUsize;
+
+    use super::*;
+
+    /// A wake that counts its calls in `counts[at]`.
+    fn counting(counts: &Arc<Vec<AtomicUsize>>, at: usize) -> Waker {
+        let counts = Arc::clone(counts);
+        Arc::new(move || {
+            counts[at].fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    #[test]
+    fn a_signal_for_one_calls_the_oldest_parked_wake_and_a_stop_calls_every_one() {
+        // #1723: a parked waiter leaves its wake with the engine; a signal for one waiter calls
+        // one wake, the oldest, once, and takes it, so the next signal calls the next one; a
+        // stop calls every wake left.
+        let epoch: Epoch = Arc::new((Mutex::new(Signals::default()), Condvar::new()));
+        let counts: Arc<Vec<AtomicUsize>> = Arc::new((0..3).map(|_| AtomicUsize::new(0)).collect());
+        {
+            let mut signals = lock(&epoch.0);
+            for at in 0..3 {
+                let ticket = signals.tickets;
+                signals.tickets += 1;
+                signals.parked.insert(ticket, counting(&counts, at));
+            }
+        }
+        let seen = || {
+            counts
+                .iter()
+                .map(|count| count.load(Ordering::SeqCst))
+                .collect::<Vec<_>>()
+        };
+        signal(&epoch, Wake::One);
+        assert_eq!(seen(), [1, 0, 0]);
+        signal(&epoch, Wake::One);
+        assert_eq!(seen(), [1, 1, 0]);
+        signal(&epoch, Wake::All);
+        assert_eq!(seen(), [1, 1, 1]);
+        assert!(lock(&epoch.0).parked.is_empty());
+        // Every signal is still there to claim, one per waiter that read an earlier epoch.
+        let mut signals = lock(&epoch.0);
+        assert_eq!((signals.sent, signals.all), (3, 3));
+        assert!(signals.claim(0));
+    }
+
+    #[test]
+    fn a_signal_with_no_parked_wake_waits_for_a_claim() {
+        // A signal sent before a waiter parks calls no wake; the waiter's next look claims it,
+        // as its epoch came before it, so no wake is lost between a look and a park.
+        let epoch: Epoch = Arc::new((Mutex::new(Signals::default()), Condvar::new()));
+        let before = lock(&epoch.0).sent;
+        signal(&epoch, Wake::One);
+        let mut signals = lock(&epoch.0);
+        assert!(signals.claim(before));
+        // Claimed once: a second waiter of the same epoch finds nothing.
+        assert!(!signals.claim(before));
     }
 }
