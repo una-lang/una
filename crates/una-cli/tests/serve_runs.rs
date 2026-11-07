@@ -880,7 +880,6 @@ fn run_flags(
     std::fs::write(&script_path, script).unwrap();
     let trace = package.join("flag-trace.json");
     let _ = std::fs::remove_file(&trace);
-    let _ = std::fs::remove_file(out);
     let ran = command
         .env("UNA_TEST_RUN_SERVER", "1")
         .env("NO_COLOR", "1")
@@ -899,7 +898,12 @@ fn run_flags(
         .collect();
     let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap_or_default())
         .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()));
-    let wire = std::fs::read_to_string(out).unwrap_or_default();
+    // Only a regular file is read back: the test reads no FIFO it made.
+    let wire = if std::fs::symlink_metadata(out).is_ok_and(|m| m.is_file()) {
+        std::fs::read_to_string(out).unwrap_or_default()
+    } else {
+        String::new()
+    };
     (
         ran.status.code().unwrap_or(-1),
         output,
@@ -925,6 +929,8 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
         "worker_pool",
         "cancelled_task_503",
         "reply_after_answer_deadline",
+        // Several connections from one peer address, one of them refused at accept.
+        "peer_limit_refuses",
     ] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/serve_runs")
@@ -980,4 +986,102 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
         assert_eq!(messages[0], messages[1], "{case}");
         let _ = std::fs::remove_dir_all(&scratch);
     }
+}
+
+#[test]
+fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: after a scripted run, both engines report the run's own diagnostics,
+    // then a `--serve-out` that cannot be written, with the higher of the run's exit code and 2.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/serve_runs/aborted_root_without_tasks");
+    let recorded = lines(&dir.join("run.jsonl"));
+    assert_eq!(abort_code(&recorded[0]["completion"]), Some("U6003"));
+    let (scratch, package, name) = build_native(&dir, "-aborts");
+    let script = flag_script(&dir, &|k| k);
+    let engines = || {
+        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        interpreter
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .arg("run");
+        let native = std::process::Command::new(package.join("target/una").join(&name));
+        [("interpreter", interpreter), ("native", native)]
+    };
+    let unwritable = package.join("missing-dir/serve-out.jsonl");
+    let mut seen = Vec::new();
+    for (engine, command) in engines() {
+        let (code, _, stderr, _, _) = run_flags(command, &package, &script, &unwritable);
+        let abort = stderr
+            .find("[U6003]")
+            .unwrap_or_else(|| panic!("{engine}: {stderr}"));
+        let out = stderr
+            .find("error: cannot write the connections to")
+            .unwrap_or_else(|| panic!("{engine}: {stderr}"));
+        assert!(abort < out, "{engine}: the abort comes first: {stderr}");
+        seen.push((code, stderr.lines().last().unwrap().to_owned()));
+    }
+    assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen[0].0, 2);
+    // A writable file keeps the run's own exit code.
+    let out = package.join("serve-out.jsonl");
+    for (engine, command) in engines() {
+        let (code, _, stderr, _, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 1, "{engine}: {stderr}");
+        assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn serve_out_follows_no_link_never_blocks_and_is_private() {
+    // `spec/31 §8` rule 6: `--serve-out` follows no symbolic link, never blocks on a FIFO,
+    // refuses a file that is not regular, and leaves the file with mode 0600, an existing one's
+    // included, in both engines.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/worker_pool");
+    let (scratch, package, name) = build_native(&dir, "-out-files");
+    let script = flag_script(&dir, &|k| k);
+    let target = package.join("target-of-link.jsonl");
+    std::fs::write(&target, "kept\n").unwrap();
+    let link = package.join("link.jsonl");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let fifo = package.join("fifo.jsonl");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let existing = package.join("existing.jsonl");
+    let engines = || {
+        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        interpreter
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .arg("run");
+        let native = std::process::Command::new(package.join("target/una").join(&name));
+        [("interpreter", interpreter), ("native", native)]
+    };
+    for refused in [&link, &fifo] {
+        for (engine, command) in engines() {
+            let started = Instant::now();
+            let (code, _, stderr, _, _) = run_flags(command, &package, &script, refused);
+            assert!(started.elapsed() < HANG, "{engine}: blocked");
+            assert_eq!(code, 2, "{engine} {}: {stderr}", refused.display());
+            assert!(
+                stderr.contains("cannot write the connections to"),
+                "{engine}: {stderr}"
+            );
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept\n");
+    for (engine, command) in engines() {
+        std::fs::write(&existing, "old\n").unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (code, _, stderr, _, text) = run_flags(command, &package, &script, &existing);
+        assert_eq!(code, 0, "{engine}: {stderr}");
+        assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
+        let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{engine}");
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
 }
