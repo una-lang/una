@@ -1,4 +1,4 @@
--- test: in edition 0.4, `initial` of `update` has the map's value type, so `initial: []` for a `Map[Text, List[Text]]` is an empty `List[Text]` that `change` appends to (spec/21 §2 rule 5)
+-- test: in edition 0.5, `initial` of `update` has the map's value type, so `initial: []` for a `Map[Text, List[Text]]` is an empty `List[Text]` that `change` appends to (spec/21 §2 rule 5)
 -- spec: spec/21 §2
 -- grant: console
 -- expect: run-output "{\"fruit\": [\"apple\", \"fig\"], \"leaf\": [\"kale\"]}"

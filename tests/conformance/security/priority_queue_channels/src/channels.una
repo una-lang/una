@@ -1,4 +1,4 @@
--- test: in edition 0.4, the priorities of a priority queue are its shape: a `secret` priority pushed into a queue with a `public` top label is U4001 at the priority, with a control, and what `pop` gives from a queue of `secret` priorities is `secret`, U4003 at `Console`, while a queue of `public` priorities prints (ADR 0119 IF4)
+-- test: in edition 0.5, the priorities of a priority queue are its shape: a `secret` priority pushed into a queue with a `public` top label is U4001 at the priority, with a control, and what `pop` gives from a queue of `secret` priorities is `secret`, U4003 at `Console`, while a queue of `public` priorities prints (ADR 0119 IF4)
 -- spec: spec/28 §8
 -- expect: error U4001 at src/channels.una:13:36
 -- expect: error U4003 at src/channels.una:29:18
