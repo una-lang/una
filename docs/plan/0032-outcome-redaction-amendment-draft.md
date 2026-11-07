@@ -1,6 +1,6 @@
 # ADR 0032 amendment draft: an operation's outcome rendered at its label (S-45)
 
-Status: Proposed (draft for the project's decision; it is appended to docs/adr/0032-runtime-details-left-open.md only once accepted, with the date of its acceptance). Security fix of #1552 (S-45); the behavior is already implemented in the pull request that closes #1552. Until then `spec/11 §5`, `spec/26 §6` rule 4, `spec/07 §4`, `spec/09 §4` and `spec/13 §8` cite it as proposed.
+Status: Accepted by the project on 2026-11-06; its text is now ADR 0032's amendment "Amendment (2026-11-06): an operation's outcome rendered at its label (S-45)", at the end of `docs/adr/0032-runtime-details-left-open.md`, which governs, and its notes are the notes of 2026-11-06 of ADRs 0085, 0094 and 0117. This draft is kept as the record of the proposal.
 
 ## Amendment (proposed 2026-11-04): an operation's outcome rendered at its label (S-45)
 
