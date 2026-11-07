@@ -3409,7 +3409,9 @@ pub(crate) fn limit_timing(
 /// accepts, `internal` (`spec/24 §5`): U4001 at the loop when `τ` is above it, naming the
 /// largest source of `τ`. `τ` joins the residue label `L_res` (ADR 0116 P9), computed once.
 /// Returns each loop, in source order, with its function and `τ`, for the report's `timing`
-/// list (rule 21). O(loops × (functions + call edges + operations)).
+/// list (rule 21). O(V + E) and O((V + E) · h) once for the summaries
+/// ([`super::timing::Summaries`]), then O(size of the seed) per loop, and one search per loop
+/// that is reported.
 pub(crate) fn deadline_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -3495,7 +3497,9 @@ pub(crate) fn deadline_timing(
 /// `τ_conc`, the program's other tasks. `Limited` is labeled `internal`, so `τ` of that
 /// statement MUST flow to `internal`; U4001 at the binding otherwise, naming what raised it
 /// (`spec/27 §10`). The label is joined with the residue label `L_res` (ADR 0116 P9), as at
-/// every timing site. O(sites × (functions + call edges + operations)).
+/// every timing site. O(V + E) and O((V + E) · h) once for the summaries
+/// ([`super::timing::Summaries`]), then O(size of the seed) per site, and one search per site
+/// that is reported.
 pub(crate) fn limiter_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -3598,8 +3602,8 @@ fn within_site_explained(
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
 /// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
 /// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass
-/// 2. O(sites × (functions + call edges + operations)), and O(V + E + size of the seeds) once
-/// for `L_res`.
+/// 2. O(V + E) and O((V + E) · h) once for the summaries ([`super::timing::Summaries`]), then
+/// O(size of the seed) per site, and O(V + E + size of the seeds) once for `L_res`.
 pub(crate) fn within_labels(
     env: &Env<'_>,
     findings: &Findings,
@@ -3631,8 +3635,9 @@ pub(crate) fn within_labels(
 ///   failure at most `internal`, so `τ(e)` above it is U4001 at the `within`;
 /// - each `within` whose `τ` is above `public` joins the report's `timing` list.
 ///
-/// Returns the report's entries, in source order. O(sites × (functions + call edges +
-/// operations)).
+/// Returns the report's entries, in source order. O(V + E) and O((V + E) · h) once for the
+/// summaries ([`super::timing::Summaries`]), then O(size of the seed) per site, and one search
+/// per site that is reported.
 pub(crate) fn within_timing(
     env: &Env<'_>,
     findings: &Findings,

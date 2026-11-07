@@ -9,7 +9,8 @@
 //! calls (slices 5 and 7); and one
 //! function holding `together for`s nested `d` deep, one call at each level, where a `ctx` that
 //! walked the parents of each construct would take O(d²). Counted first (ADR 0077): the package
-//! pass steps, which the process-wide counter `pass_steps` counts, must at most double with each
+//! steps of the timing label and of the package passes, which the process-wide counters
+//! `timing_steps` and `pass_steps` count, must at most double with each
 //! doubling, with a margin of 10 %. The first five shapes are also timed, as a fallback, over a
 //! span of 8 times the size, by the shared helper of `una-cli/tests/common/timing.rs` (#1197).
 //! The nested shape is counted only: checking nested bodies is superlinear in time already,
@@ -135,7 +136,7 @@ fn nested(d: usize) -> String {
     text
 }
 
-/// The codes of the package `text`, the pass steps its type check took, and the number of
+/// The codes of the package `text`, the timing and pass steps its type check took, and the number of
 /// constructs it recorded.
 fn checked(text: &str) -> (Vec<String>, usize, usize) {
     let mut db = SourceDb::new();
@@ -164,9 +165,11 @@ fn checked(text: &str) -> (Vec<String>, usize, usize) {
         locks: &[],
     };
     assert!(check_names(&input).is_empty());
-    let steps = una_core::label_counters::pass_steps();
+    let count =
+        || una_core::label_counters::timing_steps() + una_core::label_counters::pass_steps();
+    let steps = count();
     let check = check_types(&input);
-    let steps = una_core::label_counters::pass_steps() - steps;
+    let steps = count() - steps;
     (
         check
             .diagnostics

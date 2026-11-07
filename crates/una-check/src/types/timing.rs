@@ -2720,6 +2720,9 @@ pub(crate) fn summaries(env: &Env<'_>, findings: &Findings) -> Summaries {
         }
     }
     for (&h, seed) in &findings.handler_seeds {
+        if h >= handlers {
+            continue;
+        }
         for (cap, op) in &seed.ops {
             uses.push((functions + h, name(*cap, op, &mut ops)));
         }
@@ -3073,8 +3076,9 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 ///
 /// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within` and
 /// `first of` sites take their `τ_conc` from it ([`timing_precise`], slices 3 and 4 of the plan
-/// on #1087), and so do the constructs `L_res` counts ([`residue`]); `for ever within`, the
-/// tick, limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the preview's.
+/// on #1087), and so do the constructs `L_res` counts ([`residue`]), `for ever within` and the
+/// tick (slice 5); limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the
+/// preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let kappa: Vec<Label> = findings
         .constructs

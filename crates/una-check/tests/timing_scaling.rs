@@ -1,10 +1,11 @@
 //! Scaling of the timing label of the sites (ADR 0116 amendment of 2026-10-25, E and I; slice 7
 //! of #1087): `τ⁰` of each site comes from per-node summaries closed once per package
 //! (`timing::Summaries`), not from a search of the call graph per site, which made `n` sites that
-//! reach `n` functions O(n²). Two shapes, each at four sizes:
+//! reach `n` functions O(n²). Three shapes, each at four sizes:
 //! - a chain of `n` functions, each with a `together` whose branch calls the next under a
 //!   `within`, so every site reaches the rest of the chain;
-//! - one function with `n` `within`s beside one construct.
+//! - one function with `n` `within`s beside one construct;
+//! - `n` statements that a `limiter` scopes over, each reaching the rest of a chain of calls.
 //!
 //! Counted first (ADR 0077): the timing and pass steps, which the process-wide counters count,
 //! must at most double with each doubling, with a margin of 10 %. Timed as a fallback, over a
@@ -57,6 +58,31 @@ fn many(n: usize) -> String {
     text
 }
 
+/// `n` statements that a `limiter` scopes over, each calling `h<i>`, where `h<i>` calls
+/// `h<i+1>`: each statement reaches the rest of the chain, so a search per statement takes
+/// O(n²) in all, and the summaries O(n).
+fn limiters(n: usize) -> String {
+    let mut text = String::from(
+        "module app\n\nimport std.limit (Limit, limiter)\nimport std.time (millisecond)\n",
+    );
+    for i in 0..n {
+        let next = if i + 1 == n {
+            "n".to_owned()
+        } else {
+            format!("h{}(n) + 1", i + 1)
+        };
+        text.push_str(&format!("\nh{i}(n: Int) -> Int = {next}\n"));
+    }
+    text.push_str("\npub run(n: Int) -> Int\n=\n");
+    for i in 0..n {
+        text.push_str(&format!(
+            "  let v{i} = h{i}(n) with @x = limiter(at_most: 1, per: 1000 * millisecond, waiting: 0)\n"
+        ));
+    }
+    text.push_str("  n\n");
+    text
+}
+
 /// The codes of the package `text`, and the timing and pass steps its type check took.
 fn checked(text: &str) -> (Vec<String>, usize) {
     let mut db = SourceDb::new();
@@ -106,6 +132,7 @@ fn the_timing_label_of_the_sites_scales_linearly() {
     for (shape, make) in [
         ("a chain", chain as fn(usize) -> String),
         ("many sites", many),
+        ("`limiter` statements", limiters),
     ] {
         let counts: Vec<usize> = sizes
             .iter()
