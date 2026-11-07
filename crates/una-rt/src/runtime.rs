@@ -1988,9 +1988,11 @@ pub(crate) fn task_stopping() -> bool {
 }
 
 /// The bound of the `tasks` statement of the run's `serve` section driver: the sum of `/once`
-/// over the run's `serve:` grants, at least 1 ([`Grant::serve_driver_bound`], #1724). O(g).
+/// over the run's `serve:` grants, within the default bound of a `tasks` statement, at least 1
+/// ([`Grant::serve_driver_bound`], #1724). O(g).
 pub(crate) fn serve_driver_bound() -> usize {
-    with_state(|state| Grant::serve_driver_bound(&state.grants)).unwrap_or(1)
+    with_state(|state| Grant::serve_driver_bound(&state.grants, state.max_memory, state.shared.cap))
+        .unwrap_or(1)
 }
 
 /// `f` of the state of the run, when the thread runs `main`.

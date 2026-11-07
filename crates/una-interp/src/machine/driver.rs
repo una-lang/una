@@ -68,7 +68,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let _root = super::serve::RootRights(&run);
         let caps = server_caps();
         // The grants' `/once` bounds the started tasks (decision S6-D6, #1724).
-        let bound = crate::Grant::serve_driver_bound(self.grants);
+        let bound = crate::Grant::serve_driver_bound(self.grants, self.max_memory, self.run.cap);
         let result = self
             .tasks_with(Some(bound), |machine| machine.serve_loop(handle, &caps))
             .and_then(|_| match on_stop {
