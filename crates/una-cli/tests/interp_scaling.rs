@@ -74,14 +74,14 @@ fn run_source_seconds(dir: &Path, source: &str) -> f64 {
 }
 
 /// The seconds `run_main` takes on `source`, a package of `edition`, its best of three. A
-/// package of edition 0.4 is described by `ita.una` and `ita.lock`, the others by `una.toml`
-/// and `verification.lock`.
+/// package of edition 0.4 or later is described by `ita.una` and `ita.lock`, the others by
+/// `una.toml` and `verification.lock`.
 fn run_edition_seconds(dir: &Path, source: &str, edition: &str) -> f64 {
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    if edition == "0.4" {
+    if edition == "0.4" || edition == "0.5" {
         std::fs::write(
             dir.join("ita.una"),
-            "ita scaling\n  version 0.1.0\n  edition 0.4\n",
+            format!("ita scaling\n  version 0.1.0\n  edition {edition}\n"),
         )
         .unwrap();
         std::fs::write(
@@ -184,14 +184,14 @@ fn a_sum_of_decimals_is_linear_in_its_amounts() {
     // a wide margin (#341).
     let dir = std::env::temp_dir().join(format!("una-interp-decimals-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let fixed = run_edition_seconds(&dir, &decimal_sum(10), "0.4");
+    let fixed = run_edition_seconds(&dir, &decimal_sum(10), "0.5");
     timing::assert_growth(
         "decimal amounts",
         &[10_000, 80_000],
         fixed,
         1e-6,
         24.0,
-        |n| run_edition_seconds(&dir, &decimal_sum(n), "0.4"),
+        |n| run_edition_seconds(&dir, &decimal_sum(n), "0.5"),
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

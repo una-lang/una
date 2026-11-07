@@ -22,7 +22,8 @@ fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// A package of edition 0.4 named `name`, whose entry module `prog` is `source`.
+/// A package of edition 0.5, which has the hash tables (ADR 0139 rule 6), named `name`, whose
+/// entry module `prog` is `source`.
 fn package(name: &str, source: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("hash_keys")
@@ -31,7 +32,7 @@ fn package(name: &str, source: &str) -> PathBuf {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry prog\n  grants\n    console\n"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry prog\n  grants\n    console\n"),
     )
     .unwrap();
     std::fs::copy(
@@ -133,7 +134,7 @@ pub main() -> Unit
   @console.print(\"{s.len}\")
 ";
 
-/// A program of edition 0.4 that declares a table but never makes one.
+/// A program of edition 0.5 that declares a table but never makes one.
 const REACHES_NO_TABLE: &str = "module prog
 
 import std.collections (HashSet, Set, empty_hash_set, empty_set)

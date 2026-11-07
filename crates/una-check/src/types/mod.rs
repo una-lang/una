@@ -2421,12 +2421,12 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
     fn a_decimal_declaration_that_does_not_elaborate_is_an_internal_error() {
         // Edition 0.4's `Decimal` (`spec/29 §16`): its literals, aligned operands and
         // refinements elaborate on their own paths, which the cross-check covers as any other.
-        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        let (check, codes) = run(DECIMAL, Edition::V0_5);
         assert_eq!(codes, Vec::new());
         assert_eq!(names(&check), ["Amount", "total", "scaled"]);
         for (name, line) in [("Amount", 3), ("total", 5), ("scaled", 7)] {
             let _broken = Break::of(name);
-            let (_, codes) = run(DECIMAL, Edition::V0_4);
+            let (_, codes) = run(DECIMAL, Edition::V0_5);
             assert_eq!(codes, [(Code::U8001, line)], "{name}");
         }
     }
@@ -2435,7 +2435,7 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
     fn a_decimal_declaration_of_the_prelude_that_does_not_elaborate_is_an_internal_error() {
         // The functions of `Decimal` and the kind `Rounding`, which edition 0.4's prelude
         // declares: each is in Core IR, and one that does not elaborate rejects the package.
-        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        let (check, codes) = run(DECIMAL, Edition::V0_5);
         assert_eq!(codes, Vec::new());
         let functions = ["parse_decimal", "as_decimal", "json_decimal"];
         for name in functions {
@@ -2460,7 +2460,7 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
             .chain([("Rounding", "prelude kind")])
         {
             let _broken = Break::of(name);
-            let (check, codes) = run(DECIMAL, Edition::V0_4);
+            let (check, codes) = run(DECIMAL, Edition::V0_5);
             assert_eq!(codes.len(), 1, "{name}: {codes:?}");
             let diagnostic = check.diagnostics.first().expect("one diagnostic");
             assert_eq!(diagnostic.code, Code::U8001, "{name}");

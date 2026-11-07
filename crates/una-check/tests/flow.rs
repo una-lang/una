@@ -46,6 +46,7 @@ fn with_input<R>(
             Edition::V0_2 => KeywordSet::V0_2,
             Edition::V0_3 => KeywordSet::V0_3,
             Edition::V0_4 => KeywordSet::V0_4,
+            Edition::V0_5 => KeywordSet::V0_5,
         };
         let lexed = lex_in(db.file(id), id, &mut interner, keywords);
         let parsed = parse(&lexed, id, &interner);

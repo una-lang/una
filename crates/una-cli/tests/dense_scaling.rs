@@ -41,13 +41,14 @@ impl World for Quiet {
     }
 }
 
-/// A package of edition 0.4 in `dir` with `source` as its one module, `main`: described by
-/// `ita.una` and locked by `ita.lock` (ADR 0122), the lock of a conformance case of edition 0.4.
+/// A package of edition 0.5, which has the dense values (ADR 0139 rule 6), in `dir` with
+/// `source` as its one module, `main`: described by `ita.una` and locked by `ita.lock` (ADR
+/// 0122), the lock of a conformance case.
 fn package(dir: &Path, source: &str) {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
-        "ita scaling\n  version 0.1.0\n  edition 0.4\n",
+        "ita scaling\n  version 0.1.0\n  edition 0.5\n",
     )
     .unwrap();
     std::fs::copy(
