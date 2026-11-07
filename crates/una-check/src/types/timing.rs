@@ -196,12 +196,129 @@ pub(crate) struct ConstructNode {
     pub(crate) seed: TimingSeed,
 }
 
-/// One frame of [`Checker::timing_start`]: where the site's locals start, and its seed.
+/// What checking records for the open sites, in the innermost one (ADR 0116 amendment of
+/// 2026-10-25, E: frames as a tree, each item recorded once; slice 8a of the plan on #1087).
+#[derive(Clone, Debug)]
+enum Event {
+    /// A source of the frame itself: its program counter, a deadline's label.
+    Source(Label, String),
+    /// A read of the local `name` at `position`, with `ℓ*` of its type: free in every frame of
+    /// the stack whose mark is above the position.
+    Read(Label, String, usize),
+    /// A call of, or a reference to, a function.
+    Callee(usize),
+    /// An operation performed.
+    Op(CapId, String),
+    /// A handler installed.
+    Install(usize),
+    /// A call of a function value.
+    ValueCall,
+    /// A prelude function applied to an argument whose code is not known (#1023).
+    Opaque(usize),
+    /// A value computed (IF5 item 7).
+    Value(Label),
+    /// A value bound or answered, for the reach of a `start` (#1674).
+    Bound(Label),
+}
+
+/// One frame of [`Checker::timing_start`], a node of its body's tree of frames: where its
+/// locals start, its parent and children, its own fields (`seed`, with no items), and the items
+/// recorded while it was the innermost open frame, each with its sequence number.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct TimingFrame {
+struct FrameNode {
     mark: usize,
-    read: BTreeSet<String>,
+    children: Vec<usize>,
     seed: TimingSeed,
+    events: Vec<(u64, Event)>,
+}
+
+/// The frames of the sites being checked: a tree by nesting, with the open ones on a stack,
+/// innermost last. Each item checking records goes once into the innermost open frame, not into
+/// every open frame, and the seed of a frame is rebuilt from its subtree when it ends. The tree
+/// is cleared whenever no frame is open, so it holds the frames of one outermost site at most.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TimingFrames {
+    tree: Vec<FrameNode>,
+    stack: Vec<usize>,
+    next: u64,
+}
+
+impl TimingFrames {
+    /// Records `event` in the innermost open frame, if any.
+    fn record(&mut self, event: Event) {
+        if let Some(&at) = self.stack.last()
+            && let Some(frame) = self.tree.get_mut(at)
+        {
+            frame.events.push((self.next, event));
+            self.next += 1;
+        }
+    }
+
+    /// Whether a frame is open.
+    fn is_open(&self) -> bool {
+        !self.stack.is_empty()
+    }
+
+    /// The seed of the frame `at`, rebuilt from the items of its subtree in the order checking
+    /// recorded them, exactly as the copying into every open frame built it: its own sources and
+    /// fields; each read of a local bound before its mark, once per name, in order; and the
+    /// callees, operations, installations, values, bindings, value calls and opaque
+    /// applications of the whole subtree. O(k log k) for the `k` items of the subtree.
+    fn seed_of(&self, at: usize) -> TimingSeed {
+        let Some(frame) = self.tree.get(at) else {
+            return TimingSeed::default();
+        };
+        let mut seed = frame.seed.clone();
+        let mut events: Vec<&(u64, Event)> = Vec::new();
+        let mut pending = vec![at];
+        while let Some(node) = pending.pop() {
+            let Some(child) = self.tree.get(node) else {
+                continue;
+            };
+            pending.extend(child.children.iter().copied());
+            events.extend(
+                child
+                    .events
+                    .iter()
+                    .filter(|(_, event)| node == at || !matches!(event, Event::Source(..))),
+            );
+        }
+        events.sort_unstable_by_key(|(sequence, _)| *sequence);
+        let mut read: BTreeSet<&str> = BTreeSet::new();
+        let join = |slot: &mut Option<Label>, label: &Label| {
+            *slot = Some(match slot {
+                Some(before) => before.join(label),
+                None => label.clone(),
+            });
+        };
+        for (_, event) in events {
+            match event {
+                Event::Source(label, source) => seed.sources.push((label.clone(), source.clone())),
+                Event::Read(label, name, position) => {
+                    if *position < frame.mark && read.insert(name.as_str()) {
+                        seed.sources
+                            .push((label.clone(), format!("the binding `{name}`")));
+                    }
+                }
+                Event::Callee(f) => {
+                    seed.callees.insert(*f);
+                }
+                Event::Op(cap, op) => {
+                    seed.ops.insert((*cap, op.clone()));
+                }
+                Event::Install(h) => {
+                    seed.handlers.insert(*h);
+                }
+                Event::ValueCall => seed.value_call = true,
+                Event::Opaque(f) => {
+                    seed.opaque_applies.insert(*f);
+                }
+                Event::Value(label) => join(&mut seed.values, label),
+                Event::Bound(label) => join(&mut seed.bound, label),
+            }
+        }
+        seed
+    }
 }
 
 impl Checker<'_, '_, '_> {
@@ -215,13 +332,23 @@ impl Checker<'_, '_, '_> {
             construct: self.parts.last().copied(),
             ..TimingSeed::default()
         };
-        seed.sources
-            .push((self.ctx.pc.clone(), "the program counter".to_owned()));
-        self.timing.push(TimingFrame {
+        let at = self.timing.tree.len();
+        if let Some(&parent) = self.timing.stack.last()
+            && let Some(frame) = self.timing.tree.get_mut(parent)
+        {
+            frame.children.push(at);
+        }
+        self.timing.tree.push(FrameNode {
             mark: self.locals.len(),
-            read: BTreeSet::new(),
-            seed,
+            children: Vec::new(),
+            seed: std::mem::take(&mut seed),
+            events: Vec::new(),
         });
+        self.timing.stack.push(at);
+        self.timing.record(Event::Source(
+            self.ctx.pc.clone(),
+            "the program counter".to_owned(),
+        ));
     }
 
     /// Whether code checked here runs where the structure of its function does not show what
@@ -303,12 +430,7 @@ impl Checker<'_, '_, '_> {
                 .or_insert_with(Label::public);
             *slot = slot.join(label);
         }
-        for frame in &mut self.timing {
-            frame.seed.bound = Some(match &frame.seed.bound {
-                Some(before) => before.join(label),
-                None => label.clone(),
-            });
-        }
+        self.timing.record(Event::Bound(label.clone()));
     }
 
     /// Records that the code being checked installs the handler `handler` at `span`.
@@ -374,30 +496,35 @@ impl Checker<'_, '_, '_> {
     /// a test runs alone, so nothing runs beside it, as nothing runs beside `main` (ADR 0116
     /// IF6); the code of a task or a lambda inside it stays unplaced by its own sites.
     pub(crate) fn timing_placed(&mut self) {
-        if let Some(frame) = self.timing.last_mut() {
+        if let Some(&at) = self.timing.stack.last()
+            && let Some(frame) = self.timing.tree.get_mut(at)
+        {
             frame.seed.unplaced = false;
         }
     }
 
-    /// Ends the innermost site of [`Self::timing_start`] and returns its seed.
+    /// Ends the innermost site of [`Self::timing_start`] and returns its seed, rebuilt from the
+    /// items of its subtree ([`TimingFrames`]).
     pub(crate) fn timing_end(&mut self) -> TimingSeed {
-        self.timing
-            .pop()
-            .map(|frame| frame.seed)
-            .unwrap_or_default()
+        let Some(at) = self.timing.stack.pop() else {
+            return TimingSeed::default();
+        };
+        let seed = self.timing.seed_of(at);
+        if !self.timing.is_open() {
+            self.timing.tree.clear();
+        }
+        seed
     }
 
     /// Adds `label` from `source` to the innermost site, such as a deadline's label (IF5 item
     /// 5).
     pub(crate) fn timing_source(&mut self, label: Label, source: String) {
-        if let Some(frame) = self.timing.last_mut() {
-            frame.seed.sources.push((label, source));
-        }
+        self.timing.record(Event::Source(label, source));
     }
 
     /// Records a read of the local `name` in every site it is free in (IF5 item 2).
     pub(crate) fn timing_read(&mut self, name: &str) {
-        if self.timing.is_empty() {
+        if !self.timing.is_open() {
             return;
         }
         let Some(position) = self.locals.position(name) else {
@@ -407,14 +534,8 @@ impl Checker<'_, '_, '_> {
             return;
         };
         let label = self.deep(&ty);
-        for frame in &mut self.timing {
-            if position < frame.mark && frame.read.insert(name.to_owned()) {
-                frame
-                    .seed
-                    .sources
-                    .push((label.clone(), format!("the binding `{name}`")));
-            }
-        }
+        self.timing
+            .record(Event::Read(label, name.to_owned(), position));
     }
 
     /// Records a value of type `ty` computed by the code being checked (#1685): `ℓ*` of `ty`,
@@ -434,9 +555,7 @@ impl Checker<'_, '_, '_> {
                 None => *values = Some(label.clone()),
             }
         }
-        for frame in &mut self.timing {
-            raise(&mut frame.seed.values, &label);
-        }
+        self.timing.record(Event::Value(label.clone()));
         if let Some(current) = self.current {
             let body = self.findings.body_labels.entry(current).or_insert(None);
             raise(body, &label);
@@ -457,9 +576,7 @@ impl Checker<'_, '_, '_> {
     /// Records a call of, or a reference to, the function `callee` in every open site, and in
     /// the seed of the handler being checked.
     pub(crate) fn timing_callee(&mut self, callee: usize) {
-        for frame in &mut self.timing {
-            frame.seed.callees.insert(callee);
-        }
+        self.timing.record(Event::Callee(callee));
         if let Some(seed) = self.handler_seed() {
             seed.callees.insert(callee);
         }
@@ -468,9 +585,7 @@ impl Checker<'_, '_, '_> {
     /// Records the operation `op` of `capability` in every open site, and in the seed of the
     /// handler being checked.
     pub(crate) fn timing_op(&mut self, capability: CapId, op: &str) {
-        for frame in &mut self.timing {
-            frame.seed.ops.insert((capability, op.to_owned()));
-        }
+        self.timing.record(Event::Op(capability, op.to_owned()));
         if let Some(seed) = self.handler_seed() {
             seed.ops.insert((capability, op.to_owned()));
         }
@@ -479,9 +594,7 @@ impl Checker<'_, '_, '_> {
     /// Records the installation of the handler `handler` in every open site, and in the seed
     /// of the handler being checked.
     pub(crate) fn timing_install(&mut self, handler: usize) {
-        for frame in &mut self.timing {
-            frame.seed.handlers.insert(handler);
-        }
+        self.timing.record(Event::Install(handler));
         if let Some(seed) = self.handler_seed() {
             seed.handlers.insert(handler);
         }
@@ -490,9 +603,7 @@ impl Checker<'_, '_, '_> {
     /// Records a call of a function value in every open site (IF5 item 4), and in the seed of
     /// the handler being checked (#1436).
     pub(crate) fn timing_value_call(&mut self) {
-        for frame in &mut self.timing {
-            frame.seed.value_call = true;
-        }
+        self.timing.record(Event::ValueCall);
         if let Some(seed) = self.handler_seed() {
             seed.value_call = true;
         }
@@ -506,9 +617,7 @@ impl Checker<'_, '_, '_> {
         if let Some(current) = self.current {
             self.findings.opaque_applies.insert((current, callee));
         }
-        for frame in &mut self.timing {
-            frame.seed.opaque_applies.insert(callee);
-        }
+        self.timing.record(Event::Opaque(callee));
         if let Some(seed) = self.handler_seed() {
             seed.opaque_applies.insert(callee);
         }

@@ -252,7 +252,7 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// loop until the stop (U3027, ADR 0116 rule 19).
     pub(crate) do_stops: bool,
     /// The sites whose timing label is being recorded, innermost last (ADR 0116 IF5).
-    pub(crate) timing: Vec<super::timing::TimingFrame>,
+    pub(crate) timing: super::timing::TimingFrames,
     /// The task constructs whose parts enclose the code checked, innermost last, by their ids
     /// in `Findings::constructs` (ADR 0116 P2, P3): those of the node being checked only, so
     /// a lambda's body starts with none.
@@ -562,7 +562,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             tasks_frames: Vec::new(),
             in_ever: false,
             do_stops: false,
-            timing: Vec::new(),
+            timing: super::timing::TimingFrames::default(),
             parts: Vec::new(),
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
