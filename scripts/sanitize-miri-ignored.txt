@@ -5,8 +5,11 @@
 # threads, maps a task's stack or switches coroutines, which Miri cannot do (#1145), a test
 # that times the scheduler's turns on the real clock, which Miri simulates (#1146), a test
 # that starts the timer thread, which serves until the process ends, while Miri rejects a
-# thread alive at exit (#1151, #1193), or a test that asks the allocator for more than it can
-# give, which Miri reports as resource exhaustion rather than returning null (#1700).
+# thread alive at exit (#1151, #1193), a test that asks the allocator for more than it can
+# give, which Miri reports as resource exhaustion rather than returning null (#1700),
+# a test of the debug credit of the quarantine whose table sizes hold only at its full 65,536
+# slots, while Miri's has 64 (#1506), or a timing test ignored in every build and run by hand
+# in a quiet window (#926).
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
 ffi::tests::a_replace_of_an_empty_pattern_scenario
@@ -58,6 +61,8 @@ ffi::tests::i7_i10_a_block_whose_own_task_was_cancelled_copies_nothing_and_ends_
 ffi::tests::i8_a_failure_in_the_first_batch_leaves_the_later_batches_unforked
 ffi::tests::i8_first_batch_failure_scenario
 ffi::tests::words_in_a_run_scenario
+host::tests::a_cut_fails_a_queued_operation_timed_out_and_a_failure_interrupts_it
+reactor::tests::a_deadline_s_cut_leaves_a_parked_request_to_its_own_time_out
 reactor::tests::a_parked_task_is_woken_by_readiness_by_its_time_and_by_a_cancellation
 reactor::tests::a_parked_task_leaves_its_worker_to_the_others
 reactor::tests::a_run_s_own_stop_wakes_its_parked_waits_with_the_handlers_installed
@@ -84,7 +89,10 @@ runtime::tests::the_tls_settings_exist_before_main_exactly_when_a_grant_includes
 runtime::tests::the_tls_settings_scenario
 sched::tests::a_cancelled_task_parked_on_an_interruptible_wait_is_woken_at_once
 sched::tests::a_construct_starts_no_thread_and_maps_no_stack_whatever_ran_before
+sched::tests::a_lone_overdue_turn_is_not_raised
 sched::tests::a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn
+sched::tests::a_lost_turn_end_raise_is_raised_again_while_the_turn_stays_overdue
+sched::tests::a_turn_end_raised_before_the_task_installs_its_state_still_yields
 sched::tests::a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before
 sched::tests::a_yield_lets_the_jobs_queued_before_it_run_first
 sched::tests::one_worker_runs_a_parent_and_the_children_it_waits_for_three_levels_deep
@@ -109,5 +117,10 @@ tasks::tests::i1_i10_an_adoption_inside_nested_blocks_renumbers_within_what_it_r
 tasks::tests::i1_i10_an_adoption_reserves_what_it_allocates_and_renumbers_the_handlers
 tasks::tests::i1_i3_every_start_allocates_within_its_reservation_at_any_depth_and_path
 tasks::tests::i5_i7_a_block_joins_batch_by_batch_and_keeps_its_results_in_task_order
-timer::tests::a_timer_sets_its_entry_once_its_deadline_passes_and_a_cancelled_one_never_does
+tasks::tests::the_warm_up_copies_a_closure_object_into_every_task_as_a_program_s_block_does
+tasks::tests::the_warm_up_runs_one_real_task_per_item_and_leaves_nothing_behind
 values::collections::tests::a_bit_set_the_allocator_cannot_give_is_refused_and_the_runtime_stays_usable
+values::tests::a_reservation_left_unused_still_bounds_the_credit
+values::tests::a_reservation_within_the_debug_table_still_lowers_the_credit
+values::tests::an_import_that_reserves_more_than_twice_its_table_moves_the_release_bound
+values::tests::two_fresh_chains_compare_in_time_linear_in_their_depth
