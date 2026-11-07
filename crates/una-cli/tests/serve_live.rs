@@ -57,6 +57,19 @@ fn package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
 /// [`package`], whose `ita.una` has, when `served`, a `serve` section that names `srv` in
 /// place of the `run entry`.
 fn package_with(name: &str, port: u16, program: &str, engine: Engine, served: bool) -> PathBuf {
+    let grants = format!("    serve \"http://127.0.0.1:{port}\"\n");
+    package_granted(name, &grants, program, engine, served)
+}
+
+/// [`package_with`], whose `grants` are `console` and the lines `grants`, each indented by four
+/// spaces and ending with a newline.
+fn package_granted(
+    name: &str,
+    grants: &str,
+    program: &str,
+    engine: Engine,
+    served: bool,
+) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "una-serve-live-{name}-{engine:?}-{}",
         std::process::id()
@@ -67,11 +80,11 @@ fn package_with(name: &str, port: u16, program: &str, engine: Engine, served: bo
         dir.join("ita.una"),
         if served {
             format!(
-                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n\nserve\n  module srv\n"
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  grants\n    console\n{grants}\nserve\n  module srv\n"
             )
         } else {
             format!(
-                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n"
+                "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n{grants}"
             )
         },
     )
@@ -936,5 +949,156 @@ fn internal_twin(name: &str, program: &str, long: usize, engine: Engine) {
         assert_eq!(output(&lines), ["serving", "stopped"], "{engine:?}");
         assert!(stderr.contains("ended alone"), "{engine:?}: {stderr}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A backend on `127.0.0.1` that answers every request `200` with the body `ok` at once and
+/// closes, on a thread of its own: its port.
+fn backend() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => return,
+                    }
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            });
+        }
+    });
+    port
+}
+
+/// A pool of `WORKERS` tasks, each of which loops on `next`, then an `Http` call to the backend
+/// on port `BACK`, then answers `200` with what the backend's status was: a program shape the
+/// checker accepts, where every task but those answering waits in `next`.
+const POOL: &str = r#"module srv
+
+import std.host (HttpServer, Reply)
+
+worker(n: Int) -> Unit
+  uses @server: HttpServer[next, reply]
+  uses @http: Http[get]
+  diverges
+=
+  for ever
+    let next = attempt @server.next()
+    when next
+      is Ok(exchange) ->
+        let back = attempt @http.get("http://127.0.0.1:BACK/", headers: [], key_name: None)
+        let body = when back
+          is Ok(reply) -> "backend {reply.status}"
+          is Err(failure) -> "backend failed"
+        @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+          if error use unit
+      is Err(failure) -> unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @http: Http[get]
+  uses @console: Console[print]
+  diverges
+=
+  @console.print("serving")
+  tasks at most 1000 at once
+    for n in 1..(WORKERS + 1)
+      start worker(n)
+  @console.print("stopped")
+"#;
+
+/// Sends `GET /` on a fresh connection to `port` and reads the reply, on a thread of its own:
+/// the reply without its `Date` line, and how long it took.
+fn request_on_thread(port: u16) -> std::thread::JoinHandle<(String, Duration)> {
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut stream = connect(port);
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        (dateless(&read_reply(&mut stream)), started.elapsed())
+    })
+}
+
+/// Runs [`POOL`] with `workers` tasks and `--io-threads` `helpers` in `engine`, sends `requests`
+/// requests one after another, then `requests` at once, and checks that every one is answered
+/// `200` by the backend's reply, each within 5 seconds, before the grant's
+/// `answer within 10 seconds` would answer `503`.
+fn pool_answers(name: &str, engine: Engine, workers: usize, helpers: usize, requests: usize) {
+    let back = backend();
+    let port = free_port();
+    let program = POOL
+        .replace("BACK", &back.to_string())
+        .replace("WORKERS", &workers.to_string());
+    let grants = format!(
+        "    serve \"http://127.0.0.1:{port}\"\n      answer within 10 seconds\n    http \"http://127.0.0.1:{back}\" get\n"
+    );
+    let dir = package_granted(name, &grants, &program, engine, false);
+    let threads = helpers.to_string();
+    let mut run = start(
+        &dir,
+        name,
+        engine,
+        &["--io-threads", &threads, "--stop-grace", "5"],
+    );
+    run.expect("serving");
+    let bound = Duration::from_secs(5);
+    let one_by_one = (0..requests).map(|_| request_on_thread(port).join().unwrap());
+    let one_by_one: Vec<_> = one_by_one.collect();
+    let at_once: Vec<_> = (0..requests).map(|_| request_on_thread(port)).collect();
+    let at_once = at_once.into_iter().map(|sent| sent.join().unwrap());
+    for (reply, took) in one_by_one.into_iter().chain(at_once) {
+        assert_eq!(
+            reply,
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nbackend 200",
+            "{name} ({engine:?}, {workers} waiters, {helpers} helpers) after {took:?}"
+        );
+        assert!(
+            took < bound,
+            "{name} ({engine:?}, {workers} waiters, {helpers} helpers): {took:?}"
+        );
+    }
+    run.terminate();
+    let (code, lines, stderr) = run.end();
+    assert_eq!(code, Some(0), "{name} ({engine:?}): {stderr}");
+    assert_eq!(
+        output(&lines),
+        ["serving", "stopped"],
+        "{name} ({engine:?})"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #1723 (the hunt of #1011, H1 (a)): in native code a waiting `next` held a helper of the I/O
+/// pool for its whole wait, and `Http`'s lookup and connection need one too. With
+/// `--io-threads 1` and two tasks waiting in `next`, the request task's `Http` call never
+/// started, and the request got `503` at `answer`; the interpreter answered `200`. A waiting
+/// `next` now parks on the reactor and holds no helper, so both engines answer `200`.
+#[test]
+fn waiting_next_calls_do_not_starve_the_http_pool() {
+    for engine in ENGINES {
+        pool_answers("live_pool_starve", engine, 2, 1, 1);
+    }
+}
+
+/// #1723, the limit: more tasks waiting in `next` than helpers in the I/O pool, 64 waiters over
+/// 2 helpers, and 8 requests one after another, then 8 at once, each of which makes an `Http`
+/// call: every request is delivered and answered `200`, in both engines. Before the fix, native
+/// code answered the first one `503` at `answer`: its `Http` call queued behind waits that no
+/// signal ended. A wait holds no thread, so the number of waiters is bounded by the tasks only;
+/// each signal of the engine wakes O(1) waiters, and each look of a parked waiter costs
+/// O(log p) for the p parked ones.
+#[test]
+fn more_next_waiters_than_helpers_still_deliver_and_answer() {
+    for engine in ENGINES {
+        pool_answers("live_pool_limit", engine, 64, 2, 8);
     }
 }
