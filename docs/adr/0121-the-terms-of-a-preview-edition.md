@@ -451,3 +451,10 @@ Existing codes cover the rest: U0101 (a construct of `0.4`, or a new reserved ke
 - **Chapter.** Its rules live in `spec/27`, as its header states (ADR 0121 rule 20).
 
 **ADR 0114, Note of 2026-10-19.** The carve-out of rule 15 stays the only exception to the erasure clause in edition `0.3`, besides the allowances of ADRs 0103 and 0104, and is not a precedent there: a construct that does not erase targets edition `0.4`, under the terms of ADR 0121. In edition `0.4`, `F64` is inherited by cumulativity and needs no carve-out. **Chapter:** `spec/26`, which this record's header names, is the chapter of ADR 0116; this record's rules live in `spec/29`, the numeric foundation, beside `F32` and `Complex` of ADR 0120 (ADR 0121 rule 20).
+
+## Amendment (2026-11-06): the terms apply to every preview edition (ADR 0139)
+
+- Rules 1 to 19 are written for edition `0.4`, with edition `0.3` as the edition before it. They apply to every preview edition `0.N`, with the edition before it in place of `0.3` (edition `0.6` for edition `0.8`, since there is no edition `0.7`), and with `v0.N.0` in place of `v0.4.0` in rule 15: edition `0.N` becomes stable at release R0.N, compiler version `v0.N.0` (ADR 0139 rules 1 and 2). The heading of rule 6 names the edition it concerns. Rule 13 (edition `0.3`) and rule 14 (edition `0.3` becomes stable no later than edition `0.4`) are unchanged.
+- **Glossary.** A release R0.N is the release whose compiler version is `v0.N.0`; its patch releases are `v0.N.x`. An edition is named by the release that closes it, and only a release that changes syntax creates one (ADR 0139 rules 2 and 3).
+- **Rule 20.** In the table of chapters, the Edition column of `spec/28` (ADR 0119) reads `0.5`, and that of `spec/29` (ADR 0120) reads "`0.3` (`F64`); `0.5` (the rest)".
+- **Records that move.** A construct that a release accepted in edition `0.4` and that ADR 0139 moves to edition `0.5` is a removed form under rule 5, U7007 with the repair of ADR 0139 rule 7.
