@@ -37,14 +37,18 @@ pub enum Waited {
 pub enum Look {
     /// The wait ends, as [`Port::wait`] would have ended it.
     Done(Waited),
-    /// Nothing yet: the caller parks for at most `slice`, then looks again. When the look was
-    /// given a wake, the engine holds it as `ticket` and calls it at most once, at a signal the
-    /// waiter may claim; the caller gives the ticket back with [`Port::unpark`] after its park.
+    /// Nothing yet: the caller parks for at most `slice`, or until its wake when `slice` is
+    /// `None`, then looks again. When the look was given a wake, the engine holds it as
+    /// `ticket` and calls it at most once, at a signal the waiter may claim or at any stop of
+    /// the engine; the caller gives the ticket back with [`Port::unpark`] after its park. The
+    /// caller's own conditions (its `stopped` test) must wake the park by the caller's means,
+    /// since no look comes in between.
     Park {
         /// The wake's place among the engine's parked waiters, when one was given.
         ticket: Option<u64>,
-        /// The longest the caller parks before its next look.
-        slice: Duration,
+        /// The time left before the wait's deadline or a rate's retry time, the earlier; `None`
+        /// when it has neither.
+        slice: Option<Duration>,
     },
 }
 

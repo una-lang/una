@@ -593,9 +593,11 @@ pub fn next(site: i64) -> i64 {
 /// from the operations of the tasks that answer, as `Http`'s lookups and connections, or from
 /// `std.limit`'s waits. Each pass looks at the engine once ([`Port::look`]), then parks with its
 /// wake left with the engine, registered under the lock the engine's signals are sent under, so
-/// no signal sent after the look is lost; the park ends at that wake, at the look's slice (at
-/// most [`una_http::serve::live::LOOK`], the deadline, or a rate's retry time), or at a
-/// cancellation of the task or an abort of the run, which [`next`] sees at its loop's head. A
+/// no signal sent after the look is lost; the park ends at that wake (a signal for one waiter,
+/// or any stop of the engine: `close`, the host stop, the hard stop), at the deadline or a
+/// rate's retry time, at a cancellation of the task or an abort of the run, which [`next`] sees
+/// at its loop's head, or at the run's host stop, which the reactor also tells. No timer looks at
+/// an idle wait, so an idle waiter costs no wake per unit of time. A
 /// deadline's cut of a `tasks` statement wakes it not, as it wakes no wait that began on a
 /// helper (#1148). `None` when the engine has no such waits or the reactor cannot hold the
 /// wait: the caller waits on a helper. O(log p) a pass for the p parked waiters.
@@ -611,28 +613,38 @@ fn parked_wait(
     let mut all = entries.to_vec();
     all.push((Arc::clone(&serving.entry), RUN_ENTRY));
     loop {
+        // The park lasts until the deadline or the retry time, else until a wake only: the
+        // reactor's timer is then never due.
         let slice = match serving.port.look(epoch, retry, deadline, &stopped, None)? {
             Look::Done(waited) => return Some(waited),
-            Look::Park { slice, .. } => slice,
+            Look::Park { slice, .. } => slice.unwrap_or(std::time::Duration::MAX),
         };
         let ticket = std::cell::Cell::new(None);
         let done = std::cell::Cell::new(None);
-        let woken = reactor.wait_on(None, slice, None, &all, |ready| {
-            match serving
-                .port
-                .look(epoch, retry, deadline, &stopped, Some(Arc::clone(ready)))
-            {
-                Some(Look::Done(waited)) => {
-                    done.set(Some(waited));
-                    true
-                }
-                Some(Look::Park { ticket: held, .. }) => {
-                    ticket.set(held);
-                    false
-                }
-                None => true,
-            }
-        });
+        let woken =
+            reactor.wait_on(
+                None,
+                slice,
+                crate::runtime::run_stop(),
+                &all,
+                |ready| match serving.port.look(
+                    epoch,
+                    retry,
+                    deadline,
+                    &stopped,
+                    Some(Arc::clone(ready)),
+                ) {
+                    Some(Look::Done(waited)) => {
+                        done.set(Some(waited));
+                        true
+                    }
+                    Some(Look::Park { ticket: held, .. }) => {
+                        ticket.set(held);
+                        false
+                    }
+                    None => true,
+                },
+            );
         if let Some(held) = ticket.get() {
             serving.port.unpark(held);
         }

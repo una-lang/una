@@ -22,9 +22,12 @@
 //!   runtime parked on its reactor (#1723), makes the same tests one look at a time
 //!   ([`Port::look`]) and leaves a wake with the engine, under the lock its signals are sent
 //!   under. A signal for one waiter calls the oldest such wake, besides waking one waiter that
-//!   sleeps on the condition, and a stop calls every one; a parked waiter still looks at least
-//!   every [`LOOK`]. So a wait for a request never takes a helper that other operations need,
-//!   however many tasks wait.
+//!   sleeps on the condition, and a stop calls every one. A parked waiter that left a wake does
+//!   not look every [`LOOK`]: its park ends only at that wake, at its deadline or a rate's retry
+//!   time, or by its caller's own means (a cancellation, an abort, the run's host stop), so an
+//!   idle parked waiter costs no wake at all. So a wait for a request never takes a helper that
+//!   other operations need, and idle waiters cost nothing per unit of time, however many tasks
+//!   wait.
 //! - **Stopping.** A host stop ([`Live::host_stop`]) closes the listeners at once, refuses what
 //!   was not delivered with `503` and lets the open exchanges drain (rule 18); the hard stop
 //!   ([`Live::hard_stop`]) answers every open exchange `503` in one non-blocking write and closes
@@ -217,8 +220,8 @@ impl Live {
 }
 
 impl Live {
-    /// One pass of a wait's tests, under the lock of the signals: how the wait ends, or how
-    /// long it may sleep before its next pass. O(1).
+    /// One pass of a wait's tests, under the lock of the signals: how the wait ends, or the
+    /// time left before its deadline or a rate's retry time, the earlier, when it has one. O(1).
     fn tests(
         &self,
         signals: &mut Signals,
@@ -226,7 +229,7 @@ impl Live {
         retry: Option<u64>,
         deadline: Option<Instant>,
         stopped: &dyn Fn() -> bool,
-    ) -> Result<Waited, Duration> {
+    ) -> Result<Waited, Option<Duration>> {
         if signals.all > epoch {
             return Ok(Waited::Changed);
         }
@@ -246,14 +249,12 @@ impl Live {
         if retry.is_some_and(|retry| engine >= retry) {
             return Ok(Waited::Changed);
         }
-        let mut slice = LOOK;
-        if let Some(deadline) = deadline {
-            slice = slice.min(deadline.saturating_duration_since(now));
-        }
-        if let Some(retry) = retry {
-            slice = slice.min(Duration::from_nanos(retry.saturating_sub(engine)));
-        }
-        Err(slice)
+        let until = deadline.map(|deadline| deadline.saturating_duration_since(now));
+        let retry = retry.map(|retry| Duration::from_nanos(retry.saturating_sub(engine)));
+        Err(match (until, retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        })
     }
 }
 
@@ -292,9 +293,10 @@ impl Port for Live {
         let (signals, changed) = &*self.epoch;
         let mut guard = lock(signals);
         loop {
+            // A wait on the condition reads its `stopped` test at least every [`LOOK`].
             let slice = match self.tests(&mut guard, epoch, retry, deadline, stopped) {
                 Ok(waited) => return waited,
-                Err(slice) => slice,
+                Err(until) => until.map_or(LOOK, |until| until.min(LOOK)),
             };
             guard = match changed.wait_timeout(guard, slice) {
                 Ok((guard, _)) => guard,
@@ -315,14 +317,17 @@ impl Port for Live {
         Some(
             match self.tests(&mut guard, epoch, retry, deadline, stopped) {
                 Ok(waited) => Look::Done(waited),
-                Err(slice) => {
+                Err(until) => {
                     let ticket = wake.map(|wake| {
                         let ticket = guard.tickets;
                         guard.tickets = ticket.wrapping_add(1);
                         guard.parked.insert(ticket, wake);
                         ticket
                     });
-                    Look::Park { ticket, slice }
+                    Look::Park {
+                        ticket,
+                        slice: until,
+                    }
                 }
             },
         )
@@ -352,6 +357,8 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use std::sync::atomic::AtomicUsize;
+
+    use una_core::http::serve::ServeGrant;
 
     use super::*;
 
@@ -397,16 +404,128 @@ mod tests {
         assert!(signals.claim(0));
     }
 
+    /// A live engine over a loopback listener that nothing connects to, and how many times each
+    /// of `n` wakes was called.
+    fn engine(n: usize) -> (Live, Arc<Vec<AtomicUsize>>) {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let grant = ServeGrant::parse(&format!("serve:http://127.0.0.1:{port}")).unwrap();
+        let prepared = super::super::prepare(
+            &[super::super::ServeInput {
+                grant: &grant,
+                certificate: None,
+                key: None,
+            }],
+            1,
+            1,
+        )
+        .unwrap();
+        let live = Live::start(prepared, std::slice::from_ref(&grant), 1).unwrap();
+        (
+            live,
+            Arc::new((0..n).map(|_| AtomicUsize::new(0)).collect()),
+        )
+    }
+
+    fn total(counts: &[AtomicUsize]) -> usize {
+        counts
+            .iter()
+            .map(|count| count.load(Ordering::SeqCst))
+            .sum()
+    }
+
     #[test]
-    fn a_signal_with_no_parked_wake_waits_for_a_claim() {
-        // A signal sent before a waiter parks calls no wake; the waiter's next look claims it,
-        // as its epoch came before it, so no wake is lost between a look and a park.
-        let epoch: Epoch = Arc::new((Mutex::new(Signals::default()), Condvar::new()));
-        let before = lock(&epoch.0).sent;
-        signal(&epoch, Wake::One);
-        let mut signals = lock(&epoch.0);
-        assert!(signals.claim(before));
-        // Claimed once: a second waiter of the same epoch finds nothing.
-        assert!(!signals.claim(before));
+    fn a_look_leaves_a_wake_that_one_signal_calls_once() {
+        // #1723: the look that finds nothing registers its wake under the lock signals are sent
+        // under; the next signal for one waiter calls it, once, and the waiter's next look
+        // claims that signal. Giving the ticket back afterwards does nothing.
+        let (live, counts) = engine(1);
+        let epoch = live.epoch();
+        let look = live.look(epoch, None, None, &|| false, Some(counting(&counts, 0)));
+        let Some(Look::Park {
+            ticket: Some(ticket),
+            slice: None,
+        }) = look
+        else {
+            panic!("{look:?}")
+        };
+        live.pass();
+        assert_eq!(total(&counts), 1);
+        live.unpark(ticket);
+        assert_eq!(
+            live.look(epoch, None, None, &|| false, None),
+            Some(Look::Done(Waited::Changed))
+        );
+        // The wake was taken: a later signal calls nothing.
+        live.pass();
+        assert_eq!(total(&counts), 1);
+        live.end(Duration::ZERO, true);
+    }
+
+    #[test]
+    fn a_signal_before_the_look_is_claimed_by_it_and_leaves_no_wake() {
+        // No wake is lost between an attempt and the park: a signal sent after the epoch was
+        // read, before the look, makes the look end the wait, and no wake is registered.
+        let (live, counts) = engine(1);
+        let epoch = live.epoch();
+        live.pass();
+        assert_eq!(
+            live.look(epoch, None, None, &|| false, Some(counting(&counts, 0))),
+            Some(Look::Done(Waited::Changed))
+        );
+        live.pass();
+        assert_eq!(total(&counts), 0);
+        // The stop test comes before the claim: a waiter that leaves takes no signal.
+        let epoch = live.epoch();
+        live.pass();
+        assert_eq!(
+            live.look(epoch, None, None, &|| true, None),
+            Some(Look::Done(Waited::Stopped))
+        );
+        live.end(Duration::ZERO, true);
+    }
+
+    #[test]
+    fn idle_parked_waiters_cost_no_wake_and_one_signal_wakes_one() {
+        // The #1726 review, M1: a parked waiter with no deadline has no slice, so no timer
+        // wakes it while the engine is idle: counted, 0 wakes for 100 waiters over 200 ms. One
+        // signal wakes one of them, the oldest; the host stop wakes each of the others once.
+        let waiters = 100;
+        let (live, counts) = engine(waiters);
+        let epoch = live.epoch();
+        for at in 0..waiters {
+            let look = live.look(epoch, None, None, &|| false, Some(counting(&counts, at)));
+            assert!(
+                matches!(
+                    look,
+                    Some(Look::Park {
+                        ticket: Some(_),
+                        slice: None
+                    })
+                ),
+                "{look:?}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(total(&counts), 0);
+        live.pass();
+        assert_eq!(total(&counts), 1);
+        assert_eq!(counts[0].load(Ordering::SeqCst), 1);
+        live.host_stop();
+        assert!(counts.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+        // A waiter with a deadline parks for no longer than it.
+        let soon = Instant::now() + Duration::from_millis(50);
+        let look = live.look(live.epoch(), None, Some(soon), &|| false, None);
+        let Some(Look::Park {
+            slice: Some(slice), ..
+        }) = look
+        else {
+            panic!("{look:?}")
+        };
+        assert!(slice <= Duration::from_millis(50), "{slice:?}");
+        live.end(Duration::ZERO, true);
     }
 }
