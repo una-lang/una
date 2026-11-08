@@ -311,19 +311,32 @@ if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
 fi
-# The packed una serves (spec/31 §1 rule 10): examples/health, on a port of its own, names the
-# address on stderr, answers `GET /health` with 200 and ends with 0 at SIGTERM, within 60 s.
+# The packed una serves (spec/31 §1 rule 10): examples/health, on a free port, names the address
+# on stderr, answers `GET /health` with 200 and ends with 0 at SIGTERM; its start and its stop
+# are each bounded, and an EXIT trap kills it if the check ends first.
+if ! command -v curl >/dev/null 2>&1; then
+    echo "error: the serve check of examples/health needs curl, which is not on PATH" >&2
+    exit 1
+fi
 dir="$tmp/serve-health"
 cp -R examples/health "$dir"
+serve_pid=
+trap 'if [ -n "$serve_pid" ]; then kill -9 "$serve_pid" 2>/dev/null || true; fi; rm -rf "$tmp"' EXIT
+# A port with no listener: one that `curl` cannot connect to, tried from a run-dependent start.
 port=$((20000 + $$ % 20000))
+tries=0
+while curl -s -m 1 -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null || [ "$?" != 7 ]; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 50 ] || { echo "error: no free port for the serve check" >&2; exit 1; }
+    port=$((20000 + ($port + 1) % 20000))
+done
 sed "s|127.0.0.1:8080|127.0.0.1:$port|" examples/health/ita.una > "$dir/ita.una"
 (cd "$dir" && exec "$una" run .) > "$tmp/serve.out" 2> "$tmp/serve.err" &
-pid=$!
+serve_pid=$!
 ticks=0
 until grep -q "^serving on 127.0.0.1:$port (granted by the package)$" "$tmp/serve.err"; do
-    if [ "$ticks" -ge 300 ] || ! kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null || true
-        echo "error: the packed una did not serve examples/health:" >&2
+    if [ "$ticks" -ge 300 ] || ! kill -0 "$serve_pid" 2>/dev/null; then
+        echo "error: the packed una did not serve examples/health within 60 s:" >&2
         cat "$tmp/serve.err" >&2
         exit 1
     fi
@@ -331,9 +344,19 @@ until grep -q "^serving on 127.0.0.1:$port (granted by the package)$" "$tmp/serv
     ticks=$((ticks + 1))
 done
 answer=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" || true)
-kill -TERM "$pid"
+kill -TERM "$serve_pid"
+ticks=0
+while kill -0 "$serve_pid" 2>/dev/null; do
+    if [ "$ticks" -ge 50 ]; then
+        echo "error: the packed una still served examples/health 10 s after SIGTERM" >&2
+        exit 1
+    fi
+    sleep 0.2
+    ticks=$((ticks + 1))
+done
 code=0
-wait "$pid" || code=$?
+wait "$serve_pid" || code=$?
+serve_pid=
 if [ "$answer" != 200 ] || [ "$code" != 0 ]; then
     echo "error: the packed una answered \"$answer\" for /health of examples/health and exited $code" >&2
     exit 1

@@ -2305,7 +2305,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
         // One line per address it serves, before `main`, as `una run` writes (`spec/31 §6` rule
-        // 7): the grants before `meta.grants.len()` are the executable's own.
+        // 14): the grants before `meta.grants.len()` are the executable's own.
         for (index, grant) in grants.iter().enumerate() {
             if let Grant::Serve { grant, .. } = grant {
                 let _ = writeln!(

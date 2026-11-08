@@ -420,6 +420,79 @@ fn una_run_serves_a_program_whose_main_uses_http_server_and_una_build_fails_clos
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The first `count` lines of stderr of `command`, a run that serves, then SIGTERM and its exit
+/// code.
+fn notices(mut command: Command, count: usize) -> (Vec<String>, Option<i32>) {
+    use std::io::BufRead as _;
+    let mut served = command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pipe = served.stderr.take().unwrap();
+    let (sender, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let seen: Vec<String> = (0..count)
+        .map(|_| {
+            lines
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("a notice")
+        })
+        .collect();
+    let killed = Command::new("kill")
+        .args(["-TERM", &served.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    (seen, served.wait().unwrap().code())
+}
+
+#[test]
+fn a_run_that_serves_names_each_grant_in_order_in_both_engines() {
+    // `spec/31 §6` rule 14: one line per `serve:` grant, the package's before the flags', the
+    // same in `una run` and in an executable of the language form.
+    runtime();
+    let (own, flag) = (free_port(), free_port());
+    let dir = package(
+        "notices",
+        &format!("    serve \"http://127.0.0.1:{own}\"\n"),
+    );
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let built = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("UNA_TEST_BUILD_SERVER", "1")
+        .arg("build")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{}", stderr(&built));
+    let grant = format!("serve:http://127.0.0.1:{flag}");
+    let mut interpreted = Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreted
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .args(["run", "--grant", &grant])
+        .current_dir(&dir);
+    let mut native = Command::new(dir.join("target/una/app"));
+    native.args(["--grant", &grant]).current_dir(&dir);
+    let wanted = [
+        format!("serving on 127.0.0.1:{own} (granted by the package)"),
+        format!("serving on 127.0.0.1:{flag} (granted by a `--grant` flag)"),
+    ];
+    for (engine, command) in [("interpreter", interpreted), ("native", native)] {
+        let (seen, code) = notices(command, 2);
+        assert_eq!(seen, wanted, "{engine}");
+        assert_eq!(code, Some(0), "{engine}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A server of the language form whose `main` does not say `diverges`: it takes no host stop
 /// (ADR 0116 rule 18), so the run keeps the default action of SIGTERM.
 const BOUNDED_SERVER: &str = "module main\n\nimport std.host (HttpServer, Reply)\n\npub main() -> Unit\n  uses @server: HttpServer[next, reply]\n=\n  let next = attempt @server.next()\n  when next\n    is Ok(exchange) ->\n      @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: \"\"))\n        if error use unit\n    is Err(failure) -> unit\n";

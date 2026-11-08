@@ -44,7 +44,9 @@ use una_sys::server::Identity;
 /// The line a run that serves writes on stderr for each `serve:` grant once its serve threads
 /// have started, before its first request, the same in both engines (`spec/31 §6` rule 14):
 /// the address and port it listens on, and whether `run grants` of the package or a `--grant`
-/// flag granted it, so a package never opens a listener unseen.
+/// flag granted it, so a package never serves unseen. A run that holds a `serve:` grant and
+/// serves nothing still binds its listeners before `main` and accepts nothing on them, and
+/// writes no line.
 pub fn serving_notice(grant: &una_core::http::serve::ServeGrant, by_package: bool) -> String {
     let by = if by_package {
         "the package"
