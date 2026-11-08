@@ -413,7 +413,7 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
                     "its task calls a function value, whose code the call does not show".to_owned()
                 }
             };
-            if found.imprecise {
+            if found.imprecise || site.function.is_none() {
                 let data = match (&found.source, found.labeled) {
                     (Some(source), _) => source.clone(),
                     (None, Some(node)) => format!("the data of {}", reach.name(env, node)),
