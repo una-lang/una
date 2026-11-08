@@ -3326,15 +3326,18 @@ pub(crate) fn serve_within(
 /// label of the package's `Http` requests, which labels `HttpError.RateLimited` and the
 /// `TimedOut` of a wait at a limit with `internal`. Each request's label covers the bodies of
 /// every ancestor of its function in the call graph, its own function included, since the time
-/// between two requests of one task is spent there, and `τ_conc` at it, the preview's. When a
+/// between two requests of one task is spent there, and the precise `τ_conc` at it (`spec/27
+/// §11`), which at a request in a function's body never exceeds the ancestors' `τ⁰`. When a
 /// grant of the manifest's `run grants` carries limits and `L_lim` is above `internal`, U4001 at
 /// each request whose own label is above it, in source order, naming the ancestor that raised it
 /// (`spec/27 §9` rule 5). `L_lim` also joins `L_res` (ADR 0116 P9, P10): a request waits at a
 /// slot that an interrupted request can still hold. Returns `L_lim`, which `una build` embeds
 /// and `una run` checks a limited `--grant` against.
 ///
-/// O(F + H + C + O + E) label joins in all ([`super::timing::limit_labels`]), with no search
-/// per request; the diagnostics add O(R log R) to sort the `R` requests.
+/// O(V + E log E + N + (R + F) log F) to build the graph and [`super::timing::Concurrency`],
+/// for `V` nodes, `E` edges, `N` recorded items, `R` reads and `F` frames, then O(1) label
+/// joins per request ([`super::timing::limit_labels`]), with no search per request; the
+/// diagnostics add O(R log R) to sort the requests.
 pub(crate) fn limit_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -3342,9 +3345,9 @@ pub(crate) fn limit_timing(
     residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) -> Label {
-    let concurrent = super::timing::concurrent_functions(findings);
     let graph = super::timing::graph(env, findings);
-    let limits = super::timing::limit_labels(env, findings, &graph, &concurrent, residue);
+    let concurrency = super::timing::concurrency(env, findings, &graph);
+    let limits = super::timing::limit_labels(env, findings, &graph, &concurrency, residue);
     let internal = Label {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()

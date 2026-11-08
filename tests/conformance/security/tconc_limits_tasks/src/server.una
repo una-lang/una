@@ -1,0 +1,28 @@
+-- test: `L_lim` with the precise `τ_conc` (ADR 0116 amendment of 2026-10-25, C, #1154): the grant carries limits, and a `tasks` block starts `churn(key)` beside a started task that makes a request, so `serve`, whose body reads the `secret` parameter, is an ancestor of the request: the ancestors' `τ⁰` (ADR 0116 P10) is `secret`, above the `internal` that `L_lim` allows (U4001 at the request), and `τ_conc` at the request is at most that `τ⁰`; its twin is `tconc_server`
+-- spec: spec/27 §9
+-- expect: error U4001 at src/server.una:18:23
+module server
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- Work on `key`, which a started task runs.
+churn(key: secret Int) -> Unit
+=
+  let spent = crunch(key)
+  unit
+
+--- A request, which a started task runs.
+fetch(path: Text) -> Unit
+  uses @http: Http[get]
+=
+  let reply = attempt @http.get(url: "https://api.example.com/{path}", headers: [], key_name: None)
+  unit
+
+--- Starts `churn(key)` beside `fetch(path)`.
+pub serve(key: secret Int, path: Text) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start churn(key)
+    start fetch(path)
+  unit
