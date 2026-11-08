@@ -41,6 +41,19 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use una_core::http::serve::{ServeGrant, TlsPolicy, overlapping};
 use una_sys::server::Identity;
 
+/// The line a run that serves writes on stderr for each `serve:` grant once its serve threads
+/// have started, before its first request, the same in both engines (`spec/31 §6` rule 14):
+/// the address and port it listens on, and whether `run grants` of the package or a `--grant`
+/// flag granted it, so a package never opens a listener unseen.
+pub fn serving_notice(grant: &una_core::http::serve::ServeGrant, by_package: bool) -> String {
+    let by = if by_package {
+        "the package"
+    } else {
+        "a `--grant` flag"
+    };
+    format!("serving on {} (granted by {by})", grant.listener())
+}
+
 /// Installs, once per process, the panic hook of the serve engine, which keeps the panics it
 /// contains off standard error (`spec/31 §6` rule 13), chained to the hook in place. A run calls
 /// it on the thread that starts it, before any serve thread or worker starts, after any hook of
@@ -53,10 +66,10 @@ pub fn install_panic_hook() {
 pub const MAX_TLS_FILE: u64 = 1 << 20;
 
 /// The descriptors a run keeps for `Console`, the reactor and its pair, the wake pipe and the
-/// runtime (`spec/31 §2` rule 7).
+/// runtime (`spec/31 §6` rule 14).
 pub const SPARE_DESCRIPTORS: u64 = 64;
 
-/// The sockets a serving run keeps for its own `Http` requests (`spec/31 §2` rule 7).
+/// The sockets a serving run keeps for its own `Http` requests (`spec/31 §6` rule 14).
 pub const HTTP_DESCRIPTORS: u64 = 256;
 
 /// The descriptors a run takes besides its connections and its `Http` sockets, set by
@@ -71,7 +84,7 @@ pub fn reserved_descriptors() -> u64 {
     RESERVED.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// The descriptors a run with these `serve:` grants needs open at once (`spec/31 §2` rule 7):
+/// The descriptors a run with these `serve:` grants needs open at once (`spec/31 §6` rule 14):
 /// the `connections` of every grant, one listener per grant, the accept poller, a poller and a
 /// wake pair for each of the `serve_threads`, [`HTTP_DESCRIPTORS`] for `Http` requests, the
 /// `file_threads` that `Files` helpers may hold open, and [`SPARE_DESCRIPTORS`]. Saturating:

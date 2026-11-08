@@ -80,27 +80,31 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Spawns `command`, which serves the section of `HEALTH` on `port`, asks it `GET /health` once
-/// it listens, then sends it SIGTERM: the reply's status line and the run's exit code.
-fn serve_once(mut command: Command, port: u16) -> (String, Option<i32>, String) {
-    use std::io::{Read, Write};
+/// Spawns `command`, which serves the section of `HEALTH` on `port`; waits for the first line
+/// of its stderr, the notice of the address it serves (`spec/31 §6` rule 14), which comes before
+/// any request; asks it `GET /health`, then sends it SIGTERM: the notice, the reply's status
+/// line, the run's exit code and the rest of its stderr.
+fn serve_once(mut command: Command, port: u16) -> (String, String, Option<i32>, String) {
+    use std::io::{BufRead, Read, Write};
     let mut served = command
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let started = std::time::Instant::now();
-    let mut stream = loop {
-        if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-            break stream;
+    let pipe = served.stderr.take().unwrap();
+    let (sender, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(pipe).lines() {
+            let Ok(line) = line else { break };
+            if sender.send(line).is_err() {
+                break;
+            }
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "the run never listened"
-        );
-        assert!(served.try_wait().unwrap().is_none(), "the run ended");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
+    });
+    let notice = lines
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the run wrote no line on stderr");
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .unwrap();
@@ -116,8 +120,9 @@ fn serve_once(mut command: Command, port: u16) -> (String, Option<i32>, String) 
         .status()
         .unwrap();
     assert!(killed.success());
-    let ended = served.wait_with_output().unwrap();
-    (status, ended.status.code(), stderr(&ended))
+    let code = served.wait().unwrap().code();
+    let rest: Vec<String> = lines.iter().collect();
+    (notice, status, code, rest.join("\n"))
 }
 
 #[test]
@@ -204,7 +209,11 @@ fn a_run_without_a_serve_grant_is_a_usage_error() {
         .args(["run", ".", "--grant"])
         .arg(format!("serve:http://127.0.0.1:{port}"))
         .current_dir(&dir);
-    let (status, code, message) = serve_once(command, port);
+    let (notice, status, code, message) = serve_once(command, port);
+    assert_eq!(
+        notice,
+        format!("serving on 127.0.0.1:{port} (granted by a `--grant` flag)")
+    );
     assert_eq!(status, "HTTP/1.1 200 OK", "{message}");
     assert_eq!(code, Some(0), "{message}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -264,9 +273,15 @@ fn una_run_serves_and_the_build_fails_closed_before_anything_is_made() {
         .env_remove("UNA_TEST_RUN_SERVER")
         .args(["run", "."])
         .current_dir(&dir);
-    let (status, code, message) = serve_once(command, port);
+    let (notice, status, code, message) = serve_once(command, port);
+    assert_eq!(
+        notice,
+        format!("serving on 127.0.0.1:{port} (granted by the package)")
+    );
     assert_eq!(status, "HTTP/1.1 200 OK", "{message}");
     assert_eq!(code, Some(0), "{message}");
+    // The notice is the run's only line on stderr.
+    assert_eq!(message, "");
     let build = una(&dir, &["build", ".", "--out", "app"]);
     assert_eq!(build.status.code(), Some(2), "{}", stderr(&build));
     assert!(
@@ -500,6 +515,11 @@ fn an_executable_without_a_serve_grant_is_the_usage_error_of_rule_1() {
     assert!(killed.success());
     let ended = served.wait_with_output().unwrap();
     assert_eq!(ended.status.code(), Some(0), "{}", stderr(&ended));
+    // The executable names the address it served, as `una run` does (`spec/31 §6` rule 14).
+    assert_eq!(
+        stderr(&ended),
+        format!("serving on 127.0.0.1:{port} (granted by a `--grant` flag)\n")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

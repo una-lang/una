@@ -311,10 +311,42 @@ if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
 fi
+# The packed una serves (spec/31 §1 rule 10): examples/health, on a port of its own, names the
+# address on stderr, answers `GET /health` with 200 and ends with 0 at SIGTERM, within 60 s.
+dir="$tmp/serve-health"
+cp -R examples/health "$dir"
+port=$((20000 + $$ % 20000))
+sed "s|127.0.0.1:8080|127.0.0.1:$port|" examples/health/ita.una > "$dir/ita.una"
+(cd "$dir" && exec "$una" run .) > "$tmp/serve.out" 2> "$tmp/serve.err" &
+pid=$!
+ticks=0
+until grep -q "^serving on 127.0.0.1:$port (granted by the package)$" "$tmp/serve.err"; do
+    if [ "$ticks" -ge 300 ] || ! kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+        echo "error: the packed una did not serve examples/health:" >&2
+        cat "$tmp/serve.err" >&2
+        exit 1
+    fi
+    sleep 0.2
+    ticks=$((ticks + 1))
+done
+answer=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" || true)
+kill -TERM "$pid"
+code=0
+wait "$pid" || code=$?
+if [ "$answer" != 200 ] || [ "$code" != 0 ]; then
+    echo "error: the packed una answered \"$answer\" for /health of examples/health and exited $code" >&2
+    exit 1
+fi
 # Every example, built natively with the runtime built into the packed una, prints what `una run` prints and exits
-# with its status (spec/16 §5); each runs in its own directory, where its grants resolve.
+# with its status (spec/16 §5); each runs in its own directory, where its grants resolve. A package
+# with a `serve` section serves until it is stopped, and `una build` of one is still refused: it is
+# checked above instead.
 for example in examples/*/; do
     example=${example%/}
+    if grep -qx serve "$example/ita.una" 2>/dev/null; then
+        continue
+    fi
     dir="$tmp/native-$(basename "$example")"
     cp -R "$example" "$dir"
     expected=$(shown "$dir" 300 "$una" run .) || true

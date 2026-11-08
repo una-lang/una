@@ -406,12 +406,65 @@ fn una_run_serves_a_program_whose_main_uses_http_server_and_una_build_fails_clos
         stderr(&ended)
     );
     assert_eq!(ended.status.code(), Some(0), "{}", stderr(&ended));
+    // The address it served, granted by `run grants` (`spec/31 §6` rule 14).
+    assert_eq!(
+        stderr(&ended),
+        format!("serving on 127.0.0.1:{port} (granted by the package)\n")
+    );
     let wanted = "`main.main` uses `HttpServer`: `una run` serves it, but `una build` does not build a program that serves in this release yet";
     let out = dir.join("server");
     let built = una(&dir, &["build", "--out", out.to_str().unwrap()]);
     assert_eq!(built.status.code(), Some(2), "{}", stderr(&built));
     assert!(stderr(&built).contains(wanted), "{}", stderr(&built));
     assert!(!out.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A server of the language form whose `main` does not say `diverges`: it takes no host stop
+/// (ADR 0116 rule 18), so the run keeps the default action of SIGTERM.
+const BOUNDED_SERVER: &str = "module main\n\nimport std.host (HttpServer, Reply)\n\npub main() -> Unit\n  uses @server: HttpServer[next, reply]\n=\n  let next = attempt @server.next()\n  when next\n    is Ok(exchange) ->\n      @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: \"\"))\n        if error use unit\n    is Err(failure) -> unit\n";
+
+#[test]
+fn a_language_form_server_without_diverges_ends_by_the_default_action_of_sigterm() {
+    // ADR 0116 rule 18, `spec/31 §6` rule 14: only a run that can take a host stop installs the
+    // handlers of SIGINT and SIGTERM. A `main` without `diverges` takes none, so SIGTERM ends
+    // the run at once with 143 (128 + 15), with no drain, while it waits in `next`.
+    let port = free_port();
+    let dir = package(
+        "bounded",
+        &format!("    serve \"http://127.0.0.1:{port}\"\n"),
+    );
+    std::fs::write(dir.join("src/main.una"), BOUNDED_SERVER).unwrap();
+    let checked = una(&dir, &["check"]);
+    assert!(checked.status.success(), "{}", stderr(&checked));
+    let mut served = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .arg("run")
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the run never listened"
+        );
+        assert!(served.try_wait().unwrap().is_none(), "the run ended");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let killed = Command::new("kill")
+        .args(["-TERM", &served.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let ended = served.wait_with_output().unwrap();
+    use std::os::unix::process::ExitStatusExt as _;
+    assert_eq!(ended.status.code(), None, "{}", stderr(&ended));
+    assert_eq!(ended.status.signal(), Some(15), "{}", stderr(&ended));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

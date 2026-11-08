@@ -410,6 +410,8 @@ pub(crate) fn run_command(
             grants.push(grant);
         }
     }
+    // The grants before this index are the package's (`run grants`), the others the flags'.
+    let package_grants = grants.len();
     for spec in options.grants {
         let Some(grant) = Grant::parse(spec, Path::new("")) else {
             writeln!(stderr, "error: {}", una_interp::invalid_grant(spec))?;
@@ -564,6 +566,18 @@ pub(crate) fn run_command(
         .iter()
         .map(|input| input.grant.clone())
         .collect();
+    // The line of each address a run that serves names on stderr (`spec/31 §6` rule 14).
+    let notices: Vec<String> = grants
+        .iter()
+        .enumerate()
+        .filter_map(|(index, grant)| match grant {
+            Grant::Serve { grant, .. } => Some(una_http::serve::serving_notice(
+                grant,
+                index < package_grants,
+            )),
+            _ => None,
+        })
+        .collect();
     let script = match options.serve_script {
         Some(script) => {
             let listeners: Vec<String> = served_grants.iter().map(|g| g.listener()).collect();
@@ -617,7 +631,7 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Errors);
         }
     }
-    // The `serve:` grants, before `main` (`spec/31 §2` rule 7): the descriptor limit, the TLS
+    // The `serve:` grants, before `main` (`spec/31 §6` rule 14): the descriptor limit, the TLS
     // files checked on their open descriptors, and the listeners, held until the run ends.
     // Nothing accepts on them until the serve threads of ADR 0123 step 4 take them over.
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
@@ -681,7 +695,13 @@ pub(crate) fn run_command(
             }
         }
         match una_http::serve::live::Live::start(listeners, &served_grants, serve_threads) {
-            Ok(live) => Some(std::sync::Arc::new(live)),
+            Ok(live) => {
+                // One line per address it serves, before the program runs (`spec/31 §6` rule 14).
+                for notice in &notices {
+                    writeln!(stderr, "{notice}")?;
+                }
+                Some(std::sync::Arc::new(live))
+            }
             Err(message) => {
                 writeln!(stderr, "error: {message}")?;
                 return Ok(ExitStatus::Usage);
