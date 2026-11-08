@@ -1291,6 +1291,20 @@ fn the_hard_stop_ends_a_run_with_u6007_and_503_alike_in_both_engines() {
             of(2)
         );
         assert!(of(2).ends_with("in the loop"), "{engine}: {}", of(2));
+        // The loop's last `next` is the one the host stop ends, so it is the run's last server
+        // operation: the `on stop` then runs, and the hard stop ends it. Its outcome,
+        // `Interrupted`, is `internal` and so redacted in the trace (`spec/31 §1` rule 7).
+        let server: Vec<&Value> = trace
+            .iter()
+            .filter(|event| event["capability"] == "HttpServer")
+            .collect();
+        let last = server.last().copied().cloned().unwrap_or_default();
+        assert_eq!(last["op"], "next", "{engine}: {last}");
+        assert_eq!(
+            server.iter().filter(|event| event["op"] == "next").count(),
+            3,
+            "{engine}: the first, the one answered in the loop, the one the stop ends"
+        );
         runs.push((printed, trace, text));
     }
     assert_eq!(runs[0], runs[1]);
