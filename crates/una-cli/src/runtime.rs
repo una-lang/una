@@ -853,16 +853,18 @@ pub(crate) fn run_command(
         Err(error) => (Err(error), None),
     };
     // A trace file that could not be written is reported after the run, with exit code 2, as
-    // for the executable.
+    // for the executable, which ends a scripted engine first: its warnings and `--serve-out`
+    // come before the trace's line (`spec/31 §8` rule 6).
     if let Some(Err(error)) = traced
         && let Some(path) = options.trace
     {
+        let status = scripted_end(ended, options.serve_out, stderr, ExitStatus::Usage)?;
         writeln!(
             stderr,
             "error: cannot write the trace to `{}`: {error}",
             path.display()
         )?;
-        return Ok(ExitStatus::Usage);
+        return Ok(status);
     }
     let run = match evaluated {
         Ok(Some(run)) => run,

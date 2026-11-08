@@ -1,0 +1,1 @@
+- **`--serve-out` and a failed `--trace` end a scripted run alike in both engines** (#1734, ADR 0123 rule 21, `spec/31 §8` rule 6): when the trace cannot be written at the end of the run, `una run` now writes `--serve-out` and its warnings before the trace line, as executables do, and `--serve-out` refuses a hard link.
