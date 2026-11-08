@@ -107,6 +107,10 @@ pub(crate) struct HttpSite {
     pub(crate) function: Option<usize>,
     /// Whether it lies inside a lambda, a task, a `tasks` block or outside a function.
     pub(crate) unplaced: bool,
+    /// The node of the graph of ADR 0116 P1 whose code holds it, `None` outside every node.
+    pub(crate) node: Option<Caller>,
+    /// The innermost construct whose part holds it (P3).
+    pub(crate) construct: Option<usize>,
 }
 
 /// Where a call is written, as a node of the call graph of ADR 0116 P1: the body of a function,
@@ -678,6 +682,8 @@ impl Checker<'_, '_, '_> {
             span,
             function: self.current,
             unplaced: self.unplaced(),
+            node: self.caller(),
+            construct: self.parts.last().copied(),
         };
         self.findings.http_sites.push(site);
     }
@@ -2305,6 +2311,8 @@ pub(crate) fn server_label(
             span,
             function: None,
             unplaced: true,
+            node: None,
+            construct: None,
         });
     }
     sites.extend(
@@ -2316,10 +2324,18 @@ pub(crate) fn server_label(
                 span: site.keyword,
                 function: site.function,
                 unplaced: site.unplaced,
+                node: None,
+                construct: None,
             }),
     );
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
-    let labels = ancestor_labels(env, graph, concurrent, &residue, &sites);
+    let labels = ancestor_labels(
+        env,
+        graph,
+        &preview_beside(env, concurrent),
+        &residue,
+        &sites,
+    );
     let label = internal.join(&labels.label);
     // The site a message names: the first whose label is the highest, else the first.
     let named = labels
@@ -2354,11 +2370,22 @@ pub(crate) fn server_label(
 /// `L_lim` of the package and the label of each request (ADR 0117 IF4, as ADR 0116 P8 states
 /// it, slice T1): the label of a request is the join of `τ⁰` of the body of every node of the
 /// call graph from which the function that makes it can be reached, that function included, of
-/// `τ_conc` at it, the preview's: `⊤` for a request inside a lambda, a task or a handler's
-/// operation, or in a function that a part of a task construct can reach, and of `L_res`
+/// `τ_conc` at it, the precise one of `spec/27 §11` for a request in a function's body and `⊤`
+/// for one in a lambda's body or a handler's operation (#1154), and of `L_res`
 /// (ADR 0116 P9, P10), the work that cancelled requests can leave on the helpers. The code that
 /// runs between two requests of one task lies in the body of an ancestor of the later one, or in
 /// what such a body calls, so the ancestors' `τ⁰` covers it.
+///
+/// **What `τ_conc` adds.** At a request in a function's body, `τ_conc` never exceeds the
+/// ancestors' `τ⁰`: every construct whose parts can run beside the request is in the body of an
+/// ancestor of the request's function, either because the request is in one of its parts or
+/// because `conc` of the function comes from an edge out of a part, whose node reaches the
+/// function; and that ancestor's `τ⁰` joins `down`, which covers the parts' work, the values
+/// they compute (#1685) and `⊤` for their calls of function values included. So the precise
+/// rule's only effect is to drop the preview's `⊤`; the ancestors' term refuses every request
+/// it refused. The `⊤` of a request elsewhere is a fail-closed default that no program reaches
+/// today: a lambda cannot perform an operation, and a request in a handler's operation has no
+/// function, so its ancestors' term is `⊤` already.
 ///
 /// **The graph** is [`graph`]'s, that of ADR 0116 P1. So the operations of a handler, which a
 /// function reaches through an operation of the handler's capability, are ancestors of what they
@@ -2378,20 +2405,49 @@ pub(crate) fn limit_labels(
     env: &Env<'_>,
     findings: &Findings,
     graph: &Graph,
-    concurrent: &BTreeSet<usize>,
+    concurrency: &Concurrency,
     residue: &Residue,
 ) -> LimitLabels {
-    ancestor_labels(env, graph, concurrent, residue, &findings.http_sites)
+    let top = Label::top(&env.categories);
+    // The precise `τ_conc` of each request (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`,
+    // issue #1154), at most the ancestors' `τ⁰` there (see above). Any other site keeps `⊤`,
+    // fail-closed: none reaches it today, and the rule of P10 counts a handler's request as `⊤`.
+    let beside = |site: &HttpSite| match site.node {
+        Some(Caller::Function(_)) => concurrency.tau_conc(&TimingSeed {
+            node: site.node,
+            construct: site.construct,
+            ..TimingSeed::default()
+        }),
+        _ => Some(top.clone()),
+    };
+    ancestor_labels(env, graph, &beside, residue, &findings.http_sites)
+}
+
+/// The preview's `τ_conc` of a site of `L_srv` (ADR 0123, S4 amendment IF-S1), which keeps it
+/// until its own card: `⊤` inside a lambda, a task, a `tasks` block or a handler's operation, or
+/// in a function that a part of a task construct can reach; nothing beside it otherwise.
+pub(crate) fn preview_beside<'a>(
+    env: &Env<'_>,
+    concurrent: &'a BTreeSet<usize>,
+) -> impl Fn(&HttpSite) -> Option<Label> + 'a {
+    let top = Label::top(&env.categories);
+    move |site: &HttpSite| {
+        (site.unplaced
+            || site.function.is_none()
+            || site.function.is_some_and(|f| concurrent.contains(&f)))
+        .then(|| top.clone())
+    }
 }
 
 /// [`limit_labels`] over `sites`: the label of each site, the join of `τ⁰` of the bodies of
-/// every ancestor of its function, its function included, of `τ_conc` at it, the preview's, and
-/// of `residue`; and their join. The one rule for `L_lim` (ADR 0117 IF4) and for `L_srv` (ADR
-/// 0123, S4 amendment IF-S1), whose sites are the server's hand-off sites.
+/// every ancestor of its function, its function included, of `beside`, its `τ_conc` (`None` when
+/// nothing runs beside it), and of `residue`; and their join. The one rule for `L_lim` (ADR 0117
+/// IF4, the precise `τ_conc`) and for `L_srv` (ADR 0123, S4 amendment IF-S1, the preview's,
+/// [`preview_beside`]), whose sites are the server's hand-off sites.
 pub(crate) fn ancestor_labels(
     env: &Env<'_>,
     graph: &Graph,
-    concurrent: &BTreeSet<usize>,
+    beside: &dyn Fn(&HttpSite) -> Option<Label>,
     residue: &Residue,
     at: &[HttpSite],
 ) -> LimitLabels {
@@ -2525,9 +2581,7 @@ pub(crate) fn ancestor_labels(
     let mut label = Label::public();
     for site in at {
         una_core::label_counters::pass_step();
-        let beside = site.unplaced
-            || site.function.is_none()
-            || site.function.is_some_and(|f| concurrent.contains(&f));
+        let beside = beside(site);
         let (own, raiser) = match site.function {
             Some(f) => {
                 let own = up.get(f).cloned().unwrap_or_else(|| top.clone());
@@ -2546,10 +2600,12 @@ pub(crate) fn ancestor_labels(
             }
             None => (top.clone(), None),
         };
-        let (site_label, raiser) = if beside {
-            (own.join(&top), raiser.or(Some(Raiser::Beside)))
-        } else {
-            (own, raiser)
+        let (site_label, raiser) = match beside {
+            Some(beside) if !beside.flows_to(&internal) => {
+                (own.join(&beside), raiser.or(Some(Raiser::Beside)))
+            }
+            Some(beside) => (own.join(&beside), raiser),
+            None => (own, raiser),
         };
         let site_label = site_label.join(&residue.label);
         let raiser = raiser.or_else(|| residue_raiser.clone());
@@ -3486,8 +3542,8 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 /// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within` and
 /// `first of` sites take their `τ_conc` from it ([`timing_precise`], slices 3 and 4 of the plan
 /// on #1087), and so do the constructs `L_res` counts ([`residue`]), `for ever within` and the
-/// tick (slice 5); limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the
-/// preview's.
+/// tick (slice 5), and `L_lim` (#1154, [`limit_labels`]); limiters, `L_srv` and the rule of a
+/// `via`'s timing sites keep the preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let coarse = coarse_labels(env, graph, &findings.frames);
     // In a build with debug assertions, and for a package with at most [`CROSS_CHECKED`]

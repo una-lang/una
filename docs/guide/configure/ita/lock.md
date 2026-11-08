@@ -130,7 +130,7 @@ $ una ita lock --check --fresh
 
 ## Edition
 
-Edition `0.4` only. Editions `0.1` to `0.3` keep `verification.lock`.
+Edition `0.4` and later. Editions `0.1` to `0.3` keep `verification.lock`.
 
 ## Normative source
 
