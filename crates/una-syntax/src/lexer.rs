@@ -195,10 +195,16 @@ fn apply(lexed: &mut Lexed, chosen: &BTreeMap<String, String>) {
         else {
             continue;
         };
-        error.repairs = vec![SyntaxRepair {
-            description: format!("rename it to `{name}`"),
-            edit: Some((error.span, name.clone())),
-        }];
+        // The rename comes first; advice without an edit, such as edition 0.4's for `simd`,
+        // stays after it. `apply` runs again across files, so an earlier rename is replaced.
+        error.repairs.retain(|repair| repair.edit.is_none());
+        error.repairs.insert(
+            0,
+            SyntaxRepair {
+                description: format!("rename it to `{name}`"),
+                edit: Some((error.span, name.clone())),
+            },
+        );
     }
 }
 
@@ -460,6 +466,14 @@ impl Lexer<'_> {
                     error: self.out.errors.len(),
                     word: word.to_owned(),
                     upper,
+                });
+            }
+            // ADR 0139 rule 7: `simd` stays reserved in edition 0.4, and is a name from 0.5
+            // (ADR 0120 rule 1); the advice follows the rename (#1743).
+            if word == "simd" && self.out.keywords == KeywordSet::V0_4 {
+                error.repairs.push(SyntaxRepair {
+                    description: "`simd` is a name from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it".to_owned(),
+                    edit: None,
                 });
             }
         }

@@ -251,3 +251,64 @@ fn checking_dense_operators_is_linear_in_the_program() {
         large / small
     );
 }
+
+#[test]
+fn map_update_in_edition_0_4_is_u1001_with_the_advice_of_edition_0_5() {
+    // ADR 0139 rule 7, #1743: `Map.update` moved to edition 0.5 with the collections (ADR 0119
+    // rule 18), so edition 0.4 gives the U1001 of edition 0.3, with advice (no edit) to raise
+    // the edition; this file's helper checks any package, not only dense values.
+    let source = "module m\n\npub f() -> Int\n=\n  let edit m: Map[Int, Int] = empty_map()\n  edit m.update(key: 1, initial: 0, change: fn(n) -> n + 1)\n  m.len\n";
+    let advice = |edition: &str| {
+        let (_, types) = run(edition, source);
+        let found: Vec<_> = types
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_str() == "U1001")
+            .collect();
+        assert_eq!(found.len(), 1, "{edition}: {:?}", types.diagnostics);
+        found[0]
+            .repairs
+            .iter()
+            .filter(|r| r.edit.is_none())
+            .map(|r| r.description.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        advice("0.4"),
+        vec![
+            "`Map.update` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it"
+        ]
+    );
+    assert!(advice("0.3").is_empty());
+    // Controls (review of #1758): no other U1001 at a member in edition 0.4 gets the advice,
+    // another method on a map, `update` on a list, and the conversions of `spec/29` §16 and §18,
+    // which `spec/13 §7` lists as carrying none.
+    for other in [
+        "module m\n\npub f() -> Int\n=\n  let edit m: Map[Int, Int] = empty_map()\n  edit m.frobnicate(key: 1)\n  m.len\n",
+        "module m\n\npub f() -> Int\n=\n  let edit xs = [1, 2]\n  edit xs.update(key: 1, initial: 0, change: fn(n) -> n + 1)\n  xs.len\n",
+        "module m\n\npub f(n: Int) -> Int\n=\n  let x = n.to_f32()\n  let y = n.to_decimal()\n  n\n",
+    ] {
+        let (_, types) = run("0.4", other);
+        let members: Vec<_> = types
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_str() == "U1001")
+            .collect();
+        assert!(!members.is_empty(), "{other}: {:?}", types.diagnostics);
+        for diagnostic in types.diagnostics {
+            assert!(
+                diagnostic
+                    .repairs
+                    .iter()
+                    .all(|r| !r.description.contains("edition 0.5")),
+                "{other}: {diagnostic:?}"
+            );
+        }
+    }
+    let (names, types) = run("0.5", source);
+    assert!(
+        names.is_empty() && types.diagnostics.is_empty(),
+        "{:?}",
+        types.diagnostics
+    );
+}
