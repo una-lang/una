@@ -1,0 +1,16 @@
+1	Host 127.1 400
+2	Host 0x7f000001 400
+3	Host port 99999 400
+4	Host empty port 400
+5	Host IPv6 zone 400
+6	no Host in HTTP/1.0 400
+7	%zz 400
+8	%2e%2e 400
+9	%00 400
+10	%5C 400
+11	%ff in a segment 400
+12	%ff in the query 400
+13	raw backslash 400
+14	authority-form 400
+15	absolute-form on the host, rewritten and answered 200
+16	valid request answered

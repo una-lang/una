@@ -1,0 +1,9 @@
+1	CONNECT 501
+2	TRACE 501
+3	lower-case get 501
+4	method not a token 400
+5	HTTP/1.2 505
+6	http/1.1 505
+7	request line over line 414
+8	bare CR in the request line 400
+9	valid request answered

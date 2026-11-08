@@ -1,0 +1,9 @@
+ita refusals_request_line
+  version 0.1.0
+  edition 0.4
+
+run
+  entry srv
+  grants
+    console
+    serve "http://127.0.0.1:8080"
