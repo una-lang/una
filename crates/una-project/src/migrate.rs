@@ -39,7 +39,7 @@ pub type Refusal = Vec<String>;
 pub fn migrate(toml: &str, lock: Option<&str>, name: Option<&str>) -> Result<Migration, Refusal> {
     let mut refusal = Vec::new();
     let (manifest, errors) = parse_manifest(toml);
-    // Edition 0.4 in `una.toml` is the one invalid setting migration exists for.
+    // Edition 0.4 or later in `una.toml` is the one invalid setting migration exists for.
     for error in errors
         .iter()
         .filter(|e| !e.message.contains("run `una migrate`"))
@@ -100,7 +100,11 @@ pub fn migrate(toml: &str, lock: Option<&str>, name: Option<&str>) -> Result<Mig
     out.comments_at(1, &comments.before_key("package", "version"));
     out.line(1, &format!("version {version}"));
     out.comments_at(1, &comments.before_key("package", "edition"));
-    out.line(1, "edition 0.4");
+    // Edition 0.4, or the later edition `una.toml` named, which no migration lowers.
+    out.line(
+        1,
+        &format!("edition {}", manifest.edition.max(Edition::V0_4).name()),
+    );
     // The profile and the budget move with the package: dropping either would check a
     // `systems` package as `app` or widen its budget (ADR 0109 rules 2 and 4).
     if manifest.profile != Profile::App {

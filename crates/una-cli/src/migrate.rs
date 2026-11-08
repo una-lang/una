@@ -191,7 +191,7 @@ pub(crate) fn migrate_command(
             },
             edition: EditionDoc {
                 from: migration.edition.name(),
-                to: "0.4",
+                to: migration.edition.max(una_project::Edition::V0_4).name(),
             },
             default_lock: migration.default_lock,
             comments_not_carried: comments,
@@ -238,8 +238,9 @@ pub(crate) fn migrate_command(
         let count = caused.len();
         writeln!(
             stdout,
-            "edition {} -> 0.4: {count} diagnostic{}",
+            "edition {} -> {}: {count} diagnostic{}",
             migration.edition.name(),
+            migration.edition.max(una_project::Edition::V0_4).name(),
             if count == 1 { "" } else { "s" }
         )?;
         write!(

@@ -1,4 +1,4 @@
-//! Dense values of edition 0.4: `Array[T]`, `Matrix[T]`, `Tensor[T]` and `Lu[T]` (`spec/29
+//! Dense values of edition 0.5: `Array[T]`, `Matrix[T]`, `Tensor[T]` and `Lu[T]` (`spec/29
 //! §17`, ADR 0120 rules 26 to 43).
 //!
 //! The methods of a dense value are resolved by its receiver to functions of the prelude whose
@@ -526,7 +526,7 @@ impl Checker<'_, '_, '_> {
 
     /// The dense type of `ty` and its element, through solved variables and labels.
     pub(crate) fn dense_of(&self, ty: &Ty) -> Option<(Dense, Shared<Ty>)> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         match self.vars.peel(ty) {

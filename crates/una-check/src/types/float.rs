@@ -325,7 +325,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// `e.m(args)` when `e` is an `F64` or an `F32` and `m` one of its methods, or `e` an
-    /// integer and `m` `to_f64()` (edition 0.3) or `to_f32()` (edition 0.4), or a conversion
+    /// integer and `m` `to_f64()` (edition 0.3) or `to_f32()` (edition 0.5), or a conversion
     /// between the float types (ADR 0114 rules 3 and 4, ADR 0120 rules 5 and 8). `None` when it
     /// is neither, so the call resolves as before.
     pub(crate) fn float_method(
@@ -338,7 +338,7 @@ impl Checker<'_, '_, '_> {
         if self.env.edition < Edition::V0_3 {
             return None;
         }
-        let edition_0_4 = self.env.edition >= Edition::V0_4;
+        let edition_0_5 = self.env.edition >= Edition::V0_5;
         let receiver = self.resolve(target);
         let label = self.deep(target);
         // A measured receiver takes its magnitude's methods, with the units of ADR 0114 rule
@@ -351,13 +351,13 @@ impl Checker<'_, '_, '_> {
                 self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::FromInt)));
                 return Some(keep(Ty::F64.with_label(&label)));
             }
-            // ADR 0120 rule 8: `n.to_f32()` on an integer, the same in edition 0.4.
-            Ty::Int | Ty::Fixed(_) if edition_0_4 && method == "to_f32" && args.is_empty() => {
+            // ADR 0120 rule 8: `n.to_f32()` on an integer, the same in edition 0.5.
+            Ty::Int | Ty::Fixed(_) if edition_0_5 && method == "to_f32" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float32(FloatOp::FromInt)));
                 return Some(keep(Ty::F32.with_label(&label)));
             }
             // ADR 0120 rule 8: the conversions between the float types.
-            Ty::F64 if edition_0_4 && method == "to_f32" && args.is_empty() => {
+            Ty::F64 if edition_0_5 && method == "to_f32" && args.is_empty() => {
                 self.resolved(span, Res::IntMethod(Prim::Float(FloatOp::ToF32)));
                 return Some(keep(Ty::F32.with_label(&label)));
             }

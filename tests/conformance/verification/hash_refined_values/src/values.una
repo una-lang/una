@@ -1,4 +1,4 @@
--- test: in edition 0.4, `set` on a `HashMap[Text, Pos]` and `add` on a `HashSet[Pos]` store their value and item at `Pos`, a `refinement` obligation each, refuted for a non-positive one and proven for a `Pos` (ADR 0119 rule 1, ADR 0103 rule 3)
+-- test: in edition 0.5, `set` on a `HashMap[Text, Pos]` and `add` on a `HashSet[Pos]` store their value and item at `Pos`, a `refinement` obligation each, refuted for a non-positive one and proven for a `Pos` (ADR 0119 rule 1, ADR 0103 rule 3)
 -- spec: spec/28 §7
 -- expect: error U5001 at src/values.una:22:29
 -- expect: error U5001 at src/values.una:24:20

@@ -1916,7 +1916,7 @@ fn queue_and_stack_pushes_and_pops_scale_linearly_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita sequence_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita sequence_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
@@ -1985,11 +1985,11 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita set_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita set_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2059,11 +2059,11 @@ fn hash_table_updates_lookups_and_operations_scale_linearly_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita hash_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita hash_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2133,11 +2133,11 @@ fn priority_queue_pushes_and_pops_scale_as_n_log_n_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita priority_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita priority_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2204,7 +2204,7 @@ fn bit_set_updates_and_lookups_scale_linearly_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita bit_set_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita bit_set_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(

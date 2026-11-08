@@ -1,4 +1,4 @@
--- test: Array and Matrix are built-in types of edition 0.4, of any element type for Array and of F64 or a fixed-width integer type for Matrix; constructors, shapes, reads, views, element-wise operators and kernels check
+-- test: Array and Matrix are built-in types of edition 0.5, of any element type for Array and of F64 or a fixed-width integer type for Matrix; constructors, shapes, reads, views, element-wise operators and kernels check
 -- spec: spec/29 §17
 -- expect: ok
 module dense

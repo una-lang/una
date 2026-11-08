@@ -38,11 +38,11 @@ fn bit_set() -> Ty {
 }
 
 impl Checker<'_, '_, '_> {
-    /// `b.size` when `b` is a `BitSet` in edition 0.4 (`spec/28 §9`): an `Int` with the bit set's
+    /// `b.size` when `b` is a `BitSet` in edition 0.5 (`spec/28 §9`): an `Int` with the bit set's
     /// top label, since the size is part of its shape (ADR 0119 IF2); `None` otherwise. In the
     /// refinement language (ADR 0119 V5).
     pub(crate) fn bit_set_size(&mut self, target_ty: &Ty, field: &str, span: Span) -> Option<Ty> {
-        if field != "size" || self.env.edition < Edition::V0_4 {
+        if field != "size" || self.env.edition < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);
@@ -53,7 +53,7 @@ impl Checker<'_, '_, '_> {
         Some(Ty::Int.with_label(&labeled.top_label()))
     }
 
-    /// `b.op(args)` when `b` is a `BitSet` in edition 0.4 and `op` is one of its built-in methods
+    /// `b.op(args)` when `b` is a `BitSet` in edition 0.5 and `op` is one of its built-in methods
     /// (`spec/28 §9`); `None` otherwise, so the call resolves as before. `place` is the type of
     /// the receiver as a place, when it is written `edit b.add(...)` or `edit b.remove(...)`.
     /// Each method is checked in O(1) besides its arguments.
@@ -68,7 +68,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);

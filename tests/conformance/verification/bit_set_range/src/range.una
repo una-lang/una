@@ -1,4 +1,4 @@
--- test: in edition 0.4, `add` and `with` on a `BitSet` require their item in its range, `0 <= i and i < b.size`, and the set operations require operands of one size, each a `precondition` obligation: proven from the size `empty_bit_set` gives, which every update keeps, and from a guard; refuted outside the range and for two sizes; unknown when only a product bounds the item; and `empty_bit_set` requires a size of at least 0 (ADR 0119 rule 14)
+-- test: in edition 0.5, `add` and `with` on a `BitSet` require their item in its range, `0 <= i and i < b.size`, and the set operations require operands of one size, each a `precondition` obligation: proven from the size `empty_bit_set` gives, which every update keeps, and from a guard; refuted outside the range and for two sizes; unknown when only a product bounds the item; and `empty_bit_set` requires a size of at least 0 (ADR 0119 rule 14)
 -- spec: spec/28 §9
 -- expect: error U5001 at src/range.una:26:20
 -- expect: error U5001 at src/range.una:29:65

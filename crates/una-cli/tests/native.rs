@@ -4304,7 +4304,8 @@ fn records_made_anew_grow_with_the_loop_and_copies_do_not_292() {
     }
 }
 
-/// A package of edition 0.4, with `ita.una` holding `sections` after its head, and the lock of
+/// A package of edition 0.5, which has every construct of edition 0.4 and the collections and
+/// numerics (ADR 0139 rule 6), with `ita.una` holding `sections` after its head, and the lock of
 /// the conformance cases.
 fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
@@ -4312,7 +4313,7 @@ fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
-        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n{sections}"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.5\n{sections}"),
     )
     .unwrap();
     std::fs::copy(

@@ -1,4 +1,4 @@
--- test: Tensor and Lu are built-in types of edition 0.4: tensors are made from list literals of lengths, read and written by list literals of indices, permuted, reshaped, summed, contracted, converted to and from arrays and matrices, and combined by operators; a matrix of floats factors into an Lu, solves and has triangular solves, and every shape precondition here is proven
+-- test: Tensor and Lu are built-in types of edition 0.5: tensors are made from list literals of lengths, read and written by list literals of indices, permuted, reshaped, summed, contracted, converted to and from arrays and matrices, and combined by operators; a matrix of floats factors into an Lu, solves and has triangular solves, and every shape precondition here is proven
 -- spec: spec/29 §17
 -- expect: ok
 module dense
