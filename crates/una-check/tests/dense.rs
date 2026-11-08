@@ -186,7 +186,7 @@ fn tensor_methods_take_the_function_of_their_rank() {
 }
 
 #[test]
-fn dense_values_check_in_edition_0_4_only() {
+fn dense_values_check_in_edition_0_5_only() {
     let source = "module m\n\npub f(a: Array[F64], m: Matrix[F64]) -> Int = a.len + m.rows\n";
     let (names, types) = run("0.5", source);
     assert!(names.is_empty(), "{names:?}");
@@ -194,6 +194,31 @@ fn dense_values_check_in_edition_0_4_only() {
     assert_eq!(types.program.modules[0].decls.len(), 1);
     let (names, _) = run("0.3", source);
     assert!(!names.is_empty(), "`Matrix` is not a name in edition 0.3");
+}
+
+#[test]
+fn a_type_parameter_named_after_a_dense_type_is_u1002_from_edition_0_5() {
+    // `spec/29 §17` rule 1: no declaration hides a dense type, a type parameter included;
+    // the message names edition 0.5, where the rule applies (ADR 0139).
+    let source = "module m\n\npub id[Matrix](x: Matrix) -> Matrix = x\n";
+    let (names, _) = run("0.5", source);
+    let messages: Vec<&str> = names
+        .iter()
+        .filter(|d| d.code.as_str() == "U1002")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![
+            "`Matrix` is a built-in dense type from edition 0.5, so a type parameter cannot take its name"
+        ],
+        "{names:?}"
+    );
+    let (names, _) = run("0.4", source);
+    assert!(
+        names.iter().all(|d| d.code.as_str() != "U1002"),
+        "`Matrix` is an ordinary name in edition 0.4: {names:?}"
+    );
 }
 
 #[test]
