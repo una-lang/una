@@ -190,6 +190,83 @@ fn runs_tasks(env: &Env<'_>, findings: &Findings, serves: bool) -> bool {
             .any(|def| def.module < env.prelude && !env.reports(def.module))
 }
 
+/// Which functions a run of the program can call (#1707), by the call graph of ADR 0116 P1: from
+/// every function a run may call without a call the graph shows, along the calls of functions.
+/// The roots are each `pub` function, which a run of a dependent package or the host can call
+/// (an entry, `handle`, `on_stop`, a `[drive]` step); each predicate and policy, and each `via`
+/// of a policy, which the language calls on its own; each function used as a value, whose
+/// calls the graph does not follow; and each function that a handler's operation, a lambda, or
+/// code outside every function but an `example` calls, as a constant's value, since handlers
+/// and lambdas are not followed from their callers here. What is left is a private function
+/// that only other such functions, or `test`s (`example`s before edition 0.4), call: `una test`
+/// runs them, a run of the program never does. A function of the standard modules is never left
+/// out. O(F + E log X) for the X tests and examples.
+fn run_reach(env: &Env<'_>, findings: &Findings) -> Vec<bool> {
+    use super::timing::{Caller, Target};
+    let count = env.functions.len();
+    let mut examples: Vec<Span> = Vec::new();
+    for module in env.modules.iter().take(env.prelude) {
+        for decl in &module.tree.decls {
+            if matches!(decl.kind, una_syntax::ast::DeclKind::Example(_)) {
+                examples.push(decl.span);
+            }
+        }
+    }
+    // Declarations do not overlap, so the one that can hold a span is the last that starts at
+    // or before it: O(log X) a lookup.
+    examples.sort_by_key(|e| (e.file, e.start));
+    let in_example = |span: Span| {
+        let at = examples.partition_point(|e| (e.file, e.start) <= (span.file, span.start));
+        at.checked_sub(1)
+            .and_then(|i| examples.get(i))
+            .is_some_and(|e| e.file == span.file && e.start <= span.start && span.end <= e.end)
+    };
+    let mut ran = vec![false; count];
+    let mut work: Vec<usize> = Vec::new();
+    let root = |f: usize, ran: &mut Vec<bool>, work: &mut Vec<usize>| {
+        if let Some(slot) = ran.get_mut(f)
+            && !*slot
+        {
+            *slot = true;
+            work.push(f);
+        }
+    };
+    for (f, def) in env.functions.iter().enumerate() {
+        if def.public
+            || def.kind != FnKind::Function
+            || def.module >= env.prelude
+            || findings.function_values.contains(&f)
+        {
+            root(f, &mut ran, &mut work);
+        }
+    }
+    for &(_, via) in &findings.policy_vias {
+        root(via, &mut ran, &mut work);
+    }
+    let mut calls: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for edge in &findings.graph_edges {
+        let Target::Function(to) = edge.to else {
+            continue;
+        };
+        match edge.from {
+            Some(Caller::Function(from)) => {
+                if let Some(out) = calls.get_mut(from) {
+                    out.push(to);
+                }
+            }
+            Some(Caller::Handler(_) | Caller::Lambda) => root(to, &mut ran, &mut work),
+            None if !in_example(edge.span) => root(to, &mut ran, &mut work),
+            None => {}
+        }
+    }
+    while let Some(f) = work.pop() {
+        for &to in calls.get(f).into_iter().flatten() {
+            root(to, &mut ran, &mut work);
+        }
+    }
+    ran
+}
+
 /// The functions whose check points a type argument above `internal` can decide: those with a
 /// site above `internal` only through a symbolic label, and, through a worklist over the
 /// generic calls, each generic function that passes a symbolic label to one of them.
@@ -235,8 +312,16 @@ pub(crate) fn switch_points(
         return;
     }
     let decided = decided_by_type(findings);
+    let ran = run_reach(env, findings);
+    let runs =
+        |function: Option<usize>| function.is_none_or(|f| ran.get(f).copied().unwrap_or(true));
     let mut found: BTreeMap<Span, (String, Label)> = BTreeMap::new();
     for site in &findings.switch_sites {
+        // Code that no run of the program reaches, as a private function only an example
+        // calls, passes no check point of a run (#1707).
+        if !runs(site.function) {
+            continue;
+        }
         let concrete = site.label.concrete();
         // A site that only a type parameter decides counts at the instances of its function,
         // unless the function is used as a value, or lies outside every function.
@@ -252,6 +337,9 @@ pub(crate) fn switch_points(
             .or_insert_with(|| (site.what.clone(), site.label.clone()));
     }
     for call in &findings.switch_calls {
+        if !runs(call.caller) {
+            continue;
+        }
         let concrete = call.label.concrete();
         if !decided.contains(&call.callee) || concrete.flows_to(&internal()) {
             continue;
