@@ -1,6 +1,6 @@
 ---
 construct: "[package] edition"
-editions: ["0.1", "0.2", "0.3"]
+editions: ["0.1", "0.2", "0.3", "0.4", "0.5"]
 spec: ["spec/13 §7", "spec/01 §5", "spec/17 §1", "spec/18 §1", "spec/19 §1", "spec/20 §2", "spec/05 §3", "spec/03 §3", "spec/25 §1", "spec/26 §1", "spec/21 §2", "spec/28 §2", "spec/29 §16", "spec/29 §17", "spec/29 §18", "spec/29 §19", "spec/30 §2"]
 codes: [U0103, U7002]
 ---
@@ -9,7 +9,7 @@ codes: [U0103, U7002]
 
 ## What it does
 
-A package is one program or library: a directory with its source files under `src/` and its manifest, `una.toml`. `edition` says which version of the Una language the package is written in: `"0.1"`, `"0.2"`, or the preview `"0.3"`. An edition fixes the language a package sees, so a package keeps compiling the same way when a newer `una` comes out. Edition `0.2` adds constructs and keywords to `0.1`, and some rules differ between them; edition `0.3` is cumulative: it has every construct, keyword and rule of edition `0.2`, and adds its own.
+A package is one program or library: a directory with its source files under `src/` and its manifest. `edition` says which version of the Una language the package is written in. In `una.toml` it is `"0.1"`, `"0.2"`, or the preview `"0.3"`. From edition `0.4`, the manifest is `ita.una`, and its `edition` line names `0.4` or `0.5`, both previews (ADR 0121, ADR 0139). An edition fixes the language a package sees, so a package keeps compiling the same way when a newer `una` comes out; a preview may still change, by the terms below. Edition `0.2` adds constructs and keywords to `0.1`, and some rules differ between them. The later editions are cumulative: each has every construct, keyword and rule of the edition before it, with the exceptions listed below, and adds its own.
 
 Learn more: [An edition is part of the package](/learn/editions/an-edition-is-part-of-the-package/) and [Edition 0.3, a preview](/learn/editions/edition-0-3-a-preview/).
 
@@ -118,11 +118,11 @@ Further rules:
 ## Diagnostics
 
 - [U0103](../../../../crates/una-explain/explain/U0103.md): a keyword of edition `0.2`, such as `edit`, in a package of edition `0.1`.
-- [U7002](../../../../crates/una-explain/explain/U7002.md): an edition other than `"0.1"`, `"0.2"` and `"0.3"`.
+- [U7002](../../../../crates/una-explain/explain/U7002.md): an edition in `una.toml` other than `"0.1"`, `"0.2"` and `"0.3"`; `"0.4"` and `"0.5"` belong in `ita.una`.
 
 ## Edition
 
-The stable editions are `0.1` and `0.2`; `0.3`, `0.4` and `0.5` are previews.
+The stable editions are `0.1` and `0.2`; `0.3`, `0.4` and `0.5` are previews. `una --version` lists the editions a release serves, and on its `preview:` line the ones that are previews.
 
 ## Normative source
 
