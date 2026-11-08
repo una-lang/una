@@ -5509,14 +5509,14 @@ fn ten_thousand_races_release_what_their_losers_hold_in_both_engines() {
     let interpreted = una(&dir, &["run", ".", "--max-memory", "16"]);
     assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
     assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "won 10000\n");
-    // A loser that is never cancelled computes for minutes: each run has a time limit, so a
-    // hang fails here instead of holding the test run (#1188).
+    // A loser that is never cancelled computes for minutes: each run has a processor-time
+    // limit, so a hang fails here instead of holding the test run (#1188, #1776).
     for workers in ["1", "2", "4"] {
         let native = output_within(
             Command::new(dir.join("target/una/losers"))
                 .args(["--max-memory", "16", "--workers", workers])
                 .current_dir(&dir),
-            std::time::Duration::from_secs(120),
+            PROCESSOR_LIMIT_SECS,
         );
         assert_eq!(
             native.status.code(),
@@ -5537,10 +5537,56 @@ impl Drop for RemovedAtEnd {
     }
 }
 
-/// The output of `command`, which must end within `limit`: otherwise it is killed and the test
-/// fails, naming the limit.
-fn output_within(command: &mut Command, limit: std::time::Duration) -> std::process::Output {
-    let mut child = command
+/// The wall-clock limit of a run of [`output_within`]: only a run that waits with nothing to
+/// do, using no processor time, reaches it, so it is generous enough for a machine whose load
+/// average is many times its processor count (#1776).
+const WALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// The processor-time limit, in seconds, of a run of the ten-thousand-round tests: the 120 s
+/// of wall clock they had before #1776, which a quiet machine's runs stay well under.
+const PROCESSOR_LIMIT_SECS: u64 = 120;
+
+/// The output of `command`, which must end within `processor_secs` seconds of processor time
+/// and within [`WALL_LIMIT`]: otherwise it is killed and the test fails, naming the limit.
+///
+/// The guard is against a run that never ends, such as a loser that is never cancelled and
+/// computes for minutes. That run uses processor time, which a busy machine does not inflate
+/// the way it inflates the elapsed time of a run that ends (#1776: 120 s of wall clock killed
+/// passing runs at a load average of 60), so its limit is processor time, which the kernel
+/// enforces (`RLIMIT_CPU`, the POSIX `ulimit -t` of `sh`, which needs no `unsafe` code). The
+/// wall-clock limit ends a run that parks every worker with nothing to run.
+fn output_within(command: &Command, processor_secs: u64) -> std::process::Output {
+    run_within(command, processor_secs, WALL_LIMIT).unwrap_or_else(|reason| panic!("{reason}"))
+}
+
+/// [`output_within`], with the wall-clock limit as an argument, and a run past a limit as an
+/// error that names it.
+fn run_within(
+    command: &Command,
+    processor_secs: u64,
+    wall: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut limited = Command::new("/bin/sh");
+    limited
+        .args([
+            "-c",
+            "ulimit -t \"$1\" || exit 125; shift; exec \"$@\"",
+            "sh",
+        ])
+        .arg(processor_secs.to_string())
+        .arg(command.get_program())
+        .args(command.get_args());
+    if let Some(dir) = command.get_current_dir() {
+        limited.current_dir(dir);
+    }
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => limited.env(key, value),
+            None => limited.env_remove(key),
+        };
+    }
+    let mut child = limited
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -5548,7 +5594,7 @@ fn output_within(command: &mut Command, limit: std::time::Duration) -> std::proc
     let started = std::time::Instant::now();
     let mut late = false;
     while child.try_wait().unwrap().is_none() {
-        if started.elapsed() > limit {
+        if started.elapsed() > wall {
             let _ = child.kill();
             late = true;
             break;
@@ -5556,8 +5602,59 @@ fn output_within(command: &mut Command, limit: std::time::Duration) -> std::proc
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let output = child.wait_with_output().unwrap();
-    assert!(!late, "still running after {limit:?}, killed: {output:?}");
-    output
+    if late {
+        return Err(format!("still running after {wall:?}, killed: {output:?}"));
+    }
+    if output.status.code() == Some(125) {
+        return Err(format!(
+            "sh could not set a processor-time limit: {output:?}"
+        ));
+    }
+    // Past the soft limit the kernel sends SIGXCPU (24 on macOS and Linux), past the hard
+    // one SIGKILL.
+    if matches!(output.status.signal(), Some(24 | 9)) {
+        return Err(format!(
+            "used more than {processor_secs} s of processor time, killed: {output:?}"
+        ));
+    }
+    Ok(output)
+}
+
+#[test]
+fn a_guarded_run_is_killed_past_its_processor_time_or_its_wall_clock() {
+    // The negative controls of `output_within` (#1776): a run that computes for ever is killed
+    // by its processor-time limit, one that waits for ever by its wall-clock limit, and one
+    // that ends within both returns its output.
+    let spin = run_within(
+        Command::new("/bin/sh").args(["-c", "while :; do :; done"]),
+        1,
+        std::time::Duration::from_secs(600),
+    );
+    assert!(
+        spin.as_ref()
+            .is_err_and(|reason| reason.starts_with("used more than 1 s of processor time")),
+        "{spin:?}"
+    );
+    let wait = run_within(
+        Command::new("/bin/sh").args(["-c", "sleep 600"]),
+        60,
+        std::time::Duration::from_secs(1),
+    );
+    assert!(
+        wait.as_ref()
+            .is_err_and(|reason| reason.starts_with("still running after 1s")),
+        "{wait:?}"
+    );
+    let ends = run_within(
+        Command::new("/bin/sh")
+            .args(["-c", "echo \"$PWD\""])
+            .current_dir("/"),
+        60,
+        std::time::Duration::from_secs(600),
+    )
+    .unwrap();
+    assert!(ends.status.success(), "{ends:?}");
+    assert_eq!(String::from_utf8_lossy(&ends.stdout), "/\n");
 }
 
 #[test]
@@ -5888,14 +5985,15 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
     // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
     // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
-    // A started task that keeps its worker, so the task that cancels it never runs, computes for minutes: each run has a time
-    // limit, so a hang fails here instead of holding the test run (#1533, as #1188 for races).
+    // A started task that keeps its worker, so the task that cancels it never runs, computes
+    // for minutes: each run has a processor-time limit, so a hang fails here instead of
+    // holding the test run (#1533, as #1188 for races, #1776).
     for (workers, budget) in [("1", "16"), ("2", "24"), ("4", "24")] {
         let native = output_within(
             Command::new(dir.join("target/una/cancelled"))
                 .args(["--max-memory", budget, "--workers", workers])
                 .current_dir(&dir),
-            std::time::Duration::from_secs(120),
+            PROCESSOR_LIMIT_SECS,
         );
         assert_eq!(
             native.status.code(),
