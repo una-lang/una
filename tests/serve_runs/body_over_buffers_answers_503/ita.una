@@ -8,4 +8,5 @@ run
     console
     serve "http://127.0.0.1:8080"
       buffers at most 1 MiB
+      peer_buffers none
       body at most 2048 KiB

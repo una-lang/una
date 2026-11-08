@@ -15,7 +15,7 @@ answer(next: Result[internal Exchange, ServeError], body: Text) -> Unit
 --- The program holds the first exchange and waits for a second, which `/once` never delivers
 --- while the first is open: the second request waits, the third finds `waiting` full and is
 --- answered `503` at once; at the host stop the waiting one is answered `503`, and the first
---- drains (ADR 0123 rules 7 and 18, `spec/31 §6`).
+--- drains (ADR 0123 rules 17 and 18, `spec/31 §6` rule 5).
 pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
 =

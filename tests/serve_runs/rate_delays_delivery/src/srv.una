@@ -13,7 +13,7 @@ answer(exchange: internal Exchange) -> Unit
     if error use unit
 
 --- A rate of two exchanges a second: the third request waits for the token, due half a second
---- after the bucket was full, and is answered then (ADR 0123 rule 7, `spec/31 §2`).
+--- after the bucket was full, and is answered then (ADR 0123 rule 17, `spec/31 §6` rule 5).
 pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
   uses @console: Console[print]

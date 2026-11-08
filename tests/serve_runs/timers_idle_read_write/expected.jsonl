@@ -2,6 +2,7 @@
 {"at":2001,"closed":true,"connection":1}
 {"at":3000,"connection":2,"text":"HTTP/1.1 408 Request Timeout\r\nDate: Tue, 14 Nov 2023 22:13:23 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
 {"at":3000,"connection":2,"shutdown":true}
+{"at":3000,"closed":true,"connection":5}
 {"at":4000,"closed":true,"connection":2}
 {"at":4001,"closed":true,"connection":3}
 {"at":20001,"connection":4,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:40 GMT\r\nContent-Length: 10\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello last"}
