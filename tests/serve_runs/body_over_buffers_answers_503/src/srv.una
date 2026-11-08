@@ -1,0 +1,33 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- Answers one request with the first segment of its path.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> ""
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "hello {first}"))
+    if error use unit
+
+--- `buffers` alone, with no share per peer: a head of exactly 1 MiB of body is admitted and holds
+--- the whole of `buffers`; another peer's body of one byte finds nothing left and is answered `503`
+--- with `Retry-After: 1` as soon as its head is read; at the host stop the held one is answered
+--- `503` (ADR 0123 rule 13, `spec/31 §6`).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")

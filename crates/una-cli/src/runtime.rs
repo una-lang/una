@@ -852,18 +852,16 @@ pub(crate) fn run_command(
         Ok((run, traced)) => (Ok(run), traced),
         Err(error) => (Err(error), None),
     };
-    // A trace file that could not be written is reported after the run, with exit code 2, as
-    // for the executable.
-    if let Some(Err(error)) = traced
-        && let Some(path) = options.trace
-    {
-        writeln!(
-            stderr,
+    // A trace file that could not be written is reported last, after the run's own
+    // diagnostics, the scripted engine's warnings and `--serve-out`, with exit code 2 or the
+    // run's when higher, as the executable reports it (`spec/31 §8` rule 6).
+    let trace_failed = match (traced, options.trace) {
+        (Some(Err(error)), Some(path)) => Some(format!(
             "error: cannot write the trace to `{}`: {error}",
             path.display()
-        )?;
-        return Ok(ExitStatus::Usage);
-    }
+        )),
+        _ => None,
+    };
     let run = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {
@@ -899,7 +897,8 @@ pub(crate) fn run_command(
         }
         writeln!(stderr, "error: cannot write the output: {error}")?;
         stderr.flush()?;
-        return scripted_end(ended, options.serve_out, stderr, ExitStatus::Usage);
+        let status = scripted_end(ended, options.serve_out, stderr, ExitStatus::Usage)?;
+        return trace_end(trace_failed, stderr, status);
     }
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
@@ -947,7 +946,26 @@ pub(crate) fn run_command(
         (stdout, &mut *stderr),
         status,
     )?;
-    scripted_end(ended, serve_out, stderr, status)
+    let status = scripted_end(ended, serve_out, stderr, status)?;
+    trace_end(trace_failed, stderr, status)
+}
+
+/// The line of a trace file that could not be written, last, as the executable writes it: the
+/// exit code is then the higher of `status` and 2.
+fn trace_end(
+    failed: Option<String>,
+    stderr: &mut dyn Write,
+    status: ExitStatus,
+) -> io::Result<ExitStatus> {
+    let Some(line) = failed else {
+        return Ok(status);
+    };
+    writeln!(stderr, "{line}")?;
+    Ok(if status.code() > ExitStatus::Usage.code() {
+        status
+    } else {
+        ExitStatus::Usage
+    })
 }
 
 /// After a scripted run's own diagnostics, as the executable orders them (`spec/31 §8` rule
