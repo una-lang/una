@@ -1,10 +1,16 @@
 //! Limits on `Http` grants in both engines (ADR 0117 rule 8, IF4, `spec/27 §9`): the same
 //! programs, interpreted and native, against a local server, and the start-up checks of a
-//! limited `--grant`. No test needs the network. The cases with requests in flight at once
-//! (crossing redirect chains, a full queue, a slot held until its exchange returns) are the
-//! client's, in `crates/una-http/tests/limits.rs`: under the preview over-approximation of
-//! `τ_conc`, a program whose requests run beside a task construct has `L_lim = ⊤`, so its
-//! grants cannot carry limits yet.
+//! limited `--grant`. No test needs the network. Since `L_lim` takes the precise `τ_conc` of
+//! `spec/27 §11` (#1154), a program whose requests run in started tasks beside work on `public`
+//! and `internal` data can carry limits, so programs of started requests live here too: five
+//! requests of a `tasks` statement sharing a bucket, under `--virtual-time`, where both engines
+//! follow the interpreter's schedule and the requests reach the bucket one after another
+//! (`spec/27 §8` rule 3), and a full queue, the one case with requests in flight at once, natively
+//! on the real clock. A slot
+//! held by an interrupted request until its exchange returns, and crossing redirect chains, need
+//! requests in flight at once, which the interpreter, running started tasks and the branches of
+//! a race one at a time (`spec/27 §1` rule 5), never has: they are the client's tests, in
+//! `crates/una-http/tests/limits.rs`.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -60,8 +66,8 @@ fn una(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// A server on `127.0.0.1`: `/hop` redirects to `/ok` on the same origin, every other path
-/// answers 200; it counts the requests it read.
+/// A server on `127.0.0.1`: `/hop` redirects to `/ok` on the same origin, `/slow` answers 200
+/// after 600 ms, every other path answers 200 at once; it counts the requests it read.
 struct Server {
     port: u16,
     seen: Arc<AtomicUsize>,
@@ -80,6 +86,10 @@ impl Server {
                 std::thread::spawn(move || {
                     let path = read_path(&mut stream);
                     counted.fetch_add(1, Ordering::SeqCst);
+                    // `/slow` answers after 600 ms, for the waits of requests in flight.
+                    if path == "/slow" {
+                        std::thread::sleep(Duration::from_millis(600));
+                    }
                     let answer = match path.as_str() {
                         "/hop" => {
                             "HTTP/1.1 302 Found\r\nLocation: /ok\r\nContent-Length: 0\r\n\r\n"
@@ -686,5 +696,135 @@ fn a_limited_grant_flag_needs_edition_0_4() {
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(2), "{native:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs the package interpreted and natively with `flags`, both expected to exit with 0, and
+/// returns each engine's printed lines; under the virtual clock, the two traces must be equal
+/// too (on the real clock, `Clock.now` reads differ).
+fn lines_in_both(dir: &Path, name: &str, flags: &[&str]) -> [Vec<String>; 2] {
+    let mut args = vec!["--json", "run", "."];
+    args.extend(flags);
+    let interpreted = una(dir, &args);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    let interpreted_lines: Vec<String> = document["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().to_owned())
+        .collect();
+    let built = una(dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let trace_file = dir.join("trace.json");
+    let native = Command::new(dir.join(format!("target/una/{name}")))
+        .args(flags)
+        .arg("--trace")
+        .arg(&trace_file)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let native_trace: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+    if flags.contains(&"--virtual-time") {
+        assert_eq!(document["trace"], native_trace);
+    }
+    let native_lines = String::from_utf8_lossy(&native.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    [interpreted_lines, native_lines]
+}
+
+#[test]
+fn five_requests_of_a_tasks_statement_share_a_bucket_alike_in_both_engines() {
+    // #1154: two per second, five started tasks, each reading the clock after its request.
+    // Under `--virtual-time` the readings are 0, 0, 500, 1000 and 1500 in both engines, with
+    // the same trace: the bucket serves the tasks in the order they reached it.
+    let server = Server::start();
+    let port = server.port;
+    let mut starts = String::new();
+    for k in 1..=5 {
+        starts.push_str(&format!(
+            "    start fetch(\"http://127.0.0.1:{port}/{k}\")\n"
+        ));
+    }
+    let program = format!(
+        "module inflight\n\nfetch(url: Text) -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @http: Http[get]\n=\n  let reply = attempt @http.get(url, headers: [], key_name: None)\n  let t = @clock.now()\n  @console.print(\"{{t}}\")\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @http: Http[get]\n=\n  tasks\n{starts}  unit\n"
+    );
+    let dir = package(
+        "inflight",
+        &format!(
+            "    console\n    clock\n    http \"http://127.0.0.1:{port}\" get\n      at most 2 per second\n"
+        ),
+        &program,
+    );
+    let checked = una(&dir, &["check", "."]);
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+    let [interpreted, native] = lines_in_both(&dir, "inflight", &["--virtual-time"]);
+    assert_eq!(interpreted, native);
+    let mut readings: Vec<u64> = interpreted.iter().map(|t| t.parse().unwrap()).collect();
+    readings.sort_unstable();
+    assert_eq!(readings, [0, 0, 500, 1000, 1500]);
+    assert_eq!(server.take(), 10);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_full_queue_gives_rate_limited_natively_and_waits_in_turn_interpreted() {
+    // #1154: one request at once, one waiting, three started tasks against a server that
+    // answers after 600 ms. Natively they run at once: one request runs, one waits, and the third
+    // finds the queue full and fails with `RateLimited` at once. Each task writes its outcome's
+    // variant to its own file, since a run's trace redacts it (S-45).
+    let server = Server::start();
+    let port = server.port;
+    let mut starts = String::new();
+    for k in 1..=3 {
+        starts.push_str(&format!(
+            "    start fetch(\"http://127.0.0.1:{port}/slow\", path: \"v{k}.txt\")\n"
+        ));
+    }
+    let program = format!(
+        "module queued\n{SHOWN}\nfetch(url: Text, path: Text) -> Unit\n  uses @files: Files[write]\n  uses @http: Http[get]\n=\n  let reply = attempt @http.get(url, headers: [], key_name: None)\n  let written = attempt @files.write(path, content: shown(reply))\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @files: Files[write]\n  uses @http: Http[get]\n=\n  tasks\n{starts}  @console.print(\"done\")\n"
+    );
+    let dir = package(
+        "queued",
+        &format!(
+            "    console\n{OUT}    http \"http://127.0.0.1:{port}\" get\n      at most 1 at once\n      waiting at most 1\n"
+        ),
+        &program,
+    );
+    let checked = una(&dir, &["check", "."]);
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+    let outcomes = |dir: &Path| -> Vec<String> {
+        let mut found: Vec<String> = (1..=3)
+            .map(|k| std::fs::read_to_string(dir.join(format!("out/v{k}.txt"))).unwrap_or_default())
+            .collect();
+        found.sort();
+        for k in 1..=3 {
+            let _ = std::fs::remove_file(dir.join(format!("out/v{k}.txt")));
+        }
+        found
+    };
+    let interpreted = una(&dir, &["--json", "run", "."]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let interpreted = outcomes(&dir);
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/queued"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    let native = outcomes(&dir);
+    // The interpreter runs started tasks one at a time (`spec/27 §1` rule 5), the sequential
+    // schedule of `spec/19 §8` rule 1 and `spec/27 §8` rule 2: its requests never wait together,
+    // and all three are served.
+    assert_eq!(interpreted, ["ok 200", "ok 200", "ok 200"]);
+    // The executable runs them at once: one in flight, one waiting, the third refused at once,
+    // never sent.
+    assert_eq!(native, ["RateLimited", "ok 200", "ok 200"]);
+    assert_eq!(server.take(), 5);
     let _ = std::fs::remove_dir_all(&dir);
 }
