@@ -1,5 +1,6 @@
 //! The security timing oracles (#1145): real-clock tests that a timing channel stays closed,
-//! each running native programs that differ only in `secret` input and requiring the same
+//! each running programs (native ones, and for the serve oracles also `una run`) that differ
+//! only in `secret` input and requiring the same
 //! observable outcome.
 //!
 //! Every test in this file is a security oracle, and every one must be `#[ignore]`d with the
@@ -51,6 +52,10 @@
 //! before it connects) against ports as they come, the keyed-placement check, and one serve
 //! thread against 8, its positive control; a key that makes the set-up 0 or 300 ms long
 //! guards only a placement that depends on the time at accept.
+//! Each of these five runs in both engines (decision D-20 of #1660), as `<oracle>_native`, the
+//! executable that `una build` made, and `<oracle>_interpreter`, `una run`, since the serve
+//! engine's waiting and waking is separate code in each; one harness, parameterized by
+//! [`Engine`], with the same assertions and sample sizes.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
@@ -879,7 +884,7 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
 /// its reply instead, which is finer than the outcome of a deadline over the same work. The key
 /// is `internal`, which raises `L_srv` too: since #1684 a loop whose bound is above `internal`
 /// is U4002 in a program that starts tasks (`spec/27 §8` rule 5), and the slicer reads no label.
-fn prefix_program(key: u8, work: u64) -> String {
+fn prefix_program(key: u8, work: u64, setup: u64) -> String {
     format!(
         r#"module srv
 
@@ -919,8 +924,8 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let base = work(3000000)
-  let n = if key() > 0 then 3000000 else 0
+  let base = work({setup})
+  let n = if key() > 0 then {setup} else 0
   let spent = setup(n)
   @console.print("ready")
   tasks at most 4096 at once
@@ -936,18 +941,93 @@ pub main() -> Unit
     )
 }
 
+/// The engine that runs the program of a serve oracle (#1660, decision D-20): each of the five
+/// oracles of ADR 0123's serve threads runs once per engine, since the waiting and waking of
+/// the serve engine is separate code in each (`una-rt`'s `serve.rs` and `una-interp`'s
+/// `machine/serve.rs`), with the same harness, assertions and sample sizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Engine {
+    /// The executable that `una build` made, run directly.
+    Native,
+    /// `una run`, of the toolchain's test build, which runs a program that serves while
+    /// `spec/31 §1` rule 10 stands when `UNA_TEST_RUN_SERVER` is 1, and ignores the variable
+    /// once the rule is lifted for `una run`.
+    Interpreter,
+}
+
+impl Engine {
+    /// Its name in package names and in the oracles' output.
+    fn name(self) -> &'static str {
+        match self {
+            Engine::Native => "native",
+            Engine::Interpreter => "interpreter",
+        }
+    }
+
+    /// The iterations of the `public` counting loops of [`prefix_program`] and
+    /// [`spread_program`] that take this engine about as long as `native` take native code:
+    /// a third, since an iteration takes the interpreter about 0.33 µs on the gate machine
+    /// and native code about 0.1 µs (measured for #1660), so that the set-ups of about 300 ms
+    /// the oracles assume hold in both engines.
+    fn iterations(self, native: u64) -> u64 {
+        match self {
+            Engine::Native => native,
+            Engine::Interpreter => native / 3,
+        }
+    }
+
+    /// The command that runs the package `name` in `dir`, with `args` for the run, its
+    /// standard output and error piped.
+    fn command(self, dir: &Path, name: &str, args: &[&str]) -> Command {
+        let mut command = match self {
+            Engine::Native => Command::new(dir.join("target/una").join(name)),
+            Engine::Interpreter => {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+                command
+                    .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                    .env("UNA_TEST_RUN_SERVER", "1")
+                    .args(["run", "."]);
+                command
+            }
+        };
+        command
+            .env("NO_COLOR", "1")
+            .args(args)
+            .current_dir(dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        command
+    }
+}
+
 /// A package of edition `0.4` named `name` whose entry module is `program`, granted `console`
 /// and `serve` on `port` with room for the early peers of [`serve_prefix_run`] (no share per
-/// peer, since every peer is `127.0.0.1`), built by a `una` of the toolchain's tests, which
-/// builds a program that serves while `spec/31 §1` rule 10 stands (`UNA_TEST_BUILD_SERVER`).
-fn serve_package(name: &str, port: u16, program: &str) -> PathBuf {
-    serve_package_with(name, port, program, "", "      connections at most 4096\n")
+/// peer, since every peer is `127.0.0.1`), for `engine`: for [`Engine::Native`] built by a
+/// `una` of the toolchain's tests, which builds a program that serves while `spec/31 §1`
+/// rule 10 stands (`UNA_TEST_BUILD_SERVER`).
+fn serve_package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
+    serve_package_with(
+        name,
+        port,
+        program,
+        "",
+        "      connections at most 4096\n",
+        engine,
+    )
 }
 
 /// As [`serve_package`], with the grants `grants` beside `console`, each line indented as a
 /// grant, and the serve grant's limits `limits`, each line indented under it, beside
-/// `peer none`, `peer_buffers none` and `peer_replies none`.
-fn serve_package_with(name: &str, port: u16, program: &str, grants: &str, limits: &str) -> PathBuf {
+/// `peer none`, `peer_buffers none` and `peer_replies none`. For [`Engine::Interpreter`] the
+/// package is checked instead of built, so that a refused program fails here, not in a run.
+fn serve_package_with(
+    name: &str,
+    port: u16,
+    program: &str,
+    grants: &str,
+    limits: &str,
+    engine: Engine,
+) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -964,12 +1044,18 @@ fn serve_package_with(name: &str, port: u16, program: &str, grants: &str, limits
     )
     .unwrap();
     std::fs::write(dir.join("src/srv.una"), program).unwrap();
-    native_build::runtime();
+    let verb = match engine {
+        Engine::Native => {
+            native_build::runtime();
+            "build"
+        }
+        Engine::Interpreter => "check",
+    };
     let built = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("UNA_TEST_BUILD_SERVER", "1")
         .env("NO_COLOR", "1")
-        .args(["build", "."])
+        .args([verb, "."])
         .current_dir(&dir)
         .output()
         .unwrap();
@@ -990,20 +1076,23 @@ fn serve_port() -> u16 {
 const EARLY_PEERS: usize = 512;
 const EARLY_BODY: usize = 64 * 1024;
 
-/// One run of the executable `name` in `dir`, serving on `port`: with `early`, the harness opens
+/// One run of the package `name` in `dir` in `engine`, serving on `port`: with `early`, the harness opens
 /// [`EARLY_PEERS`] connections as soon as the listener is bound, each sending a request with a
 /// body of [`EARLY_BODY`] bytes, before the set-up ends. Once the program prints `ready`, the
 /// harness sends `/probe` and times its reply. Returns the time to `ready` and the probe's
 /// time, in milliseconds, and its body; then the host stop ends the run, which must end with 0.
-fn serve_prefix_run(dir: &Path, name: &str, port: u16, early: bool) -> (f64, f64, String) {
+fn serve_prefix_run(
+    dir: &Path,
+    name: &str,
+    port: u16,
+    early: bool,
+    engine: Engine,
+) -> (f64, f64, String) {
     use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
     let began = Instant::now();
-    let mut child = Command::new(dir.join("target/una").join(name))
-        .args(["--stop-grace", "10"])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let mut child = engine
+        .command(dir, name, &["--stop-grace", "10"])
         .spawn()
         .unwrap();
     let connect = move || loop {
@@ -1081,23 +1170,31 @@ fn serve_prefix_run(dir: &Path, name: &str, port: u16, early: bool) -> (f64, f64
 /// judged by the rank test of the header, and every probe must be answered. The set-up of key 1 must have taken at least 100 ms more than key 0's, so
 /// that the input compared is the channel's.
 #[allow(clippy::print_stderr)]
-fn serve_prefix_oracle(label: &str, early: bool) {
+fn serve_prefix_oracle(label: &str, early: bool, engine: Engine) {
     let port = serve_port();
     // The probe's work: some milliseconds, so that the serve threads' work, when it lands
     // inside it for one input only, shifts its time.
-    let work = 200_000;
-    let names = [format!("{label}key0"), format!("{label}key1")];
+    let work = engine.iterations(200_000);
+    let setup = engine.iterations(3_000_000);
+    let engine_name = engine.name();
+    let names = [
+        format!("{label}{engine_name}key0"),
+        format!("{label}{engine_name}key1"),
+    ];
     let dirs = [
-        serve_package(&names[0], port, &prefix_program(0, work)),
-        serve_package(&names[1], port, &prefix_program(1, work)),
+        serve_package(&names[0], port, &prefix_program(0, work, setup), engine),
+        serve_package(&names[1], port, &prefix_program(1, work, setup), engine),
     ];
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut readies: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
     let mut bodies = std::collections::BTreeSet::new();
     for run in 0..20 {
         for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
-            let (ready, took, body) = serve_prefix_run(&dirs[key], &names[key], port, early);
-            eprintln!("run {run} key {key}: ready at {ready:.1} ms, probe {took:.2} ms, {body}");
+            let (ready, took, body) =
+                serve_prefix_run(&dirs[key], &names[key], port, early, engine);
+            eprintln!(
+                "{engine_name} run {run} key {key}: ready at {ready:.1} ms, probe {took:.2} ms, {body}"
+            );
             readies[key].push(ready);
             samples[sample].push(took);
             bodies.insert(body);
@@ -1109,10 +1206,10 @@ fn serve_prefix_oracle(label: &str, early: bool) {
         sorted[sorted.len() / 2]
     };
     let (ready0, ready1) = (median(&readies[0]), median(&readies[1]));
-    eprintln!("median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms");
+    eprintln!("{engine_name}: median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms");
     assert!(
         ready1 - ready0 >= 100.0,
-        "the set-up of key 1 did not take longer: the input compared is not the channel's"
+        "{engine_name}: the set-up of key 1 did not take longer: the input compared is not the channel's"
     );
     assert_eq!(
         bodies.into_iter().collect::<Vec<_>>(),
@@ -1122,20 +1219,20 @@ fn serve_prefix_oracle(label: &str, early: bool) {
     let secret = mann_whitney(&samples[0], &samples[1]);
     let control = mann_whitney(&samples[1], &samples[2]);
     eprintln!(
-        "key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; {:?} against {:?}",
+        "{engine_name}: key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; {:?} against {:?}",
         secret.u, secret.z, secret.p, samples[0], samples[1]
     );
     eprintln!(
-        "control, key 1 against key 1: U = {}, z = {:.3}, p = {:.3e}",
+        "{engine_name}: control, key 1 against key 1: U = {}, z = {:.3}, p = {:.3e}",
         control.u, control.z, control.p
     );
     assert!(
         control.p >= 0.001,
-        "the control failed: the machine's noise alone separates one input from itself"
+        "{engine_name}: the control failed: the machine's noise alone separates one input from itself"
     );
     assert!(
         secret.p >= 0.001,
-        "key 0 and key 1 differ: p = {:.3e}; the serve threads' work depends on the set-up",
+        "{engine_name}: key 0 and key 1 differ: p = {:.3e}; the serve threads' work depends on the set-up",
         secret.p
     );
     for dir in &dirs {
@@ -1145,7 +1242,7 @@ fn serve_prefix_oracle(label: &str, early: bool) {
 
 #[test]
 #[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
-fn serve_prefix_secret() {
+fn serve_prefix_secret_native() {
     // ADR 0123, S4 amendment IF-S1 and S4 design §11.5, on the real clock: the narrowing of
     // `L_srv`. Code that runs only before the run's first server operation, here set-up work
     // that a `secret` key makes 0 or about 300 ms long, is outside `L_srv`, so `una check`
@@ -1153,12 +1250,19 @@ fn serve_prefix_secret() {
     // printed `ready`, must not see the set-up: the probe's time and outcome are the same for
     // both keys. The harness connects only after `ready`, so the stream is fixed relative to
     // the program's steps.
-    serve_prefix_oracle("prefixsecret", false);
+    serve_prefix_oracle("prefixsecret", false, Engine::Native);
 }
 
 #[test]
 #[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
-fn serve_prefix_early_peers() {
+fn serve_prefix_secret_interpreter() {
+    // As `serve_prefix_secret_native`, in `una run` (decision D-20 of #1660).
+    serve_prefix_oracle("prefixsecret", false, Engine::Interpreter);
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_prefix_early_peers_native() {
     // SC9 (finding A of the S4 design), as `serve_prefix_secret`, with 512 connections that each
     // send a request with a 64 KiB body as soon as the process starts, before the set-up ends:
     // the `public` set-up of about 300 ms that both keys run first gives them the time to
@@ -1170,7 +1274,14 @@ fn serve_prefix_early_peers() {
     // the probe, served after them, would take less time for key 1. With accepting at the
     // first server operation, every connection waits in the kernel's backlog for both keys,
     // and the probe's times and outcomes do not differ.
-    serve_prefix_oracle("prefixearly", true);
+    serve_prefix_oracle("prefixearly", true, Engine::Native);
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_prefix_early_peers_interpreter() {
+    // As `serve_prefix_early_peers_native`, in `una run` (decision D-20 of #1660).
+    serve_prefix_oracle("prefixearly", true, Engine::Interpreter);
 }
 
 /// The helper `late` of the two positive controls of SC2 and SC3: after a `next` under a
@@ -1345,14 +1456,11 @@ fn serve_reply(stream: &mut std::net::TcpStream) -> Vec<u8> {
     body
 }
 
-/// Runs the executable `name` in `dir` on one serve thread, so that one thread holds every
-/// connection, and returns what `drive` returns once the run has ended with 0.
-fn serve_control_run<T>(dir: &Path, name: &str, drive: impl FnOnce() -> T) -> T {
-    let child = Command::new(dir.join("target/una").join(name))
-        .args(["--serve-threads", "1", "--stop-grace", "10"])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+/// Runs the package `name` in `dir` in `engine` on one serve thread, so that one thread holds
+/// every connection, and returns what `drive` returns once the run has ended with 0.
+fn serve_control_run<T>(dir: &Path, name: &str, engine: Engine, drive: impl FnOnce() -> T) -> T {
+    let child = engine
+        .command(dir, name, &["--serve-threads", "1", "--stop-grace", "10"])
         .spawn()
         .unwrap();
     let seen = drive();
@@ -1365,8 +1473,8 @@ fn serve_control_run<T>(dir: &Path, name: &str, drive: impl FnOnce() -> T) -> T 
 /// later the probe asks and reads its 8 MiB, keeping its connection; the third peer then
 /// asks, and 1.2 s later the first peer leaves, which frees a slot if the host had not freed
 /// it already. Returns the third peer's answer.
-fn handoff_run(dir: &Path, name: &str, port: u16) -> String {
-    serve_control_run(dir, name, || {
+fn handoff_run(dir: &Path, name: &str, port: u16, engine: Engine) -> String {
+    serve_control_run(dir, name, engine, || {
         let first = serve_request(port, "first", false);
         std::thread::sleep(Duration::from_millis(300));
         let mut probe = serve_request(port, "probe", false);
@@ -1381,8 +1489,8 @@ fn handoff_run(dir: &Path, name: &str, port: u16) -> String {
 }
 
 /// One run of `serve_delivery_history`: two peers ask at once; returns the second's answer.
-fn delivery_run(dir: &Path, name: &str, port: u16) -> String {
-    serve_control_run(dir, name, || {
+fn delivery_run(dir: &Path, name: &str, port: u16, engine: Engine) -> String {
+    serve_control_run(dir, name, engine, || {
         let mut first = serve_request(port, "first", true);
         std::thread::sleep(Duration::from_millis(50));
         let mut second = serve_request(port, "second", true);
@@ -1404,7 +1512,8 @@ fn serve_positive_control(
     program: fn(&str, u8) -> String,
     grants: &str,
     limits: &str,
-    run: fn(&Path, &str, u16) -> String,
+    run: fn(&Path, &str, u16, Engine) -> String,
+    engine: Engine,
 ) {
     let refused = root().join(format!("tests/conformance/security/{case}/src/srv.una"));
     let refused = std::fs::read_to_string(refused).unwrap();
@@ -1415,19 +1524,23 @@ fn serve_positive_control(
         "the conformance case {case} is not the oracle's program with a `secret` key"
     );
     let port = serve_port();
-    let names = [format!("{label}key0"), format!("{label}key1")];
+    let engine_name = engine.name();
+    let names = [
+        format!("{label}{engine_name}key0"),
+        format!("{label}{engine_name}key1"),
+    ];
     let dirs = [
-        serve_package_with(&names[0], port, &program("", 0), grants, limits),
-        serve_package_with(&names[1], port, &program("", 1), grants, limits),
+        serve_package_with(&names[0], port, &program("", 0), grants, limits, engine),
+        serve_package_with(&names[1], port, &program("", 1), grants, limits, engine),
     ];
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for round in 0..20 {
         for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
-            let answer = run(&dirs[key], &names[key], port);
-            eprintln!("round {round} key {key}: {answer}");
+            let answer = run(&dirs[key], &names[key], port, engine);
+            eprintln!("{engine_name} round {round} key {key}: {answer}");
             assert!(
                 answer == "in time" || answer == "late",
-                "{label} key {key}: answered {answer:?}"
+                "{label} {engine_name} key {key}: answered {answer:?}"
             );
             samples[sample].push(if answer == "late" { 1.0 } else { 0.0 });
         }
@@ -1435,16 +1548,16 @@ fn serve_positive_control(
     let channel = mann_whitney(&samples[0], &samples[1]);
     let control = mann_whitney(&samples[1], &samples[2]);
     eprintln!(
-        "key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; control: U = {}, z = {:.3}, p = {:.3e}",
+        "{engine_name}: key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; control: U = {}, z = {:.3}, p = {:.3e}",
         channel.u, channel.z, channel.p, control.u, control.z, control.p
     );
     assert!(
         control.p >= 0.001,
-        "the control failed: the machine's noise alone separates one input from itself"
+        "{engine_name}: the control failed: the machine's noise alone separates one input from itself"
     );
     assert!(
         channel.p < 0.001,
-        "key 0 and key 1 do not differ: p = {:.3e}; the channel that `L_srv` labels does not show on this machine, so the control proves nothing",
+        "{engine_name}: key 0 and key 1 do not differ: p = {:.3e}; the channel that `L_srv` labels does not show on this machine, so the control proves nothing",
         channel.p
     );
     for dir in &dirs {
@@ -1454,7 +1567,7 @@ fn serve_positive_control(
 
 #[test]
 #[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
-fn serve_handoff_residue() {
+fn serve_handoff_residue_native() {
     // ADR 0123, S4 design §11.5 and §10.3, SC2: the serve threads' work depends on the
     // hand-offs before it, here the bytes of a reply still pending to a peer that does not
     // read, and `L_srv` labels it. The positive control: a `public` key that decides those
@@ -1467,12 +1580,28 @@ fn serve_handoff_residue() {
         "",
         "      connections at most 2\n      replies at most 32 MiB\n",
         handoff_run,
+        Engine::Native,
     );
 }
 
 #[test]
 #[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
-fn serve_delivery_history() {
+fn serve_handoff_residue_interpreter() {
+    // As `serve_handoff_residue_native`, in `una run` (decision D-20 of #1660).
+    serve_positive_control(
+        "handoff",
+        "serve_handoff_residue_secret",
+        handoff_program,
+        "",
+        "      connections at most 2\n      replies at most 32 MiB\n",
+        handoff_run,
+        Engine::Interpreter,
+    );
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_delivery_history_native() {
     // ADR 0123, S4 design §11.5 and §10.3, SC3: when `next` returns depends on earlier
     // deliveries, here the rate's token that the first one took, and `L_srv` labels it. The
     // positive control: a `public` key that decides how long the code between two deliveries
@@ -1485,6 +1614,22 @@ fn serve_delivery_history() {
         "    clock\n",
         "      connections at most 64\n      at most 1 per second\n",
         delivery_run,
+        Engine::Native,
+    );
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_delivery_history_interpreter() {
+    // As `serve_delivery_history_native`, in `una run` (decision D-20 of #1660).
+    serve_positive_control(
+        "delivery",
+        "serve_delivery_history_secret",
+        delivery_program,
+        "    clock\n",
+        "      connections at most 64\n      at most 1 per second\n",
+        delivery_run,
+        Engine::Interpreter,
     );
 }
 
@@ -1503,14 +1648,19 @@ const SPREAD_CANDIDATES: usize = 120;
 /// below which the control of `serve_owner_spread` fails: a placement that concentrated every
 /// connection on one owner would make the two arms equal, and a significance test alone passes
 /// on any small consistent shift. Taken before the oracle's first gate-machine run (decision
-/// of #1660); the run logs the measured ratio, from which it is set.
+/// of #1660) and fixed: it is never fitted to a measured ratio. The first quiet run on the
+/// gate machine (2026-11-08) measured 1.031, p = 8.8e-2, and failed; the client already reads
+/// each connection in its own thread from one barrier, and measurements for #1660 found the
+/// serve threads are not what bounds these replies on macOS loopback (8 replies of 8 MiB, or
+/// 8 requests with bodies of 8 MiB, take about 35 to 40 ms on 1 serve thread and on 8), so the
+/// control fails visibly until a workload whose cost is the serve threads' own is found.
 const SPREAD_EFFECT: f64 = 1.5;
 
 /// The program of `serve_owner_spread` (SC1 of the S4 design, M1): as [`prefix_program`], a
 /// `public` set-up of about 300 ms, then one that a key makes 0 or about 300 ms long, then
 /// `ready` and a task per request, each answered with the same 8 MiB body, built once
 /// before the set-up, so that the owners' writes are most of what the serve threads do.
-fn spread_program(key: u8) -> String {
+fn spread_program(key: u8, setup: u64) -> String {
     format!(
         r#"module srv
 
@@ -1551,8 +1701,8 @@ pub main() -> Unit
   diverges
 =
   let big = doubled(23)
-  let base = work(3000000)
-  let n = if key() > 0 then 3000000 else 0
+  let base = work({setup})
+  let n = if key() > 0 then {setup} else 0
   let spent = setup(n)
   @console.print("ready")
   tasks at most 4096 at once
@@ -1589,7 +1739,7 @@ impl Drop for Reaped {
     }
 }
 
-/// One run of `serve_owner_spread`: the executable `name` in `dir`, serving on `port` with
+/// One run of `serve_owner_spread`: the package `name` in `dir` in `engine`, serving on `port` with
 /// `threads` serve threads. While the program's set-up runs, before its first server
 /// operation, the harness opens connections until [`SPREAD_PEERS`] of them have a source port
 /// that is a multiple of [`SPREAD_THREADS`]. With [`Ports::Crafted`] it keeps those; with
@@ -1603,21 +1753,25 @@ impl Drop for Reaped {
 /// `std::net` cannot bind a source port before it connects (decision of #1660: std only, no
 /// new `unsafe` and no new crate), so the ports are found among the ephemeral ones rather than
 /// chosen: the property is the same for every run, the ports are not.
-fn spread_run(dir: &Path, name: &str, port: u16, threads: u16, ports: Ports) -> (f64, f64) {
+fn spread_run(
+    dir: &Path,
+    name: &str,
+    port: u16,
+    threads: u16,
+    ports: Ports,
+    engine: Engine,
+) -> (f64, f64) {
     use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
     let began = Instant::now();
+    let threads = threads.to_string();
     let mut child = Reaped(Some(
-        Command::new(dir.join("target/una").join(name))
-            .args([
-                "--serve-threads",
-                &threads.to_string(),
-                "--stop-grace",
-                "10",
-            ])
-            .current_dir(dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+        engine
+            .command(
+                dir,
+                name,
+                &["--serve-threads", &threads, "--stop-grace", "10"],
+            )
             .spawn()
             .unwrap(),
     ));
@@ -1718,8 +1872,20 @@ fn spread_run(dir: &Path, name: &str, port: u16, threads: u16, ports: Ports) -> 
 
 #[test]
 #[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_owner_spread_native() {
+    serve_owner_spread(Engine::Native);
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_owner_spread_interpreter() {
+    // As `serve_owner_spread_native`, in `una run` (decision D-20 of #1660).
+    serve_owner_spread(Engine::Interpreter);
+}
+
+/// The oracle of `serve_owner_spread_native` and `serve_owner_spread_interpreter`.
 #[allow(clippy::print_stderr)]
-fn serve_owner_spread() {
+fn serve_owner_spread(engine: Engine) {
     // ADR 0123, S4 amendment IF-S1 and B.4, S4 design §4 (M1) and §11.5, SC1, on the real
     // clock. A connection's owner is a keyed hash of its own addresses under a key of the run.
     // Five arms, each 20 runs, their order rotated every round:
@@ -1739,11 +1905,30 @@ fn serve_owner_spread() {
     //    against arm 4 MUST separate, by the rank test and by at least [`SPREAD_EFFECT`] in
     //    the ratio of medians, so that a concentration of the crafted ports would show.
     let port = serve_port();
-    let names = ["spreadkey0".to_owned(), "spreadkey1".to_owned()];
+    let engine_name = engine.name();
+    let setup = engine.iterations(3_000_000);
+    let names = [
+        format!("spread{engine_name}key0"),
+        format!("spread{engine_name}key1"),
+    ];
     let limits = "      connections at most 4096\n      replies at most 256 MiB\n";
     let dirs = [
-        serve_package_with(&names[0], port, &spread_program(0), "", limits),
-        serve_package_with(&names[1], port, &spread_program(1), "", limits),
+        serve_package_with(
+            &names[0],
+            port,
+            &spread_program(0, setup),
+            "",
+            limits,
+            engine,
+        ),
+        serve_package_with(
+            &names[1],
+            port,
+            &spread_program(1, setup),
+            "",
+            limits,
+            engine,
+        ),
     ];
     let arms = [
         (0usize, SPREAD_THREADS, Ports::Crafted),
@@ -1758,9 +1943,9 @@ fn serve_owner_spread() {
         for step in 0..arms.len() {
             let sample = (step + round) % arms.len();
             let (key, threads, ports) = arms[sample];
-            let (ready, took) = spread_run(&dirs[key], &names[key], port, threads, ports);
+            let (ready, took) = spread_run(&dirs[key], &names[key], port, threads, ports, engine);
             eprintln!(
-                "round {round} arm {} key {key} on {threads} serve threads, {ports:?} ports: ready at {ready:.1} ms, replies {took:.2} ms",
+                "{engine_name} round {round} arm {} key {key} on {threads} serve threads, {ports:?} ports: ready at {ready:.1} ms, replies {took:.2} ms",
                 sample + 1
             );
             if sample < 3 {
@@ -1775,10 +1960,10 @@ fn serve_owner_spread() {
         sorted[sorted.len() / 2]
     };
     let (ready0, ready1) = (median(&readies[0]), median(&readies[1]));
-    eprintln!("median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms");
+    eprintln!("{engine_name}: median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms");
     assert!(
         ready1 - ready0 >= 100.0,
-        "the set-up of key 1 did not take longer: the input compared is not the channel's"
+        "{engine_name}: the set-up of key 1 did not take longer: the input compared is not the channel's"
     );
     let secret = mann_whitney(&samples[0], &samples[1]);
     let control = mann_whitney(&samples[1], &samples[2]);
@@ -1795,33 +1980,33 @@ fn serve_owner_spread() {
         ),
     ] {
         eprintln!(
-            "{what}: U = {}, z = {:.3}, p = {:.3e}",
+            "{engine_name}: {what}: U = {}, z = {:.3}, p = {:.3e}",
             test.u, test.z, test.p
         );
     }
     eprintln!(
-        "medians: crafted {:.2} ms, as they come {:.2} ms, one serve thread {:.2} ms; ratio of one serve thread to 8: {ratio:.3} (at least {SPREAD_EFFECT})",
+        "{engine_name}: medians: crafted {:.2} ms, as they come {:.2} ms, one serve thread {:.2} ms; ratio of one serve thread to 8: {ratio:.3} (at least {SPREAD_EFFECT})",
         median(&samples[0]),
         median(&samples[3]),
         median(&samples[4])
     );
     assert!(
         control.p >= 0.001,
-        "the control failed: the machine's noise alone separates one input from itself"
+        "{engine_name}: the control failed: the machine's noise alone separates one input from itself"
     );
     assert!(
         concentrated.p < 0.001 && ratio >= SPREAD_EFFECT,
-        "one serve thread and 8 with ports as they come do not differ enough (p = {:.3e}, ratio {ratio:.3}, least {SPREAD_EFFECT}): either this machine does not show a concentration of connections on one owner, or the placement over 8 serve threads concentrates them too, which is a placement defect, not noise",
+        "{engine_name}: one serve thread and 8 with ports as they come do not differ enough (p = {:.3e}, ratio {ratio:.3}, least {SPREAD_EFFECT}): either this machine does not show a concentration of connections on one owner, or the placement over 8 serve threads concentrates them too, which is a placement defect, not noise",
         concentrated.p
     );
     assert!(
         keyed.p >= 0.001,
-        "crafted ports and ports as they come differ: p = {:.3e}; the placement is not keyed, so a peer's choice of source ports decides how its connections share the serve threads",
+        "{engine_name}: crafted ports and ports as they come differ: p = {:.3e}; the placement is not keyed, so a peer's choice of source ports decides how its connections share the serve threads",
         keyed.p
     );
     assert!(
         secret.p >= 0.001,
-        "key 0 and key 1 differ: p = {:.3e}; the placement of connections depends on the time of the set-up",
+        "{engine_name}: key 0 and key 1 differ: p = {:.3e}; the placement of connections depends on the time of the set-up",
         secret.p
     );
     for dir in &dirs {
