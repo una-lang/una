@@ -406,3 +406,225 @@ fn the_core_of_a_package_that_imports_no_server_name_names_nothing_of_the_server
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_script_of_connections_is_checked_before_main_in_both_engines() {
+    // ADR 0123 rule 21, `spec/31 §8` rule 6: `--serve-script` needs `--virtual-time`,
+    // `--serve-out` needs `--serve-script`, and after the key files the script is read and
+    // checked in full, a regular file of at most 64 MiB; its connections do not run in this
+    // release yet, so every run that gives it ends with a usage error, exit code 2, the same in
+    // both engines, with no output, no trace file touched and no listener bound.
+    runtime();
+    let dir = package("script", "");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let exe = dir.join("target/una/app");
+    // The test holds the grant's port, so a run that tried to listen on it would report that.
+    let held = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let grant = format!("serve:http://127.0.0.1:{port}");
+    let open = format!(
+        "{{\"at\": 0, \"connection\": 1, \"grant\": \"127.0.0.1:{port}\", \"peer\": \"192.0.2.1\", \"reads\": \"paced\"}}\n"
+    );
+    let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
+    let write = |name: &str, text: &str| {
+        std::fs::write(dir.join(name), text).unwrap();
+        path(name)
+    };
+    let valid = write(
+        "valid.jsonl",
+        &format!(
+            "{open}{{\"at\": 3, \"connection\": 1, \"bytes\": \"R0VUIC8gSFRUUC8xLjENCkhvc3Q6IGxvY2FsaG9zdA0KDQo=\"}}\n{{\"at\": 3, \"connection\": 1, \"read\": 4096}}\n{{\"at\": 9, \"connection\": 1, \"close\": true}}\n"
+        ),
+    );
+    let earlier = write(
+        "earlier.jsonl",
+        &format!(
+            "{}{}",
+            open.replace("\"at\": 0", "\"at\": 9"),
+            open.replace("\"at\": 0", "\"at\": 5")
+                .replace("\"connection\": 1", "\"connection\": 2")
+        ),
+    );
+    let missing = path("missing.jsonl");
+    // A FIFO would block a read, and a device never end: neither is read.
+    let fifo = path("fifo.jsonl");
+    let made = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(made.success());
+    std::fs::create_dir_all(dir.join("folder.jsonl")).unwrap();
+    let folder = path("folder.jsonl");
+    let large = path("large.jsonl");
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    let bad_keys = write("bad-keys.toml", "x");
+    let keys = format!("keys:{bad_keys}");
+    let not_regular = "is not a regular file".to_owned();
+    let cases: Vec<(Vec<&str>, String)> = vec![
+        (
+            vec!["--grant", &grant, "--serve-script", &valid],
+            "`--serve-script` needs `--virtual-time`".to_owned(),
+        ),
+        // The flags of a script come before the values of the other flags.
+        (
+            vec!["--workers", "0", "--serve-script", &valid],
+            "`--serve-script` needs `--virtual-time`".to_owned(),
+        ),
+        (
+            vec!["--virtual-time", "--serve-out", "out.jsonl"],
+            "`--serve-out` needs `--serve-script`".to_owned(),
+        ),
+        (
+            vec!["--virtual-time", "--serve-script", &valid],
+            "the run has none".to_owned(),
+        ),
+        (
+            vec!["--virtual-time", "--serve-script", &missing],
+            "the run has none".to_owned(),
+        ),
+        // The key files come before the script, in both engines.
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--grant",
+                &keys,
+                "--serve-script",
+                &valid,
+            ],
+            format!("the key file `{bad_keys}` is invalid"),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &missing,
+            ],
+            format!("cannot read the script `{missing}` of `--serve-script`"),
+        ),
+        (
+            vec!["--virtual-time", "--grant", &grant, "--serve-script", &fifo],
+            not_regular.clone(),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                "/dev/zero",
+            ],
+            not_regular.clone(),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &folder,
+            ],
+            not_regular,
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &large,
+            ],
+            "is larger than 64 MiB".to_owned(),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &earlier,
+            ],
+            "line 2: `at` is 5, before the line above it, at 9".to_owned(),
+        ),
+        (
+            vec![
+                "--virtual-time",
+                "--grant",
+                &grant,
+                "--serve-script",
+                &valid,
+                "--serve-out",
+                "out.jsonl",
+                "--trace",
+                "kept.json",
+            ],
+            "the scripted connections of `--serve-script` do not run in this release yet"
+                .to_owned(),
+        ),
+        // Without a script, virtual time still takes no `serve:` grant.
+        (
+            vec!["--virtual-time", "--grant", &grant, "--trace", "kept.json"],
+            "live peers send in real time".to_owned(),
+        ),
+    ];
+    for (args, wanted) in cases {
+        std::fs::write(dir.join("kept.json"), "kept\n").unwrap();
+        let native = Command::new(&exe)
+            .args(&args)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let native_kept = std::fs::read_to_string(dir.join("kept.json")).unwrap();
+        let mut run = vec!["run"];
+        run.extend_from_slice(&args);
+        let interpreted = una(&dir, &run);
+        let interpreted_kept = std::fs::read_to_string(dir.join("kept.json")).unwrap();
+        for (engine, output, kept) in [
+            ("native", &native, native_kept),
+            ("interpreter", &interpreted, interpreted_kept),
+        ] {
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{engine} {args:?}: {output:?}"
+            );
+            assert!(
+                stderr(output).contains(&wanted),
+                "{engine} {args:?}: {}",
+                stderr(output)
+            );
+            assert_eq!(stdout(output), "", "{engine} {args:?}");
+            assert_eq!(
+                kept, "kept\n",
+                "{engine} {args:?}: the trace file was touched"
+            );
+        }
+        assert_eq!(stderr(&native), stderr(&interpreted), "{args:?}");
+    }
+    assert!(!dir.join("out.jsonl").exists());
+    drop(held);
+    // A program that serves reports `spec/31 §1` rule 10 first, script or not.
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let ran = una(
+        &dir,
+        &[
+            "run",
+            "--virtual-time",
+            "--grant",
+            &grant,
+            "--serve-script",
+            &valid,
+        ],
+    );
+    assert_eq!(ran.status.code(), Some(2), "{ran:?}");
+    assert!(
+        stderr(&ran).contains("uses `HttpServer`, whose operations do not run in this release yet"),
+        "{}",
+        stderr(&ran)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

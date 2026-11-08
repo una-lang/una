@@ -208,7 +208,7 @@ pub fn round_half_away(x: f64) -> f64 {
 }
 
 /// A finite nonzero `x` as `(negative, m, e)` with `|x| = m * 2^e`, `m < 2^53`.
-fn decode(x: f64) -> (bool, u64, i64) {
+pub(crate) fn decode(x: f64) -> (bool, u64, i64) {
     let bits = x.to_bits();
     let negative = bits & SIGN != 0;
     let biased = i64::try_from((bits >> 52) & 0x7FF).unwrap_or(0);
@@ -286,7 +286,7 @@ pub(crate) fn round_magnitude(
 
 /// `negative`, `m * 2^e` rounded to the nearest `F64`, ties to even, with overflow to an
 /// infinity and underflow to a subnormal or a signed zero. O(bits of `m`).
-fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
+pub(crate) fn round_to_f64(negative: bool, m: &BigUint, e: i64) -> f64 {
     let sign = if negative { SIGN } else { 0 };
     match round_magnitude(m, e, 53, MIN_QUANTUM, MAX_QUANTUM) {
         Rounded::Infinity => f64::from_bits(sign | 0x7FF0_0000_0000_0000),
