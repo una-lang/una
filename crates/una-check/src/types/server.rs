@@ -53,8 +53,8 @@ pub(crate) struct StartSite {
     pub(crate) reply: bool,
     /// Whether a capture's type can hold a function value.
     pub(crate) function_value: bool,
-    /// The seed of `e`, for what its task reaches (#1674).
-    pub(crate) seed: super::timing::TimingSeed,
+    /// The frame of `e`, for what its task reaches (#1674).
+    pub(crate) frame: super::timing::TimingFrame,
 }
 
 /// One open `start`, whose captures [`Checker::start_capture_read`] marks.
@@ -313,7 +313,7 @@ impl Checker<'_, '_, '_> {
             within,
             reply: frame.reply,
             function_value: frame.function_value,
-            seed,
+            frame: seed,
         });
     }
 }
@@ -362,7 +362,12 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
             .and_then(|key| env.within_timing.get(&key).cloned())
             .unwrap_or_else(Label::public);
         let reach = reach.get_or_insert_with(|| super::timing::start_reaches(env, findings));
-        let found = super::timing::start_reach(reach, &site.seed, site.function_value, &internal);
+        let found = super::timing::start_reach(
+            reach,
+            &findings.frames.seed(site.frame),
+            site.function_value,
+            &internal,
+        );
         let deep = found.unbounded.is_some() && !found.label.flows_to(&internal);
         if site.pc.join(&tau).flows_to(&internal) && !deep {
             continue;

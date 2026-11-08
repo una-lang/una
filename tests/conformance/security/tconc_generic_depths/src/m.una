@@ -1,0 +1,55 @@
+-- test: labels bottom up (#1087 slice 8b): reads of a generic parameter `x: T`, whose label `ℓ_T` only the reads carry (a value's label drops its symbols), at depths 2 and 3 under a `for ever within`: the read of `x` is free in every open frame, so the loop's timing label carries `ℓ_T`; a read of the alias `y`, bound inside the first `tasks`, is free only in the frames inside it
+-- spec: spec/27 §11
+-- expect: error U4001 at src/m.una:14:3
+module m
+
+import std.time (millisecond)
+
+step(n: Int) -> Int = n + 1
+
+pub poll[T](x: T, n: Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  for ever within 100 * millisecond
+    let v = step(n) within 10 * millisecond
+      if error use 0
+    tasks
+      let a = n + 1
+      tasks
+        let y = x
+        tasks
+          let z = y
+          let w = step(a) within 5 * millisecond
+            if error use 0
+          unit
+        unit
+      unit
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit
+
+pub quiet[T](x: T, n: Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  let y = n + 1
+  for ever within 100 * millisecond
+    tasks
+      let x2 = n
+      tasks
+        let z = x2 + y
+        unit
+      unit
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit
+
+pub inner[T](x: T, n: Int) -> public Int
+=
+  let p = first of
+    attempt step(n) within 10 * millisecond
+    attempt step(n + 1) within 5 * millisecond
+  let q = step(n) within 10 * millisecond
+    if error use 0
+  q
