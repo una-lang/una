@@ -1,0 +1,35 @@
+-- test: in edition 0.4, which has no `std.collections` (ADR 0139), a list literal given for a field of a generic kind at a refined type argument keeps the obligation of each element: an element that violates the refinement is refuted, at the literal, in a field of type `T` and of type `List[T]`, nested, in a `Some`, and beside another field (ADR 0103 rules 3 and 5, #1657); the other field is a `Map`, the 0.5 twin's a `HashMap` (verification/refined_type_arg_literal_refuted)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/refuted.una:25:39
+-- expect: error U5001 at src/refuted.una:27:40
+-- expect: error U5001 at src/refuted.una:29:36
+-- expect: error U5001 at src/refuted.una:31:53
+-- expect: error U5001 at src/refuted.una:33:56
+-- expect: error U5001 at src/refuted.una:35:54
+module refuted
+
+-- No import: edition 0.4 has no `std.collections`.
+
+pub kind Pos = Int where it > 0
+
+pub kind Box[T]
+  v: T
+
+pub kind Bag[T]
+  items: List[T]
+
+pub kind M[T]
+  m: Map[Int, T]
+  xs: List[T]
+
+pub zero() -> Box[List[Pos]] = Box(v: [0])
+
+pub mixed() -> Box[List[Pos]] = Box(v: [5, 0])
+
+pub bag() -> Bag[Pos] = Bag(items: [1, -2])
+
+pub nested() -> Box[List[List[Pos]]] = Box(v: [[5], [0]])
+
+pub optional() -> Box[Option[List[Pos]]] = Box(v: Some([0]))
+
+pub beside(m: Map[Int, Pos]) -> M[Pos] = M(m: m, xs: [0])
