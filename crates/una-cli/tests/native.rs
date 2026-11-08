@@ -8379,3 +8379,66 @@ fn t1_the_public_twin_orders_its_prints_by_its_key_in_both_engines() {
         }
     }
 }
+
+#[test]
+fn t1_residual_1708_internal_keys_still_order_the_prints_and_the_report_lists_them() {
+    // #1708, `spec/27 §8` rule 5: the rule's bound is `internal`, so the probe with an
+    // `internal` key and the branch around a call on an `internal` bit are accepted, and their
+    // prints follow the key's bits in both engines under `--virtual-time`, as the public twins'
+    // do. The residual is not closed here (it waits for the amendment of ADR 0117 or a rule at
+    // `public`); the report lists each such check point in `information.timing` as a
+    // `task switch` at `internal` (`spec/13 §6`), so a reader of the report sees where it is.
+    let cases = [
+        ("task_switch_internal", "order.spin", 17, 3),
+        ("task_switch_internal_branch_call", "order.worker", 29, 7),
+    ];
+    for (index, (case, function, line, col)) in cases.into_iter().enumerate() {
+        let source = task_switch_case(case);
+        for (key, order) in [(90, "0 2 5 7 1 3 4 6"), (165, "1 3 4 6 0 2 5 7")] {
+            let program = source.replace(
+                "let key: internal Int = 90",
+                &format!("let key: internal Int = {key}"),
+            );
+            assert!(
+                program.contains(&format!("let key: internal Int = {key}\n")),
+                "{case}"
+            );
+            let name = format!("t1res{index}k{key}");
+            let dir = within_package(&name, "order", &program);
+            let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
+            assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+            let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+            let expected: Vec<&str> = order.split(' ').collect();
+            assert_eq!(
+                document["output"],
+                serde_json::json!(expected),
+                "{case} {key}"
+            );
+            let native = Command::new(dir.join(format!("target/una/{name}")))
+                .arg("--virtual-time")
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(native.status.code(), Some(0), "{key}: {native:?}");
+            let lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(lines, expected, "{case} {key}");
+            let report = una(&dir, &["--json", "report", "."]);
+            assert_eq!(report.status.code(), Some(0), "{report:?}");
+            let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+            assert_eq!(
+                report["information"]["timing"],
+                serde_json::json!([{
+                    "construct": "task switch",
+                    "function": function,
+                    "label": "internal",
+                    "site": {"file": "src/order.una", "start": {"line": line, "col": col}},
+                }]),
+                "{case} {key}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
