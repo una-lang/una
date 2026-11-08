@@ -1,3 +1,5 @@
 1	refused, then 70,000 bytes: closed once 64 KiB are dropped
 2	refused, then 1,000 bytes: closed after one second
-3	valid request answered
+3	refused, then exactly 65,536 bytes: closed at once
+4	refused, then 65,535 bytes: closed after one second
+5	valid request answered

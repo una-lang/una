@@ -20,12 +20,14 @@
 {"at":91,"connection":10,"shutdown":true}
 {"at":101,"connection":11,"text":"HTTP/1.1 400 Bad Request\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
 {"at":101,"connection":11,"shutdown":true}
-{"at":111,"connection":12,"text":"HTTP/1.1 431 Request Header Fields Too Large\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
-{"at":111,"connection":12,"shutdown":true}
+{"at":111,"connection":12,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 8\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello ok"}
+{"at":111,"closed":true,"connection":12}
 {"at":121,"connection":13,"text":"HTTP/1.1 431 Request Header Fields Too Large\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
 {"at":121,"connection":13,"shutdown":true}
-{"at":131,"connection":14,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 8\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello ok"}
-{"at":131,"closed":true,"connection":14}
+{"at":131,"connection":14,"text":"HTTP/1.1 431 Request Header Fields Too Large\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
+{"at":131,"connection":14,"shutdown":true}
+{"at":141,"connection":15,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 8\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello ok"}
+{"at":141,"closed":true,"connection":15}
 {"at":1001,"closed":true,"connection":1}
 {"at":1011,"closed":true,"connection":2}
 {"at":1021,"closed":true,"connection":3}
@@ -37,5 +39,5 @@
 {"at":1081,"closed":true,"connection":9}
 {"at":1091,"closed":true,"connection":10}
 {"at":1101,"closed":true,"connection":11}
-{"at":1111,"closed":true,"connection":12}
 {"at":1121,"closed":true,"connection":13}
+{"at":1131,"closed":true,"connection":14}
