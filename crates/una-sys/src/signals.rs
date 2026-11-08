@@ -28,9 +28,20 @@ pub const SIGTERM: libc::c_int = libc::SIGTERM;
 
 /// The lowest descriptor the wake pipe's ends move to, above those that other code opens and
 /// closes, so that no reused descriptor ever receives the handler's byte. Under a soft limit
-/// of open descriptors at or below it, the ends move as high as the limit allows instead
-/// (#1757): `F_DUPFD_CLOEXEC` refuses a start at or above the limit.
+/// of open descriptors below `HIGH_FD + 2`, the ends move as high as the limit allows instead
+/// (#1757): `F_DUPFD_CLOEXEC` refuses a start at or above the limit. When every descriptor
+/// from there to the limit is taken, they move to the lowest free ones from [`FIRST_FREE`],
+/// never onto a standard stream.
 const HIGH_FD: libc::c_int = 512;
+
+/// The lowest descriptor the wake pipe's ends ever take: above standard input, output and
+/// error, which other code replaces with `dup2` (the solver's sandbox does, for its standard
+/// error), even when the run started with them closed (#1757, review M1).
+const FIRST_FREE: libc::c_int = libc::STDERR_FILENO + 1;
+
+/// The free descriptors the wake pipe needs: its two ends as the pipe call opens them, and
+/// the two they move to.
+const PIPE_NEEDS: u64 = 4;
 
 /// The fewest open descriptors a run that installs the handlers needs: the three standard
 /// streams, the wake pipe's two ends and the two the pipe call opens before they move, with
@@ -62,6 +73,15 @@ impl InstallError {
         InstallError {
             message: message.to_owned(),
             usage: false,
+        }
+    }
+
+    fn busy(soft: u64) -> Self {
+        InstallError {
+            message: format!(
+                "too few of the {soft} descriptors that the limit of open files (`ulimit -n`) allows are free: the runtime's stop handling needs {PIPE_NEEDS}; close inherited descriptors or raise the limit"
+            ),
+            usage: true,
         }
     }
 
@@ -142,9 +162,9 @@ fn pipe_start(soft: u64) -> libc::c_int {
 }
 
 /// The two ends of a new pipe, non-blocking and close-on-exec, at descriptors of
-/// [`pipe_start`] or above, else at the lowest free ones; on failure, nothing stays open. A
-/// soft limit below [`MIN_DESCRIPTORS`], or one the pipe's descriptors do not fit in, is a
-/// usage error (#1757).
+/// [`pipe_start`] or above, else at the lowest free ones from [`FIRST_FREE`]; on failure,
+/// nothing stays open. A soft limit below [`MIN_DESCRIPTORS`] is a usage error, and so is a
+/// limit under which fewer than [`PIPE_NEEDS`] descriptors are free (#1757).
 fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     let soft = crate::io::descriptor_limits()
         .map_err(|_| InstallError::internal("cannot read the limit of open files"))?
@@ -165,7 +185,7 @@ fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     if opened != 0 {
         let full = std::io::Error::last_os_error().raw_os_error() == Some(libc::EMFILE);
         return Err(if full {
-            InstallError::limit(soft)
+            InstallError::busy(soft)
         } else {
             InstallError::internal("cannot open the wake pipe")
         });
@@ -175,13 +195,13 @@ fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     for (fd, high) in fds.iter().zip(moved.iter_mut()) {
         // SAFETY: `fd` is an open descriptor that the pipe call returned; `F_DUPFD_CLOEXEC`
         // duplicates it close-on-exec at the lowest free descriptor from `start`, below the
-        // soft limit by `pipe_start`, or, when none is free there, from 0, which is never lower
-        // than the lowest free one; `F_GETFL`/`F_SETFL` read and set its status flags; no
-        // memory is touched.
+        // soft limit by `pipe_start`, or, when none is free there, from `FIRST_FREE`, so never
+        // onto a standard stream; `F_GETFL`/`F_SETFL` read and set its status flags; no memory
+        // is touched.
         *high = unsafe {
             let mut duplicate = fcntl(*fd, libc::F_DUPFD_CLOEXEC, start);
             if duplicate < 0 {
-                duplicate = fcntl(*fd, libc::F_DUPFD_CLOEXEC, 0);
+                duplicate = fcntl(*fd, libc::F_DUPFD_CLOEXEC, FIRST_FREE);
             }
             if duplicate < 0 {
                 full |= std::io::Error::last_os_error().raw_os_error() == Some(libc::EMFILE);
@@ -204,7 +224,7 @@ fn open_pipe() -> Result<[libc::c_int; 2], InstallError> {
     if moved.contains(&-1) {
         close_both(moved);
         return Err(if full {
-            InstallError::limit(soft)
+            InstallError::busy(soft)
         } else {
             InstallError::internal("cannot set up the wake pipe")
         });
@@ -424,5 +444,11 @@ mod tests {
         assert!(error.usage);
         assert!(error.message.contains("is 8"), "{}", error.message);
         assert!(error.message.contains("at least 16"), "{}", error.message);
+        // Descriptors in use under a limit that is large enough are not called a small limit
+        // (review L1).
+        let busy = InstallError::busy(64);
+        assert!(busy.usage);
+        assert!(!busy.message.contains("too small"), "{}", busy.message);
+        assert!(busy.message.contains("needs 4"), "{}", busy.message);
     }
 }
