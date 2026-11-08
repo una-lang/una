@@ -1,6 +1,6 @@
--- test: in the preview, a driven step that a part of a `together` block can reach has the top timing label, since a sibling task may slow it down (spec/26 §2, ADR 0116 IF7)
+-- test: a driven step that a part of a `together` block reaches takes `conc(step)`, `κ` of that block (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`): its sibling tasks work on `public` data, so the tick needs no label; the preview gave it `⊤`
 -- spec: spec/26 §2
--- expect: error U4001 at src/counter.una:10:34
+-- expect: ok
 module counter
 
 import std.drive (Tick)
