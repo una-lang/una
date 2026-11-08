@@ -1,4 +1,4 @@
--- test: a policy call runs its `via` function (#1673): the `via` makes a request on a grant with limits, and the policy is called in a construct beside work on a `secret`; the policy call's edge to the `via` makes `both`, whose body reads the `secret`, an ancestor of the request (`L_lim`, ADR 0116 P10) and puts the request beside that work (`τ_conc`, `spec/27 §11`), above the `internal` that `L_lim` allows (U4001 at the request)
+-- test: a policy call runs its `via` function (#1673): the `via` makes a request on a grant with limits, and the policy is called in a construct beside work on a `secret`; the policy call's edge to the `via` makes `both`, whose body reads the `secret`, an ancestor of the request, so the ancestors' `τ⁰` (`L_lim`, ADR 0116 P10) is `secret`, above the `internal` that `L_lim` allows (U4001 at the request); `τ_conc` at the request (`spec/27 §11`) is then at most that `τ⁰`, as at every request in a function's body
 -- spec: spec/07 §5
 -- expect: error U4001 at src/release.una:14:23
 module main

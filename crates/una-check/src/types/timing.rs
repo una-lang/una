@@ -2376,6 +2376,17 @@ pub(crate) fn server_label(
 /// runs between two requests of one task lies in the body of an ancestor of the later one, or in
 /// what such a body calls, so the ancestors' `τ⁰` covers it.
 ///
+/// **What `τ_conc` adds.** At a request in a function's body, `τ_conc` never exceeds the
+/// ancestors' `τ⁰`: every construct whose parts can run beside the request is in the body of an
+/// ancestor of the request's function, either because the request is in one of its parts or
+/// because `conc` of the function comes from an edge out of a part, whose node reaches the
+/// function; and that ancestor's `τ⁰` joins `down`, which covers the parts' work, the values
+/// they compute (#1685) and `⊤` for their calls of function values included. So the precise
+/// rule's only effect is to drop the preview's `⊤`; the ancestors' term refuses every request
+/// it refused. The `⊤` of a request elsewhere is a fail-closed default that no program reaches
+/// today: a lambda cannot perform an operation, and a request in a handler's operation has no
+/// function, so its ancestors' term is `⊤` already.
+///
 /// **The graph** is [`graph`]'s, that of ADR 0116 P1. So the operations of a handler, which a
 /// function reaches through an operation of the handler's capability, are ancestors of what they
 /// call, and so are the functions that call a value, of what a lambda calls.
@@ -2399,8 +2410,8 @@ pub(crate) fn limit_labels(
 ) -> LimitLabels {
     let top = Label::top(&env.categories);
     // The precise `τ_conc` of each request (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`,
-    // issue #1154). A request in a lambda's body or in a handler's operation keeps `⊤`: its
-    // ancestors are not one function's, and the rule of P10 counts them as `⊤` already.
+    // issue #1154), at most the ancestors' `τ⁰` there (see above). Any other site keeps `⊤`,
+    // fail-closed: none reaches it today, and the rule of P10 counts a handler's request as `⊤`.
     let beside = |site: &HttpSite| match site.node {
         Some(Caller::Function(_)) => concurrency.tau_conc(&TimingSeed {
             node: site.node,
@@ -3531,8 +3542,8 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 /// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within` and
 /// `first of` sites take their `τ_conc` from it ([`timing_precise`], slices 3 and 4 of the plan
 /// on #1087), and so do the constructs `L_res` counts ([`residue`]), `for ever within` and the
-/// tick (slice 5); limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the
-/// preview's.
+/// tick (slice 5), and `L_lim` (#1154, [`limit_labels`]); limiters, `L_srv` and the rule of a
+/// `via`'s timing sites keep the preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let coarse = coarse_labels(env, graph, &findings.frames);
     // In a build with debug assertions, and for a package with at most [`CROSS_CHECKED`]

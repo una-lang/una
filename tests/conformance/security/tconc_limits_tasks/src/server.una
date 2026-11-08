@@ -1,4 +1,4 @@
--- test: `L_lim` with the precise `τ_conc` (ADR 0116 amendment of 2026-10-25, C, #1154): the grant carries limits, and a `tasks` block starts `churn(key)` beside a started task that makes a request, so `τ_conc` at the request is `secret`, above the `internal` that `L_lim` allows (U4001 at the request); its twin is `tconc_server`
+-- test: `L_lim` with the precise `τ_conc` (ADR 0116 amendment of 2026-10-25, C, #1154): the grant carries limits, and a `tasks` block starts `churn(key)` beside a started task that makes a request, so `serve`, whose body reads the `secret` parameter, is an ancestor of the request: the ancestors' `τ⁰` (ADR 0116 P10) is `secret`, above the `internal` that `L_lim` allows (U4001 at the request), and `τ_conc` at the request is at most that `τ⁰`; its twin is `tconc_server`
 -- spec: spec/27 §9
 -- expect: error U4001 at src/server.una:18:23
 module server
