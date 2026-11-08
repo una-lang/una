@@ -1448,6 +1448,8 @@ struct VersionDocument {
     schema: &'static str,
     version: &'static str,
     editions: Vec<&'static str>,
+    /// The editions served as previews, oldest first; `[]` when none (ADR 0121 rule 7).
+    preview: Vec<&'static str>,
     z3: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     build: Option<&'static str>,
@@ -1510,6 +1512,11 @@ fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus>
         .iter()
         .map(|edition| edition.name())
         .collect();
+    let preview: Vec<&'static str> = una_project::Edition::ALL
+        .iter()
+        .filter(|edition| edition.is_preview())
+        .map(|edition| edition.name())
+        .collect();
     let z3 = una_project::DEFAULT_SOLVER_VERSION;
     let build = development_build().then_some("development");
     if json {
@@ -1517,6 +1524,7 @@ fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus>
             schema: "una.version/1",
             version,
             editions,
+            preview,
             z3,
             build,
         };
@@ -1526,6 +1534,9 @@ fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus>
     } else {
         writeln!(stdout, "una {version}")?;
         writeln!(stdout, "editions: {}", editions.join(", "))?;
+        if !preview.is_empty() {
+            writeln!(stdout, "preview: {}", preview.join(", "))?;
+        }
         writeln!(stdout, "z3: {z3}")?;
         if build.is_some() {
             writeln!(stdout, "development build")?;
