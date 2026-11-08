@@ -1,0 +1,1 @@
+- **Timing oracle for the placement of connections** (#1660, ADR 0123 S4 design §11.5, SC1). The release timing oracle `serve_owner_spread` checks that set-up code before a run's first server operation does not change how the serve threads place and serve 8 connections from crafted source ports, with a positive control that serves the same connections on one serve thread.
