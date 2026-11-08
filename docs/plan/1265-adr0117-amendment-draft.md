@@ -1,0 +1,12 @@
+# Draft: ADR 0117 amendment for issue #1265 (per-name bound on the lookup pool)
+
+Status: draft for the project to append to `docs/adr/0117-concurrency-for-servers.md` as a dated amendment. The accepted text is not edited. Decision of 2026-11-06 (card #1577): the per-name bound now, the per-zone bound later (card #1717).
+
+## Amendment (date of acceptance): one lookup per name on the lookup pool (#1265)
+
+Point 1 of the amendment of 2026-10-27 (slice S7 merged with issue #1148) left the bounds per name and per zone of the withdrawn S7 resolver (review R7-10 and R7-13) to a later issue. Issue #1265 puts the bound per name on the bounded lookup pool of `spec/24 §4` rule 2, which keeps its size and its start before `main`:
+
+1. **One lookup for the requests of a name that wait together,** names compared without case. A request for a name whose lookup is queued or running joins it only while another request still waits for it, and waits until its own deadline. A lookup whose requests all gave up takes no new one: it never runs if it has not started, and else runs to its end unseen, while a later request of the name starts its own lookup on a free thread. So residue never answers a later request (review M1 of #1574), and delays one only when the pool is full, as before #1265. Only requests in flight at the same time join, and a join can make a request faster as well as slower: that is the timing of their tasks or races.
+2. **Space.** A pool's line is pruned of steps whose requests gave up once it doubles since its last prune, so it holds at most twice what it kept at that prune, or 32: a pool holds O(peak waiting requests + threads) entries, at an amortized O(1) per step. A step that panics fails its request at once with `Unreachable` and keeps its thread.
+3. **Not taken from S7:** the 5-second memory of a failed name. It is a cache across requests, whose answer would depend on what earlier code looked up (the history that P8 removes), and the bound above holds without it.
+4. **Left to card #1717:** the share per zone (R7-13) on both pools, residue included. Counting residue in a share makes a deadline's cut delay a later request of the zone on a pool that is not full, an open channel that `L_res` does not cover (card #1577); it waits for `L_res` to count the requests a deadline can cut, or for the reactor. Until then, residue is bounded by the pool's size and the host resolver's own time, not per name, and many names of one stalled zone can hold every thread of a pool, each request ending at its own deadline.

@@ -9,6 +9,7 @@ pub mod complex;
 pub mod decimal;
 pub mod dense;
 mod descriptor;
+pub mod elementary;
 pub mod float;
 pub mod float32;
 pub mod flow;
