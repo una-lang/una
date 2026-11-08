@@ -1492,6 +1492,30 @@ fn edition_0_4_advises_edition_0_5_for_the_moved_syntax() {
         vec![(reserved, vec![rename]); 2]
     );
     assert_eq!(repairs_in(simd, KeywordSet::V0_5), vec![]);
+    // Controls (review of #1758): in edition 0.4 another reserved word keeps exactly its
+    // rename, and an integer argument of another type keeps no repair.
+    assert_eq!(
+        repairs_in(
+            "f() -> Int\n=\n  let within = 4\n  within\n",
+            KeywordSet::V0_4
+        )
+        .into_iter()
+        .map(|(_, repairs)| repairs)
+        .collect::<Vec<_>>(),
+        vec![
+            vec![(
+                "rename it to `the_within`".to_owned(),
+                Some("the_within".to_owned())
+            )];
+            2
+        ]
+    );
+    for other in ["f(x: List[2]) -> Int = 0\n", "f(x: Option[2]) -> Int = 0\n"] {
+        let found = repairs_in(other, KeywordSet::V0_4);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.starts_with("U0101 "), "{found:?}");
+        assert!(found[0].1.is_empty(), "{other}: {found:?}");
+    }
     let decimal = "f(x: Decimal[2]) -> Int = 0\n";
     let found = repairs_in(decimal, KeywordSet::V0_4);
     assert_eq!(found.len(), 1, "{found:?}");
