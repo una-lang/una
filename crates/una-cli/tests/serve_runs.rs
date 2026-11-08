@@ -1164,22 +1164,70 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-#[test]
-fn a_trace_that_fails_at_the_end_still_writes_serve_out_alike_in_both_engines() {
-    // `spec/31 §8` rule 6: when `--trace` cannot be written at the end of a scripted run, both
-    // engines still write `--serve-out`, the same file, and report the trace after it, a usage
-    // error, exit code 2. The trace is a FIFO whose reader leaves at once, so its writes fail.
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/worker_pool");
-    let (scratch, package, name) = build_native(&dir, "-trace-fails");
-    let script = flag_script(&dir, &|k| k);
-    let fifo = package.join("trace-fifo.json");
+/// A package beside `scratch` with the language-form server of `language_form`, its `on stop`
+/// aborting the run (U6003) when `aborts`, and a script of `n` connections, each from its own
+/// peer address with one request: its directory and the script in the form of `--serve-script`.
+/// Its trace holds two events a request, far more than a pipe buffer holds.
+fn many_requests(scratch: &Path, n: u32, aborts: bool) -> (PathBuf, String) {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    let dir = scratch.join(if aborts { "many_aborts" } else { "many" });
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    let manifest = std::fs::read_to_string(from.join("ita.una")).unwrap();
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    let mut program = std::fs::read_to_string(from.join("src/srv.una")).unwrap();
+    if aborts {
+        program = program.replace(
+            "    on stop\n      @server.close()\n",
+            "    on stop\n      @server.close()\n      bomb()\n",
+        );
+        program.push_str("\n--- Aborts the run: an integer of more than 4300 digits written as text.\nbomb() -> Unit\n=\n  let edit big = 1\n  for i in 1..2000\n    big = big * 1000\n  let shown = \"{big}\"\n  unit\n");
+    }
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    let mut script = String::new();
+    for k in 0..n {
+        let peer = format!("10.{}.{}.{}", k / 62_500, (k / 250) % 250, k % 250 + 1);
+        script.push_str(&format!(
+            "{{\"at\":{k},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"{peer}\",\"reads\":\"eager\"}}\n"
+        ));
+        let request = format!("GET /r{k} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        script.push_str(&format!(
+            "{{\"at\":{k},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+            script::encode(request.as_bytes())
+        ));
+    }
+    (dir, script)
+}
+
+/// A FIFO at `path` whose reader, on its own thread, takes the first byte the run writes and
+/// leaves: every later write of the run fails, since the run writes more than the byte and a
+/// pipe buffer hold. No timing decides it.
+fn failing_trace(path: &Path) -> std::thread::JoinHandle<()> {
     assert!(
         std::process::Command::new("mkfifo")
-            .arg(&fifo)
+            .arg(path)
             .status()
             .unwrap()
             .success()
     );
+    let reading = path.to_path_buf();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(reading).unwrap();
+        let mut first = [0u8; 1];
+        file.read_exact(&mut first).unwrap();
+    })
+}
+
+#[test]
+fn a_trace_that_fails_at_the_end_still_writes_serve_out_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: when `--trace` cannot be written, both engines still write
+    // `--serve-out`, the same file, and report the trace last, a usage error, exit code 2.
+    let scratch = std::env::temp_dir().join(format!("una-trace-fails-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (dir, script) = many_requests(&scratch, 2_000, false);
+    let (built, package, name) = build_native(&dir, "-trace-fails");
     let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
     interpreter
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -1187,21 +1235,66 @@ fn a_trace_that_fails_at_the_end_still_writes_serve_out_alike_in_both_engines() 
     let native = std::process::Command::new(package.join("target/una").join(&name));
     let mut files = Vec::new();
     for (engine, command) in [("interpreter", interpreter), ("native", native)] {
-        // The reader opens the FIFO, which lets the run's open of the trace go on, and closes it.
-        let reading = fifo.clone();
-        let reader = std::thread::spawn(move || drop(std::fs::File::open(reading)));
+        let fifo = package.join(format!("trace-{engine}.fifo"));
+        let reader = failing_trace(&fifo);
         let out = package.join(format!("serve-out-{engine}.jsonl"));
-        let _ = std::fs::remove_file(&out);
         let (code, _, stderr, _, text) = run_flags_traced(command, &package, &script, &out, &fifo);
         reader.join().unwrap();
         assert_eq!(code, 2, "{engine}: {stderr}");
+        let last = stderr.lines().last().unwrap_or_default();
         assert!(
-            stderr.contains("cannot write the trace"),
+            last.starts_with(&format!(
+                "error: cannot write the trace to `{}`: ",
+                fifo.display()
+            )),
             "{engine}: {stderr}"
         );
-        assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
+        // Each connection's reply and its close, at least.
+        assert!(read_out(&text).len() >= 2 * 2_000, "{engine}");
         files.push(text);
     }
     assert_eq!(files[0], files[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn an_aborted_run_reports_its_abort_then_serve_out_then_the_trace_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: after a scripted run that aborts, both engines report the abort,
+    // then a `--serve-out` that cannot be written, then a trace that cannot be written, in that
+    // order, with the higher exit code, 2.
+    let scratch = std::env::temp_dir().join(format!("una-abort-trace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (dir, script) = many_requests(&scratch, 2_000, true);
+    let (built, package, name) = build_native(&dir, "-abort-trace");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run");
+    let native = std::process::Command::new(package.join("target/una").join(&name));
+    let unwritable = package.join("missing-dir/serve-out.jsonl");
+    let mut tails = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let fifo = package.join(format!("trace-{engine}.fifo"));
+        let reader = failing_trace(&fifo);
+        let (code, _, stderr, _, _) =
+            run_flags_traced(command, &package, &script, &unwritable, &fifo);
+        reader.join().unwrap();
+        assert_eq!(code, 2, "{engine}: {stderr}");
+        let at = |needle: &str| {
+            stderr
+                .find(needle)
+                .unwrap_or_else(|| panic!("{engine}: no {needle}: {stderr}"))
+        };
+        let abort = at("[U6003]");
+        let out = at("error: cannot write the connections to");
+        let trace = at("error: cannot write the trace to");
+        assert!(abort < out && out < trace, "{engine}: the order: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        tails.push(lines[lines.len() - 2..].join("\n"));
+    }
+    assert_eq!(tails[0].lines().next(), tails[1].lines().next());
+    let _ = std::fs::remove_dir_all(&built);
     let _ = std::fs::remove_dir_all(&scratch);
 }
