@@ -20,7 +20,7 @@ answer(exchange: internal Exchange, key: secret Int) -> Unit
   @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
     if error use unit
 
-serve_all(exchanges: internal List[Exchange], key: secret Int) -> Unit
+pub serve_all(exchanges: internal List[Exchange], key: secret Int) -> Unit
   uses @server: HttpServer[reply]
 =
   tasks

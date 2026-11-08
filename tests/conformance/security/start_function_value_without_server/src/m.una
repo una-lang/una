@@ -3,7 +3,7 @@
 -- expect: error U4002 at src/m.una:11:15
 module m
 
-spawn(jobs: internal List[fn() -> Unit], key: secret Int) -> Unit
+pub spawn(jobs: internal List[fn() -> Unit], key: secret Int) -> Unit
 =
   tasks
     for job in jobs
