@@ -1658,8 +1658,9 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
         // A `via` body is checked without labels (`spec/07 §5` rule 3), so what decides the
         // calls it and its callees make is not recorded.
         let via = node < graph.functions && env.vias.contains_key(&node);
-        // A predicate, and a `checked` predicate, run in the refinement language, whose
-        // decisions record no check point with its label.
+        // A predicate, and a body that evaluates a `checked` predicate, count as imprecise,
+        // conservatively: a `reflect` predicate's body records its check points, and `checked`
+        // on labeled data is refused (`spec/07 §3`), so this only makes the test coarser.
         let unlabeled = node < graph.functions
             && (findings.unlabeled_checks.contains(&node)
                 || env
@@ -1711,7 +1712,7 @@ pub(crate) fn decided_functions(findings: &Findings) -> BTreeSet<usize> {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()
     };
-    let by_type = super::switch::decided_by_type(findings);
+    let by_type = super::switch::decided_by_type(findings, &internal);
     let mut out: BTreeSet<usize> = BTreeSet::new();
     for site in &findings.switch_sites {
         if !site.label.concrete().flows_to(&internal)
@@ -1829,8 +1830,9 @@ pub(crate) fn start_reach(
             );
         }
     }
-    // A `start` in a generic body takes its type parameters' values from callers outside it.
-    imprecise |= !label.symbols.is_empty() || (lambda && foreign);
+    // A `start` in a generic body takes its type parameters' values from callers outside it. A
+    // lambda in its reach is `Λ`, imprecise already.
+    imprecise |= !label.symbols.is_empty();
     StartReach {
         unbounded,
         source,

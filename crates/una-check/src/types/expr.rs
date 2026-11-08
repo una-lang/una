@@ -2238,8 +2238,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.pass == Pass::Check && self.base != Base::Quiet {
             self.findings.checked.push((self.module, span));
         }
-        // #1682: its predicate runs in the refinement language, whose decisions record no
-        // check point with its label.
+        // #1682: a body that evaluates a `checked` predicate counts as imprecise for the depth
+        // rule, conservatively.
         if self.pass == Pass::Check
             && let Some(f) = self.current
         {

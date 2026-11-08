@@ -179,7 +179,7 @@ shop 0.1.0
 
 ## Edition
 
-Edition `0.4` only, a preview.
+Edition `0.4` and later, a preview.
 
 ## Normative source
 

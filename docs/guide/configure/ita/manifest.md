@@ -129,7 +129,7 @@ pub one() -> Int = 1
 
 ## Edition
 
-Edition `0.4` only, a preview. Editions `0.1` to `0.3` are described by `una.toml` (see [`una migrate`](migrate.md)).
+Edition `0.4` and later, a preview. Editions `0.1` to `0.3` are described by `una.toml` (see [`una migrate`](migrate.md)).
 
 ## Normative source
 

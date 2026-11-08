@@ -94,7 +94,7 @@ error[U7013]: `json` is a package of `itaty`, whose root metadata is not built i
 
 ## Edition
 
-Edition `0.4` only, a preview.
+Edition `0.4` and later, a preview.
 
 ## Normative source
 

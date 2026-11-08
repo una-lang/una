@@ -377,7 +377,8 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
         // data above `internal`; otherwise, the coarse test of #1674 on what it holds.
         let decided =
             decided_here.get_or_insert_with(|| super::timing::decided_functions(findings));
-        let by_data = if found.imprecise {
+        // A `start` in a handler's operation body has no function to look up: the coarse test.
+        let by_data = if found.imprecise || site.function.is_none() {
             !found.label.flows_to(&internal)
         } else {
             found.decided

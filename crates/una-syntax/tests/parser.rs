@@ -1433,3 +1433,116 @@ fn renames_are_chosen_across_the_files_of_a_package_125() {
         .collect();
     assert_eq!(together, vec![Some("the_table_4".to_owned()); 3]);
 }
+
+/// The code, message and repairs of every lexical and syntax error of `body`, after
+/// `module t`, under `keywords`.
+fn repairs_in(body: &str, keywords: KeywordSet) -> Vec<(String, Vec<Shown>)> {
+    let text = format!("module t\n\n{body}");
+    let mut db = SourceDb::new();
+    let id = db.add("t.una", text.as_bytes());
+    let mut interner = Interner::new();
+    let lexed = lex_in(db.file(id), id, &mut interner, keywords);
+    let parsed = parse(&lexed, id, &interner);
+    lexed
+        .errors
+        .iter()
+        .chain(&parsed.errors)
+        .map(|error| {
+            (
+                format!("{} {}", error.code, error.message),
+                error
+                    .repairs
+                    .iter()
+                    .map(|r| (r.description.clone(), r.edit.as_ref().map(|e| e.1.clone())))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn edition_0_4_advises_edition_0_5_for_the_moved_syntax() {
+    // ADR 0139 rule 7, #1743: `simd` as a name, `Decimal[s]` and the `with:` and `and:` labels
+    // moved to edition 0.5 with no diagnostic of their own; in edition 0.4 each keeps the
+    // error edition 0.3 gives it, with advice (no edit) to raise the edition. Edition 0.3
+    // gives the same errors without the advice, and edition 0.5 none.
+    let advice =
+        |what: &str| format!("{what} (ADR 0139): write `edition 0.5` in ita.una to use it");
+    let simd = "f() -> Int\n=\n  let simd = 4\n  simd\n";
+    let rename = (
+        "rename it to `the_simd`".to_owned(),
+        Some("the_simd".to_owned()),
+    );
+    let reserved = "U0103 `simd` is reserved for v0.2 (systems profile)".to_owned();
+    assert_eq!(
+        repairs_in(simd, KeywordSet::V0_4),
+        vec![
+            (
+                reserved.clone(),
+                vec![
+                    rename.clone(),
+                    (advice("`simd` is a name from edition 0.5"), None)
+                ]
+            );
+            2
+        ]
+    );
+    assert_eq!(
+        repairs_in(simd, KeywordSet::V0_3),
+        vec![(reserved, vec![rename]); 2]
+    );
+    assert_eq!(repairs_in(simd, KeywordSet::V0_5), vec![]);
+    // Controls (review of #1758): in edition 0.4 another reserved word keeps exactly its
+    // rename, and an integer argument of another type keeps no repair.
+    assert_eq!(
+        repairs_in(
+            "f() -> Int\n=\n  let within = 4\n  within\n",
+            KeywordSet::V0_4
+        )
+        .into_iter()
+        .map(|(_, repairs)| repairs)
+        .collect::<Vec<_>>(),
+        vec![
+            vec![(
+                "rename it to `the_within`".to_owned(),
+                Some("the_within".to_owned())
+            )];
+            2
+        ]
+    );
+    for other in ["f(x: List[2]) -> Int = 0\n", "f(x: Option[2]) -> Int = 0\n"] {
+        let found = repairs_in(other, KeywordSet::V0_4);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.starts_with("U0101 "), "{found:?}");
+        assert!(found[0].1.is_empty(), "{other}: {found:?}");
+    }
+    let decimal = "f(x: Decimal[2]) -> Int = 0\n";
+    let found = repairs_in(decimal, KeywordSet::V0_4);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].0.starts_with("U0101 "), "{found:?}");
+    assert_eq!(
+        found[0].1,
+        vec![(advice("`Decimal[s]` exists from edition 0.5"), None)]
+    );
+    let earlier = repairs_in(decimal, KeywordSet::V0_3);
+    assert_eq!(earlier.len(), 1, "{earlier:?}");
+    assert_eq!(earlier[0].0, found[0].0, "the error is edition 0.3's");
+    assert!(earlier[0].1.is_empty(), "{earlier:?}");
+    assert_eq!(repairs_in(decimal, KeywordSet::V0_5), vec![]);
+    for label in ["with", "and"] {
+        let call = format!("f(a: Int) -> Int = g(a, {label}: a)\n");
+        let message = format!("U0101 unexpected keyword `{label}`, expected an expression");
+        assert_eq!(
+            repairs_in(&call, KeywordSet::V0_4),
+            vec![(
+                message.clone(),
+                vec![(
+                    advice(&format!("the label `{label}:` exists from edition 0.5")),
+                    None
+                )]
+            )]
+        );
+        assert_eq!(repairs_in(&call, KeywordSet::V0_3), vec![(message, vec![])]);
+        assert_eq!(repairs_in(&call, KeywordSet::V0_5), vec![]);
+    }
+}

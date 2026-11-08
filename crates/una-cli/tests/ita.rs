@@ -366,6 +366,36 @@ fn migrate_rewrites_the_modules_in_the_canonical_form_of_edition_0_4() {
 }
 
 #[test]
+fn migrate_rewrites_an_edition_0_5_package_with_the_keywords_of_0_5() {
+    // #1744: a `una.toml` of edition 0.5 migrates to `edition 0.5`, and its modules are read
+    // with the keywords of 0.5 for the canonical form. `simd` is a name there and reserved in
+    // 0.4 (ADR 0139), so with the keywords of 0.4 this module would have a syntax error, no
+    // canonical form, and its long line would be left for U7001.
+    let declarations = "module demo\n\npub add(first: Int, second: Int, third: Int, fourth: Int) -> Int = first + second + third + fourth\n\n";
+    let long = "pub total(simd: Int) -> Int = add(simd, second: simd + 1000000, third: simd + 2000000, fourth: simd + 3000000)\n";
+    let wrapped = "pub total(simd: Int) -> Int = add(simd, second: simd + 1000000, third: simd + 2000000,\n  fourth: simd + 3000000\n)\n";
+    let dir = toml_package("migrate-wrap-0-5", "0.5", &format!("{declarations}{long}"));
+    let (code, out, err) = una(&["una", "migrate", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        "wrote ita.una, ita.lock, src/demo.una; removed una.toml, verification.lock\nname: demo-pkg -> demo_pkg\nedition 0.5 -> 0.5: 0 diagnostics\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/demo.una")).unwrap(),
+        format!("{declarations}{wrapped}")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ita.una")).unwrap(),
+        "ita demo_pkg\n  version 0.1.0\n  edition 0.5\n"
+    );
+    let after = una_cli::check(&dir, una_cli::Tier::Zero).unwrap();
+    assert_eq!(after.diagnostics, []);
+    let (code, _, err) = una(&["una", "fmt", "--check", path(&dir)]);
+    assert_eq!((code, err.as_str()), (0, ""));
+}
+
+#[test]
 fn migrate_dry_run_writes_nothing() {
     let dir = toml_package("migrate-dry", "0.1", MODULE);
     let (code, out, _) = una(&["una", "--json", "migrate", "--dry-run", path(&dir)]);

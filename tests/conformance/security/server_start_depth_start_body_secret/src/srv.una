@@ -1,0 +1,37 @@
+-- test: the body that holds the `start` has a call that a `secret` key decides, and the precise depth test counts that body too, since the started call's arguments run in the task: U4003 at the `start`, and U4002 at the call (spec/31 §1, ADR 0123 IF6, #1682)
+-- spec: spec/31 §1
+-- expect: error U4002 at src/srv.una:28:29
+-- expect: error U4003 at src/srv.una:34:11
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: secret Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let n = exchange.request.body.len
+  let d = deep(n)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all(key: secret Int) -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  let pre = if key > 0 then deep(3) else 0
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
