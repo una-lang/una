@@ -167,15 +167,15 @@ const INFERRING: &str =
 
 #[test]
 fn inferring_labels_along_a_chain_of_helpers_adds_a_bounded_share_of_cpu_time() {
-    // A child with an empty argument checks nothing: the start of the test binary, `idle`.
+    // The child `idle` checks nothing: the start of the test binary.
     if let Some(dir) = cpu::child() {
-        if !dir.is_empty() {
+        if dir != "idle" {
             inferred_check_here(Path::new(&dir));
         }
         cpu::ran();
         return;
     }
-    let idle = timing::best_of_three(|| cpu::in_child(INFERRING, ""));
+    let idle = timing::best_of_three(|| cpu::in_child(INFERRING, "idle"));
     // The labels flow from the entry point down the chain over a worklist of calls, linear in
     // the calls. Counted first: each call to a helper is taken once, and once more when its
     // caller's labels change, so the labeled chain takes at most about two steps per call in

@@ -32,8 +32,14 @@
 use std::process::{Command, Output};
 
 /// Names, in a child of the test binary that [`in_child`] runs, the argument of the one
-/// measurement it makes.
+/// measurement it makes, as `<nonce> <file> <argument>`: the parent writes the nonce, new for each
+/// child, into the file and removes the file once the child has run, so that a value that did not
+/// come from a parent (one left in the environment of the run) fails the test rather than making
+/// it return without measuring ([`child`]).
 const CHILD: &str = "UNA_CPU_TIME_CHILD";
+
+/// The children [`in_child`] has started in this process, a part of each nonce.
+static CHILDREN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// What a child prints once its measurement has passed, so that the parent knows its filter
 /// named the test.
@@ -68,11 +74,32 @@ pub fn cpu_output(command: &Command) -> (Output, f64) {
 
 /// For a test whose claim is about work done in its own process (a check, the interpreter): the
 /// argument of the measurement this process makes when it is a child that [`in_child`] runs,
-/// else `None`. The test then makes that one measurement, calls [`ran`] and returns.
+/// else `None`. The test then makes that one measurement, calls [`ran`] and returns. A value of
+/// [`CHILD`] that its parent did not pass, without the nonce its file holds, fails the test.
 pub fn child() -> Option<String> {
     // A test reads the variable its own parent set; no library code reads it.
     #[allow(clippy::disallowed_methods)]
-    std::env::var(CHILD).ok()
+    let value = std::env::var(CHILD).ok()?;
+    let argument = verified(&value);
+    assert!(
+        argument.is_ok(),
+        "{CHILD} is set, but not by a parent test: {argument:?}"
+    );
+    argument.ok()
+}
+
+/// The argument of a value of [`CHILD`], `<nonce> <file> <argument>`, when `file` holds `nonce`.
+fn verified(value: &str) -> Result<String, String> {
+    let mut parts = value.splitn(3, ' ');
+    let (Some(nonce), Some(file), Some(argument)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(format!("not `<nonce> <file> <argument>`: {value:?}"));
+    };
+    match std::fs::read_to_string(file) {
+        Ok(held) if !nonce.is_empty() && held == nonce => Ok(argument.to_owned()),
+        Ok(held) => Err(format!("the nonce {nonce:?} is not the {held:?} of {file}")),
+        Err(error) => Err(format!("no nonce in {file}: {error}")),
+    }
 }
 
 /// Says, in a child, that its measurement has passed: its standard output is the parent's to read.
@@ -92,11 +119,20 @@ pub fn in_child(test: &str, argument: &str) -> f64 {
 
 /// [`in_child`], with the output of the child's first run ([`cpu_output`]).
 pub fn in_child_output(test: &str, argument: &str) -> (Output, f64) {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let count = CHILDREN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let nonce = format!("{}-{count}-{started}", std::process::id());
+    let file = std::env::temp_dir().join(format!("una-cpu-time-child-{nonce}"));
+    std::fs::write(&file, &nonce).expect("the nonce file");
     let mut command = Command::new(std::env::current_exe().expect("the test binary"));
     command
         .args(["--exact", test, "--nocapture", "--test-threads", "1"])
-        .env(CHILD, argument);
+        .env(CHILD, format!("{nonce} {} {argument}", file.display()));
     let (output, seconds) = cpu_output(&command);
+    let _ = std::fs::remove_file(&file);
     assert!(
         output.status.success() && String::from_utf8_lossy(&output.stdout).contains(RAN),
         "{test} in a child, {argument}: {output:?}"
@@ -168,6 +204,31 @@ fn split_report(stderr: &[u8]) -> (Vec<u8>, f64) {
         }
     }
     (own.as_bytes().to_vec(), seconds)
+}
+
+#[test]
+fn a_child_value_without_its_parent_s_nonce_is_refused() {
+    // A value left in the environment, an idle one included, is no measurement to make.
+    for value in ["", "idle", "1 /nonexistent/una-cpu-time-child idle"] {
+        assert!(verified(value).is_err(), "{value:?}");
+    }
+    let file = std::env::temp_dir().join(format!("una-cpu-time-child-test-{}", std::process::id()));
+    std::fs::write(&file, "n-1-2").unwrap();
+    let path = file.display();
+    assert!(verified(&format!("n-1-3 {path} idle")).is_err());
+    assert!(verified(&format!(" {path} idle")).is_err());
+    assert_eq!(
+        verified(&format!("n-1-2 {path} idle")),
+        Ok("idle".to_owned())
+    );
+    // The argument keeps its own spaces: a size and a directory.
+    assert_eq!(
+        verified(&format!("n-1-2 {path} 10 /tmp/a b")),
+        Ok("10 /tmp/a b".to_owned())
+    );
+    // Once the parent removed the file, the same value is refused.
+    std::fs::remove_file(&file).unwrap();
+    assert!(verified(&format!("n-1-2 {path} idle")).is_err());
 }
 
 #[test]
