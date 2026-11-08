@@ -2024,6 +2024,11 @@ pub(crate) fn reached_from(
 /// `opaque_applies`, the same facts as IF5 item 4 and #1023). A prelude function such as
 /// `map` runs only the functions it is given, which those two facts cover, so its own edge to
 /// `Λ` is not followed.
+///
+/// **Function values from outside** (#1710). Even then, `Λ` is opened only when a function
+/// value made outside the code the `via`s reach can come into it ([`foreign_values`]): the
+/// search runs first without `Λ`, and every function value that code calls is then a lambda
+/// written in a reached node or a function named in one, which that search follows.
 pub(crate) struct ViaReach {
     /// For each node, the `via` function the search reached it from first, `None` when no
     /// `via` function reaches it.
@@ -2206,7 +2211,8 @@ fn search(
 ///   checked with the package) whose result or parameters can hold one.
 ///
 /// Otherwise every function value that code calls is a lambda written in a node it reaches or
-/// a function it names, whose code [`search`] follows from that node. O(V).
+/// a function it names, whose code [`search`] follows from that node. O(V + O log O) for the O
+/// operations of the graph (`tests/via_reach_scaling.rs`).
 fn foreign_values(
     env: &Env<'_>,
     graph: &Graph,
@@ -2214,11 +2220,34 @@ fn foreign_values(
     reached: &[Option<usize>],
 ) -> bool {
     // The prelude's functions are host code, which calls only the function values it is given.
+    // Only the module named exactly `prelude`: `prelude.map` and `std.collections` are
+    // modules apart, whose functions count here when their types can hold a function value,
+    // as their type parameters can.
     let apart = |module: usize| {
         let prelude = env.modules.get(module).is_some_and(|m| m.path == "prelude");
         !prelude && (module >= env.prelude || !env.reports(module))
     };
+    // Whether each operation's answer can hold a function value, by its node, built once: each
+    // capability's operations by name, then one lookup per operation node, O(O log O). A node
+    // whose operation is not found fails closed.
+    let mut answers = vec![true; graph.succ.len()];
+    let mut by_name: BTreeMap<CapId, BTreeMap<&str, &super::env::OpDef<'_>>> = BTreeMap::new();
+    for ((cap, op), &node) in &graph.ops {
+        una_core::label_counters::timing_step();
+        let ops = by_name.entry(*cap).or_insert_with(|| {
+            env.capabilities
+                .get(*cap)
+                .map(|c| c.ops.iter().map(|d| (d.name, d)).collect())
+                .unwrap_or_default()
+        });
+        if let Some(slot) = answers.get_mut(node) {
+            *slot = ops
+                .get(op.as_str())
+                .is_none_or(|d| holds_function(env, &d.result.base));
+        }
+    }
     for (node, by) in reached.iter().enumerate() {
+        una_core::label_counters::timing_step();
         if by.is_none() {
             continue;
         }
@@ -2248,20 +2277,8 @@ fn foreign_values(
             }
         } else if node < graph.functions + graph.handlers + graph.capabilities {
             // A capability's node leads to its handlers, each checked as a node here.
-        } else if node != graph.lambda {
-            let answers = graph
-                .ops
-                .iter()
-                .find(|(_, at)| **at == node)
-                .and_then(|((cap, op), _)| {
-                    env.capabilities
-                        .get(*cap)
-                        .and_then(|c| c.ops.iter().find(|d| d.name == *op))
-                })
-                .is_none_or(|d| holds_function(env, &d.result.base));
-            if answers {
-                return true;
-            }
+        } else if node != graph.lambda && answers.get(node).copied().unwrap_or(true) {
+            return true;
         }
     }
     false
