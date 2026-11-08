@@ -235,6 +235,7 @@ Every package under [`examples/`](examples) checks with every obligation proven 
 | [`journal`](examples/journal) | Information flow: labels, a declassification policy, files and the environment |
 | [`greenhouse`](examples/greenhouse) | Operation contracts, and handlers verified against them |
 | [`shortlinks`](examples/shortlinks) | An escape hatch within its budget, and a generated requirement awaiting review |
+| [`health`](examples/health) | Edition 0.4 preview: a health endpoint, the `serve` section of `ita.una`, tests that call `handle` with `test_request` |
 
 ## Build from source
 

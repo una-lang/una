@@ -1006,23 +1006,46 @@ fn every_example_has_a_readme_whose_commands_run() {
             .filter(|(_, attributes)| value(attributes, "una").as_deref() == Some("run ."))
             .map(|(block, _)| *block)
             .collect();
+        // `[package]` requires `name` and `edition` (`spec/13 §7`); from edition 0.4 the
+        // manifest is `ita.una`, `ita NAME` with an `edition` line (ADR 0122).
+        let (package_name, edition, serves) =
+            match std::fs::read_to_string(package.join("una.toml")) {
+                Ok(manifest) => {
+                    let key = |wanted: &str| -> String {
+                        manifest
+                            .lines()
+                            .filter_map(|line| line.split_once('='))
+                            .find(|(key, _)| key.trim() == wanted)
+                            .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+                            .unwrap_or_else(|| panic!("{relative}: its una.toml has no `{wanted}`"))
+                    };
+                    (key("name"), key("edition"), false)
+                }
+                Err(_) => {
+                    let manifest = std::fs::read_to_string(package.join("ita.una"))
+                        .unwrap_or_else(|_| panic!("{relative}: no una.toml or ita.una"));
+                    let name = manifest
+                        .lines()
+                        .find_map(|line| line.strip_prefix("ita "))
+                        .unwrap_or_else(|| panic!("{relative}: its ita.una has no `ita` line"))
+                        .trim()
+                        .to_owned();
+                    let edition = manifest
+                        .lines()
+                        .find_map(|line| line.strip_prefix("  edition "))
+                        .unwrap_or_else(|| panic!("{relative}: its ita.una has no `edition`"))
+                        .trim()
+                        .to_owned();
+                    (name, edition, manifest.contains("\nserve\n"))
+                }
+            };
+        // A package with a `serve` section does not run until `spec/31 §1` rule 10 lifts; its
+        // README shows no `una run`, and `serve_live.rs` runs it in the test build.
         assert_eq!(
             runs.len(),
-            1,
-            "{relative}: one `text una=\"run .\"` block of what `una run` prints"
+            usize::from(!serves),
+            "{relative}: one `text una=\"run .\"` block of what `una run` prints, none for a package that serves"
         );
-        let printed = runs[0];
-        // `[package]` requires `name` and `edition` (`spec/13 §7`).
-        let manifest = std::fs::read_to_string(package.join("una.toml")).unwrap();
-        let key = |wanted: &str| -> String {
-            manifest
-                .lines()
-                .filter_map(|line| line.split_once('='))
-                .find(|(key, _)| key.trim() == wanted)
-                .map(|(_, value)| value.trim().trim_matches('"').to_owned())
-                .unwrap_or_else(|| panic!("{relative}: its una.toml has no `{wanted}`"))
-        };
-        let edition = key("edition");
 
         // `una run` and the native executable print the `text` block.
         let copy = scratch(2_000_000 + index * 10_000 + 9_999).join(name);
@@ -1036,30 +1059,32 @@ fn every_example_has_a_readme_whose_commands_run() {
                 .output()
                 .unwrap()
         };
-        let output = una(&["run", "."]);
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            printed.body,
-            "{relative}: what `una run` prints"
-        );
-        runtime();
-        let built = una(&["build", "."]);
-        assert!(
-            built.status.success(),
-            "{relative}: `una build .`: {}",
-            String::from_utf8_lossy(&built.stderr)
-        );
-        let output = Command::new(copy.join("target/una").join(key("name")))
-            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .env_remove("UNA_PROOF_KEY")
-            .current_dir(&copy)
-            .output()
-            .unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            printed.body,
-            "{relative}: what the native executable prints"
-        );
+        if let Some(printed) = runs.first() {
+            let output = una(&["run", "."]);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                printed.body,
+                "{relative}: what `una run` prints"
+            );
+            runtime();
+            let built = una(&["build", "."]);
+            assert!(
+                built.status.success(),
+                "{relative}: `una build .`: {}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+            let output = Command::new(copy.join("target/una").join(&package_name))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
+                .current_dir(&copy)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                printed.body,
+                "{relative}: what the native executable prints"
+            );
+        }
         // The other excerpts, in the README's order, in the same copy, after `una run .`,
         // `una build .` and `una check .` (so `una obligations .` reads the cache the README says
         // it reads). Each command must exit with 0.
