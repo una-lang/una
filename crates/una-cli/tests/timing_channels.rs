@@ -40,6 +40,12 @@
 //! time must still change how many requests a server receives on this machine. The oracle of
 //! #1148 (ADR 0116 P9) runs the `public` twin of the residue amplifier, whose `secret` half
 //! `una check` refuses with U4001, and requires its two keys to give the same deadline outcomes.
+//! The oracles of ADR 0123's serve threads (S4 design §11.5) run a program that serves on a
+//! live port: `serve_prefix_secret` and `serve_prefix_early_peers` time a probe's reply, and the
+//! positive controls `serve_handoff_residue` and `serve_delivery_history` (#1660) require a
+//! `public` key to change whether a later `next` under a deadline receives its request, the
+//! channels SC2 and SC3 that `L_srv` labels; their `secret` versions are conformance cases
+//! refused with U4003, which each oracle checks are its program.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
@@ -930,13 +936,20 @@ pub main() -> Unit
 /// peer, since every peer is `127.0.0.1`), built by a `una` of the toolchain's tests, which
 /// builds a program that serves while `spec/31 §1` rule 10 stands (`UNA_TEST_BUILD_SERVER`).
 fn serve_package(name: &str, port: u16, program: &str) -> PathBuf {
+    serve_package_with(name, port, program, "", "      connections at most 4096\n")
+}
+
+/// As [`serve_package`], with the grants `grants` beside `console`, each line indented as a
+/// grant, and the serve grant's limits `limits`, each line indented under it, beside
+/// `peer none`, `peer_buffers none` and `peer_replies none`.
+fn serve_package_with(name: &str, port: u16, program: &str, grants: &str, limits: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
         format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:{port}\"\n      connections at most 4096\n      peer none\n      peer_buffers none\n      peer_replies none\n"
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n{grants}    serve \"http://127.0.0.1:{port}\"\n{limits}      peer none\n      peer_buffers none\n      peer_replies none\n"
         ),
     )
     .unwrap();
@@ -1153,4 +1166,320 @@ fn serve_prefix_early_peers() {
     // first server operation, every connection waits in the kernel's backlog for both keys,
     // and the probe's times and outcomes do not differ.
     serve_prefix_oracle("prefixearly", true);
+}
+
+/// The helper `late` of the two positive controls of SC2 and SC3: after a `next` under a
+/// deadline timed out, the program waits up to 10 s more for the request and answers it
+/// `late`. A request taken at the moment the first deadline cut its `next`, which the host
+/// then answers itself, leaves none, and the run ends after those 10 s with an answer that is
+/// neither `late` nor `in time`, which fails the oracle visibly instead of hanging it.
+const LATE: &str = r#"late() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  let again = attempt @server.next() within 10 * second
+  when again
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "late"))
+        if error use unit
+    is Err(failure) -> unit
+
+"#;
+
+/// The program of `serve_handoff_residue` (SC2 of the S4 design, §10.3), with its key labeled
+/// `label`, `"secret "` or `""`: the key decides how many bytes the first reply holds, 32 MiB
+/// or one, to a peer that never reads it, so they stay pending on a serve thread. The second
+/// reply, 8 MiB to the probe, then finds the grant's `replies` of 32 MiB full or not: when it
+/// is, the reply frees the pending one, the host closes its connection, and the grant's
+/// second slot of `connections at most 2` is free. The third `next`, under a deadline of
+/// 500 ms, then receives the third peer's request, which waited in the kernel's backlog for
+/// a slot, or times out, and the third peer is answered `in time` or `late`. The `secret`
+/// version is the conformance case `serve_handoff_residue_secret`, refused by U4003: the
+/// first reply's body is `secret`, above what `reply` accepts.
+fn handoff_program(label: &str, key: u8) -> String {
+    format!(
+        r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+import std.time (millisecond, second)
+
+key() -> {label}Int = {key}
+
+doubled(n: Int) -> Text
+=
+  let edit t = "x"
+  for i in 0..<n
+    t = "{{t}}{{t}}"
+  t
+
+{LATE}pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let big = doubled(25)
+  let probe = doubled(23)
+  let first = attempt @server.next()
+  let answered_first = when first
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right,
+        reply: Reply(status: 200, headers: [], body: if key() > 0 then big else "x")
+      )
+        if error use unit
+    is Err(failure) -> unit
+  let second = attempt @server.next()
+  let answered_second = when second
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: probe))
+        if error use unit
+    is Err(failure) -> unit
+  let third = attempt @server.next() within 500 * millisecond
+  let answered_third = when third
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "in time"))
+        if error use unit
+    is Err(failure) -> late()
+  @server.close()
+"#
+    )
+}
+
+/// The program of `serve_delivery_history` (SC3 of the S4 design, §10.3), with its key
+/// labeled `label`: under a rate of one exchange per second, the first delivery takes the
+/// bucket's token, and the code between it and the second `next`, which the key makes 0 or
+/// 1.5 s long on the clock (not by a count of iterations, whose time the machine's load
+/// would decide), decides whether the second `next`, under a deadline of 500 ms, reaches the
+/// next token, 1 s after the first: the second peer is answered `late` or `in time`. The `secret` version is the
+/// conformance case `serve_delivery_history_secret`, refused by U4003: that wait reads the
+/// `secret` key after a server operation, so `L_srv` is `secret`, and so is the deadline's
+/// outcome, which decides the replies.
+fn delivery_program(label: &str, key: u8) -> String {
+    format!(
+        r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+import std.time (millisecond, second)
+
+key() -> {label}Int = {key}
+
+pause(ms: {label}Int) -> Unit
+  uses @clock: Clock[now]
+  diverges
+=
+  let start = @clock.now()
+  for ever
+    let now = @clock.now()
+    if now >= start + ms
+      stop
+
+{LATE}pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @clock: Clock[now]
+  diverges
+=
+  let first = attempt @server.next()
+  let answered_first = when first
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "first"))
+        if error use unit
+    is Err(failure) -> unit
+  pause(if key() > 0 then 1500 else 0)
+  let second = attempt @server.next() within 500 * millisecond
+  let answered_second = when second
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "in time"))
+        if error use unit
+    is Err(failure) -> late()
+  @server.close()
+"#
+    )
+}
+
+/// Connects to the run on `port`, retrying while its listener is not bound yet, for at most
+/// 30 s, and sends `GET /<path>`, with `Connection: close` when `close`.
+fn serve_request(port: u16, path: &str, close: bool) -> std::net::TcpStream {
+    let began = Instant::now();
+    let mut stream = loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(began.elapsed() < Duration::from_secs(30), "{error}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let connection = if close { "Connection: close\r\n" } else { "" };
+    stream
+        .write_all(
+            format!("GET /{path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{connection}\r\n").as_bytes(),
+        )
+        .unwrap();
+    stream
+}
+
+/// Reads one reply from `stream`, by its `Content-Length`, and returns its body.
+fn serve_reply(stream: &mut std::net::TcpStream) -> Vec<u8> {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert_eq!(
+            stream.read(&mut byte).unwrap(),
+            1,
+            "the reply ended in its head"
+        );
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+    let length: usize = head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .map(|value| value.trim().parse().unwrap())
+        .unwrap_or_else(|| panic!("no content-length: {head}"));
+    let mut body = vec![0u8; length];
+    stream.read_exact(&mut body).unwrap();
+    body
+}
+
+/// Runs the executable `name` in `dir` on one serve thread, so that every connection has one
+/// owner, and returns what `drive` returns once the run has ended with 0.
+fn serve_control_run<T>(dir: &Path, name: &str, drive: impl FnOnce() -> T) -> T {
+    let child = Command::new(dir.join("target/una").join(name))
+        .args(["--serve-threads", "1", "--stop-grace", "10"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let seen = drive();
+    let ended = child.wait_with_output().unwrap();
+    assert_eq!(ended.status.code(), Some(0), "{name}: {ended:?}");
+    seen
+}
+
+/// One run of `serve_handoff_residue`: the first peer asks and never reads its reply; 300 ms
+/// later the probe asks and reads its 8 MiB, keeping its connection; the third peer then
+/// asks, and 1.2 s later the first peer leaves, which frees a slot if the host had not freed
+/// it already. Returns the third peer's answer.
+fn handoff_run(dir: &Path, name: &str, port: u16) -> String {
+    serve_control_run(dir, name, || {
+        let first = serve_request(port, "first", false);
+        std::thread::sleep(Duration::from_millis(300));
+        let mut probe = serve_request(port, "probe", false);
+        assert_eq!(serve_reply(&mut probe).len(), 1 << 23, "{name}: the probe");
+        let mut third = serve_request(port, "third", true);
+        std::thread::sleep(Duration::from_millis(1200));
+        drop(first);
+        let answer = String::from_utf8_lossy(&serve_reply(&mut third)).into_owned();
+        drop(probe);
+        answer
+    })
+}
+
+/// One run of `serve_delivery_history`: two peers ask at once; returns the second's answer.
+fn delivery_run(dir: &Path, name: &str, port: u16) -> String {
+    serve_control_run(dir, name, || {
+        let mut first = serve_request(port, "first", true);
+        std::thread::sleep(Duration::from_millis(50));
+        let mut second = serve_request(port, "second", true);
+        assert_eq!(serve_reply(&mut first), b"first", "{name}: the first peer");
+        String::from_utf8_lossy(&serve_reply(&mut second)).into_owned()
+    })
+}
+
+/// The positive control of a channel that `L_srv` labels (S4 design §11.5, SC2 and SC3): the
+/// `secret` version of `program` is the conformance case `case`, which `una check` refuses
+/// with U4003; its `public` twin, built with `grants` and the serve grant's `limits`, runs 20 times with key 0 and 20 with
+/// key 1, alternating, key 1 again as the control. The keys' answers, `in time` or `late`,
+/// MUST differ by the rank test of the header at p below 0.001, so that the channel exists on
+/// this machine, and the control MUST pass.
+#[allow(clippy::print_stderr)]
+fn serve_positive_control(
+    label: &str,
+    case: &str,
+    program: fn(&str, u8) -> String,
+    grants: &str,
+    limits: &str,
+    run: fn(&Path, &str, u16) -> String,
+) {
+    let refused = root().join(format!("tests/conformance/security/{case}/src/srv.una"));
+    let refused = std::fs::read_to_string(refused).unwrap();
+    let module = refused.find("module srv").unwrap();
+    assert_eq!(
+        &refused[module..],
+        program("secret ", 1),
+        "the conformance case {case} is not the oracle's program with a `secret` key"
+    );
+    let port = serve_port();
+    let names = [format!("{label}key0"), format!("{label}key1")];
+    let dirs = [
+        serve_package_with(&names[0], port, &program("", 0), grants, limits),
+        serve_package_with(&names[1], port, &program("", 1), grants, limits),
+    ];
+    let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for round in 0..20 {
+        for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
+            let answer = run(&dirs[key], &names[key], port);
+            eprintln!("round {round} key {key}: {answer}");
+            let late = match answer.as_str() {
+                "in time" => 0.0,
+                "late" => 1.0,
+                other => panic!("{label} key {key}: answered {other:?}"),
+            };
+            samples[sample].push(late);
+        }
+    }
+    let channel = mann_whitney(&samples[0], &samples[1]);
+    let control = mann_whitney(&samples[1], &samples[2]);
+    eprintln!(
+        "key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; control: U = {}, z = {:.3}, p = {:.3e}",
+        channel.u, channel.z, channel.p, control.u, control.z, control.p
+    );
+    assert!(
+        control.p >= 0.001,
+        "the control failed: the machine's noise alone separates one input from itself"
+    );
+    assert!(
+        channel.p < 0.001,
+        "key 0 and key 1 do not differ: p = {:.3e}; the channel that `L_srv` labels does not show on this machine, so the control proves nothing",
+        channel.p
+    );
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_handoff_residue() {
+    // ADR 0123, S4 design §11.5 and §10.3, SC2: the serve threads' work depends on the
+    // hand-offs before it, here the bytes of a reply still pending to a peer that does not
+    // read, and `L_srv` labels it. The positive control: a `public` key that decides those
+    // bytes decides, through the grant's `replies` and `connections`, whether a later `next`
+    // under a deadline receives its request. Its `secret` version is refused by U4003.
+    serve_positive_control(
+        "handoff",
+        "serve_handoff_residue_secret",
+        handoff_program,
+        "",
+        "      connections at most 2\n      replies at most 32 MiB\n",
+        handoff_run,
+    );
+}
+
+#[test]
+#[ignore = "security timing oracle: run by the timing-channels step of local-ci and the release gates"]
+fn serve_delivery_history() {
+    // ADR 0123, S4 design §11.5 and §10.3, SC3: when `next` returns depends on earlier
+    // deliveries, here the rate's token that the first one took, and `L_srv` labels it. The
+    // positive control: a `public` key that decides how long the code between two deliveries
+    // takes decides whether the second `next`, under a deadline, receives its request. Its
+    // `secret` version is refused by U4003.
+    serve_positive_control(
+        "delivery",
+        "serve_delivery_history_secret",
+        delivery_program,
+        "    clock\n",
+        "      connections at most 64\n      at most 1 per second\n",
+        delivery_run,
+    );
 }
