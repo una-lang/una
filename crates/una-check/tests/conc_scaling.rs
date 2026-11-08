@@ -13,9 +13,9 @@
 //! `timing_steps` and `pass_steps` count, must at most double with each
 //! doubling, with a margin of 10 %. The first five shapes are also timed, as a fallback, over a
 //! span of 8 times the size, by the shared helper of `una-cli/tests/common/timing.rs` (#1197).
-//! The nested shape is counted only: checking nested bodies is superlinear in time already,
-//! before this analysis (the copying of items into every open frame, amendment E, which slice 8
-//! of the plan on #1087 removes). This file holds one test, so no other test of its binary moves
+//! The nested shape is counted only: checking nested bodies is superlinear in time for reasons
+//! outside this analysis; the timing labels of nested sites are counted by the nested shape of
+//! `tests/timing_scaling.rs` (slice 8b of #1087). This file holds one test, so no other test of its binary moves
 //! the counter while it reads it.
 
 // Tests may unwrap freely (compiler/conventions.md §1).

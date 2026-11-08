@@ -10,7 +10,8 @@
 //! Counted first (ADR 0077): the timing and pass steps, which the process-wide counters count,
 //! must at most double with each doubling, with a margin of 10 %. Timed as a fallback, over a
 //! span of 8 times the size, by the shared helper of `una-cli/tests/common/timing.rs` (#1197):
-//! less than 24 times as long. The nested shape of section I comes with slice 8. This file holds
+//! less than 24 times as long. The nested shape of section I (slice 8b) is counted only: each
+//! doubling of its depth must raise the count by less than 3 times. This file holds
 //! one test, so no other test of its binary moves the counters while it reads them.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -80,6 +81,30 @@ fn limiters(n: usize) -> String {
         ));
     }
     text.push_str("  n\n");
+    text
+}
+
+/// 400 functions, each with `tasks` statements nested `d` deep, a `let` at each level and, at
+/// the innermost, a read of every outer binding (amendment I): the frames are `400 × d` and the
+/// reads `400 × d`, each read free in the frames inside the one that binds it. Recording every
+/// item in every open frame, or rebuilding every frame's seed from its subtree, costs
+/// `400 × d²/2`; the labels bottom up and the sweep of the reads cost O(400 × d log d).
+fn nested(d: usize) -> String {
+    let mut text = String::from("module app\n");
+    for f in 0..400 {
+        text.push_str(&format!("\npub f{f}(n: Int) -> Unit\n=\n"));
+        for level in 0..d {
+            let pad = "  ".repeat(level + 1);
+            text.push_str(&format!("{pad}let a{level} = n + {level}\n{pad}tasks\n"));
+        }
+        let pad = "  ".repeat(d + 1);
+        let sum: Vec<String> = (0..d).map(|level| format!("a{level}")).collect();
+        text.push_str(&format!("{pad}let z = {}\n{pad}unit\n", sum.join(" + ")));
+        for level in (0..d).rev() {
+            let pad = "  ".repeat(level + 1);
+            text.push_str(&format!("{pad}unit\n"));
+        }
+    }
     text
 }
 
@@ -155,5 +180,33 @@ fn the_timing_label_of_the_sites_scales_linearly() {
             );
             took
         });
+    }
+    // Nested sites, counted (amendment I): each doubling of `d`, from `d` of 8, raises the count
+    // by less than 3 times; `d²` growth reaches at least 3 at some doubling of these sizes. The
+    // parser's cap on nesting allows the depth, which the test checks first.
+    let depths = [8, 16, 32, 64];
+    let counts: Vec<usize> = depths
+        .iter()
+        .map(|&d| {
+            let text = nested(d);
+            let (codes, steps) = std::thread::Builder::new()
+                .stack_size(256 << 20)
+                .spawn(move || checked(&text))
+                .unwrap()
+                .join()
+                .unwrap();
+            assert_eq!(codes, Vec::<String>::new(), "nested {d} deep");
+            steps
+        })
+        .collect();
+    for (pair, sizes) in counts.windows(2).zip(depths.windows(2)) {
+        assert!(
+            pair[1] < 3 * pair[0],
+            "nested sites: from {} to {} deep the count went from {} to {}, 3 times or more (counts {counts:?})",
+            sizes[0],
+            sizes[1],
+            pair[0],
+            pair[1]
+        );
     }
 }
