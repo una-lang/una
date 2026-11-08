@@ -46,10 +46,11 @@
 //! `public` key to change whether a later `next` under a deadline receives its request, the
 //! channels SC2 and SC3 that `L_srv` labels; their `secret` versions are conformance cases
 //! refused with U4003, which each oracle checks are its program.
-//! `serve_owner_spread` (#1660, SC1) times the replies to 8 connections whose source ports
-//! the harness found to be multiples of 8 (std cannot bind a source port before it connects),
-//! after a set-up that a key makes 0 or 300 ms long; its positive control serves them on one
-//! serve thread.
+//! `serve_owner_spread` (#1660, SC1) times the replies to 8 connections over 8 serve threads:
+//! whose source ports the harness found to be multiples of 8 (std cannot bind a source port
+//! before it connects) against ports as they come, the keyed-placement check, and one serve
+//! thread against 8, its positive control; a key that makes the set-up 0 or 300 ms long
+//! guards only a placement that depends on the time at accept.
 //! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
@@ -1492,9 +1493,18 @@ fn serve_delivery_history() {
 /// placement by `port mod M`, with no key, would put on one serve thread.
 const SPREAD_THREADS: u16 = 8;
 /// The connections of one run of `serve_owner_spread`, and the most candidates it opens to
-/// find them.
+/// find them: below the 128 of macOS's default `kern.ipc.somaxconn`, since every candidate
+/// waits unaccepted in the backlog and the 129th connect would block until the run accepts.
+/// Sequential ephemeral ports need about 57 to 64 candidates, and Linux, which takes even ports
+/// first, about 32; a host that runs out fails the run visibly, never passes it.
 const SPREAD_PEERS: usize = 8;
-const SPREAD_CANDIDATES: usize = 1024;
+const SPREAD_CANDIDATES: usize = 120;
+/// The least ratio of the median times of one serve thread and of 8 with ports as they come,
+/// below which the control of `serve_owner_spread` fails: a placement that concentrated every
+/// connection on one owner would make the two arms equal, and a significance test alone passes
+/// on any small consistent shift. Taken before the oracle's first gate-machine run (decision
+/// of #1660); the run logs the measured ratio, from which it is set.
+const SPREAD_EFFECT: f64 = 1.5;
 
 /// The program of `serve_owner_spread` (SC1 of the S4 design, M1): as [`prefix_program`], a
 /// `public` set-up of about 300 ms, then one that a key makes 0 or about 300 ms long, then
@@ -1558,35 +1568,60 @@ pub main() -> Unit
     )
 }
 
+/// Which connections one run of `serve_owner_spread` keeps: the crafted ones, whose source
+/// ports are all multiples of [`SPREAD_THREADS`], or ports as they come.
+#[derive(Clone, Copy, Debug)]
+enum Ports {
+    Crafted,
+    AsTheyCome,
+}
+
+/// A child process that is killed and reaped when dropped, unless taken first, so that a
+/// failed assertion never leaves a server that `diverges` listening.
+struct Reaped(Option<std::process::Child>);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// One run of `serve_owner_spread`: the executable `name` in `dir`, serving on `port` with
 /// `threads` serve threads. While the program's set-up runs, before its first server
 /// operation, the harness opens connections until [`SPREAD_PEERS`] of them have a source port
-/// that is a multiple of [`SPREAD_THREADS`], and closes the others; every one waits in the
-/// kernel's backlog, since nothing is accepted before the first server operation. Once the
-/// program prints `ready`, the kept connections each send `/probe` at once and read their
-/// 8 MiB reply. Returns the time to `ready` and the time until the last reply was read, in
-/// milliseconds; then the host stop ends the run, which must end with 0.
+/// that is a multiple of [`SPREAD_THREADS`]. With [`Ports::Crafted`] it keeps those; with
+/// [`Ports::AsTheyCome`] it keeps the last [`SPREAD_PEERS`] it opened, whatever their ports,
+/// so both kinds of run open and close the same number of connections. It closes the others;
+/// every one waits in the kernel's backlog, since nothing is accepted before the first server
+/// operation. Once the program prints `ready`, the kept connections each send `/probe` at once
+/// and read their 8 MiB reply. Returns the time to `ready` and the time until the last reply
+/// was read, in milliseconds; then the host stop ends the run, which must end with 0.
 ///
 /// `std::net` cannot bind a source port before it connects (decision of #1660: std only, no
 /// new `unsafe` and no new crate), so the ports are found among the ephemeral ones rather than
 /// chosen: the property is the same for every run, the ports are not.
-fn spread_run(dir: &Path, name: &str, port: u16, threads: u16) -> (f64, f64) {
+fn spread_run(dir: &Path, name: &str, port: u16, threads: u16, ports: Ports) -> (f64, f64) {
     use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
     let began = Instant::now();
-    let mut child = Command::new(dir.join("target/una").join(name))
-        .args([
-            "--serve-threads",
-            &threads.to_string(),
-            "--stop-grace",
-            "10",
-        ])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stdout = child.stdout.take().unwrap();
+    let mut child = Reaped(Some(
+        Command::new(dir.join("target/una").join(name))
+            .args([
+                "--serve-threads",
+                &threads.to_string(),
+                "--stop-grace",
+                "10",
+            ])
+            .current_dir(dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let stdout = child.0.as_mut().unwrap().stdout.take().unwrap();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut stdout = BufReader::new(stdout);
@@ -1601,11 +1636,11 @@ fn spread_run(dir: &Path, name: &str, port: u16, threads: u16) -> (f64, f64) {
             }
         }
     });
-    let mut kept = Vec::new();
-    let mut dropped = Vec::new();
-    while kept.len() < SPREAD_PEERS {
+    let mut opened = Vec::new();
+    let mut crafted = 0;
+    while crafted < SPREAD_PEERS {
         assert!(
-            kept.len() + dropped.len() < SPREAD_CANDIDATES,
+            opened.len() < SPREAD_CANDIDATES,
             "{name}: no {SPREAD_PEERS} source ports in {SPREAD_CANDIDATES} are multiples of {SPREAD_THREADS}"
         );
         let stream = match TcpStream::connect(("127.0.0.1", port)) {
@@ -1617,15 +1652,25 @@ fn spread_run(dir: &Path, name: &str, port: u16, threads: u16) -> (f64, f64) {
             }
         };
         if stream.local_addr().unwrap().port() % SPREAD_THREADS == 0 {
-            stream
-                .set_read_timeout(Some(Duration::from_secs(30)))
-                .unwrap();
-            kept.push(stream);
-        } else {
-            dropped.push(stream);
+            crafted += 1;
         }
+        opened.push(stream);
     }
-    drop(dropped);
+    // The connections not kept are closed here, before `ready`.
+    let kept: Vec<TcpStream> = match ports {
+        Ports::Crafted => {
+            let (kept, others): (Vec<_>, Vec<_>) = opened
+                .into_iter()
+                .partition(|stream| stream.local_addr().unwrap().port() % SPREAD_THREADS == 0);
+            drop(others);
+            kept
+        }
+        Ports::AsTheyCome => {
+            let kept = opened.split_off(opened.len() - SPREAD_PEERS);
+            drop(opened);
+            kept
+        }
+    };
     let chosen = Instant::now();
     let ready = ready_rx
         .recv_timeout(Duration::from_secs(60))
@@ -1634,6 +1679,11 @@ fn spread_run(dir: &Path, name: &str, port: u16, threads: u16) -> (f64, f64) {
         chosen < ready,
         "{name}: the ports were not chosen before the set-up ended"
     );
+    for stream in &kept {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+    }
     let start = Arc::new(std::sync::Barrier::new(SPREAD_PEERS + 1));
     let peers: Vec<_> = kept
         .into_iter()
@@ -1654,12 +1704,13 @@ fn spread_run(dir: &Path, name: &str, port: u16, threads: u16) -> (f64, f64) {
         assert_eq!(peer.join().unwrap(), 1 << 23, "{name}: a probe");
     }
     let took = sent.elapsed().as_secs_f64() * 1000.0;
-    let status = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let ended = child.wait_with_output().unwrap();
+    let id = child.0.as_ref().unwrap().id().to_string();
+    let status = Command::new("kill").args(["-TERM", &id]).status();
+    assert!(
+        matches!(&status, Ok(status) if status.success()),
+        "{name}: the host stop was not sent: {status:?}"
+    );
+    let ended = child.0.take().unwrap().wait_with_output().unwrap();
     assert_eq!(ended.status.code(), Some(0), "{name}: {ended:?}");
     reader.join().unwrap();
     (ready.duration_since(began).as_secs_f64() * 1000.0, took)
@@ -1670,15 +1721,23 @@ fn spread_run(dir: &Path, name: &str, port: u16, threads: u16) -> (f64, f64) {
 #[allow(clippy::print_stderr)]
 fn serve_owner_spread() {
     // ADR 0123, S4 amendment IF-S1 and B.4, S4 design §4 (M1) and §11.5, SC1, on the real
-    // clock: a connection's owner is a keyed hash of its own addresses under a key of the run,
-    // so set-up code before the first server operation, here work that a key makes 0 or about
-    // 300 ms long, cannot steer which serve thread owns which connection. Each run is served by
-    // 8 connections of one address whose source ports are all multiples of 8, over 8 serve
-    // threads; the time until the last of their 8 MiB replies is read MUST not differ between
-    // the keys. The positive control runs key 0 on one serve thread, every connection on one
-    // owner, the most that a steered placement could do: its times MUST differ from key 0's
-    // over 8 threads, so that the oracle would see a placement that the set-up decided. A
-    // control of key 1 against itself MUST pass.
+    // clock. A connection's owner is a keyed hash of its own addresses under a key of the run.
+    // Five arms, each 20 runs, their order rotated every round:
+    //
+    // 1. key 0 and 2. key 1, crafted ports, 8 serve threads: a key makes set-up code before
+    //    the first server operation 0 or about 300 ms long. The harness, not the program,
+    //    picks the connections, all wait in the backlog before `ready` for both keys, and the
+    //    backlog is accepted in order, so this comparison guards only a placement that
+    //    depends on the time at accept. It cannot see a placement without the key, by accept
+    //    order or by the thread that accepted: those give both keys the same owners.
+    // 3. key 1 again: the control of the machine's noise.
+    // 4. key 0, ports as they come, 8 serve threads: the keyed-placement check. The crafted
+    //    ports are all multiples of 8, the family that `port mod 8` without a key puts on one
+    //    serve thread, while ports as they come spread over all 8 under it. Under the keyed
+    //    hash both spread alike, so arm 1 against arm 4 MUST NOT separate.
+    // 5. key 0, ports as they come, one serve thread, every connection on one owner: arm 5
+    //    against arm 4 MUST separate, by the rank test and by at least [`SPREAD_EFFECT`] in
+    //    the ratio of medians, so that a concentration of the crafted ports would show.
     let port = serve_port();
     let names = ["spreadkey0".to_owned(), "spreadkey1".to_owned()];
     let limits = "      connections at most 4096\n      replies at most 256 MiB\n";
@@ -1686,24 +1745,25 @@ fn serve_owner_spread() {
         serve_package_with(&names[0], port, &spread_program(0), "", limits),
         serve_package_with(&names[1], port, &spread_program(1), "", limits),
     ];
-    // Samples: key 0, key 1, key 1 again, key 0 on one serve thread.
-    let mut samples: [Vec<f64>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let arms = [
+        (0usize, SPREAD_THREADS, Ports::Crafted),
+        (1, SPREAD_THREADS, Ports::Crafted),
+        (1, SPREAD_THREADS, Ports::Crafted),
+        (0, SPREAD_THREADS, Ports::AsTheyCome),
+        (0, 1, Ports::AsTheyCome),
+    ];
+    let mut samples: [Vec<f64>; 5] = Default::default();
     let mut readies: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
     for round in 0..20 {
-        for (sample, (key, threads)) in [
-            (0usize, SPREAD_THREADS),
-            (1, SPREAD_THREADS),
-            (1, SPREAD_THREADS),
-            (0, 1),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let (ready, took) = spread_run(&dirs[key], &names[key], port, threads);
+        for step in 0..arms.len() {
+            let sample = (step + round) % arms.len();
+            let (key, threads, ports) = arms[sample];
+            let (ready, took) = spread_run(&dirs[key], &names[key], port, threads, ports);
             eprintln!(
-                "round {round} key {key} on {threads} serve threads: ready at {ready:.1} ms, replies {took:.2} ms"
+                "round {round} arm {} key {key} on {threads} serve threads, {ports:?} ports: ready at {ready:.1} ms, replies {took:.2} ms",
+                sample + 1
             );
-            if threads == SPREAD_THREADS {
+            if sample < 3 {
                 readies[key].push(ready);
             }
             samples[sample].push(took);
@@ -1722,31 +1782,46 @@ fn serve_owner_spread() {
     );
     let secret = mann_whitney(&samples[0], &samples[1]);
     let control = mann_whitney(&samples[1], &samples[2]);
-    let positive = mann_whitney(&samples[0], &samples[3]);
+    let keyed = mann_whitney(&samples[0], &samples[3]);
+    let concentrated = mann_whitney(&samples[4], &samples[3]);
+    let ratio = median(&samples[4]) / median(&samples[3]);
+    for (what, test) in [
+        ("key 0 against key 1", &secret),
+        ("control, key 1 against key 1", &control),
+        ("crafted ports against ports as they come", &keyed),
+        (
+            "one serve thread against 8, ports as they come",
+            &concentrated,
+        ),
+    ] {
+        eprintln!(
+            "{what}: U = {}, z = {:.3}, p = {:.3e}",
+            test.u, test.z, test.p
+        );
+    }
     eprintln!(
-        "key 0 against key 1: U = {}, z = {:.3}, p = {:.3e}; control, key 1 against key 1: U = {}, z = {:.3}, p = {:.3e}; positive, 8 serve threads against 1: U = {}, z = {:.3}, p = {:.3e}",
-        secret.u,
-        secret.z,
-        secret.p,
-        control.u,
-        control.z,
-        control.p,
-        positive.u,
-        positive.z,
-        positive.p
+        "medians: crafted {:.2} ms, as they come {:.2} ms, one serve thread {:.2} ms; ratio of one serve thread to 8: {ratio:.3} (at least {SPREAD_EFFECT})",
+        median(&samples[0]),
+        median(&samples[3]),
+        median(&samples[4])
     );
     assert!(
         control.p >= 0.001,
         "the control failed: the machine's noise alone separates one input from itself"
     );
     assert!(
-        positive.p < 0.001,
-        "one owner and eight do not differ: p = {:.3e}; a steered placement would not show on this machine, so the oracle proves nothing",
-        positive.p
+        concentrated.p < 0.001 && ratio >= SPREAD_EFFECT,
+        "one serve thread and 8 with ports as they come do not differ enough (p = {:.3e}, ratio {ratio:.3}, least {SPREAD_EFFECT}): either this machine does not show a concentration of connections on one owner, or the placement over 8 serve threads concentrates them too, which is a placement defect, not noise",
+        concentrated.p
+    );
+    assert!(
+        keyed.p >= 0.001,
+        "crafted ports and ports as they come differ: p = {:.3e}; the placement is not keyed, so a peer's choice of source ports decides how its connections share the serve threads",
+        keyed.p
     );
     assert!(
         secret.p >= 0.001,
-        "key 0 and key 1 differ: p = {:.3e}; the placement of connections depends on the set-up",
+        "key 0 and key 1 differ: p = {:.3e}; the placement of connections depends on the time of the set-up",
         secret.p
     );
     for dir in &dirs {
