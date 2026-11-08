@@ -61,10 +61,15 @@ fn keywords_for(path: &Path) -> KeywordSet {
         .skip(1)
         .take_while(|dir| dir.starts_with(&repository))
     {
-        // `ita.una` exists from edition 0.4 only (ADR 0122), so it names that edition for the
-        // wrapping formatter (#1175); it comes first, as the package reads its manifests.
-        if dir.join("ita.una").is_file() {
-            return KeywordSet::V0_4;
+        // `ita.una` exists from edition 0.4 only (ADR 0122), so it names that edition or a later
+        // one for the wrapping formatter (#1175); it comes first, as the package reads its
+        // manifests.
+        if let Ok(text) = std::fs::read_to_string(dir.join("ita.una")) {
+            return if text.lines().any(|line| line.trim() == "edition 0.5") {
+                KeywordSet::V0_5
+            } else {
+                KeywordSet::V0_4
+            };
         }
         let manifest = dir.join("una.toml");
         if manifest.is_file() {

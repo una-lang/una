@@ -1,4 +1,4 @@
--- test: in edition 0.4 a kind, variant or unit named `F32`, `Complex`, `Array`, `Matrix`, `Tensor` or `Lu` is U1002
+-- test: in edition 0.5 a kind, variant or unit named `F32`, `Complex`, `Array`, `Matrix`, `Tensor` or `Lu` is U1002
 -- spec: spec/29 §18
 -- expect: error U1002 at src/m.una:11:10
 -- expect: error U1002 at src/m.una:13:10

@@ -581,27 +581,37 @@ pub(crate) fn run_command(
     };
     // A script of connections stands for the peers of the `serve:` grants (ADR 0123 rule 21):
     // it is read and checked in full after the key files, as the executable reads them, and
-    // before anything is made or runs; its connections do not run in this release yet
-    // (`spec/31 §8`).
-    if let Some(script) = options.serve_script {
-        let listeners: Vec<String> = grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Serve { grant, .. } => Some(grant.listener()),
-                _ => None,
-            })
-            .collect();
-        let message = match una_http::serve::script_file::load(script, &listeners) {
-            Ok(_) => una_http::serve::script_file::PENDING.to_owned(),
-            Err(message) => message,
-        };
-        writeln!(stderr, "error: {message}")?;
+    // before anything is made or runs. Its connections run only in the toolchain's own test
+    // builds (`scripted`); elsewhere they do not run yet (`spec/31 §8`).
+    let served_grants: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
+        .iter()
+        .map(|input| input.grant.clone())
+        .collect();
+    let script = match options.serve_script {
+        Some(script) => {
+            let listeners: Vec<String> = served_grants.iter().map(|g| g.listener()).collect();
+            match una_http::serve::script_file::load(script, &listeners) {
+                Ok(events) => Some(events),
+                Err(message) => {
+                    writeln!(stderr, "error: {message}")?;
+                    return Ok(ExitStatus::Usage);
+                }
+            }
+        }
+        None => None,
+    };
+    let script_runs = script.is_some()
+        && cfg!(feature = "test-hooks")
+        && crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() == Some("1");
+    if script.is_some() && !script_runs {
+        writeln!(stderr, "error: {}", una_http::serve::script_file::PENDING)?;
         return Ok(ExitStatus::Usage);
     }
     // Live peers send in real time, which virtual time cannot place: a run under
     // `--virtual-time` takes no `serve:` grant without `--serve-script` (ADR 0123, S4
     // amendment C).
     if options.virtual_time
+        && script.is_none()
         && grants
             .iter()
             .any(|grant| matches!(grant, Grant::Serve { .. }))
@@ -636,12 +646,14 @@ pub(crate) fn run_command(
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
     let serve_threads =
         una_interp::concurrency::serve_threads(options.tasks.serve_threads).unwrap_or(1);
-    let served: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
-        .iter()
-        .map(|input| input.grant.clone())
-        .collect();
+    // A scripted run binds no listener: the script's connections take their place.
+    let inputs = if script_runs {
+        Vec::new()
+    } else {
+        serve_inputs(&grants)
+    };
     let listeners = match una_http::serve::prepare(
-        &serve_inputs(&grants),
+        &inputs,
         serve_threads,
         options
             .tasks
@@ -677,7 +689,7 @@ pub(crate) fn run_command(
     let live = if serves && !listeners.listeners.is_empty() {
         // The engine's panic hook, from this thread, before any serve thread starts.
         una_http::serve::install_panic_hook();
-        match una_http::serve::live::Live::start(listeners, &served, serve_threads) {
+        match una_http::serve::live::Live::start(listeners, &served_grants, serve_threads) {
             Ok(live) => Some(std::sync::Arc::new(live)),
             Err(message) => {
                 writeln!(stderr, "error: {message}")?;
@@ -699,6 +711,9 @@ pub(crate) fn run_command(
         drive.is_some() || serving,
     );
     let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    let engine = script.as_deref().and_then(|events| {
+        scripted::Engine::start(options.environment, &served_grants, events, &stop)
+    });
     // The serve engine learns of the host stop and of the hard stop from the run's watcher
     // (ADR 0123 rule 18).
     if let Some(live) = &live {
@@ -755,9 +770,12 @@ pub(crate) fn run_command(
     let host = &host;
     let max_depth = options.max_depth;
     let mut limits = limits(&options, Some(&stop));
-    limits.serve = live
-        .as_deref()
-        .map(|live| live as &dyn una_http::serve::program::Port);
+    limits.serve = match &engine {
+        Some(engine) => Some(engine.port()),
+        None => live
+            .as_deref()
+            .map(|live| live as &dyn una_http::serve::program::Port),
+    };
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
@@ -827,6 +845,9 @@ pub(crate) fn run_command(
         );
     }
     drop(watching);
+    // The scripted engine ends with the run; what it leaves and `--serve-out` are reported
+    // after the run's own diagnostics, as the executable reports them (`scripted_end`).
+    let ended = engine.as_ref().map(scripted::Engine::end);
     let (evaluated, traced) = match evaluated {
         Ok((run, traced)) => (Ok(run), traced),
         Err(error) => (Err(error), None),
@@ -878,7 +899,7 @@ pub(crate) fn run_command(
         }
         writeln!(stderr, "error: cannot write the output: {error}")?;
         stderr.flush()?;
-        return Ok(ExitStatus::Usage);
+        return scripted_end(ended, options.serve_out, stderr, ExitStatus::Usage);
     }
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
@@ -917,14 +938,51 @@ pub(crate) fn run_command(
         diagnostics: in_output_order(&diagnostics),
         trace: run.trace.iter().map(EventDoc::from).collect(),
     };
-    finish(
+    let serve_out = options.serve_out;
+    let status = finish(
         &document,
         &diagnostics,
         &package.sources,
         options,
-        (stdout, stderr),
+        (stdout, &mut *stderr),
         status,
-    )
+    )?;
+    scripted_end(ended, serve_out, stderr, status)
+}
+
+/// After a scripted run's own diagnostics, as the executable orders them (`spec/31 §8` rule
+/// 6): what the engine left not at rest, as warnings, then `--serve-out`, whose file that
+/// cannot be written is a usage error; the exit code is the higher of the run's and 2.
+fn scripted_end(
+    ended: Option<(String, Vec<String>)>,
+    serve_out: Option<&Path>,
+    stderr: &mut dyn Write,
+    status: ExitStatus,
+) -> io::Result<ExitStatus> {
+    let Some((out, problems)) = ended else {
+        return Ok(status);
+    };
+    for problem in problems {
+        writeln!(
+            stderr,
+            "warning: the scripted engine at the end of the run: {problem}"
+        )?;
+    }
+    if let Some(path) = serve_out
+        && let Err(error) = una_http::serve::script_file::write_out(path, &out)
+    {
+        writeln!(
+            stderr,
+            "error: {}",
+            una_http::serve::script_file::out_error(path, &error)
+        )?;
+        return Ok(if status.code() > ExitStatus::Usage.code() {
+            status
+        } else {
+            ExitStatus::Usage
+        });
+    }
+    Ok(status)
 }
 
 /// Prints `document` as JSON on stdout, or `diagnostics` for people on stderr, and returns
@@ -1826,6 +1884,88 @@ impl<'a> ExampleDoc<'a> {
                 Completion::Aborted(_) => OutcomeDoc::Aborted,
             },
             trace: run.trace.iter().map(EventDoc::from).collect(),
+        }
+    }
+}
+
+/// The scripted engine behind `--serve-script` (ADR 0123 rule 21, `spec/31 §8` rule 6): the
+/// connections of a checked script in place of listeners, and `--serve-out`. It runs only in
+/// the toolchain's own test builds, when `UNA_TEST_RUN_SERVER` is 1 as for the other runs that
+/// serve there (`spec/31 §1` rule 10); every other run reports the script as not run yet.
+///
+/// It belongs to the run of `una run`, beside the live serve engine this file starts, and opens
+/// no connection: the script stands for the peers.
+mod scripted {
+    use std::sync::Arc;
+
+    use una_core::http::serve::ServeGrant;
+    use una_http::serve::program::Port;
+    use una_http::serve::script_file::Event;
+    use una_interp::stopping::RunStop;
+
+    use crate::Environment;
+
+    /// The scripted engine of a run.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) struct Engine(una_http::serve::script::ScriptPort);
+
+    /// No build but the toolchain's tests has the scripted engine.
+    #[cfg(not(feature = "test-hooks"))]
+    pub(crate) enum Engine {}
+
+    impl Engine {
+        /// The engine of the grants `grants` fed by `events`, whose host stop is `stop`'s, when this
+        /// build and `environment` run it; `None` otherwise.
+        #[cfg(feature = "test-hooks")]
+        pub(crate) fn start(
+            environment: Environment<'_>,
+            grants: &[ServeGrant],
+            events: &[Event],
+            stop: &Arc<RunStop>,
+        ) -> Option<Engine> {
+            if crate::variable(environment, "UNA_TEST_RUN_SERVER").as_deref() != Some("1") {
+                return None;
+            }
+            let stop = Arc::clone(stop);
+            Some(Engine(una_http::serve::script::ScriptPort::from_script(
+                grants,
+                events,
+                Box::new(move || stop.request_local()),
+            )))
+        }
+
+        #[cfg(not(feature = "test-hooks"))]
+        pub(crate) fn start(
+            _: Environment<'_>,
+            _: &[ServeGrant],
+            _: &[Event],
+            _: &Arc<RunStop>,
+        ) -> Option<Engine> {
+            None
+        }
+
+        /// The engine as the program's operations meet it.
+        pub(crate) fn port(&self) -> &dyn Port {
+            #[cfg(feature = "test-hooks")]
+            return &self.0;
+            #[cfg(not(feature = "test-hooks"))]
+            match *self {}
+        }
+
+        /// Ends the engine once the program has ended: the text of `--serve-out`, and what the
+        /// engine left not at rest (counters, peers, timers, connections accepted before any server
+        /// operation), which the run reports as warnings.
+        pub(crate) fn end(&self) -> (String, Vec<String>) {
+            #[cfg(feature = "test-hooks")]
+            return {
+                let ended = self.0.end();
+                (
+                    una_http::serve::script::out_text(&ended.wire),
+                    ended.problems,
+                )
+            };
+            #[cfg(not(feature = "test-hooks"))]
+            match *self {}
         }
     }
 }

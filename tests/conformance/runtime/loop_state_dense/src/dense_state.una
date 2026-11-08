@@ -1,4 +1,4 @@
--- test: in edition 0.4, an array, a matrix and a set that `for` loops update, through one or two levels of loops, hold their final values when read after the loops, while a copy bound before a loop and a closure created before it keep the values from before; a function whose loop updates a copy of its array argument gives the same result when called twice and leaves the argument as it was (#1196, spec/17 §7)
+-- test: in edition 0.5, an array, a matrix and a set that `for` loops update, through one or two levels of loops, hold their final values when read after the loops, while a copy bound before a loop and a closure created before it keep the values from before; a function whose loop updates a copy of its array argument gives the same result when called twice and leaves the argument as it was (#1196, spec/17 §7)
 -- spec: spec/17 §7
 -- grant: console
 -- expect: run-output "array: array([1.0, 2.0, 3.0]) / array([0.0, 0.0, 0.0]) / Some(0.0)"

@@ -85,11 +85,11 @@ pub(crate) enum Builtin {
     Map,
     /// `F64`, built in from edition 0.3 (`spec/29`, ADR 0114 rule 1).
     F64,
-    /// `F32`, built in from edition 0.4 (`spec/29`, ADR 0120 rule 5).
+    /// `F32`, built in from edition 0.5 (`spec/29`, ADR 0120 rule 5).
     F32,
-    /// A collection type that `std.collections` exports, edition 0.4 (ADR 0119 rule 0).
+    /// A collection type that `std.collections` exports, edition 0.5 (ADR 0119 rule 0).
     Coll(una_core::Coll),
-    /// `Complex[F64]` and `Complex[F32]`, built in from edition 0.4 (`spec/29 §19`, ADR 0120
+    /// `Complex[F64]` and `Complex[F32]`, built in from edition 0.5 (`spec/29 §19`, ADR 0120
     /// rule 22): two types, each a record kind of the prelude, written with their component
     /// type in brackets.
     Complex,
@@ -497,12 +497,12 @@ pub(crate) struct Env<'a> {
     /// declaration and examples keeps from it, by function id: the handler's name and the first
     /// place it is named, which the U4002 at a call of their policy shows.
     pub(crate) blocked_vias: BTreeMap<usize, (String, Span)>,
-    /// The module of the map's built-in method `update`, in edition 0.4 (ADR 0119 rule 18):
+    /// The module of the map's built-in method `update`, in edition 0.5 (ADR 0119 rule 18):
     /// in no scope, so only method syntax on a map reaches it.
     pub(crate) map_module: Option<usize>,
     /// The function `update` of that module.
     pub(crate) map_update: Option<usize>,
-    /// The module `std.collections`, when a package of edition 0.4 imports it (ADR 0119
+    /// The module `std.collections`, when a package of edition 0.5 imports it (ADR 0119
     /// rule 0).
     pub(crate) collections: Option<usize>,
     /// The hidden function `update` of that module, which only method syntax on a hash map
@@ -573,7 +573,7 @@ pub(crate) fn position_text(path: &[Step]) -> String {
 
 impl<'a> Env<'a> {
     /// Builds the environment of the package modules, then the prelude, `std.testing`, in
-    /// edition 0.4 the module of the map's `update` and, when the package imports it,
+    /// edition 0.5 the module of the map's `update` and, when the package imports it,
     /// `std.collections`, and lowers every signature.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
@@ -719,7 +719,7 @@ impl<'a> Env<'a> {
                     .entry("F64")
                     .or_insert(Entity::Builtin(Builtin::F64));
             }
-            if edition >= Edition::V0_4 {
+            if edition >= Edition::V0_5 {
                 module
                     .upper
                     .entry("F32")
@@ -728,6 +728,8 @@ impl<'a> Env<'a> {
                     .upper
                     .entry("Complex")
                     .or_insert(Entity::Builtin(Builtin::Complex));
+            }
+            if edition >= Edition::V0_4 {
                 // ADR 0123 rule 1: `std.host` exports `ReplyRight`, which only an import brings
                 // into scope (`spec/10 §11` rule 10).
                 module
@@ -1096,11 +1098,11 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// The dense type that `name` names in a type, in edition 0.4 (ADR 0120 rule 3): `Array`,
+    /// The dense type that `name` names in a type, in edition 0.5 (ADR 0120 rule 3): `Array`,
     /// `Matrix`, `Tensor` and `Lu` are built in, ahead of any declaration and of the variant
     /// `Json.Array`.
     pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
-        if self.edition < Edition::V0_4 {
+        if self.edition < Edition::V0_5 {
             return None;
         }
         match name {
@@ -1613,14 +1615,14 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// ADR 0120 rules 4, 8 and 15: in edition 0.4, `to_decimal` on an integer or a float, and
+    /// ADR 0120 rules 4, 8 and 15: in edition 0.5, `to_decimal` on an integer or a float, and
     /// `to_f32` on an integer or an `F64`, are built in, ahead of a function of that name, so a
     /// package function `to_decimal` whose first parameter has an integer type, a refinement
     /// or a measured one, `F64`, `F32`, or a type parameter, and a package function `to_f32`
     /// whose first parameter has an integer type, `F64`, or a type parameter, is U1002 at its
     /// name, and so is an import of one: no program changes meaning silently.
     fn no_function_to_decimal(&self, report: &mut Report<'_>) {
-        if self.edition < Edition::V0_4 {
+        if self.edition < Edition::V0_5 {
             return;
         }
         let built_in = |def: &FnDef<'_>| {
@@ -1659,7 +1661,7 @@ impl<'a> Env<'a> {
                     Code::U1002,
                     function.name.span,
                     format!(
-                        "{conversion} is a built-in conversion from edition 0.4, so a function cannot take its name for {firsts}"
+                        "{conversion} is a built-in conversion from edition 0.5, so a function cannot take its name for {firsts}"
                     ),
                 );
                 // ADR 0120 "Migration": the rename is the program's choice, so `una fix` does
@@ -1693,7 +1695,7 @@ impl<'a> Env<'a> {
                             Code::U1002,
                             ident.span,
                             format!(
-                                "{conversion} is a built-in conversion from edition 0.4, so an imported function of that name for {firsts} would never be called"
+                                "{conversion} is a built-in conversion from edition 0.5, so an imported function of that name for {firsts} would never be called"
                             ),
                         );
                     }
@@ -2172,7 +2174,7 @@ impl<'a> Env<'a> {
     /// M6.
     /// Whether a unit may follow `ty`, a written base type without its label: an integer
     /// type, `F64` from edition 0.3 (ADR 0114 rule 12.1), and `F32`, `Decimal[s]`,
-    /// `Complex[F64]` and `Complex[F32]` in edition 0.4 (ADR 0120 rule 61). Those types exist
+    /// `Complex[F64]` and `Complex[F32]` in edition 0.5 (ADR 0120 rule 61). Those types exist
     /// only in the editions that have them, so the type alone decides.
     fn measurable(&self, ty: &Ty) -> bool {
         match ty {
@@ -2295,7 +2297,7 @@ impl<'a> Env<'a> {
         };
         // ADR 0104 rule 2: a unit after `of`, on a number type only: an integer type, `F64`
         // from edition 0.3 (ADR 0114 rule 12.1), and `F32`, `Decimal[s]` and the complex types
-        // in edition 0.4 (ADR 0120 rule 61).
+        // in edition 0.5 (ADR 0120 rule 61).
         if let Some(unit) = &ty.unit {
             let measurable = self.measurable(declared.base.unlabeled());
             match declared.base.unlabeled() {
@@ -2315,7 +2317,7 @@ impl<'a> Env<'a> {
                 Ty::Error(_) => {}
                 _ => {
                     if self.reports(module) {
-                        let message = if self.edition >= Edition::V0_4 {
+                        let message = if self.edition >= Edition::V0_5 {
                             "a unit follows only a number type: `Int`, a fixed-width integer type, `F64`, `F32`, `Decimal[s]`, `Complex[F64]` or `Complex[F32]`"
                         } else if self.edition >= Edition::V0_3 {
                             "a unit follows only a number type: `Int`, a fixed-width integer type or `F64`"
@@ -2567,9 +2569,9 @@ impl<'a> Env<'a> {
             }
             return Declared::plain(Ty::Param(index));
         }
-        // Edition 0.4: `Decimal` is the decimal type only with its scale, an integer literal,
+        // Edition 0.5: `Decimal` is the decimal type only with its scale, an integer literal,
         // in brackets (ADR 0120 rule 2); the name alone is the `Json` variant.
-        if self.edition >= Edition::V0_4 && name == "Decimal" {
+        if self.edition >= Edition::V0_5 && name == "Decimal" {
             if reports {
                 report.error(
                     Code::U2037,
@@ -2580,7 +2582,7 @@ impl<'a> Env<'a> {
             return Declared::error();
         }
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
-        // Edition 0.4 (ADR 0120 rule 3): `Array`, `Matrix`, `Tensor` and `Lu` are built-in
+        // Edition 0.5 (ADR 0120 rule 3): `Array`, `Matrix`, `Tensor` and `Lu` are built-in
         // types, which no declaration can hide; the prelude's variant `Json.Array` is a constructor, written
         // with parentheses, so it never meets the type, written with brackets.
         if let Some(dense) = self.dense_name(name) {
@@ -2696,6 +2698,16 @@ impl<'a> Env<'a> {
                     return arity(expected, bases.len());
                 }
                 return self.alias(id, &bases, ident, reports, report);
+            }
+            // ADR 0139 rule 7: in edition 0.4, `Array` is still `Json`'s variant; the dense
+            // type moved to edition 0.5.
+            Some(Entity::Variant(kind, _))
+                if self.edition == Edition::V0_4 && matches!(name, "Array" | "Decimal") =>
+            {
+                format!(
+                    "`{name}` is a variant of `{}`, not a type; the type `{name}` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it",
+                    self.kind_display(kind)
+                )
             }
             Some(Entity::Variant(kind, _)) => {
                 format!(

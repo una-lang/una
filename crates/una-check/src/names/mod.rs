@@ -575,13 +575,13 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
-        // Edition 0.4: `Decimal` is built in (`spec/29 §16`, ADR 0120 rule 3).
-        if upper && self.package.settings.edition >= Edition::V0_4 && name == "Decimal" {
+        // Edition 0.5: `Decimal` is built in (`spec/29 §16`, ADR 0120 rule 3).
+        if upper && self.package.settings.edition >= Edition::V0_5 && name == "Decimal" {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`Decimal` is a built-in decimal type from edition 0.4, so a {} cannot take its name",
+                    "`Decimal` is a built-in decimal type from edition 0.5, so a {} cannot take its name",
                     what.word()
                 ),
             );
@@ -599,33 +599,33 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
-        // Edition 0.4: the dense types are built in, and `Tensor` and `Lu` are reserved for
+        // Edition 0.5: the dense types are built in, and `Tensor` and `Lu` are reserved for
         // them (`spec/29 §17`, ADR 0120 rule 3).
         if upper
-            && self.package.settings.edition >= Edition::V0_4
+            && self.package.settings.edition >= Edition::V0_5
             && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
         {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a built-in dense type from edition 0.4, so a {} cannot take its name",
+                    "`{name}` is a built-in dense type from edition 0.5, so a {} cannot take its name",
                     what.word()
                 ),
             );
             self.diagnostics.push(diagnostic);
         }
-        // Edition 0.4: the other types of the numeric foundation are built in (`spec/29`, ADR
+        // Edition 0.5: the other types of the numeric foundation are built in (`spec/29`, ADR
         // 0120 rule 3), as `F64` is; `Decimal` and the dense types have their own messages above.
         if upper
-            && self.package.settings.edition >= Edition::V0_4
+            && self.package.settings.edition >= Edition::V0_5
             && matches!(name, "F32" | "Complex")
         {
             let mut diagnostic = self.make(
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a built-in numeric type from edition 0.4, so a {} cannot take its name",
+                    "`{name}` is a built-in numeric type from edition 0.5, so a {} cannot take its name",
                     what.word()
                 ),
             );
@@ -985,7 +985,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 table.edges.push((target, import.module.span));
             }
             // The importable standard modules (`spec/10 §11` rule 10), `std.collections` among
-            // them from edition 0.4 (ADR 0119 rule 0).
+            // them from edition 0.5 (ADR 0119 rule 0).
             let edition = self.package.settings.edition;
             let importable = prelude::importable(edition);
             let is_std = importable.contains(&path.as_str());
@@ -1007,13 +1007,20 @@ impl<'p, 'a> Checker<'p, 'a> {
                     }
                     _ => listed.join(""),
                 };
-                self.error(
+                let mut diagnostic = self.make(
                     Code::U1001,
                     import.module.span,
                     format!(
                         "module `{path}` is not a module of this package; the standard modules that can be imported are {listed}"
                     ),
                 );
+                // ADR 0139 rule 7: `std.collections` moved to edition 0.5.
+                if edition == Edition::V0_4 && prelude::moved_to_0_5(&path) {
+                    diagnostic
+                        .repairs
+                        .push(Checker::advice(prelude::moved_to_0_5_advice(&path)));
+                }
+                self.diagnostics.push(diagnostic);
                 continue;
             }
             for ident in &import.names {

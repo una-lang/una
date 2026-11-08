@@ -1,4 +1,4 @@
-//! Dense values of edition 0.4 (`spec/29 §17`, ADR 0120): the prelude's contracts are all
+//! Dense values of edition 0.5 (`spec/29 §17`, ADR 0120): the prelude's contracts are all
 //! elaborated, the methods resolve by their receiver, and the checker's scaling stays linear.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -24,6 +24,7 @@ fn run(edition: &str, source: &str) -> (Vec<Diagnostic>, TypeCheck) {
         Edition::V0_2 => KeywordSet::V0_2,
         Edition::V0_3 => KeywordSet::V0_3,
         Edition::V0_4 => KeywordSet::V0_4,
+        Edition::V0_5 => KeywordSet::V0_5,
     };
     let id = db.add("src/m.una", source.as_bytes());
     let lexed = lex_in(db.file(id), id, &mut interner, keywords);
@@ -82,6 +83,7 @@ fn every_function_of_the_prelude_is_elaborated_with_its_contract() {
         (Edition::V0_2, "0.2"),
         (Edition::V0_3, "0.3"),
         (Edition::V0_4, "0.4"),
+        (Edition::V0_5, "0.5"),
     ] {
         let (names, types) = run(name, "module m\n\npub f() -> Int = 1\n");
         assert!(names.is_empty(), "{names:?}");
@@ -106,11 +108,11 @@ fn every_function_of_the_prelude_is_elaborated_with_its_contract() {
 
 #[test]
 fn every_dense_contract_keeps_each_of_its_clauses() {
-    // Each function the prelude of edition 0.4 adds keeps, in Core, as many `requires` and
+    // Each function the prelude of edition 0.5 adds keeps, in Core, as many `requires` and
     // `ensures` clauses as its source writes (review of #1048, L1): counted from the source of
     // its declarations, one line per clause.
-    let (_, types) = run("0.4", "module m\n\npub f() -> Int = 1\n");
-    let source = standard_source(Edition::V0_4).prelude;
+    let (_, types) = run("0.5", "module m\n\npub f() -> Int = 1\n");
+    let source = standard_source(Edition::V0_5).prelude;
     let start = source.find("pub array[").expect("the dense prelude");
     // The dense section ends where the declarations of `F32` (`spec/29 §18` rule 9) begin.
     let end = start
@@ -148,7 +150,7 @@ fn a_function_that_computes_elements_keeps_no_refinement_in_its_result() {
     // Review of #1048, C1: `matrix_diagonal` places `+0` off the diagonal, so over a refined
     // element type its result is over the base; a view keeps the refinement.
     let source = "module m\n\npub f(a: Array[I32 in 1..10]) -> I32\n  requires a.len >= 2\n=\n  let d = matrix_diagonal(values: a)\n  let x = d.get(row: 0, column: 1)\n  100 / x\n";
-    let (names, types) = run("0.4", source);
+    let (names, types) = run("0.5", source);
     assert!(names.is_empty() && types.diagnostics.is_empty());
     // Core's own text, which writes a refined type as `{base | refinements}` (review of #1048,
     // N6): the matrix is over the base, and no matrix of the function is over a refined type.
@@ -163,14 +165,14 @@ fn tensor_methods_take_the_function_of_their_rank() {
     // are the arguments (`spec/29 §17`): the call in Core is to that function, with as many
     // index arguments as the literal has.
     let source = "module m\n\npub f(t: Tensor[F64]) -> F64\n  requires t.rank == 3 and t.dim(axis: 0) > 1 and t.dim(axis: 1) > 2 and t.dim(axis: 2) > 3\n=\n  t.get(at: [1, 2, 3])\n\npub g() -> Tensor[I8]\n=\n  let zero: I8 = 0\n  tensor_filled(shape: [2, 2], value: zero)\n";
-    let (names, types) = run("0.4", source);
+    let (names, types) = run("0.5", source);
     assert!(names.is_empty(), "{names:?}");
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let core = una_core::print_module(&types.program.modules[0]);
     assert!(core.contains("dense_tensor_get_3"), "{core}");
     assert!(core.contains("dense_tensor_filled_2"), "{core}");
     let (_, types) = run(
-        "0.4",
+        "0.5",
         "module m\n\npub f(s: List[Int]) -> Tensor[F64] = tensor_filled(shape: s, value: 0.0)\n",
     );
     assert_eq!(
@@ -186,7 +188,7 @@ fn tensor_methods_take_the_function_of_their_rank() {
 #[test]
 fn dense_values_check_in_edition_0_4_only() {
     let source = "module m\n\npub f(a: Array[F64], m: Matrix[F64]) -> Int = a.len + m.rows\n";
-    let (names, types) = run("0.4", source);
+    let (names, types) = run("0.5", source);
     assert!(names.is_empty(), "{names:?}");
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     assert_eq!(types.program.modules[0].decls.len(), 1);
@@ -211,7 +213,7 @@ fn checking_dense_operators_is_linear_in_the_program() {
     let time = |n: usize| {
         let source = program(n);
         let start = Instant::now();
-        let (names, types) = run("0.4", &source);
+        let (names, types) = run("0.5", &source);
         assert!(names.is_empty() && types.diagnostics.is_empty());
         start.elapsed().as_secs_f64()
     };

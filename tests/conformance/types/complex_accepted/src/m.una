@@ -1,4 +1,4 @@
--- test: in edition 0.4 `Complex[F64]` and `Complex[F32]` are types with the fields `re` and `im`, built by `complex(re:, im:)` with labeled, punned or receiver arguments, whose float literals take the component type the context expects; their operators, `conj`, `scale` and `norm_sqr` keep the type, `==` compares them, and `re`, `im`, `complex(re:, im:)` and `==` are in the refinement language
+-- test: in edition 0.5 `Complex[F64]` and `Complex[F32]` are types with the fields `re` and `im`, built by `complex(re:, im:)` with labeled, punned or receiver arguments, whose float literals take the component type the context expects; their operators, `conj`, `scale` and `norm_sqr` keep the type, `==` compares them, and `re`, `im`, `complex(re:, im:)` and `==` are in the refinement language
 -- spec: spec/29 §19
 -- expect: ok
 module m

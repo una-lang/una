@@ -1,9 +1,8 @@
--- test: in edition 0.4, `simd` is no longer reserved: it is an identifier outside the `simd required` clause (ADR 0120 rule 1)
+-- test: in edition 0.4, `simd` is still reserved for the systems profile (U0103), since ADR 0139 rule 6 moves ADR 0120 rule 1 to edition 0.5
 -- spec: spec/01 §5
--- expect: ok
+-- expect: error U0103 at src/simd04.una:9:7
+-- expect: error U0103 at src/simd04.una:10:3
 module simd04
-
-pub simd(lanes: Int) -> Int = lanes * 2
 
 pub lanes() -> Int
 =

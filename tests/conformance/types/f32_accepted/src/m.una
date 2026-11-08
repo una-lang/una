@@ -1,4 +1,4 @@
--- test: F32 in edition 0.4: float literals typed by an expected F32, an operator's other operand included, on either side; operators, methods with labeled arguments, `to_f32` of an integer and of an F64, `to_f64` of an F32, `to_bits` as a U32, comparisons by identity and totalOrder, the prelude functions, `Map[F32, V]`, `sort` and `max`, all accepted
+-- test: F32 in edition 0.5: float literals typed by an expected F32, an operator's other operand included, on either side; operators, methods with labeled arguments, `to_f32` of an integer and of an F64, `to_f64` of an F32, `to_bits` as a U32, comparisons by identity and totalOrder, the prelude functions, `Map[F32, V]`, `sort` and `max`, all accepted
 -- spec: spec/29 §18
 -- expect: ok
 module m

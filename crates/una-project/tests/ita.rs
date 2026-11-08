@@ -770,3 +770,18 @@ fn a_systems_package_declares_its_budget_in_ita_una() {
         assert_eq!(manifest.max_memory, None);
     }
 }
+
+#[test]
+fn edition_0_5_is_named_in_ita_una() {
+    // ADR 0139 rule 6: edition 0.5, a preview after 0.4, is named in `ita.una` as 0.4 is.
+    let (manifest, errors) = parse_ita_manifest("ita case\n  version 0.1.0\n  edition 0.5\n");
+    assert_eq!(render(&errors), Vec::<String>::new());
+    assert_eq!(manifest.edition, Edition::V0_5);
+    assert!(Edition::V0_5.has_collections_and_numerics());
+    assert!(!Edition::V0_4.has_collections_and_numerics());
+    has(
+        "ita case\n  version 0.1.0\n  edition 0.6\n",
+        Code::U7008,
+        "edition `0.6` is not supported",
+    );
+}

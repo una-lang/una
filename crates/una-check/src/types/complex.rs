@@ -1,4 +1,4 @@
-//! `Complex[F64]` and `Complex[F32]` of edition 0.4 (`spec/29 §19`, ADR 0120 rules 22 to 25):
+//! `Complex[F64]` and `Complex[F32]` of edition 0.5 (`spec/29 §19`, ADR 0120 rules 22 to 25):
 //! the prelude's record kinds `Complex_F64` and `Complex_F32`, which a program writes
 //! `Complex[F64]` and `Complex[F32]` and builds with `complex(re: x, im: y)`, whose arguments'
 //! type picks the kind. The operators `+`, `-`, `*`, `/` and unary `-`, and the methods
@@ -129,7 +129,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// `complex(re: x, im: y)`, or `x.complex(im: y)` with the receiver, already typed, binding
-    /// `re`, when `id` is the prelude's `complex` in edition 0.4 (ADR 0120 rule 22): both
+    /// `re`, when `id` is the prelude's `complex` in edition 0.5 (ADR 0120 rule 22): both
     /// arguments are `F64`, or both `F32` (U2001 otherwise), and the result is `Complex[F64]` or
     /// `Complex[F32]`, labeled with both arguments' labels (IF1). A complex `expected` type gives
     /// its component type to the arguments, so float literals take it. The call is a
@@ -143,7 +143,7 @@ impl Checker<'_, '_, '_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let def = self.env.functions.get(id)?;
@@ -332,7 +332,7 @@ impl Checker<'_, '_, '_> {
         )
     }
 
-    /// `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` on a complex `x` in edition 0.4 (ADR
+    /// `x.conj()`, `x.scale(by: k)` and `x.norm_sqr()` on a complex `x` in edition 0.5 (ADR
     /// 0120 rule 23), code only: the result joins the labels of the receiver and of `k`. `None`
     /// when `target` is not complex or `method` is none of them, so the call resolves as a
     /// function of the package.
@@ -343,7 +343,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         // A measured receiver (ADR 0120 rule 64): `conj` keeps its unit, `scale(by:)`
@@ -507,11 +507,11 @@ impl Checker<'_, '_, '_> {
         self.report.repair_since(mark, Code::U2001, at, repair);
     }
 
-    /// U2001 when the prelude's `complex` is used as a value in edition 0.4: its result's type
+    /// U2001 when the prelude's `complex` is used as a value in edition 0.5: its result's type
     /// is chosen by its arguments' type at each call (ADR 0120 rule 22), which a function value
     /// cannot carry.
     pub(crate) fn complex_function_value(&mut self, id: usize, span: Span) {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return;
         }
         let Some(def) = self.env.functions.get(id) else {

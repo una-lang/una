@@ -8,7 +8,9 @@
 //! calls `handle` and gives its outcome to [`answer`]: `handle`'s reply, or `500` with an empty
 //! body when it failed, never the failure's payload, to `reply`, whose failure is ignored. At
 //! a host stop `next` fails with `Interrupted`, the loop stops at its next iteration, and the
-//! started tasks drain. Each operation is performed and traced as the compiled code of the
+//! started tasks drain. The statement is bounded by the sum of the grants' `/once`
+//! (`una_interp::Grant::serve_driver_bound`), so `start` waits for a place while that many
+//! `handle` tasks run, even when their exchanges ended. Each operation is performed and traced as the compiled code of the
 //! program of rule 4 performs it, so the bytes and the trace are that program's.
 //!
 //! Each request costs O(1) beside `handle` and the bytes of the request and the reply: one
@@ -79,7 +81,9 @@ pub(crate) fn drive(answer: i64, next: i64, site: i64) -> i64 {
         );
         return 2;
     };
-    if started::tasks_begin(0, 0, at) != 0 {
+    // The grants' `/once` bounds the started tasks (decision S6-D6, #1724), as in the
+    // interpreter: a task's place is given back when its `handle` ends.
+    if started::tasks_begin_at_most(runtime::serve_driver_bound()) != 0 {
         return 2;
     }
     let instance = server();

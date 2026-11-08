@@ -1,4 +1,4 @@
--- test: in edition 0.4, the breadth-first walk of ADR 0119 rule 20 is proven from the facts of V2 alone: `visit`'s `ensures` keeps the measure `2 * (seen.size - seen.len) + waiting.len` from rising, each `add` is in its bit set's range, and one round of the walk, a `pop` then a `visit`, lowers the measure by at least 1 (`decreases_step`) and keeps it at least 0 (`decreases_bound`), from `len <= size` of every bit set and `len >= 0` of every queue; the obligations of ADR 0116's `decreases` are stated as `ensures` of the round
+-- test: in edition 0.5, the breadth-first walk of ADR 0119 rule 20 is proven from the facts of V2 alone: `visit`'s `ensures` keeps the measure `2 * (seen.size - seen.len) + waiting.len` from rising, each `add` is in its bit set's range, and one round of the walk, a `pop` then a `visit`, lowers the measure by at least 1 (`decreases_step`) and keeps it at least 0 (`decreases_bound`), from `len <= size` of every bit set and `len >= 0` of every queue; the obligations of ADR 0116's `decreases` are stated as `ensures` of the round
 -- spec: spec/28 §11
 -- expect: ok
 module walk

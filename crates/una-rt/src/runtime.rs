@@ -2001,6 +2001,14 @@ pub(crate) fn task_stopping() -> bool {
     with_state(|state| state.cancelled() || state.stopped.is_some()).unwrap_or(false)
 }
 
+/// The bound of the `tasks` statement of the run's `serve` section driver: the sum of `/once`
+/// over the run's `serve:` grants, within the default bound of a `tasks` statement, at least 1
+/// ([`Grant::serve_driver_bound`], #1724). O(g).
+pub(crate) fn serve_driver_bound() -> usize {
+    with_state(|state| Grant::serve_driver_bound(&state.grants, state.max_memory, state.shared.cap))
+        .unwrap_or(1)
+}
+
 /// `f` of the state of the run, when the thread runs `main`.
 pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|cell| cell.borrow_mut().as_mut().map(f))
@@ -2183,23 +2191,53 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     #[cfg(not(feature = "test-hooks"))]
     let scripted = false;
     // A script of connections stands for the peers of the `serve:` grants (ADR 0123 rule 21):
-    // it is read and checked in full before `main`, and its connections do not run in this
-    // release yet (`spec/31 §8`), as for `una run`.
-    if let Some(script) = &options.serve_script {
-        let listeners: Vec<String> = grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Serve { grant, .. } => Some(grant.listener()),
-                _ => None,
-            })
-            .collect();
-        let message = match una_http::serve::script_file::load(script, &listeners) {
-            Ok(_) => una_http::serve::script_file::PENDING.to_owned(),
-            Err(message) => message,
-        };
-        let _ = writeln!(stderr, "error: {message}");
-        return USAGE;
-    }
+    // it is read and checked in full before `main`. Its connections run only in the
+    // toolchain's own test builds; elsewhere they do not run yet (`spec/31 §8`), as for
+    // `una run`.
+    let scripted = match &options.serve_script {
+        Some(script) => {
+            let served: Vec<una_core::http::serve::ServeGrant> = grants
+                .iter()
+                .filter_map(|grant| match grant {
+                    Grant::Serve { grant, .. } => Some((**grant).clone()),
+                    _ => None,
+                })
+                .collect();
+            let listeners: Vec<String> = served.iter().map(|g| g.listener()).collect();
+            let events = match una_http::serve::script_file::load(script, &listeners) {
+                Ok(events) => events,
+                Err(message) => {
+                    let _ = writeln!(stderr, "error: {message}");
+                    return USAGE;
+                }
+            };
+            // The test hook and the flag cannot both name a script.
+            if scripted {
+                let _ = writeln!(
+                    stderr,
+                    "error: `--serve-script` and `UNA_TEST_SERVE_SCRIPT` both name a script"
+                );
+                return USAGE;
+            }
+            #[cfg(feature = "test-hooks")]
+            let runs = crate::serve::script::install_from_script(
+                &served,
+                &events,
+                options.serve_out.clone(),
+            );
+            #[cfg(not(feature = "test-hooks"))]
+            let runs = {
+                let _ = (&served, &events);
+                false
+            };
+            if !runs {
+                let _ = writeln!(stderr, "error: {}", una_http::serve::script_file::PENDING);
+                return USAGE;
+            }
+            true
+        }
+        None => scripted,
+    };
     // Live peers send in real time, which virtual time cannot place: a run under
     // `--virtual-time` takes no `serve:` grant without `--serve-script` (ADR 0123, S4 amendment
     // C). The scripted engine of the tests stands for such a script.
@@ -2618,7 +2656,10 @@ fn finish(mut state: State) -> i32 {
     // The scripted engine of the tests ends with the run, after every answer (ADR 0123 rule
     // 21).
     #[cfg(feature = "test-hooks")]
-    crate::serve::script::end();
+    if let Err(message) = crate::serve::script::end() {
+        let _ = writeln!(stderr, "error: {message}");
+        code = USAGE;
+    }
     // The serve threads write what the run answered, then end (ADR 0123 rule 18); after an
     // abort that ends the process at once, `abort_run` made the hard stop already.
     end_serving(
