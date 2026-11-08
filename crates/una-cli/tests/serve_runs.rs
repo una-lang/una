@@ -56,6 +56,8 @@
     clippy::unwrap_used
 )]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/timing.rs"]
 mod timing;
 
@@ -694,19 +696,17 @@ fn answered(wire: &[Value]) -> usize {
         .count()
 }
 
-/// The seconds the native executable built in `package` takes to serve its script.
+/// The processor seconds the native executable built in `package` takes to serve its script.
 fn native_seconds(package: &Path, name: &str, n: usize) -> f64 {
     let wire = package.join("wire.jsonl");
-    let (ran, seconds) = timing::timed(|| {
+    let (ran, seconds) = cpu::cpu_output(
         std::process::Command::new(package.join("target/una").join(name))
             .env("UNA_TEST_SERVE_SCRIPT", package)
             .env("UNA_TEST_SERVE_WIRE", &wire)
             .env("UNA_TEST_SERVE_REVEAL", "0")
             .arg("--virtual-time")
-            .current_dir(package)
-            .output()
-            .unwrap()
-    });
+            .current_dir(package),
+    );
     assert_eq!(ran.status.code(), Some(0), "{ran:?}");
     assert_eq!(answered(&lines(&wire)), n);
     seconds
@@ -724,7 +724,24 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn a_serve_section_takes_constant_time_per_request() {
+fn a_serve_section_takes_constant_cpu_time_per_request() {
+    // Each run is measured by its processor time (`cpu`, #1662): the interpreter's in a child of
+    // this test binary, the executable's itself. Neither engine waits by spinning: under the
+    // script and virtual time the serve engine's operations do their work in the calling task,
+    // the scheduler's workers block on a condition variable or park, and no slicer runs, so the
+    // processor time is the requests' work whatever runs beside the test.
+    const TEST: &str = "a_serve_section_takes_constant_cpu_time_per_request";
+    if let Some(dir) = cpu::child() {
+        let (n, dir) = dir.split_once(' ').unwrap();
+        let (wire, _) = run(Path::new(dir));
+        assert_eq!(
+            answered(&wire),
+            n.parse::<usize>().unwrap(),
+            "interpreted: {n} requests"
+        );
+        cpu::ran();
+        return;
+    }
     // `spec/31 §7` rule 4: each request costs one `next`, one `start`, one move of one reply
     // right and one `reply`, O(1) beside `handle`, so serving `n` requests takes O(n) in both
     // engines. From 2,500 to 10,000 requests four times as many take about four times as long;
@@ -736,9 +753,7 @@ fn a_serve_section_takes_constant_time_per_request() {
     let interpreted = |n: usize| {
         let dir = requests_case(n);
         let _scratch = Scratch(vec![dir.clone()]);
-        let ((wire, _), seconds) = timing::timed(|| run(&dir));
-        assert_eq!(answered(&wire), n, "interpreted: {n} requests");
-        seconds
+        cpu::in_child(TEST, &format!("{n} {}", dir.display()))
     };
     let fixed = timing::best_of_three(|| interpreted(100));
     timing::assert_growth(

@@ -1,17 +1,19 @@
 //! The costs of dense values that ADR 0120 states (Costs): `get` and `set` in a loop cost the
 //! same per access whatever the array's length, since a `set` of an array held once updates it
 //! in place; and the verifier's shape obligations are linear in their number. Only the measured
-//! step is timed, and a miss is measured twice more (#341).
+//! step is timed, by its processor time in a child of the test binary (`common/cpu.rs`, #1662),
+//! and a miss is measured twice more (#341).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/timing.rs"]
 mod timing;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use una_cli::Tier;
 use una_interp::{FileFault, Host, Limits, NotText, World};
@@ -67,9 +69,18 @@ fn accesses(n: usize) -> String {
     )
 }
 
-/// The seconds `run_main` takes on `source`, the best of three.
+/// The processor seconds a child takes to check `source` and run it by `run_main`, the best of
+/// three. The length is a literal of the source, so the check costs the same at every length
+/// and the fixed cost, measured the same way on 10 elements, takes it out with the child's start.
 fn run_seconds(dir: &Path, source: &str) -> f64 {
     package(dir, source);
+    let test = "get_and_set_in_a_loop_cost_the_same_per_access_at_any_length_in_cpu_time";
+    let argument = dir.display().to_string();
+    timing::best_of_three(|| cpu::in_child(test, &argument))
+}
+
+/// The measured step, in the child: the package in `dir` checked, then its `main` run once.
+fn run_here(dir: &Path) {
     let checked = una_cli::check(dir, Tier::Zero).unwrap();
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     let program = checked.program;
@@ -83,21 +94,15 @@ fn run_seconds(dir: &Path, source: &str) -> f64 {
         std::thread::Builder::new()
             .stack_size(stack)
             .spawn_scoped(scope, || {
-                (0..3)
-                    .map(|_| {
-                        let started = Instant::now();
-                        let run = una_interp::run_main(
-                            &program,
-                            "main",
-                            &mut Quiet,
-                            &host,
-                            Limits::depth(10_000),
-                        )
-                        .unwrap();
-                        assert!(matches!(run.completion, una_interp::Completion::Ok(_)));
-                        started.elapsed().as_secs_f64()
-                    })
-                    .fold(f64::INFINITY, f64::min)
+                let run = una_interp::run_main(
+                    &program,
+                    "main",
+                    &mut Quiet,
+                    &host,
+                    Limits::depth(10_000),
+                )
+                .unwrap();
+                assert!(matches!(run.completion, una_interp::Completion::Ok(_)));
             })
             .unwrap()
             .join()
@@ -106,7 +111,12 @@ fn run_seconds(dir: &Path, source: &str) -> f64 {
 }
 
 #[test]
-fn get_and_set_in_a_loop_cost_the_same_per_access_at_any_length() {
+fn get_and_set_in_a_loop_cost_the_same_per_access_at_any_length_in_cpu_time() {
+    if let Some(dir) = cpu::child() {
+        run_here(Path::new(&dir));
+        cpu::ran();
+        return;
+    }
     // From 10^4 to 8 * 10^4 elements, eight times as many accesses take about eight times as
     // long; a copy at each `set` would take about 64 times. The bound, 24, leaves a wide
     // margin, as #329's does.
@@ -130,17 +140,20 @@ fn shapes(n: usize) -> String {
 }
 
 #[test]
-fn shape_obligations_verify_in_linear_time() {
+fn shape_obligations_verify_in_linear_cpu_time() {
+    if let Some(dir) = cpu::child() {
+        let checked = una_cli::check(Path::new(&dir), Tier::One).unwrap();
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        cpu::ran();
+        return;
+    }
     // 10, 100 and 1,000 shape obligations: ten times as many take about ten times as long
     // past the fixed cost, within 30.
     let dir = std::env::temp_dir().join(format!("una-dense-shapes-{}", std::process::id()));
     let verify = |n: usize| {
         package(&dir, &shapes(n));
-        let started = Instant::now();
-        let checked = una_cli::check(&dir, Tier::One).unwrap();
-        let seconds = started.elapsed().as_secs_f64();
-        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-        seconds
+        let argument = dir.display().to_string();
+        cpu::in_child("shape_obligations_verify_in_linear_cpu_time", &argument)
     };
     let fixed = timing::best_of_three(|| verify(1));
     timing::assert_growth(
