@@ -1772,8 +1772,8 @@ impl Drop for Reaped {
 /// every one waits in the kernel's backlog, since nothing is accepted before the first server
 /// operation. Once the program prints `ready`, the kept connections each send `/probe` at once
 /// and read their 8 MiB reply. Returns the time to `ready` and the time until the last reply
-/// was read, in milliseconds, and the serve thread that owned each kept connection, in the
-/// order of their source ports, as the run's placement probe wrote them (`place::probe`, the
+/// was read, in milliseconds, and each kept connection's source port with the serve thread
+/// placement chose for it, in the order of the ports, as the run's placement probe wrote them (`place::probe`, the
 /// `test-hooks` feature; decision D-24 of #1660); then the host stop ends the run, which must
 /// end with 0. With `unkeyed` the probe places by `port mod M`, with no key: the oracle's
 /// positive control.
@@ -1789,7 +1789,7 @@ fn spread_run(
     ports: Ports,
     unkeyed: bool,
     engine: Engine,
-) -> (f64, f64, Vec<usize>) {
+) -> (f64, f64, Vec<(u16, usize)>) {
     use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
     let owners_file = dir.join("owners.txt");
@@ -1925,7 +1925,7 @@ fn spread_run(
                 "{name}: the probe placed the kept port {port} {} times:\n{log}",
                 found.len()
             );
-            found[0]
+            (*port, found[0])
         })
         .collect();
     (
@@ -1967,7 +1967,8 @@ fn serve_owner_spread(engine: Engine) {
     // the owner on this machine (PR #1779: 9 workloads, ratios 0.4 to 1.17 of one serve
     // thread to 8, in both engines), so the oracle observes it directly (decision D-24): the
     // run's placement probe, under the `test-hooks` feature only, writes the serve thread that
-    // owns each accepted connection (`una_http::serve::place::probe`).
+    // placement chose for each accepted connection, before the peer's admission
+    // (`una_http::serve::place::probe`).
     //
     // Six arms, each 20 runs, their order rotated every round:
     //
@@ -1978,8 +1979,8 @@ fn serve_owner_spread(engine: Engine) {
     // 3. key 1 again.
     // 4. key 0, ports as they come, 8 serve threads.
     // 5. key 0, ports as they come, one serve thread.
-    // 6. key 0, crafted ports, 8 serve threads, placed by `port mod 8` with no key: the
-    //    positive control.
+    // 6. key 0, crafted ports, 8 serve threads, the unkeyed port-mod-8 placement (`port mod 8`
+    //    with no key): the positive control.
     //
     // ASSERTED, on the owners: in each run of arms 1, 2 and 3, the 8 crafted connections are
     // not all on one owner (false fail 8 * 8^-8 = 4.8e-7 per run under the model of
@@ -1987,8 +1988,15 @@ fn serve_owner_spread(engine: Engine) {
     // thread owns between [`SPREAD_POOLED_LEAST`] and [`SPREAD_POOLED_MOST`] (2.5e-7 per
     // thread and arm). By the union bound, the false-fail probability of one engine's oracle
     // is at most 60 * 4.8e-7 + 24 * 2.5e-7 = 3.5e-5. In every run of arm 6 all 8 crafted
-    // connections are on one owner, so the observation and the crafted ports do separate a
-    // placement without the key from the keyed one.
+    // connections are on one owner, so the observation and the crafted ports do separate the
+    // unkeyed port-mod-8 placement from the keyed one. They separate only that one: other
+    // placements without a fresh key spread multiples of 8 and pass every asserted check,
+    // such as `(port >> 3) mod 8`, an unkeyed SipHash, round-robin by accept order, the
+    // thread that accepted, or the keyed hash under a fixed key, since the ports differ from
+    // run to run and cannot be replayed (std cannot bind a source port). A fixed key is not
+    // covered by this oracle: the owners of a port that recurs across keyed runs are logged,
+    // with how often they agree (about 1 in 8 under fresh keys, always under a fixed key), as
+    // a diagnostic only, since how many ports recur is not known in advance.
     //
     // LOGGED ONLY, never asserted: the timings of every arm, the rank tests of PR #1779 (key 0
     // against key 1, key 1 against itself, crafted against as they come, one serve thread
@@ -2040,6 +2048,9 @@ fn serve_owner_spread(engine: Engine) {
     let mut readies: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
     let mut pooled = [[0usize; SPREAD_THREADS as usize]; 6];
     let mut problems = Vec::new();
+    // The owners of each source port over the keyed runs of 8 serve threads (arms 1 to 4),
+    // for the diagnostic of a fixed key.
+    let mut by_port: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
     for round in 0..20 {
         for step in 0..arms.len() {
             let sample = (step + round) % arms.len();
@@ -2054,9 +2065,12 @@ fn serve_owner_spread(engine: Engine) {
                 engine,
             );
             let mut counts = [0usize; SPREAD_THREADS as usize];
-            for &owner in &owners {
+            for &(source, owner) in &owners {
                 assert!(owner < threads, "{engine_name}: owner {owner} of {threads}");
                 counts[owner] += 1;
+                if sample < 4 {
+                    by_port.entry(source).or_default().push(owner);
+                }
             }
             for (total, count) in pooled[sample].iter_mut().zip(counts) {
                 *total += count;
@@ -2075,7 +2089,7 @@ fn serve_owner_spread(engine: Engine) {
             }
             if sample == 5 && most != SPREAD_PEERS {
                 problems.push(format!(
-                    "round {round} arm 6: the unkeyed control did not put the {SPREAD_PEERS} crafted connections on one owner: {owners:?}; the probe or the crafted ports do not separate"
+                    "round {round} arm 6: the unkeyed port-mod-8 placement did not put the {SPREAD_PEERS} crafted connections on one owner: {owners:?}; the probe or the crafted ports do not separate"
                 ));
             }
             if sample < 3 {
@@ -2084,6 +2098,22 @@ fn serve_owner_spread(engine: Engine) {
             samples[sample].push(took);
         }
     }
+    // Diagnostic only: a port seen in several keyed runs keeps its owner about 1 time in 8
+    // under fresh keys, and always under a fixed key.
+    let (mut pairs, mut agreeing) = (0usize, 0usize);
+    for owners in by_port.values() {
+        for (i, a) in owners.iter().enumerate() {
+            for b in &owners[i + 1..] {
+                pairs += 1;
+                agreeing += usize::from(a == b);
+            }
+        }
+    }
+    eprintln!(
+        "{engine_name}: diagnostic: {} source ports recur across the keyed runs; of {pairs} pairs of runs that share a port, {agreeing} give it the same owner (fresh keys: about {:.1}; a fixed key: all {pairs})",
+        by_port.values().filter(|owners| owners.len() > 1).count(),
+        pairs as f64 / 8.0
+    );
     for (arm, counts) in pooled.iter().enumerate() {
         eprintln!(
             "{engine_name}: arm {}: connections per serve thread over 20 runs: {counts:?}",
@@ -2096,7 +2126,7 @@ fn serve_owner_spread(engine: Engine) {
             .any(|&c| !(SPREAD_POOLED_LEAST..=SPREAD_POOLED_MOST).contains(&c))
         {
             problems.push(format!(
-                "arm {}: connections per serve thread over 20 runs {counts:?} leave [{SPREAD_POOLED_LEAST}, {SPREAD_POOLED_MOST}]: the crafted ports do not spread as a keyed hash would",
+                "arm {}: connections per serve thread over 20 runs {counts:?} leave [{SPREAD_POOLED_LEAST}, {SPREAD_POOLED_MOST}]: the crafted ports do not spread as a keyed hash would, as under the unkeyed port-mod-8 placement",
                 arm + 1
             ));
         }

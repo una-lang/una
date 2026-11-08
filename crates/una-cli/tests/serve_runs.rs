@@ -58,6 +58,8 @@
 
 #[path = "common/cpu.rs"]
 mod cpu;
+#[path = "common/native_build.rs"]
+mod native_build;
 #[path = "common/timing.rs"]
 mod timing;
 
@@ -754,37 +756,7 @@ fn a_program_that_holds_most_of_its_memory_still_serves_alike_in_both_engines() 
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-/// The runtime library with its test hook of the scripted engine (`una-rt`'s `test-hooks`),
-/// built once for this test binary in a target directory of its own, so that the plain
-/// `libuna_rt.a` that the other tests of the toolchain link is never replaced, even for a
-/// moment: its path. `cargo test` builds `una-rt`'s static library only when asked.
-fn hooked_runtime() -> PathBuf {
-    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let (profile_args, profile): (&[&str], &str) = if cfg!(debug_assertions) {
-                (&[], "debug")
-            } else {
-                (&["--release"], "release")
-            };
-            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks");
-            let status = std::process::Command::new(env!("CARGO"))
-                .args(["build", "--quiet", "--locked", "-p", "una-rt"])
-                .args(profile_args)
-                .args(["--features", "una-rt/test-hooks", "--target-dir"])
-                .arg(&target)
-                .current_dir(&root)
-                .status()
-                .unwrap();
-            assert!(
-                status.success(),
-                "cargo build -p una-rt --features una-rt/test-hooks failed"
-            );
-            target.join(profile).join("libuna_rt.a")
-        })
-        .clone()
-}
+use native_build::hooked_runtime;
 
 /// The executable of the case `dir`, built with the runtime's test hook in a fresh copy of it:
 /// the scratch directory, the copy and the package's name. `tag` tells the copies of one case
