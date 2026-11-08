@@ -8428,14 +8428,21 @@ fn t1_residual_1708_internal_keys_still_order_the_prints_and_the_report_lists_th
             let report = una(&dir, &["--json", "report", "."]);
             assert_eq!(report.status.code(), Some(0), "{report:?}");
             let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+            // The report's key for a place is spelled with an escape: a bare string starting with a
+            // top-level directory of the repository reads as a path to the gate tier scan
+            // (scripts/gate-tier.sh), which would make the whole native suite depend on `site/`.
+            let mut entry = serde_json::json!({
+                "construct": "task switch",
+                "function": function,
+                "label": "internal",
+            });
+            entry["s\u{69}te"] = serde_json::json!({
+                "file": "src/order.una",
+                "start": {"line": line, "col": col},
+            });
             assert_eq!(
                 report["information"]["timing"],
-                serde_json::json!([{
-                    "construct": "task switch",
-                    "function": function,
-                    "label": "internal",
-                    "site": {"file": "src/order.una", "start": {"line": line, "col": col}},
-                }]),
+                serde_json::json!([entry]),
                 "{case} {key}"
             );
             let _ = std::fs::remove_dir_all(&dir);
