@@ -9,8 +9,11 @@
 //! bound of 32 times, which separates linear (about 16 times) from quadratic (about 256 times) on a
 //! shared machine: with a time a·n + b·n², it tolerates a quadratic share r = b·n0/a at the
 //! smallest size n0 of at most (32 - 16)/(256 - 32) = 1/14, as tight as the old bound of 2.5 times
-//! per doubling over 8 times the size (1/12). This file holds one test, so no other test of its
-//! binary moves the counter while it reads it.
+//! per doubling over 8 times the size (1/12). A second shape, counted only, holds `n` requests,
+//! each in a task started by its own `tasks` statement: the precise `τ_conc` of each request comes
+//! from `Concurrency`, built once, in O(1) per request (#1154), where a search of the constructs
+//! per request would take O(n²). This file holds one test, so no other test of its binary moves
+//! the counter while it reads it.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -22,9 +25,14 @@ mod timing;
 
 use una_check::{ModuleInput, PackageInput, check_names, check_types};
 use una_project::parse_manifest;
-use una_syntax::{Interner, SourceDb, lex, parse};
+use una_syntax::{Interner, KeywordSet, SourceDb, lex_in, parse};
 
 const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n";
+
+/// Edition 0.4, for `tasks`. It is described by `ita.una`; the settings `una.toml` gives are the
+/// same, and the project error that names `ita.una` does not matter here, as in
+/// `tests/timing_scaling.rs`.
+const MANIFEST_0_4: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n";
 
 /// A module of `n` functions, each making one request and calling the next, under a `top` that
 /// works on a `secret` before it calls the first: an ancestor of every request.
@@ -46,17 +54,49 @@ fn app(n: usize) -> String {
     text
 }
 
+/// A module of `n` functions, each making one request, and a `run` with `n` `tasks` statements,
+/// each starting one of them beside work on a `secret`: `n` requests, each beside its own
+/// construct.
+fn started(n: usize) -> String {
+    let mut text = String::from("module app\n\ncrunch(key: secret Int) -> secret Int = key * 3\n");
+    for i in 0..n {
+        text.push_str(&format!(
+            "\nf{i}(url: Text) -> Unit\n  uses @http: Http[get]\n=\n  let reply = attempt @http.get(url, headers: [], key_name: None)\n  unit\n"
+        ));
+    }
+    text.push_str("\npub run(url: Text, key: secret Int) -> Unit\n  uses @http: Http[get]\n=\n");
+    for i in 0..n {
+        text.push_str(&format!(
+            "  tasks\n    start f{i}(url)\n    let spent{i} = crunch(key)\n    unit\n"
+        ));
+    }
+    text.push_str("  unit\n");
+    text
+}
+
 /// Whether `L_lim` of the package of size `n` is above `internal`, its codes, the pass steps
 /// its type check took, and its time.
 fn checked(n: usize) -> (bool, Vec<String>, usize, Duration) {
-    let text = app(n);
+    checked_text(&app(n), MANIFEST, KeywordSet::V0_1)
+}
+
+/// [`checked`] for the package `text` under `manifest`.
+fn checked_text(
+    text: &str,
+    manifest_text: &str,
+    keywords: KeywordSet,
+) -> (bool, Vec<String>, usize, Duration) {
     let mut db = SourceDb::new();
     let mut interner = Interner::new();
-    let manifest = db.add("una.toml", MANIFEST.as_bytes());
-    let (settings, errors) = parse_manifest(MANIFEST);
-    assert!(errors.is_empty(), "{errors:?}");
+    let manifest = db.add("una.toml", manifest_text.as_bytes());
+    let (settings, errors) = parse_manifest(manifest_text);
+    // Only the error that names `ita.una`, for edition 0.4 (see [`MANIFEST_0_4`]).
+    assert!(
+        errors.is_empty() || (manifest_text == MANIFEST_0_4 && errors.len() == 1),
+        "{errors:?}"
+    );
     let id = db.add("src/app.una", text.as_bytes());
-    let lexed = lex(db.file(id), id, &mut interner);
+    let lexed = lex_in(db.file(id), id, &mut interner, keywords);
     let parsed = parse(&lexed, id, &interner);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let input = PackageInput {
@@ -115,6 +155,18 @@ fn the_history_of_a_limit_scales_linearly() {
         })
         .collect();
     timing::assert_count_growth("the history of a limit", &sizes, &counts, 1.1);
+    // Requests beside constructs, counted: `τ_conc` of each request is O(1) once `Concurrency`
+    // is built, so a doubling at most doubles the pass steps, with the same margin.
+    let beside: Vec<usize> = sizes[..4]
+        .iter()
+        .map(|&n| {
+            let (raised, codes, steps, _) =
+                checked_text(&started(n), MANIFEST_0_4, KeywordSet::V0_4);
+            judged(n, raised, &codes);
+            steps
+        })
+        .collect();
+    timing::assert_count_growth("requests beside constructs", &sizes[..4], &beside, 1.1);
     // The fallback spans 16 times the smallest size against a bound of 32 (see the module
     // documentation).
     let span = [sizes[0], sizes[4]];
