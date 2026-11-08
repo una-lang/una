@@ -11,14 +11,17 @@ fn examples_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-/// Every `.una` file under `examples/`, sorted, with its path relative to `examples/`.
+/// Every `.una` file under `examples/` but the `ita.una` manifests (ADR 0122), sorted, with its
+/// path relative to `examples/`.
 fn example_files() -> Vec<(String, PathBuf)> {
     fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 walk(&path, files);
-            } else if path.extension().is_some_and(|extension| extension == "una") {
+            } else if path.extension().is_some_and(|extension| extension == "una")
+                && !path.ends_with("ita.una")
+            {
                 files.push(path);
             }
         }
@@ -41,9 +44,13 @@ fn example_files() -> Vec<(String, PathBuf)> {
 }
 
 /// The keywords of the edition of the example package that holds `name`, a path relative to
-/// `examples/`: its `una.toml` says (`spec/13 §7`).
+/// `examples/`: its `una.toml`, or from edition 0.4 its `ita.una`, says (`spec/13 §7`).
 fn keywords(name: &str) -> KeywordSet {
     let package = name.split('/').next().unwrap_or("");
+    let ita = fs::read_to_string(examples_root().join(package).join("ita.una")).unwrap_or_default();
+    if ita.contains("\n  edition 0.4\n") {
+        return KeywordSet::V0_4;
+    }
     let manifest =
         fs::read_to_string(examples_root().join(package).join("una.toml")).unwrap_or_default();
     if manifest.contains("edition = \"0.2\"") {
