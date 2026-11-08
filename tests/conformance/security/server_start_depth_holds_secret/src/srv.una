@@ -1,0 +1,35 @@
+-- test: a task that recurses on `internal` request data and also holds a `secret` key, which decides none of its calls, is accepted: its depth follows only the calls that data decide, and no call it can make is decided by data above `internal` (spec/31 §1, ADR 0123 IF6, #1682); `server_start_depth_secret` is refused, where the `secret` key decides the recursion
+-- spec: spec/31 §1
+-- expect: ok
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: secret Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(exchange.request.body.len)
+  let masked: secret Int = key * 2 + 1
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all(key: secret Int) -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
