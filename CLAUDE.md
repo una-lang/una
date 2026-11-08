@@ -31,6 +31,10 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 5. One session works here with subagents (`.claude/agents/`: builder, reviewer, mechanic, scout); procedures are skills (`.claude/skills/`); the state of the work is `.claude/state/STATE.md` and `.claude/plan/NEXT.md` (skill `state`). Read `.claude/docs/HARNESS.md` and `.claude/docs/WORKFLOW.md` once per session.
 6. Only `main` is long-lived (plus `release/v0.1` and `release/v0.3`). A branch and its worktree (`.claude/worktrees/<issue>`) are deleted at merge.
 
+## Process v5 (pilot, owner-signed 2026-11-08)
+
+A pull request passes `../ops/pr-check.sh` in its slot and merges with `../ops/merge.sh`; independent review and heavy evidence run at release validation, except lane S (soundness, trusted computing base, security, information flow, verifier encoding), which gets one adversarial review before merge. See `.claude/docs/WORKFLOW.md`. The validation section below describes the check of v4 and applies to lane S and release candidates.
+
 ## Commands
 
 ```bash
