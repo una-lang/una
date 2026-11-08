@@ -1261,3 +1261,104 @@ One graph of the package, one search for its cycles and two closures over its st
 - Issue: #1009 (slice S7). Precedent: ADR 0117, "Amendment (2026-10-19): what slice S3 settles", item 7, which settled `Deadline = Expired` as `= | Expired` for the same reason.
 
 Rule 21's `pub kind TestRequestError = Refused` is declared `pub kind TestRequestError = | Refused`: a sum kind of one variant, since `= Refused` would name an alias of a type `Refused` (`spec/02 §2`, `alias_body`), which does not exist, and `fails` names a sum kind (`spec/06`, U2002 otherwise). `test_request` fails with `Refused` where the host would answer `400`, as rule 21 states. The variant and its meaning do not change (`spec/31 §8` rule 2).
+
+## Amendment (2026-11-08, Proposed): a per-peer share of `waiting`, `/once` and `delivered`
+
+- Status: Proposed, for the project to accept. Nothing in it is implemented. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ.
+- Issue: #1784, the residual of decision 5 of the amendment of 2026-11-02 ("`waiting`, `/once` and `delivered` have no per-peer share").
+
+### Why
+
+Rule 7 gives a peer a share of `connections` (`peer`), of `handshakes`, of `buffers` (`peer_buffers`) and of `replies` (`peer_replies`), but none of the three budgets that requests hold after they are read: `waiting` (read, not delivered), `/once` (delivered, not answered) and `delivered` (their bytes). Today what one peer holds of them is bounded only by its connections, since a connection has at most one request between the end of its reading and its reply (`spec/31 §3` rule 8):
+
+| Budget, default | Bound on one peer today | Peers that fill it at the defaults |
+| --- | --- | --- |
+| `waiting` = 1024 | `peer` = 64 requests | 16 |
+| `/once` = 256 | `peer` = 64 exchanges | 4 |
+| `delivered` = 256 MiB | 64 × (`line` + `header` + `body`) ≈ 65 MiB | 4 |
+
+A body's reservation in `peer_buffers` (1 MiB at the defaults) ends at delivery (rule 13 item 2), so after delivery it no longer limits the peer: one peer can hold 64 delivered requests of about 1 MiB each.
+
+**The attack.** Take the rate-limited proxy of the Examples (`600/minute`, so 10 deliveries a second, `answer` 30 s). An attacker with 16 IPv4 addresses opens 64 keep-alive connections from each and keeps one small `GET` in flight on every connection, sending the next as soon as a reply or a `503` arrives. After about 100 seconds of the rate, every place of `waiting` holds one of its requests, and stays held: each place it loses to a delivery or to `answer` it takes back at once. Every request of every other peer then finds `waiting` full and gets `503` with `Retry-After: 1` (rule 14) at once, for as long as the attack lasts. With a slow handler (an upstream that takes seconds) instead of a rate, 4 addresses hold all 256 `/once` slots, or all 256 MiB of `delivered` with bodies near `body`, and every other request waits up to `answer` and gets `503`. And an operator who raises `connections` to 16,384 gets `peer` = 1024 by default, so one address fills `waiting` alone. Rule 7 already says that global limits are levers ("The shares make this cost many addresses, not one"); for these three, the cost is a handful of addresses, or one.
+
+### Options
+
+Every option keys peers as rule 12 does (`PeerKey` in `crates/una-http/src/serve/peer.rs`): an IPv4 address; the /64 prefix of an IPv6 address; an IPv4-mapped IPv6 address as its IPv4 address. Each keeps its counters in the peer's entry of the peer table, which lives while the peer has an open connection, and an open connection outlives every request it holds, so no option adds an entry or a lock at accept. Two caveats hold for all of them, as they hold for `peer` today:
+
+- **NAT.** Many clients behind one carrier-grade NAT or one proxy are one peer, and share one share. A server behind a proxy sets the shares to `none`, as it sets `peer`, `peer_buffers` and `peer_replies` (Question 7).
+- **IPv6.** A peer is a /64. An attacker with a /48 holds 65,536 peers, and a share per /64 does not slow it down; neither does `peer`. A second level of shares per /48 is left out here (see the recommendation).
+
+#### Option A. A fixed share, taken when a request is read in full
+
+Two items join rule 7:
+
+| Item | Meaning | Default | Range |
+| --- | --- | --- | --- |
+| `peer_pending=N` | requests of one peer read in full and not yet answered: waiting for delivery or in an open exchange | `max(16, waiting / 64)` | 1 to 2^31 − 1, or `none` |
+| `peer_delivered=M` | the bytes, head and body, of those requests, in MiB | `max(1, delivered / 64)`, raised to the bytes of one request at `line`, `header` and `body` | 1 to 65,536, or `none` |
+
+- **Where it is taken.** At the end of reading a request (`complete` in `thread.rs`), beside the place in `waiting`, with the same `add_below` on two atomics of the peer's entry; a failure of a later check gives back the earlier ones. A request over either share is answered as when `waiting` is full, `503` with `Retry-After: 1`, at once, and takes no place. A declared `Content-Length` that cannot fit `peer_delivered` even alone is refused when the head is read, as #1675 refuses one that cannot fit `delivered`.
+- **Where it is given back.** When the exchange ends (reply, `answer`, the peer leaving, a stop, an auto-answer), or when the waiting request is refused or dropped: the same points that give back `/once` and `delivered` today.
+- **Why at reading, not at delivery.** A share checked at delivery would stop the front of a serve thread's queue on its own peer's share, and every request behind it, of every peer, would wait (head-of-line blocking); skipping it would make delivery a scan. Taking the share before the request is queued leaves delivery as it is: first come, first served per serve thread, from the rotating cursor (`spec/31 §6` rule 5), O(1) expected.
+- **What it bounds.** At the defaults a peer holds at most 16 waiting or open requests, and 4 MiB of their bytes (a request of `body` = 1024 KiB, with `line` and `header`, fits). Filling `waiting` takes 64 peers (four times today), `/once` 16 (four times), `delivered` 64 (sixteen times); and an operator's larger `connections` no longer lets one peer fill `waiting`.
+- **Cost.** Time O(1) per request, two atomic additions and two subtractions, no lock. Space 16 bytes per peer entry (two `AtomicU64`), at most `connections + handshakes` entries (`spec/31 §6` rule 2 item 5).
+
+#### Option B. A fair share that follows the active peers
+
+A peer may hold `max(floor, budget / active)` of each budget, where `active` is the number of peers that hold any request; or, in the variant like rule 13's reply pressure, nothing is refused until a budget is full, and then a request of a peer under its fair share displaces the newest waiting request of the peer that holds the most (which gets `503`).
+
+- **What it bounds.** A lone peer may use a whole budget; under contention each active peer gets an equal part. It adapts to load where option A does not.
+- **Cost.** The first form: time O(1) per request (one more atomic, the count of active peers, raised and lowered as a peer's count leaves and reaches 0), space 16 bytes per peer plus one counter per grant. The variant: a heap of peers by what they hold, under a mutex per grant, O(log p) per change over p active peers while the budget is full, space about 32 bytes per active peer for the heap's entry and its index; a request's place must also be removable from its queue, which today's queues mark dead and compact.
+- **Against it.** A peer's refusal then depends on how many other peers are active, a count the peer reads from its own `503`s, finer than today's "a budget is full". That is a new channel between peers, outside this record's model of information flow (it is between peers, not between labels of the program) but contrary to the aim of the shares, which is that one peer's service does not reveal or depend on another's beyond the global limits. The variant's displacement also refuses requests that were already accepted, a behavior no other limit of this record has.
+
+#### Option C. A per-peer rate of requests
+
+A token bucket per peer, `peer_rate`, as rule 10 keeps for handshakes: GCRA, one timestamp per peer, charged when a request is read in full; a request without a token is answered `503` with `Retry-After: 1`.
+
+- **What it bounds.** What a peer holds of `waiting` only indirectly, at most its rate times the time a request stays, up to `answer` (30 s): at 16 requests a second, 480 places. It does not bound `/once` or `delivered` under a slow handler, which a slow request holds without any rate, and it refuses the bursts that browsers make (several requests at a page load) more often than an occupancy share does.
+- **Cost.** Time O(1) per request, one compare-and-swap; space 8 bytes per peer.
+
+#### Comparison
+
+| | A, fixed share | B, fair share | C, per-peer rate |
+| --- | --- | --- | --- |
+| Time per request | O(1), atomics | O(1); variant O(log p) under a lock | O(1), one CAS |
+| Space per peer | 16 bytes | 16 bytes; variant +32 | 8 bytes |
+| Bounds `waiting`, `/once`, `delivered` | all three, directly | all three, adaptively | `waiting`, indirectly |
+| New channel between peers | none | the count of active peers | none |
+| Delivery path changed | no | variant: yes | no |
+
+### Information flow, the report and the oracles (option A)
+
+- **`L_srv` (IF-S1).** The shares are state of the serve threads that changes only at the end of reading a request, at delivery and at the end of an exchange, each an event of the request stream or of a hand-off. The soundness argument of IF-S1 is unchanged: the serve threads' work stays a function of the request stream (input, `internal`), of the program's hand-offs and of their timers. No label changes.
+- **IF5.** A refusal by a share depends on the peer's own requests and on how fast the program answers them, the same dependence as a refusal by a full `waiting`, already out of the model (Question 4). IF5's list "full `waiting`, `buffers` or `connections`" reads "full `waiting`, `buffers`, `connections`, `peer_pending` or `peer_delivered`". A fixed share depends on no other peer, so it creates no channel between peers; it removes part of one, since another peer can no longer fill `waiting` alone.
+- **Timing.** The checks are two atomic additions whose cost does not depend on any value, and the answer is the same `503` as for a full `waiting`, sent at the same point, so a refusal by a share and one by the global budget cannot be told apart by their timing or bytes.
+- **Determinism.** Nothing is keyed or random; under a script (`--virtual-time`, `--serve-script`) the refusals are a function of the script.
+- **The trace.** The host's refusals are not events of the program, so no event changes. Which requests `next` receives changes only as a full `waiting` already changes it.
+- **The report (rule 22).** Each grant's entry lists `peer_pending` and `peer_delivered` with their values, as for every limit. The warnings gain "a grant with `peer_pending=none` or `peer_delivered=none`". The `out_of_model` list is unchanged.
+- **The oracles.** The five oracles of `spec/31 §6` time a reply to a probe, the owner of a connection, or a delivery under a rate; none is meant to depend on a budget's share, but every one of them, like every test of the toolchain, sends from one peer, loopback. The slice of tests checks that each keeps fewer requests of that peer in flight than `peer_pending` and, where an oracle or a test fills a global budget from loopback on purpose, sets `peer_pending=none` and `peer_delivered=none` in its grant, so that it still tests the global limit.
+
+### Tests that would prove it
+
+All in host code shared by both engines (`crates/una-http/src/serve`), with the serve-run cases of `tests/serve_runs` run in both engines:
+
+- **One peer.** One address, 64 connections, a handler that does not answer: the 17th complete request is `503` with `Retry-After: 1` at once; after one reply, the next request is accepted; the global `waiting`, `/once` and `delivered` stay within the peer's share. A request whose bytes exceed `peer_delivered` alone is refused at its head, before its body.
+- **Many peers.** 64 addresses at their share fill `waiting` exactly; a 65th peer's request gets the global `503`; when one peer's request is answered, another peer's request takes the place. With 63 peers at their share, a new peer is served while they hold theirs.
+- **Slow peers.** Peers that never read their replies, peers that send their bodies a byte at a time, and peers that leave while waiting or after delivery: every share is given back at the end of each exchange, and after every connection closes the grant and every peer entry are quiet (`is_quiet`, extended to the peer counters).
+- **Keys.** Two addresses of one /64 share a share; two /64s do not; `::ffff:a.b.c.d` shares with `a.b.c.d`.
+- **Races.** Many threads taking and giving back shares of one peer never pass the share and end at zero, as `gate.rs`'s `racing_threads_never_pass_the_limit` does for handshakes.
+- **Scaling.** The time per admission stays flat at 1,000, 10,000 and 100,000 peers (a test that fails on growth linear in the peers).
+- **Grants.** Parsing, defaults, ranges and `none` of both items; U7002 in `una.toml` and the usage error for `--grant` on a malformed value, as rule 6 lists them.
+
+### Recommendation and the default
+
+**Option A**, with the defaults above. It bounds all three budgets directly, costs O(1) and 16 bytes per peer, leaves the delivery path and its order untouched, and creates no channel between peers. Option B's adaptivity is not worth a channel between peers in a record whose rule is the most secure option; option C does not bound `/once` or `delivered`. If the project does not answer, the default is option A as written here, defaults included. Left for a later record: a share per IPv6 /48 above the share per /64, a share of the grant's rate (option C as an addition), and fair queuing of delivery across peers (a round robin of per-peer queues on each serve thread, O(1) amortized per delivery, about 48 bytes per active peer and serve thread), which would also bound how long one peer's requests delay another's.
+
+### Implementation slices
+
+Each is under 250 changed lines and one area; 1 and 4 can go in parallel, 2 after 1, 3 after 2.
+
+1. **Grant items** (`crates/una-http`, the grant parser and `Limits`): `peer_pending` and `peer_delivered`, defaults, ranges, `none`, the errors of rule 6, the report's warning; unit tests.
+2. **The accounting** (`serve/peer.rs`, `serve/grant.rs`, `serve/thread.rs`): the two counters of `Peer`, taking them in `complete`, giving them back wherever `/once`, `delivered` or a `waiting` place is given back, the refusal at a head that cannot fit; unit and race tests, `is_quiet` with the peers.
+3. **Adversarial runs** (`crates/una-http/src/serve/tests.rs`, `tests/serve_runs`): one peer, many peers, slow peers, keys, scaling, both engines; the grants of loopback tests that fill a global budget get `none`.
+4. **Text** (`docs/spec/31-http-servers.md` §2 and §6 rules 4, 5, 7 and 12; the guide; a changelog fragment): the items, where they are taken and given back, the answers, the costs; rule 13's worst case per peer.
