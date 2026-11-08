@@ -1334,14 +1334,14 @@ fn serve_reply(stream: &mut std::net::TcpStream) -> Vec<u8> {
         .lines()
         .find_map(|line| line.strip_prefix("content-length:"))
         .map(|value| value.trim().parse().unwrap())
-        .unwrap_or_else(|| panic!("no content-length: {head}"));
+        .expect("a reply without content-length");
     let mut body = vec![0u8; length];
     stream.read_exact(&mut body).unwrap();
     body
 }
 
-/// Runs the executable `name` in `dir` on one serve thread, so that every connection has one
-/// owner, and returns what `drive` returns once the run has ended with 0.
+/// Runs the executable `name` in `dir` on one serve thread, so that one thread holds every
+/// connection, and returns what `drive` returns once the run has ended with 0.
 fn serve_control_run<T>(dir: &Path, name: &str, drive: impl FnOnce() -> T) -> T {
     let child = Command::new(dir.join("target/una").join(name))
         .args(["--serve-threads", "1", "--stop-grace", "10"])
@@ -1420,12 +1420,11 @@ fn serve_positive_control(
         for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
             let answer = run(&dirs[key], &names[key], port);
             eprintln!("round {round} key {key}: {answer}");
-            let late = match answer.as_str() {
-                "in time" => 0.0,
-                "late" => 1.0,
-                other => panic!("{label} key {key}: answered {other:?}"),
-            };
-            samples[sample].push(late);
+            assert!(
+                answer == "in time" || answer == "late",
+                "{label} key {key}: answered {answer:?}"
+            );
+            samples[sample].push(if answer == "late" { 1.0 } else { 0.0 });
         }
     }
     let channel = mann_whitney(&samples[0], &samples[1]);
