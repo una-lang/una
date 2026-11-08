@@ -168,6 +168,21 @@ pub(crate) fn install_live(
     threads: usize,
     stop: &una_interp::stopping::RunStop,
 ) -> Result<(), String> {
+    // A test build of the runtime: the placement probe of `serve_owner_spread` (#1660); the
+    // executable is the process, as for `env_var`.
+    #[cfg(feature = "test-hooks")]
+    #[allow(clippy::disallowed_methods)]
+    {
+        let unkeyed = std::env::var_os("UNA_TEST_SERVE_UNKEYED").is_some_and(|v| v == "1");
+        let log = std::env::var_os("UNA_TEST_SERVE_OWNERS");
+        if unkeyed || log.is_some() {
+            una_http::serve::place::probe::install(
+                unkeyed,
+                log.as_deref().map(std::path::Path::new),
+            )
+            .map_err(|error| format!("the placement probe: {error}"))?;
+        }
+    }
     let live = Arc::new(una_http::serve::live::Live::start(
         prepared, grants, threads,
     )?);

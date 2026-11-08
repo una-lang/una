@@ -689,6 +689,20 @@ pub(crate) fn run_command(
     let live = if serves && !listeners.listeners.is_empty() {
         // The engine's panic hook, from this thread, before any serve thread starts.
         una_http::serve::install_panic_hook();
+        // The toolchain's test builds: the placement probe of `serve_owner_spread` (#1660).
+        #[cfg(feature = "test-hooks")]
+        {
+            let unkeyed = crate::variable(options.environment, "UNA_TEST_SERVE_UNKEYED").as_deref()
+                == Some("1");
+            let log = crate::variable(options.environment, "UNA_TEST_SERVE_OWNERS");
+            if (unkeyed || log.is_some())
+                && let Err(error) =
+                    una_http::serve::place::probe::install(unkeyed, log.as_deref().map(Path::new))
+            {
+                writeln!(stderr, "error: the placement probe: {error}")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
         match una_http::serve::live::Live::start(listeners, &served_grants, serve_threads) {
             Ok(live) => Some(std::sync::Arc::new(live)),
             Err(message) => {

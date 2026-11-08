@@ -774,11 +774,17 @@ impl Shared {
         // panicked): placement stays a function of the connection's addresses and of which
         // threads ended. `None` only when the caller is not a serve thread (the simulator): a
         // serve thread that accepts is itself live.
+        #[cfg(not(feature = "test-hooks"))]
         let placed = place::owner(self.key, self.threads, grant, address);
+        // The placement probe of a test (`place::probe`), unkeyed only when a test asks.
+        #[cfg(feature = "test-hooks")]
+        let placed = place::probe::placed(self.key, self.threads, grant, address);
         let Some(owner) = self.live_from(placed) else {
             self.give_back(state, taken, now, 0);
             return Err(AcceptRefusal::NoThread);
         };
+        #[cfg(feature = "test-hooks")]
+        place::probe::record(address, owner);
         // The admission records the peer's place in `taken` as soon as it is taken.
         let peer = match state.admit_into(address.ip(), now, &mut taken.peer) {
             Ok(peer) => peer,
