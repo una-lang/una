@@ -238,6 +238,8 @@ impl Checker<'_, '_, '_> {
             span,
             function: self.current,
             unplaced: self.unplaced(),
+            node: self.caller(),
+            construct: self.parts.last().copied(),
         };
         self.findings.server_sites.push(site);
     }

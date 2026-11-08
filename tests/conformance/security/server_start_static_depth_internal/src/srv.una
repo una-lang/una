@@ -1,0 +1,38 @@
+-- test: the twin of `server_start_static_depth_secret`: the chain that runs is chosen by `internal` data, which the auto-answer accepts, so the `start` is accepted, whatever `--task-depth` the operator sets (spec/31 §1, #1681)
+-- spec: spec/31 §1
+-- expect: ok
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+one(n: internal Int) -> internal Int = n + 1
+
+two(n: internal Int) -> internal Int = one(n) + 1
+
+three(n: internal Int) -> internal Int = two(n) + 1
+
+four(n: internal Int) -> internal Int = three(n) + 1
+
+answer(exchange: internal Exchange, key: internal Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = if key > 0
+    four(key)
+  else
+    key
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub serve_all(key: internal Int) -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()

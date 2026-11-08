@@ -1,0 +1,48 @@
+-- test: `L_lim` at a request in a handler's operation (ADR 0116 amendment of 2026-10-25, C, #1154): the operation runs in a `together` branch beside `public` work only, but a request in a handler's operation belongs to no function, so its ancestors' term stays `⊤` (U4001 at the request), as before the precise `τ_conc`
+-- spec: spec/27 §9
+-- expect: error U4001 at src/server.una:32:25
+module server
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+churn(key: secret Int) -> Unit
+=
+  let spent = crunch(key)
+  unit
+
+crunch_open(n: Int) -> Int = n * 3
+
+churn_open(n: Int) -> Unit
+=
+  let spent = crunch_open(n)
+  unit
+
+fetch(path: Text) -> Unit
+  uses @http: Http[get]
+=
+  let reply = attempt @http.get(url: "https://api.example.com/{path}", headers: [], key_name: None)
+  unit
+
+capability Getter
+  op go(path: Text) -> Unit
+
+handler web() for Getter
+  uses @http: Http[get]
+  op go(path) =
+    let reply = attempt @http.get(url: "https://api.example.com/{path}", headers: [],
+      key_name: None
+    )
+    unit
+
+both(path: Text) -> Unit
+  uses @g: Getter[go]
+=
+  together
+    let a = churn_open(3)
+    let b = @g.go(path)
+  unit
+
+pub serve(path: Text) -> Unit
+  uses @http: Http[get]
+=
+  both(path) with @g = web()

@@ -1,0 +1,28 @@
+-- test: the twin of `tconc_via_tasks` (#1154): the sibling works on `public` data, so `τ_conc` at the request in the `via` function, the precise one of `spec/27 §11`, is at most `internal`, and the limited grant is accepted
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (key_of)
+
+crunch(key: Int) -> Int
+=
+  let edit acc = key
+  for i in 0..1000
+    acc = if acc > 0 then acc - 1 else acc + 1
+  acc
+
+churn(key: Int) -> Unit
+=
+  let spent = crunch(key)
+  unit
+
+--- The policy is called in the block of a `tasks` statement, beside a started task that works on `key`.
+pub both(key: Int, n: Int) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start churn(key)
+    let b = key_of(n)
+    unit
+  unit
