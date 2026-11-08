@@ -46,6 +46,7 @@ fn with_input<R>(
             Edition::V0_2 => KeywordSet::V0_2,
             Edition::V0_3 => KeywordSet::V0_3,
             Edition::V0_4 => KeywordSet::V0_4,
+            Edition::V0_5 => KeywordSet::V0_5,
         };
         let lexed = lex_in(db.file(id), id, &mut interner, keywords);
         let parsed = parse(&lexed, id, &interner);
@@ -776,4 +777,26 @@ fn tau_conc_follows_every_kind_of_edge_from_the_parts_of_a_construct() {
     assert_eq!(at("app.run_block"), [some("secret")]);
     // Called after the statement has ended, nothing runs beside it.
     assert_eq!(at("app.after"), [None]);
+}
+
+/// The loop of `tests/conformance/security/tconc_for_ever_within_tasks`, whose `tasks` statement
+/// also raises `L_res`: its U4001 names `τ_conc` at the loop, the work beside it (ADR 0116 C,
+/// `spec/27 §11`), and not only the residue, so a loop rule that dropped `τ_conc` would name the
+/// residue instead and fail here.
+#[test]
+fn a_for_ever_within_beside_secret_tasks_names_the_tasks_beside_it() {
+    let manifest = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n";
+    let text = "module poll\n\nimport std.time (millisecond)\n\ncrunch(key: secret Int) -> secret Int = key * 3\n\n--- Work on `key`, which a started task runs.\nchurn(key: secret Int) -> Unit\n=\n  let spent = crunch(key)\n  unit\n\n--- Starts `churn(key)`, and polls beside it, in the block of the `tasks` statement.\npub serve(key: secret Int, url: Text) -> Unit\n  uses @http: Http[get]\n  diverges\n=\n  tasks\n    start churn(key)\n    for ever within 100 * millisecond\n      let reading = attempt @http.get(url, headers: [], key_name: None)\n      stop\n    unit\n  unit\n";
+    let (_, types) = run(&[("una.toml", manifest), ("src/poll.una", text)], false);
+    let loop_errors: Vec<&str> = types
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.as_str() == "U4001" && d.message.contains("`for ever within`"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(loop_errors.len(), 1, "{loop_errors:?}");
+    assert!(
+        loop_errors[0].contains("depends on tasks that can run beside it"),
+        "{loop_errors:?}"
+    );
 }

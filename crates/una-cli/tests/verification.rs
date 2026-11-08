@@ -2149,10 +2149,10 @@ fn a_loop_state_of_n_components_gives_queries_linear_in_n() {
     );
 }
 
-/// A package of edition 0.4 under the test's temporary directory, with `source` as its module
-/// `facts`: described by `ita.una` and locked by the lock of a conformance case of edition 0.4
-/// (ADR 0122).
-fn facts_package_0_4(name: &str, source: &str) -> PathBuf {
+/// A package of edition 0.5, which has the collections (ADR 0139 rule 6), under the test's
+/// temporary directory, with `source` as its module `facts`: described by `ita.una` and locked
+/// by the lock of a conformance case (ADR 0122).
+fn facts_package_0_5(name: &str, source: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("verification")
         .join(name);
@@ -2160,7 +2160,7 @@ fn facts_package_0_4(name: &str, source: &str) -> PathBuf {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.5\n"),
     )
     .unwrap();
     std::fs::copy(
@@ -2175,7 +2175,7 @@ fn facts_package_0_4(name: &str, source: &str) -> PathBuf {
 /// The queries of every obligation of the edition 0.4 package `name` whose module is
 /// `source`, as text, generated but not solved.
 fn queries_0_4(name: &str, source: &str) -> Vec<String> {
-    let root = facts_package_0_4(name, source);
+    let root = facts_package_0_5(name, source);
     let (checked, obligations) = generated(&root);
     assert!(!obligations.is_empty(), "{name}: {:?}", checked.diagnostics);
     let text = std::fs::read_to_string(repository().join("verification.lock")).unwrap();

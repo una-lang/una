@@ -827,7 +827,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -863,7 +864,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -963,7 +965,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -1006,7 +1009,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -1078,7 +1082,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -1123,7 +1128,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -1185,7 +1191,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -1234,7 +1241,8 @@
    "describes": [
     "0.2",
     "0.3",
-    "0.4"
+    "0.4",
+    "0.5"
    ],
    "earlier": [
     {
@@ -1476,7 +1484,7 @@
      ],
      "returns": {
       "type": "Bool",
-      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
+      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.5"
      }
     },
     "HashMap[K, V]": {
@@ -1489,7 +1497,7 @@
      ],
      "returns": {
       "type": "Bool",
-      "meaning": "`true` when `m` has an entry at `key`; not usable in contracts in edition 0.4"
+      "meaning": "`true` when `m` has an entry at `key`; not usable in contracts in edition 0.5"
      }
     },
     "HashSet[T]": {
@@ -1502,7 +1510,7 @@
      ],
      "returns": {
       "type": "Bool",
-      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.4"
+      "meaning": "`true` when `s` holds `item`; not usable in contracts in edition 0.5"
      }
     },
     "BitSet": {
@@ -1515,20 +1523,21 @@
      ],
      "returns": {
       "type": "Bool",
-      "meaning": "`true` when `item` is a member of `b`; not usable in contracts in edition 0.4"
+      "meaning": "`true` when `item` is a member of `b`; not usable in contracts in edition 0.5"
      }
     }
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.has(item: T) -> Bool`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.has(item: Int) -> Bool` and `where b: BitSet`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.5: it has none of `s.has(item: T) -> Bool`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.has(item: Int) -> Bool` and `where b: BitSet`"
     }
    ],
    "use_instead": [
@@ -1575,15 +1584,16 @@
     "meaning": "`Some` of the value at `key`, `Some` exactly when `m.has(key: key)`; a missing key gives `None`, not a failure"
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.5: it has no `where m: HashMap[K, V]`"
     }
    ],
    "see_also": [
@@ -1631,15 +1641,16 @@
     "meaning": "nothing; afterwards `m.get(key: key) == Some(value)`, and `m.len` grows by one when `key` was not there"
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.5: it has no `where m: HashMap[K, V]`"
     }
    ],
    "use_instead": [
@@ -1736,15 +1747,16 @@
     }
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `edit s.remove(item: T) -> Unit`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `edit b.remove(item: Int) -> Unit` and `where b: BitSet`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.5: it has none of `edit s.remove(item: T) -> Unit`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `edit b.remove(item: Int) -> Unit` and `where b: BitSet`"
     }
    ],
    "use_instead": [
@@ -1849,15 +1861,16 @@
     }
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.with(item: T) -> Set[T]`, `where s: Set[T]`, `m.with(key: K, value: V) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.with(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.with(item: Int) -> BitSet` and `where b: BitSet`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.5: it has none of `s.with(item: T) -> Set[T]`, `where s: Set[T]`, `m.with(key: K, value: V) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.with(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.with(item: Int) -> BitSet` and `where b: BitSet`"
     }
    ],
    "see_also": [
@@ -1949,15 +1962,16 @@
     }
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.without(item: T) -> Set[T]`, `where s: Set[T]`, `m.without(key: K) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.without(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.without(item: Int) -> BitSet` and `where b: BitSet`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.5: it has none of `s.without(item: T) -> Set[T]`, `where s: Set[T]`, `m.without(key: K) -> HashMap[K, V]`, `where m: HashMap[K, V]`, `s.without(item: T) -> HashSet[T]`, `where s: HashSet[T]`, `b.without(item: Int) -> BitSet` and `where b: BitSet`"
     }
    ],
    "see_also": [
@@ -1997,15 +2011,16 @@
     "meaning": "the keys of `m`, in ascending key order on a `Map` and in the order they were first added on a `HashMap`; as many as `m.len`"
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.5: it has no `where m: HashMap[K, V]`"
     }
    ],
    "see_also": [
@@ -2034,15 +2049,16 @@
     "meaning": "the values of `m`, in the order of their keys on a `Map` and in the order the keys were first added on a `HashMap`; as many as `m.len`"
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.5: it has no `where m: HashMap[K, V]`"
     }
    ],
    "see_also": [
@@ -2071,15 +2087,16 @@
     "meaning": "the entries of `m` as `Entry` values, in ascending key order on a `Map` and in the order the keys were first added on a `HashMap`; as many as `m.len`"
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.4: it has no `where m: HashMap[K, V]`"
+     "differs": "no `HashMap[K, V]` receiver, since `std.collections` begins in edition 0.5: it has no `where m: HashMap[K, V]`"
     }
    ],
    "see_also": [
@@ -2128,7 +2145,7 @@
     "meaning": "the length of the receiver, a text, a list, a map, a set, a hash table or a bit set"
    },
    "describes": [
-    "0.4"
+    "0.5"
    ],
    "earlier": [
     {
@@ -2140,9 +2157,10 @@
     {
      "editions": [
       "0.2",
-      "0.3"
+      "0.3",
+      "0.4"
      ],
-     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.4: it has none of `s.len -> Int`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.len -> Int` and `where b: BitSet`"
+     "differs": "no `Set[T]`, `HashMap[K, V]`, `HashSet[T]` or `BitSet` receiver, since `std.collections` begins in edition 0.5: it has none of `s.len -> Int`, `where s: Set[T]`, `where m: HashMap[K, V]`, `where s: HashSet[T]`, `b.len -> Int` and `where b: BitSet`"
     }
    ],
    "see_also": [

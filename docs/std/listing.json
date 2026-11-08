@@ -16,7 +16,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Nat = Int where it >= 0",
           "docs": [
@@ -39,7 +40,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Option[T] = Some(value: T) | None",
           "docs": [
@@ -62,7 +64,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Result[T, E] = Ok(value: T) | Err(failure: E)",
           "docs": [
@@ -85,7 +88,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind FileError = NotFound | Denied | Io",
           "docs": [
@@ -108,7 +112,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind KeyError = | UnknownKey",
           "docs": [
@@ -131,7 +136,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability Console\n  op print(line: Text) -> Unit\n    accepts public",
           "docs": [
@@ -154,7 +160,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability Clock\n  op now() -> Int\n    accepts public",
           "docs": [
@@ -177,7 +184,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability Env\n  op get(name: Text) -> Option[internal Text]\n    accepts public",
           "docs": [
@@ -200,7 +208,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability Files\n  op read(path: Text) -> internal Text\n    fails FileError\n    accepts public\n  op write(path: Text, content: Text) -> Unit\n    fails FileError\n    accepts internal",
           "docs": [
@@ -223,7 +232,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability Keys\n  op hmac(key_name: Text, data: Text) -> internal Hashed\n    fails KeyError",
           "docs": [
@@ -247,7 +257,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub abs(x: Int) -> Int\n  ensures result >= 0 and (result == x or result == -x)",
           "docs": [
@@ -279,7 +290,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub min[T: Ord](a: T, b: T) -> T\n  ensures result <= a and result <= b and (result == a or result == b)",
           "docs": [
@@ -312,7 +324,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub max[T: Ord](a: T, b: T) -> T\n  ensures result >= a and result >= b and (result == a or result == b)",
           "docs": [
@@ -335,7 +348,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub is_digits(t: Text) -> Bool",
           "docs": [
@@ -358,7 +372,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub starts_with(t: Text, prefix: Text) -> Bool",
           "docs": [
@@ -380,7 +395,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub trim(t: Text) -> Text\n  ensures result.len <= t.len",
           "docs": [
@@ -402,7 +418,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub to_int(t: Text) -> Option[Int]",
           "docs": [
@@ -427,7 +444,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub is_empty[T](xs: List[T]) -> Bool\n  ensures result == (xs.len == 0)",
           "docs": [
@@ -449,7 +467,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub first[T](xs: List[T]) -> Option[T]\n  ensures (result is None) == (xs.len == 0)",
           "docs": [
@@ -471,7 +490,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub at[T](xs: List[T], index: Int) -> Option[T]\n  ensures (result is None) == (index < 0 or index >= xs.len)",
           "docs": [
@@ -494,7 +514,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub append[T](xs: List[T], item: T) -> List[T]\n  ensures result.len == xs.len + 1",
           "docs": [
@@ -526,7 +547,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub contains[T: Eq](xs: List[T], item: T) -> Bool",
           "docs": [
@@ -559,7 +581,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]\n  ensures result.len == xs.len\n  uses of each\n  fails of each",
           "docs": [
@@ -594,7 +617,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]\n  ensures result.len <= xs.len\n  uses of keep\n  fails of keep",
           "docs": [
@@ -631,7 +655,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep",
           "docs": [
@@ -668,7 +693,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step",
           "docs": [
@@ -704,7 +730,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub sum[T: Integer](xs: List[T]) -> Int",
           "docs": [
@@ -728,7 +755,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub is_some[T](o: Option[T]) -> Bool\n  ensures result == (o is Some)",
           "docs": [
@@ -750,7 +778,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub or_else[T](o: Option[T], default: T) -> T",
           "docs": [
@@ -773,7 +802,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub is_ok[T, E](r: Result[T, E]) -> Bool\n  ensures result == (r is Ok)",
           "docs": [
@@ -794,7 +824,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub set[T](edit xs: List[T], index: Int, item: T) -> Unit\n  requires 0 <= index and index < xs.len\n  ensures xs.len == old(xs).len",
           "docs": [
@@ -815,7 +846,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub sort[T: Ord](xs: List[T]) -> List[T]\n  ensures result.len == xs.len",
           "docs": [
@@ -836,7 +868,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Entry[K, V]\n  key: K\n  value: V",
           "docs": [
@@ -857,7 +890,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub empty_map[K: Ord, V]() -> Map[K, V]\n  ensures result.len == 0",
           "docs": [
@@ -878,7 +912,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub predicate opaque is_json_number(t: Text) -> Bool",
           "docs": [
@@ -900,7 +935,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind JsonNumber = Text where is_json_number(it)",
           "docs": [
@@ -921,7 +957,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Json = Null | Boolean(value: Bool) | Number(value: Int) | Decimal(text: JsonNumber) | Str(value: Text) | Array(items: List[Json]) | Object(fields: Map[Text, Json])",
           "docs": [
@@ -943,7 +980,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int) | NumberTooLong(at: Int)",
           "docs": [
@@ -964,7 +1002,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub parse_json(t: Text) -> Json\n  fails JsonError",
           "docs": [
@@ -985,7 +1024,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub to_json(j: Json) -> Text",
           "docs": [
@@ -1006,7 +1046,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub quote_json(t: Text) -> Text",
           "docs": [
@@ -1027,7 +1068,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits | TooLong",
           "docs": [
@@ -1048,7 +1090,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub split(t: Text, on: Text) -> List[Text]\n  requires on.len > 0\n  ensures result.len >= 1",
           "docs": [
@@ -1070,7 +1113,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub join(parts: List[Text], separator: Text) -> Text",
           "docs": [
@@ -1091,7 +1135,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub ends_with(t: Text, suffix: Text) -> Bool",
           "docs": [
@@ -1112,7 +1157,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub contains_text(t: Text, part: Text) -> Bool",
           "docs": [
@@ -1133,7 +1179,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub find(t: Text, text: Text) -> Option[Int]",
           "docs": [
@@ -1155,7 +1202,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub replace(t: Text, pattern: Text, by: Text) -> Text\n  requires pattern.len > 0",
           "docs": [
@@ -1177,7 +1225,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub slice(t: Text, start: Int, end: Int) -> Text\n  requires 0 <= start and start <= end and end <= t.len\n  ensures result.len == end - start",
           "docs": [
@@ -1199,7 +1248,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub to_upper(t: Text) -> Text\n  ensures result.len == t.len",
           "docs": [
@@ -1220,7 +1270,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub to_lower(t: Text) -> Text\n  ensures result.len == t.len",
           "docs": [
@@ -1241,7 +1292,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub chars(t: Text) -> List[Text]\n  ensures result.len == t.len",
           "docs": [
@@ -1262,7 +1314,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub parse_int(t: Text) -> Int\n  fails ParseError",
           "docs": [
@@ -1283,7 +1336,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub trim_start(t: Text) -> Text\n  ensures result.len <= t.len",
           "docs": [
@@ -1304,7 +1358,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub trim_end(t: Text) -> Text\n  ensures result.len <= t.len",
           "docs": [
@@ -1325,7 +1380,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub bytes(t: Text) -> List[U8]\n  ensures result.len >= t.len",
           "docs": [
@@ -1346,7 +1402,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Header\n  name: Text\n  value: internal Text",
           "docs": [
@@ -1368,7 +1425,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Response\n  status: Int\n  headers: List[Header]\n  body: Text",
           "docs": [
@@ -1397,7 +1455,8 @@
         },
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited",
           "docs": [
@@ -1418,7 +1477,8 @@
           "editions": [
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability Http\n  op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal\n  op delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n    fails HttpError\n    accepts internal",
           "docs": [
@@ -1439,7 +1499,8 @@
         {
           "editions": [
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub nan() -> F64\n  ensures result.is_nan()",
           "docs": [
@@ -1459,7 +1520,8 @@
         {
           "editions": [
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub infinity() -> F64\n  ensures result.is_infinite() and not result.is_sign_negative()",
           "docs": [
@@ -1479,7 +1541,8 @@
         {
           "editions": [
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub f64_from_bits(bits: U64) -> F64",
           "docs": [
@@ -1499,7 +1562,8 @@
         {
           "editions": [
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub parse_f64(t: Text) -> F64\n  fails ParseError",
           "docs": [
@@ -1520,7 +1584,8 @@
         {
           "editions": [
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub as_f64(j: Json) -> Option[F64]",
           "docs": [
@@ -1540,7 +1605,8 @@
         {
           "editions": [
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub json_number(x: F64) -> Option[Json]",
           "docs": [
@@ -1559,7 +1625,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub kind Rounding = HalfEven | HalfAwayFromZero | HalfTowardZero | TowardZero | AwayFromZero | TowardPositive | TowardNegative",
           "docs": [
@@ -1579,7 +1645,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub parse_decimal(t: Text, scale: Int) -> Decimal[0]\n  fails ParseError",
           "docs": [
@@ -1599,7 +1665,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub as_decimal(j: Json, scale: Int) -> Option[Decimal[0]]",
           "docs": [
@@ -1619,7 +1685,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub json_decimal[T](x: T) -> Json",
           "docs": [
@@ -1638,7 +1704,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub array[T](xs: List[T]) -> Array[T]\n  ensures result.len == xs.len",
           "docs": [
@@ -1657,7 +1723,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub array_filled[T](length: Int, value: T) -> Array[T]\n  requires length >= 0\n  ensures result.len == length",
           "docs": [
@@ -1676,7 +1742,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub matrix[T](rows: Int, columns: Int, elements: List[T]) -> Matrix[T]\n  requires rows >= 0 and columns >= 0 and elements.len == rows * columns\n  ensures result.rows == rows and result.columns == columns",
           "docs": [
@@ -1696,7 +1762,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub matrix_filled[T](rows: Int, columns: Int, value: T) -> Matrix[T]\n  requires rows >= 0 and columns >= 0\n  ensures result.rows == rows and result.columns == columns",
           "docs": [
@@ -1715,7 +1781,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub matrix_diagonal[T](values: Array[T]) -> Matrix[T]\n  ensures result.rows == values.len and result.columns == values.len",
           "docs": [
@@ -1735,7 +1801,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub tensor[T](shape: List[Int], elements: List[T]) -> Tensor[T]",
           "docs": [
@@ -1758,7 +1824,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub tensor_filled[T](shape: List[Int], value: T) -> Tensor[T]",
           "docs": [
@@ -1779,7 +1845,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub f32_from_bits(bits: U32) -> F32",
           "docs": [
@@ -1799,7 +1865,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub parse_f32(t: Text) -> F32\n  fails ParseError",
           "docs": [
@@ -1819,7 +1885,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub kind Finite64 = F64 where it.is_finite()",
           "docs": [
@@ -1838,7 +1904,7 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.5"
           ],
           "declaration": "pub kind Finite32 = F32 where it.is_finite()",
           "docs": [
@@ -1857,7 +1923,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Method = Get | Head | Post | Put | Patch | Delete | Options",
           "docs": [
@@ -1877,7 +1944,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Param\n  name: internal Text\n  value: internal Text",
           "docs": [
@@ -1896,7 +1964,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Request\n  method: internal Method\n  target: internal Text\n  segments: internal List[Text]\n  params: internal List[Param]\n  headers: internal List[Header]\n  body: internal Text\n  peer: internal Text\n  listener: internal Text",
           "docs": [
@@ -1919,7 +1988,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Exchange\n  request: internal Request\n  right: internal ReplyRight",
           "docs": [
@@ -1938,7 +2008,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Status = Int where 200 <= it and it <= 599",
           "docs": [
@@ -1957,7 +2028,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind Reply\n  status: internal Status\n  headers: internal List[Header]\n  body: internal Text",
           "docs": [
@@ -1976,7 +2048,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind ServeError = Interrupted | TimedOut | Closed | NotHeld | BadReply",
           "docs": [
@@ -1998,7 +2071,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub capability HttpServer\n  op next() -> internal Exchange\n    fails ServeError\n    accepts internal\n  op reply(to: ReplyRight, reply: Reply) -> Unit\n    fails ServeError\n    accepts internal\n  op close() -> Unit\n    accepts public",
           "docs": [
@@ -2023,7 +2097,8 @@
             "0.1",
             "0.2",
             "0.3",
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub fake_hash(seed: Int) -> internal Hashed",
           "docs": [
@@ -2044,7 +2119,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub elapse(d: Int of Millisecond) -> Unit\n  requires d >= 0",
           "docs": [
@@ -2065,7 +2141,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub kind TestRequestError = | Refused",
           "docs": [
@@ -2086,7 +2163,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub test_request(method: Method, target: Text, body: Text) -> Request\n  fails TestRequestError",
           "docs": [
@@ -2109,7 +2187,8 @@
       "variants": [
         {
           "editions": [
-            "0.4"
+            "0.4",
+            "0.5"
           ],
           "declaration": "pub test_exchange(request: Request) -> Exchange",
           "docs": [

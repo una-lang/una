@@ -1,15 +1,17 @@
 //! Scaling of the labels of concurrent work (ADR 0116 P2 to P4, slice 2 of #1087): `κ` of each
 //! construct from its seed, `ctx` down each body's construct tree, and `conc` of every node in one
 //! pass over the strongly connected components of the reversed graph, O(V + E + F) joins in all.
-//! Five shapes, each at four sizes: a chain of `n` functions, each holding a `together` whose
+//! Six shapes, each at four sizes: a chain of `n` functions, each holding a `together` whose
 //! branch calls the next; the same chain whose last branch reaches one `within`, so that every
 //! round of the probe of pass 2 computes the labels (slice 3); one function holding `n`
 //! constructs one after another; `n` `tasks` statements whose tasks make requests, each of which
-//! `L_res` counts with its `τ_conc` (slice 4); and one
+//! `L_res` counts with its `τ_conc` (slice 4); `n` `for ever within` loops over a chain of
+//! calls (slices 5 and 7); and one
 //! function holding `together for`s nested `d` deep, one call at each level, where a `ctx` that
 //! walked the parents of each construct would take O(d²). Counted first (ADR 0077): the package
-//! pass steps, which the process-wide counter `pass_steps` counts, must at most double with each
-//! doubling, with a margin of 10 %. The first four shapes are also timed, as a fallback, over a
+//! steps of the timing label and of the package passes, which the process-wide counters
+//! `timing_steps` and `pass_steps` count, must at most double with each
+//! doubling, with a margin of 10 %. The first five shapes are also timed, as a fallback, over a
 //! span of 8 times the size, by the shared helper of `una-cli/tests/common/timing.rs` (#1197).
 //! The nested shape is counted only: checking nested bodies is superlinear in time already,
 //! before this analysis (the copying of items into every open frame, amendment E, which slice 8
@@ -82,6 +84,25 @@ fn requests(n: usize) -> String {
     text
 }
 
+/// `n` functions that say `diverges`, each with a `for ever within` whose body calls `h<i>`,
+/// where `h<i>` calls `h<i+1>`: loop `i` reaches the rest of the chain, so a search per loop
+/// takes O(n²) in all, and the summaries of slice 7, with `τ_conc` taken at the loop once per
+/// package (slice 5), O(n).
+fn loops(n: usize) -> String {
+    let mut text = String::from("module app\n\nimport std.time (millisecond)\n");
+    for i in 0..n {
+        let next = if i + 1 == n {
+            "n".to_owned()
+        } else {
+            format!("h{}(n) + 1", i + 1)
+        };
+        text.push_str(&format!(
+            "\nh{i}(n: Int) -> Int = {next}\n\npub g{i}(n: Int) -> Int\n  diverges\n=\n  let edit k = n\n  for ever within 100 * millisecond\n    k = h{i}(k)\n    stop\n  k\n"
+        ));
+    }
+    text
+}
+
 /// One function with `n` constructs one after another, each calling its own function.
 fn many(n: usize) -> String {
     let mut text = String::from("module app\n\nstep(n: Int) -> Int = n + 1\n");
@@ -115,7 +136,7 @@ fn nested(d: usize) -> String {
     text
 }
 
-/// The codes of the package `text`, the pass steps its type check took, and the number of
+/// The codes of the package `text`, the timing and pass steps its type check took, and the number of
 /// constructs it recorded.
 fn checked(text: &str) -> (Vec<String>, usize, usize) {
     let mut db = SourceDb::new();
@@ -144,9 +165,11 @@ fn checked(text: &str) -> (Vec<String>, usize, usize) {
         locks: &[],
     };
     assert!(check_names(&input).is_empty());
-    let steps = una_core::label_counters::pass_steps();
+    let count =
+        || una_core::label_counters::timing_steps() + una_core::label_counters::pass_steps();
+    let steps = count();
     let check = check_types(&input);
-    let steps = una_core::label_counters::pass_steps() - steps;
+    let steps = count() - steps;
     (
         check
             .diagnostics
@@ -166,13 +189,16 @@ fn the_labels_of_concurrent_work_scale_linearly() {
         ("many constructs", many),
         ("a chain with a `within`", chain_within),
         ("`tasks` statements that make requests", requests),
+        ("`for ever within` loops", loops),
     ] {
         let counts: Vec<usize> = sizes
             .iter()
             .map(|&n| {
                 let (codes, steps, constructs) = checked(&make(n));
                 assert_eq!(codes, Vec::<String>::new(), "{shape} of {n}");
-                assert_eq!(constructs, n, "{shape} of {n}");
+                // The loops are sites, not constructs.
+                let expected = if shape.contains("loops") { 0 } else { n };
+                assert_eq!(constructs, expected, "{shape} of {n}");
                 steps
             })
             .collect();

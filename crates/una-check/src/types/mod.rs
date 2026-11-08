@@ -81,14 +81,15 @@ const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 /// The declarations that edition 0.3 adds to the prelude: the functions of `F64` (`spec/29`,
 /// ADR 0114 rule 3.9), appended after those of edition 0.2.
 const PRELUDE_0_3: &str = include_str!("../std/prelude_0_3.una");
-/// The declarations that edition 0.4 adds to the prelude: `Rounding` and the functions of
+/// The declarations that edition 0.5 adds to the prelude: `Rounding` and the functions of
 /// `Decimal` (`spec/29 §16`), the constructors of dense values and the functions their
 /// methods resolve to (`spec/29 §17`, ADR 0120), then the functions of `F32` and the finite
-/// kinds (ADR 0120 rules 5 and 11), appended after those of edition 0.3.
+/// kinds (ADR 0120 rules 5 and 11), appended after those of edition 0.3. ADR 0139 rule 6 moves
+/// them from edition 0.4.
 const PRELUDE_0_4: &str = include_str!("../std/prelude_0_4.una");
 
 /// The declarations of `HttpServer` that edition 0.4 adds to `std.host`, which is the prelude's
-/// host part (ADR 0123 rules 0 and 1, `spec/31 §1`), appended after those of [`PRELUDE_0_4`].
+/// host part (ADR 0123 rules 0 and 1, `spec/31 §1`), appended last.
 /// Only an import from `std.host` brings their names into scope (`spec/10 §11` rule 10).
 const HOST_0_4: &str = include_str!("../std/host_0_4.una");
 
@@ -290,10 +291,19 @@ pub fn builtin_methods() -> Vec<(&'static str, String)> {
 
 /// The standard modules' source in `edition`, as [`Standard::load`] parses it.
 pub fn standard_source(edition: Edition) -> StandardSource {
-    let (prelude, keywords) = if edition >= Edition::V0_4 {
+    let (prelude, keywords) = if edition >= Edition::V0_5 {
         (
             format!(
                 "{}\n{}{PRELUDE_0_3}{PRELUDE_0_4}{HOST_0_4}",
+                of_prelude(),
+                PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
+            ),
+            KeywordSet::V0_5,
+        )
+    } else if edition >= Edition::V0_4 {
+        (
+            format!(
+                "{}\n{}{PRELUDE_0_3}{HOST_0_4}",
                 of_prelude(),
                 PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1)
             ),
@@ -537,11 +547,11 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .iter()
         .map(|category| category.value.clone())
         .collect();
-    // ADR 0119 rule 0: `std.collections` is in scope only for a package of edition 0.4 that
-    // imports it, so no other package's checks or Core IR change; `std.limit` the same (ADR
-    // 0117 rule 9).
-    let imports = |standard: &str| {
-        package.settings.edition >= Edition::V0_4
+    // ADR 0119 rule 0: `std.collections` is in scope only for a package of edition 0.5 (ADR
+    // 0139 rule 6) that imports it, so no other package's checks or Core IR change; `std.limit`
+    // the same from edition 0.4 (ADR 0117 rule 9).
+    let imports = |standard: &str, from: Edition| {
+        package.settings.edition >= from
             && package.modules.iter().any(|module| {
                 module.tree.imports.iter().any(|import| {
                     let path: Vec<&str> = import
@@ -554,13 +564,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 })
             })
     };
-    let imports_collections = imports(una_core::COLLECTIONS_MODULE);
-    let imports_limit = imports(una_core::LIMIT_MODULE);
+    let imports_collections = imports(una_core::COLLECTIONS_MODULE, Edition::V0_5);
+    let imports_limit = imports(una_core::LIMIT_MODULE, Edition::V0_4);
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.after_prelude(),
-        (package.settings.edition >= Edition::V0_4).then(|| standard.source(&standard.map_0_4)),
+        (package.settings.edition >= Edition::V0_5).then(|| standard.source(&standard.map_0_4)),
         imports_collections.then(|| standard.source(&standard.collections)),
         imports_limit.then(|| standard.source(&standard.limit)),
         categories,
@@ -623,9 +633,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     env.blocked_vias = vias.blocked;
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
-    // Edition 0.4: functions named like a built-in method of a collection (ADR 0119 rules 0
-    // and 18).
-    if package.settings.edition >= Edition::V0_4 {
+    // Edition 0.5: functions named like a built-in method of a collection (ADR 0119 rules 0
+    // and 18, moved to edition 0.5 by ADR 0139).
+    if package.settings.edition >= Edition::V0_5 {
         collections::method_names(&env, &mut report);
     }
     authority::stored_effects(&env, &mut report);
@@ -1837,14 +1847,17 @@ mod tests {
             let source = standard_source(*edition);
             let (prelude, keywords) = if *edition >= Edition::V0_4 {
                 // `HttpError` gains `Interrupted` and `RateLimited` (ADR 0116 rule 12, ADR 0117
-                // rule 8), and `std.host` the server (ADR 0123 rule 1).
+                // rule 8), and `std.host` the server (ADR 0123 rule 1); edition 0.5 adds the
+                // numeric declarations (ADR 0120, ADR 0139 rule 6).
                 let http = PRELUDE_0_2.replace(HTTP_ERROR_0_4.0, HTTP_ERROR_0_4.1);
+                let (numeric, keywords) = if *edition >= Edition::V0_5 {
+                    (PRELUDE_0_4, KeywordSet::V0_5)
+                } else {
+                    ("", KeywordSet::V0_4)
+                };
                 (
-                    format!(
-                        "{}\n{http}{PRELUDE_0_3}{PRELUDE_0_4}{HOST_0_4}",
-                        of_prelude()
-                    ),
-                    KeywordSet::V0_4,
+                    format!("{}\n{http}{PRELUDE_0_3}{numeric}{HOST_0_4}", of_prelude()),
+                    keywords,
                 )
             } else if *edition >= Edition::V0_3 {
                 (
@@ -1881,7 +1894,8 @@ mod tests {
         // a keyword used as a name does.
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let v0_3 = format!("{v0_2}{PRELUDE_0_3}");
-        let v0_4 = format!("{v0_3}{PRELUDE_0_4}{HOST_0_4}");
+        let v0_4 = format!("{v0_3}{HOST_0_4}");
+        let v0_5 = format!("{v0_3}{PRELUDE_0_4}{HOST_0_4}");
         let testing_0_4 = testing_source(Edition::V0_4);
         assert!(testing_0_4.contains("import std.time (Millisecond)"));
         for (name, text, keywords) in [
@@ -1889,6 +1903,7 @@ mod tests {
             ("prelude 0.2", v0_2.as_str(), KeywordSet::V0_2),
             ("prelude 0.3", v0_3.as_str(), KeywordSet::V0_3),
             ("prelude 0.4", v0_4.as_str(), KeywordSet::V0_4),
+            ("prelude 0.5", v0_5.as_str(), KeywordSet::V0_5),
             ("testing", TESTING, KeywordSet::V0_1),
             ("testing 0.4", testing_0_4.as_str(), KeywordSet::V0_4),
         ] {
@@ -2099,8 +2114,8 @@ mod tests {
                 .chain(&standard.later)
                 .map(source)
                 .collect(),
-            (edition >= Edition::V0_4).then(|| source(&standard.map_0_4)),
-            (edition >= Edition::V0_4).then(|| source(&standard.collections)),
+            (edition >= Edition::V0_5).then(|| source(&standard.map_0_4)),
+            (edition >= Edition::V0_5).then(|| source(&standard.collections)),
             (edition >= Edition::V0_4).then(|| source(&standard.limit)),
             Vec::new(),
             edition,
@@ -2235,6 +2250,7 @@ example \"step adds one\"
             Edition::V0_2 => KeywordSet::V0_2,
             Edition::V0_3 => KeywordSet::V0_3,
             Edition::V0_4 => KeywordSet::V0_4,
+            Edition::V0_5 => KeywordSet::V0_5,
         };
         let lexed = lex_in(sources.file(id), id, &mut interner, keywords);
         let parsed = parse(&lexed, id, &interner);
@@ -2405,12 +2421,12 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
     fn a_decimal_declaration_that_does_not_elaborate_is_an_internal_error() {
         // Edition 0.4's `Decimal` (`spec/29 §16`): its literals, aligned operands and
         // refinements elaborate on their own paths, which the cross-check covers as any other.
-        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        let (check, codes) = run(DECIMAL, Edition::V0_5);
         assert_eq!(codes, Vec::new());
         assert_eq!(names(&check), ["Amount", "total", "scaled"]);
         for (name, line) in [("Amount", 3), ("total", 5), ("scaled", 7)] {
             let _broken = Break::of(name);
-            let (_, codes) = run(DECIMAL, Edition::V0_4);
+            let (_, codes) = run(DECIMAL, Edition::V0_5);
             assert_eq!(codes, [(Code::U8001, line)], "{name}");
         }
     }
@@ -2419,7 +2435,7 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
     fn a_decimal_declaration_of_the_prelude_that_does_not_elaborate_is_an_internal_error() {
         // The functions of `Decimal` and the kind `Rounding`, which edition 0.4's prelude
         // declares: each is in Core IR, and one that does not elaborate rejects the package.
-        let (check, codes) = run(DECIMAL, Edition::V0_4);
+        let (check, codes) = run(DECIMAL, Edition::V0_5);
         assert_eq!(codes, Vec::new());
         let functions = ["parse_decimal", "as_decimal", "json_decimal"];
         for name in functions {
@@ -2444,7 +2460,7 @@ pub scaled(a: Decimal[2], rate: Decimal[4]) -> Bool
             .chain([("Rounding", "prelude kind")])
         {
             let _broken = Break::of(name);
-            let (check, codes) = run(DECIMAL, Edition::V0_4);
+            let (check, codes) = run(DECIMAL, Edition::V0_5);
             assert_eq!(codes.len(), 1, "{name}: {codes:?}");
             let diagnostic = check.diagnostics.first().expect("one diagnostic");
             assert_eq!(diagnostic.code, Code::U8001, "{name}");

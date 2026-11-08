@@ -215,9 +215,9 @@ pub(crate) const STD_LIMIT: &str = "std.limit";
 pub(crate) const STD_LIMIT_NAMES: [&str; 3] = ["Limit", "Limited", "limiter"];
 
 /// The standard modules a package of `edition` may import (`spec/10 §11` rule 10, ADR 0119
-/// rule 0, ADR 0117 rule 9).
+/// rule 0, ADR 0117 rule 9): `std.collections` from edition 0.5 (ADR 0139 rule 6).
 pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
-    if edition >= Edition::V0_4 {
+    if edition >= Edition::V0_5 {
         &[
             STD_HOST,
             STD_TESTING,
@@ -226,15 +226,18 @@ pub(crate) fn importable(edition: Edition) -> &'static [&'static str] {
             STD_COLLECTIONS,
             STD_LIMIT,
         ]
+    } else if edition >= Edition::V0_4 {
+        &[STD_HOST, STD_TESTING, STD_TIME, STD_DRIVE, STD_LIMIT]
     } else {
         &[STD_HOST, STD_TESTING]
     }
 }
 
-/// The path of the standard module of the collections, edition 0.4 (ADR 0119 rule 0).
+/// The path of the standard module of the collections, edition 0.5 (ADR 0119 rule 0, ADR 0139
+/// rule 6).
 pub(crate) const STD_COLLECTIONS: &str = una_core::COLLECTIONS_MODULE;
 
-/// What `std.collections` exports to an import in edition 0.4: its types, its kind `Ranked`,
+/// What `std.collections` exports to an import in edition 0.5: its types, its kind `Ranked`,
 /// the functions that make the types implemented so far and the conversions into them (ADR 0119
 /// rules 0 and 16). The other functions join the list with the types they make.
 pub(crate) const STD_COLLECTIONS_NAMES: [&str; 21] = [
@@ -289,11 +292,11 @@ pub(crate) const FLOAT_0_3: [&str; 6] = [
     "json_number",
 ];
 
-/// The constructors of dense values that edition 0.4 adds to the prelude (`spec/29 §17`, ADR
-/// 0120 rule 32). The methods of dense values are resolved by their receiver, through
+/// The constructors of dense values that edition 0.5 adds to the prelude (`spec/29 §17`, ADR
+/// 0120 rule 32, ADR 0139 rule 6). The methods of dense values are resolved by their receiver, through
 /// functions of the prelude whose names start with [`DENSE_HIDDEN`], which no name in a program
 /// reaches.
-pub(crate) const DENSE_0_4: [&str; 7] = [
+pub(crate) const DENSE_0_5: [&str; 7] = [
     "array",
     "array_filled",
     "matrix",
@@ -308,13 +311,13 @@ pub(crate) const DENSE_0_4: [&str; 7] = [
 /// written in a program.
 pub(crate) const DENSE_HIDDEN: &str = "dense_";
 
-/// The functions of `Decimal` that edition 0.4 adds to the prelude (`spec/29 §16`, ADR 0120
+/// The functions of `Decimal` that edition 0.5 adds to the prelude (`spec/29 §16`, ADR 0120
 /// rules 16 and 17).
-pub(crate) const DECIMAL_0_4: [&str; 3] = ["parse_decimal", "as_decimal", "json_decimal"];
+pub(crate) const DECIMAL_0_5: [&str; 3] = ["parse_decimal", "as_decimal", "json_decimal"];
 
-/// The kind `Rounding` and its variants, which edition 0.4 adds to the prelude (`spec/29 §16`,
+/// The kind `Rounding` and its variants, which edition 0.5 adds to the prelude (`spec/29 §16`,
 /// ADR 0120 rule 14).
-pub(crate) const ROUNDING_0_4: [&str; 8] = [
+pub(crate) const ROUNDING_0_5: [&str; 8] = [
     "Rounding",
     "HalfEven",
     "HalfAwayFromZero",
@@ -324,16 +327,36 @@ pub(crate) const ROUNDING_0_4: [&str; 8] = [
     "TowardPositive",
     "TowardNegative",
 ];
-/// The functions of `F32` that edition 0.4 adds to the prelude (`spec/29`, ADR 0120 rule 5).
-pub(crate) const FLOAT_0_4: [&str; 2] = ["f32_from_bits", "parse_f32"];
+/// The functions of `F32` that edition 0.5 adds to the prelude (`spec/29`, ADR 0120 rule 5).
+pub(crate) const FLOAT_0_5: [&str; 2] = ["f32_from_bits", "parse_f32"];
 
-/// The function of `Complex` that edition 0.4 adds to the prelude (`spec/29 §19`, ADR 0120
+/// The function of `Complex` that edition 0.5 adds to the prelude (`spec/29 §19`, ADR 0120
 /// rule 22).
-pub(crate) const COMPLEX_0_4: [&str; 1] = ["complex"];
+pub(crate) const COMPLEX_0_5: [&str; 1] = ["complex"];
 
-/// The upper names that edition 0.4 adds: `F32`, the finite kinds and `Complex` (ADR 0120
+/// The upper names that edition 0.5 adds: `F32`, the finite kinds and `Complex` (ADR 0120
 /// rules 5, 11 and 22).
-pub(crate) const UPPER_0_4: [&str; 4] = ["F32", "Finite64", "Finite32", "Complex"];
+pub(crate) const UPPER_0_5: [&str; 4] = ["F32", "Finite64", "Finite32", "Complex"];
+
+/// Whether `name` is a built-in name of edition 0.5 that ADR 0139 rule 6 moves there from
+/// edition 0.4: a name of the numeric foundation (ADR 0120) or `std.collections` (ADR 0119).
+/// In edition 0.4 it is the ordinary error of an unknown name, which no release ever accepted
+/// there (ADR 0139 rule 7), with the advice to raise the edition.
+pub(crate) fn moved_to_0_5(name: &str) -> bool {
+    DENSE_0_5.contains(&name)
+        || DECIMAL_0_5.contains(&name)
+        || ROUNDING_0_5.contains(&name)
+        || FLOAT_0_5.contains(&name)
+        || COMPLEX_0_5.contains(&name)
+        || UPPER_0_5.contains(&name)
+        || matches!(name, "Array" | "Matrix" | "Tensor" | "Lu" | "Decimal")
+        || name == STD_COLLECTIONS
+}
+
+/// The advice of an unknown name or module that [`moved_to_0_5`] holds, in edition 0.4.
+pub(crate) fn moved_to_0_5_advice(name: &str) -> String {
+    format!("`{name}` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it")
+}
 
 /// The variants that edition 0.4 adds to `HttpError`: an operation that a host stop
 /// interrupts (ADR 0116 rule 12), and a request whose limit's queue is full (ADR 0117 rule 8).

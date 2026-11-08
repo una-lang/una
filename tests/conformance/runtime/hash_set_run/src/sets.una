@@ -1,4 +1,4 @@
--- test: in edition 0.4, a `HashSet` holds each item once and lists its items in the order they were first added: `has`, `add`, `remove`, `with`, `without`, `items`, `.len`, the set operations and `same_items` give their results, on the empty set too; `union` lists the receiver's items then the other's it lacks, `intersection` and `difference` keep the receiver's order; lists and records are items; a set renders as `{a, b}` and keeps value semantics through a binding; both engines agree (ADR 0119 rules 8 to 12)
+-- test: in edition 0.5, a `HashSet` holds each item once and lists its items in the order they were first added: `has`, `add`, `remove`, `with`, `without`, `items`, `.len`, the set operations and `same_items` give their results, on the empty set too; `union` lists the receiver's items then the other's it lacks, `intersection` and `difference` keep the receiver's order; lists and records are items; a set renders as `{a, b}` and keeps value semantics through a binding; both engines agree (ADR 0119 rules 8 to 12)
 -- spec: spec/28 §7
 -- grant: console
 -- expect: run-output "empty: {} 0 false [] {}"

@@ -130,10 +130,10 @@ pub fn builtins() -> Vec<Builtin> {
         entry("keys", "Map[K, V]", "m", &[], "List[K]"),
         entry("values", "Map[K, V]", "m", &[], "List[V]"),
         entry("entries", "Map[K, V]", "m", &[], "List[Entry[K, V]]"),
-        // Edition 0.4 (ADR 0119 rule 18).
+        // Edition 0.5 (ADR 0119 rule 18).
         Builtin {
             edit: true,
-            since: Edition::V0_4,
+            since: Edition::V0_5,
             ..entry(
                 "update",
                 "Map[K, V]",
@@ -143,12 +143,12 @@ pub fn builtins() -> Vec<Builtin> {
             )
         },
     ];
-    // Edition 0.4: the methods of `Stack` and `Queue` (`spec/28 §5`), in the order of their
+    // Edition 0.5: the methods of `Stack` and `Queue` (`spec/28 §5`), in the order of their
     // tables.
     let seq =
         |name, receiver, var, edit, params: &[(&'static str, &'static str)], result| Builtin {
             edit,
-            since: Edition::V0_4,
+            since: Edition::V0_5,
             ..entry(name, receiver, var, params, result)
         };
     all.extend([
@@ -171,9 +171,9 @@ pub fn builtins() -> Vec<Builtin> {
         seq("peek_back", "Queue[T]", "q", false, &[], "Option[T]"),
         seq("items", "Queue[T]", "q", false, &[], "List[T]"),
     ]);
-    // Edition 0.4: the methods of `Set` (`spec/28 §6`, ADR 0119 rule 7).
+    // Edition 0.5: the methods of `Set` (`spec/28 §6`, ADR 0119 rule 7).
     let set = |name, params: &[(&'static str, &'static str)], result: &str| Builtin {
-        since: Edition::V0_4,
+        since: Edition::V0_5,
         ..entry(name, "Set[T]", "s", params, result)
     };
     let set_update = |name| Builtin {
@@ -181,7 +181,7 @@ pub fn builtins() -> Vec<Builtin> {
         ..set(name, &[("item", "T")], "Unit")
     };
     all.extend([
-        len("Set[T]", "s", Edition::V0_4),
+        len("Set[T]", "s", Edition::V0_5),
         set("has", &[("item", "T")], "Bool"),
         set_update("add"),
         set_update("remove"),
@@ -196,17 +196,17 @@ pub fn builtins() -> Vec<Builtin> {
         set("difference", &[("other", "Set[T]")], "Set[T]"),
         set("is_subset", &[("of", "Set[T]")], "Bool"),
     ]);
-    // Edition 0.4: the methods of `HashMap` and `HashSet` (`spec/28 §7`, ADR 0119 rule 12).
+    // Edition 0.5: the methods of `HashMap` and `HashSet` (`spec/28 §7`, ADR 0119 rule 12).
     let hash_map = |name, params: &[(&'static str, &'static str)], result: &str| Builtin {
-        since: Edition::V0_4,
+        since: Edition::V0_5,
         ..entry(name, "HashMap[K, V]", "m", params, result)
     };
     let hash_set = |name, params: &[(&'static str, &'static str)], result: &str| Builtin {
-        since: Edition::V0_4,
+        since: Edition::V0_5,
         ..entry(name, "HashSet[T]", "s", params, result)
     };
     all.extend([
-        len("HashMap[K, V]", "m", Edition::V0_4),
+        len("HashMap[K, V]", "m", Edition::V0_5),
         hash_map("has", &[("key", "K")], "Bool"),
         hash_map("get", &[("key", "K")], "Option[V]"),
         Builtin {
@@ -231,7 +231,7 @@ pub fn builtins() -> Vec<Builtin> {
         hash_map("values", &[], "List[V]"),
         hash_map("entries", &[], "List[Entry[K, V]]"),
         hash_map("same_entries", &[("as", "HashMap[K, V]")], "Bool"),
-        len("HashSet[T]", "s", Edition::V0_4),
+        len("HashSet[T]", "s", Edition::V0_5),
         hash_set("has", &[("item", "T")], "Bool"),
         Builtin {
             edit: true,
@@ -250,11 +250,11 @@ pub fn builtins() -> Vec<Builtin> {
         hash_set("is_subset", &[("of", "HashSet[T]")], "Bool"),
         hash_set("same_items", &[("as", "HashSet[T]")], "Bool"),
     ]);
-    // Edition 0.4: the methods of `PriorityQueue` (`spec/28 §8`, ADR 0119 rule 13), in the
+    // Edition 0.5: the methods of `PriorityQueue` (`spec/28 §8`, ADR 0119 rule 13), in the
     // order of its table.
     let priority = |name, edit, params: &[(&'static str, &'static str)], result| Builtin {
         edit,
-        since: Edition::V0_4,
+        since: Edition::V0_5,
         ..entry(name, "PriorityQueue[T, P]", "q", params, result)
     };
     all.extend([
@@ -265,9 +265,9 @@ pub fn builtins() -> Vec<Builtin> {
         priority("peek_priority", false, &[], "Option[P]"),
         priority("items", false, &[], "List[T]"),
     ]);
-    // Edition 0.4: `.size` and the methods of `BitSet` (`spec/28 §9`, ADR 0119 rule 14).
+    // Edition 0.5: `.size` and the methods of `BitSet` (`spec/28 §9`, ADR 0119 rule 14).
     let bits = |name, params: &[(&'static str, &'static str)], result: &str| Builtin {
-        since: Edition::V0_4,
+        since: Edition::V0_5,
         ..entry(name, "BitSet", "b", params, result)
     };
     let bits_update = |name| Builtin {
@@ -275,7 +275,7 @@ pub fn builtins() -> Vec<Builtin> {
         ..bits(name, &[("item", "Int")], "Unit")
     };
     all.extend([
-        len("BitSet", "b", Edition::V0_4),
+        len("BitSet", "b", Edition::V0_5),
         Builtin {
             property: true,
             ..bits("size", &[], "Int")
@@ -347,15 +347,15 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
         "len" => &[
             "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
             "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
-            "never negative (`spec/21 §2`). From edition 0.4 on, a `Stack`, a `Queue`, a `Set`, a",
+            "never negative (`spec/21 §2`). From edition 0.5 on, a `Stack`, a `Queue`, a `Set`, a",
             "`HashMap`, a `HashSet` and a `PriorityQueue` count their items, and a `BitSet` its",
             "members, in O(1) (`spec/28 §5`, `§6`, `§7`, `§8`, `§9`).",
         ],
         "has" => &[
             "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
-            "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.4 on, whether",
+            "and predicates (`spec/21 §2`, `spec/21 §4`). On a `Set`, from edition 0.5 on, whether",
             "`s` holds `item`, in O(log n) (`spec/28 §6`). On a `HashMap` and a `HashSet`, the same",
-            "in O(|k|) expected, outside contracts in edition 0.4 (`spec/28 §7`). On a `BitSet`,",
+            "in O(|k|) expected, outside contracts in edition 0.5 (`spec/28 §7`). On a `BitSet`,",
             "whether `item` is a member, `false` outside its range, in O(1) (`spec/28 §9`).",
         ],
         "get" => &[

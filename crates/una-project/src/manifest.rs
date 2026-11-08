@@ -299,11 +299,31 @@ pub enum Edition {
     /// Edition `0.4`, a preview until the rules that target it land: every construct of
     /// edition `0.3`, and those of ADR 0116 (`spec/26`) as they land.
     V0_4,
+    /// Edition `0.5`, a preview (ADR 0121, as ADR 0139 extends it): every construct of edition
+    /// `0.4`, collections (ADR 0119, `spec/28`) and the numeric foundation (ADR 0120,
+    /// `spec/29` but `F64`), which ADR 0139 rule 6 moves here from edition `0.4`.
+    V0_5,
 }
 
 impl Edition {
     /// Every edition, oldest first.
-    pub const ALL: [Edition; 4] = [Edition::V0_1, Edition::V0_2, Edition::V0_3, Edition::V0_4];
+    pub const ALL: [Edition; 5] = [
+        Edition::V0_1,
+        Edition::V0_2,
+        Edition::V0_3,
+        Edition::V0_4,
+        Edition::V0_5,
+    ];
+
+    /// The edition that collections (ADR 0119) and the numeric foundation (ADR 0120) exist
+    /// from: `0.5`, where ADR 0139 rule 6 moves them from `0.4`.
+    pub const COLLECTIONS_AND_NUMERICS: Edition = Edition::V0_5;
+
+    /// Whether this edition has collections (ADR 0119) and the numeric foundation (ADR 0120)
+    /// but `F64`, which edition `0.3` has (ADR 0114).
+    pub fn has_collections_and_numerics(self) -> bool {
+        self >= Edition::COLLECTIONS_AND_NUMERICS
+    }
 
     /// The keyword of the test declaration in this edition: `test` from edition `0.3`, and
     /// `example` in editions `0.1` and `0.2` (`spec/08 §2`, ADR 0105). Messages and the output
@@ -332,10 +352,11 @@ impl Edition {
             Edition::V0_2 => "0.2",
             Edition::V0_3 => "0.3",
             Edition::V0_4 => "0.4",
+            Edition::V0_5 => "0.5",
         }
     }
 
-    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2", "0.3" and "0.4"`.
+    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2", "0.3", "0.4" and "0.5"`.
     pub(crate) fn listed() -> String {
         let names: Vec<String> = Edition::ALL
             .iter()
@@ -355,6 +376,7 @@ impl Edition {
             "0.2" => Some(Edition::V0_2),
             "0.3" => Some(Edition::V0_3),
             "0.4" => Some(Edition::V0_4),
+            "0.5" => Some(Edition::V0_5),
             _ => None,
         }
     }
@@ -502,14 +524,18 @@ fn package_table(
                     ));
                 } else if name == "edition" {
                     match Edition::parse(&located.value) {
-                        // Edition 0.4 is described by `ita.una` (ADR 0122 Question 8.1): the
-                        // package is still checked in edition 0.4, and `una migrate` moves it.
-                        Some(Edition::V0_4) => {
-                            manifest.edition = Edition::V0_4;
+                        // Edition 0.4 and later are described by `ita.una` (ADR 0122 Question
+                        // 8.1): the package is still checked in its edition, and `una migrate`
+                        // moves it.
+                        Some(edition) if edition >= Edition::V0_4 => {
+                            manifest.edition = edition;
                             errors.push(ProjectError::new(
                                 Code::U7002,
                                 located.range,
-                                "edition 0.4 is described by ita.una, not una.toml; run `una migrate`",
+                                format!(
+                                    "edition {} is described by ita.una, not una.toml; run `una migrate`",
+                                    edition.name()
+                                ),
                             ));
                         }
                         Some(edition) => manifest.edition = edition,

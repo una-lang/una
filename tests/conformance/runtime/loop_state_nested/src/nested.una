@@ -1,4 +1,4 @@
--- test: in edition 0.4, a list and a map updated through two levels of nested loops, and a list updated by two loops in a row, hold their final values when read after the loops, and copies taken before each loop, in the outer body too, keep theirs; a function whose loops update a copy of its argument gives the same result when called twice with one argument, which keeps its value, when the call is the argument's last use, and when it re-enters itself from inside its own loop, in both engines (#1196, spec/17 §7)
+-- test: in edition 0.5, a list and a map updated through two levels of nested loops, and a list updated by two loops in a row, hold their final values when read after the loops, and copies taken before each loop, in the outer body too, keep theirs; a function whose loops update a copy of its argument gives the same result when called twice with one argument, which keeps its value, when the call is the argument's last use, and when it re-enters itself from inside its own loop, in both engines (#1196, spec/17 §7)
 -- spec: spec/17 §7
 -- grant: console
 -- expect: run-output "nested: [1, 3, 5]"

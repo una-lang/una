@@ -146,8 +146,8 @@ pub(crate) fn program(
         library,
         host,
         condition_edits: condition_edits(findings),
-        // ADR 0069, amendment of 2026-10-19: the frames of a map, in edition `0.4`.
-        map_frames: env.edition >= una_project::Edition::V0_4,
+        // ADR 0069, amendment of 2026-10-19: the frames of a map, in edition `0.5`.
+        map_frames: env.edition >= una_project::Edition::V0_5,
     };
     gaps.missing = missing(env, &program);
     (program, gaps)
@@ -331,7 +331,7 @@ pub(crate) fn rejected(
 
 /// The kinds of the prelude that Core IR declares, in the module `prelude`; the others are
 /// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407). `Rounding` and
-/// the two complex kinds are edition 0.4's (`spec/29 §16`, `§19`).
+/// the two complex kinds are edition 0.5's (`spec/29 §16`, `§19`).
 pub(crate) const PRELUDE_CORE_KINDS: [&str; 8] = [
     "Json",
     "JsonError",
@@ -5856,7 +5856,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         })
     }
 
-    /// `edit m.update(key: k, initial: i, change: f)` on a map, edition 0.4 (ADR 0119 rule
+    /// `edit m.update(key: k, initial: i, change: f)` on a map, edition 0.5 (ADR 0119 rule
     /// 18): `v = when m.get(k) is Some(x) -> x, None -> i`, then `m.with(k, f(v))`, as the
     /// tuple `(m', unit)` of a call with an `edit` argument (`spec/17 §4`). `f` is called
     /// exactly once, and a failure of it leaves `m` as it was, since the place takes its new
