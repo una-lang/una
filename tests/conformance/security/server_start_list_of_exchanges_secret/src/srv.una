@@ -8,7 +8,7 @@ import std.host (Exchange)
 
 idle(exchanges: internal List[Exchange]) -> Unit = unit
 
-serve_all(batches: internal List[List[Exchange]], key: secret Int) -> Unit
+pub serve_all(batches: internal List[List[Exchange]], key: secret Int) -> Unit
 =
   tasks
     for batch in batches

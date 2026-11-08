@@ -5,7 +5,7 @@ module m
 
 crunch[T](x: T) -> Unit = unit
 
-spawn[T](x: T, key: secret Bool) -> Unit
+pub spawn[T](x: T, key: secret Bool) -> Unit
 =
   tasks
     if key

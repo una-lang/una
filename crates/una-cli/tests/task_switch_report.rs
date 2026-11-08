@@ -156,3 +156,28 @@ fn an_entry_in_a_handler_s_operation_body_names_the_handler() {
     assert_eq!(entry["construct"], "task switch");
     assert_eq!(entry["function"], "operations.box");
 }
+
+#[test]
+fn a_check_point_that_only_a_test_reaches_is_not_listed() {
+    // #1707: code that no run of the program reaches is neither refused nor listed. The
+    // `internal` twin of `task_switch_example_only` lists no `task switch`, while that of its
+    // twin `task_switch_reached`, whose task calls the same function, lists the loop.
+    let security = hermetic::repository().join("tests/conformance/security");
+    let base = std::env::temp_dir().join(format!("una-switch-reach-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    hermetic::seal(&base);
+    let only = base.join("example_only_internal");
+    twin(
+        &security.join("task_switch_example_only"),
+        &only,
+        "internal ",
+    );
+    assert_eq!(listed(&only, "task_switch_example_only"), Sites::new());
+    let reached = base.join("reached_internal");
+    twin(&security.join("task_switch_reached"), &reached, "internal ");
+    assert_eq!(
+        listed(&reached, "task_switch_reached"),
+        refused(&security.join("task_switch_reached"))
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
