@@ -267,7 +267,7 @@ The executable and `una run`, not `una test`, also take `--serve-threads <n>`, 1
 
 ## 10. `std.limit`
 
-1. **The module** (ADR 0117 rule 9). In edition `0.4`, `std.limit` is an importable standard module (`spec/10 §11` rule 10), read only by a package that imports it, as `std.collections` is (`spec/28 §2`); in earlier editions an import of it is U1001 at the module path. It declares:
+1. **The module** (ADR 0117 rule 9). In edition `0.4`, `std.limit` is an importable standard module (`spec/10 §11` rule 10), read only by a package that imports it, the mechanism by which `std.collections` is read in edition `0.5` (`spec/28 §2`); in earlier editions an import of it is U1001 at the module path. It declares:
 
    ```una
    pub kind Limited = | RateLimited

@@ -4,7 +4,7 @@ Status: Normative, v0.3 (ADR 0104), with the other number types of ADR 0114 rule
 
 A unit of measure is part of a number type. `Int of Meter` is neither `Int` nor `Int of Second`, so a program cannot add meters to seconds, pass seconds where milliseconds are expected, or compare grams with milliliters. Units exist only at compile time: they are erased after the type check, so they cost nothing at run time or in verification, and they do not change a program's output.
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`) and later. In editions `0.1` and `0.2`, a `measure` declaration and `of` after a type are syntax errors (U0101). `F64` takes a unit from edition `0.3`, and `F32`, `Decimal[s]`, the complex types and the elements of dense values in edition `0.4`, the editions that have them (§9).
+**Editions.** The rules of this chapter apply only to packages of edition `0.3` (`spec/13 §7`) and later. In editions `0.1` and `0.2`, a `measure` declaration and `of` after a type are syntax errors (U0101). `F64` takes a unit from edition `0.3`, and `F32`, `Decimal[s]`, the complex types and the elements of dense values in edition `0.5`, the edition that has them (§9).
 
 ## 1. Declarations
 
