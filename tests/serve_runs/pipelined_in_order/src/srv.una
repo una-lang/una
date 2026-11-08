@@ -13,8 +13,8 @@ answer(exchange: internal Exchange) -> Unit
     if error use unit
 
 --- Pipelined requests on one connection, sent in one write, are read one at a time, each after
---- the reply before it is written, and answered in their order (ADR 0123 rule 12); a second
---- connection moves the script's time on.
+--- the reply before it is written, and answered in their order at the instant they are read
+--- (ADR 0123 rule 12, `spec/31 §8` rule 6); a second connection runs after them.
 pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
   uses @console: Console[print]
