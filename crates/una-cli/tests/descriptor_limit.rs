@@ -93,5 +93,33 @@ fn a_limit_too_small_for_the_runtime_is_a_usage_error_in_both_engines() {
             "{engine} at the minimum"
         );
     }
+    // Review L3: the cases above meet a warm proof cache, which `una build` left. Under a
+    // fresh home the cache is cold, and `una run` checks first: for a package whose check runs
+    // the solver, here a function with a contract, the solver's confinement cannot set its own
+    // limit of 16 under a hard limit of 12, which is U5003, a diagnosed error, never U8001
+    // (`spec/26 §6` rule 3).
+    let checked = format!(
+        "{program}\nnext_of(n: Int) -> Int\n  requires n >= 0\n  ensures result > n\n=\n  n + 1\n"
+    );
+    let cold_dir = within_package("fdcold", "alive", &checked);
+    let home = cold_dir.join("cold-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let cold = Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -n 12 && exec \"$0\" run .")
+        .arg(una)
+        .env("HOME", &home)
+        .env("NO_COLOR", "1")
+        .current_dir(&cold_dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&cold.stderr);
+    assert_eq!(cold.status.code(), Some(1), "{cold:?}");
+    assert!(
+        stderr.contains("U5003") && !stderr.contains("U8001"),
+        "{stderr}"
+    );
+    assert!(cold.stdout.is_empty(), "{cold:?}");
+    let _ = std::fs::remove_dir_all(&cold_dir);
     let _ = std::fs::remove_dir_all(&dir);
 }
