@@ -249,6 +249,14 @@ pub(crate) enum Command {
         /// Write the trace to this file as a JSON array, each event as it happens (ADR 0117)
         #[arg(long, value_name = "FILE")]
         trace: Option<PathBuf>,
+
+        /// Replace the listeners of the `serve:` grants with the connections this file describes, one JSON object per line; needs --virtual-time (ADR 0123)
+        #[arg(long, value_name = "FILE")]
+        serve_script: Option<PathBuf>,
+
+        /// Write what each scripted connection received to this file; needs --serve-script (ADR 0123)
+        #[arg(long, value_name = "FILE")]
+        serve_out: Option<PathBuf>,
     },
     /// Compile `main` of the `[run] entry` module into a native executable
     Build {
