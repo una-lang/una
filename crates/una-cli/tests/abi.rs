@@ -190,9 +190,8 @@ fn the_report_of_the_events_example() {
 #[test]
 fn the_previews_of_una_version_are_the_markers_of_spec_13_section_7() {
     // ADR 0121 rule 7 and its tests: the `preview` of `una --version` and the markers of
-    // `spec/13 §7`, which the website reads, name the same editions, so they cannot disagree;
-    // each preview but the first has every construct of the edition before it, the sentence
-    // the website needs to read a stable list as "and later".
+    // `spec/13 §7`, which the website reads, name the same editions, so they cannot disagree.
+    // The test applies the rules of the website's reader, so a text it would refuse fails here.
     let output = una(&["--json", "--version"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let version = json(&output);
@@ -212,20 +211,53 @@ fn the_previews_of_una_version_are_the_markers_of_spec_13_section_7() {
         std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
     let section =
         &spec13[spec13.find("## 7. Project files").unwrap()..spec13.find("## 8.").unwrap()];
-    let marked: Vec<&str> = editions
-        .iter()
-        .copied()
-        .filter(|e| section.contains(&format!("**Edition `{e}` is a preview**")))
-        .collect();
-    assert_eq!(preview, marked, "spec/13 §7 and `una --version` disagree");
-    for pair in editions.windows(2) {
-        if preview.contains(&pair[1]) && preview.contains(&pair[0]) {
-            let rule = format!(
-                "Edition `\"{}\"` has every construct, keyword and rule of edition `\"{}\"`",
-                pair[1], pair[0]
-            );
-            assert!(section.contains(&rule), "spec/13 §7 lacks: {rule}");
+    // The website's reader (`website/scripts/preview/editions.mjs`, `releaseEditions`): a
+    // marker is "**Edition `X` is a preview**", with `X` quoted or not, and a marker of an
+    // edition the release does not serve is an error.
+    let mut marked: Vec<String> = Vec::new();
+    for (at, _) in section.match_indices("**Edition `") {
+        let rest = &section[at + "**Edition `".len()..];
+        let Some((name, after)) = rest.split_once('`') else {
+            continue;
+        };
+        if !after.starts_with(" is a preview**") {
+            continue;
         }
+        let name = name.trim_matches('"');
+        assert!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "spec/13 §7: a preview marker names `{name}`, which is no edition"
+        );
+        assert!(
+            editions.contains(&name),
+            "spec/13 §7 names {name} a preview, but the release does not serve it"
+        );
+        marked.push(name.to_owned());
+    }
+    assert_eq!(preview, marked, "spec/13 §7 and `una --version` disagree");
+    // Every preview has every construct of the edition before it, stable or not, in the
+    // sentence the website reads (each edition quoted or not); without it the website cannot
+    // read a list that ends at the newest stable edition as "and later".
+    for (i, edition) in editions.iter().enumerate() {
+        if !preview.contains(edition) || i == 0 {
+            continue;
+        }
+        let before = editions[i - 1];
+        let found = [edition.to_string(), format!("\"{edition}\"")]
+            .iter()
+            .any(|e| {
+                [before.to_string(), format!("\"{before}\"")]
+                    .iter()
+                    .any(|b| {
+                        section.contains(&format!(
+                            "Edition `{e}` has every construct, keyword and rule of edition `{b}`"
+                        ))
+                    })
+            });
+        assert!(
+            found,
+            "spec/13 §7 does not say that edition {edition} has every construct of edition {before}"
+        );
     }
     // A preview edition is always newer than every stable one: editions are cumulative.
     let first = editions.iter().position(|e| preview.contains(e)).unwrap();

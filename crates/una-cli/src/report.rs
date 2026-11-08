@@ -249,7 +249,8 @@ struct PackageDoc {
 }
 
 /// The edition section of the report (ADR 0121 rule 8, `spec/13 §6`). Its third key,
-/// `preview_constructs`, joins it with the edition ledger of ADR 0121 rule 9.
+/// `preview_constructs`, is not emitted yet: it lands with the edition ledger of ADR 0121
+/// rule 9 (#1752).
 #[derive(Serialize)]
 struct EditionDoc {
     /// The package's edition, as `ita.una` or `una.toml` names it.
