@@ -4,7 +4,7 @@ Status: Proposed (draft for the project's decision; it is appended to docs/adr/0
 
 ## Amendment (proposed 2026-11-04): quiet tasks and the bound of `tasks` (S-40 remainder)
 
-Rule 7 bounds the tasks of a `tasks` statement that run at once, `tasks at most n at once` or the default `max(64, M)`, and every task of the statement holds one of those slots. A `start` that stands in quiet code (`spec/26 §6` rule 4, the ADR 0116 S-39 amendment draft), under a `secret` branch for one, holds a slot too. So whether such `start`s ran decides whether a later public `start` of the same statement waits for a slot. In the interpreter, whose tasks share one queue, the wait lets the queued tasks run first, and the order of their public events changes with the secret, deterministically. Natively the wait is timing.
+Rule 7 bounds the tasks of a `tasks` statement that run at once, `tasks at most n at once` or the default `max(64, M)`, and every task of the statement holds one of those slots. A `start` that stands in quiet code (`spec/26 §6` rule 4, the ADR 0116 S-39 amendment of 2026-11-06), under a `secret` branch for one, holds a slot too. So whether such `start`s ran decides whether a later public `start` of the same statement waits for a slot. In the interpreter, whose tasks share one queue, the wait lets the queued tasks run first, and the order of their public events changes with the secret, deterministically. Natively the wait is timing.
 
 The reproducer is `ops/coordination/reviews/1512-repro/p_bound.una`, under `tasks at most 2 at once`:
 

@@ -1,0 +1,39 @@
+-- test: the twin of `tconc_residue_beside`: the sibling branch works on `public` data, so `L_res` is `internal`, from `ρ` of `Http`, which the failure of `Http.get` carries, and the program is accepted; the preview's `τ_conc` made `L_res` `⊤` here
+-- spec: spec/27 §11
+-- expect: ok
+module residue
+
+import std.time (millisecond)
+
+crunch_open(n: Int) -> Int = n * 3
+
+--- A request in a started task, which a cancellation of the task can leave on a helper.
+fetch(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- A `tasks` statement whose started task makes a request.
+serve(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start fetch(url)
+  unit
+
+--- `serve` runs in a branch, beside work on `m`: `τ_conc` of its `tasks` statement.
+pub both(m: Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  together
+    let a = crunch_open(m)
+    let b = serve(url)
+  unit
+
+--- A later request under a deadline, in a function no task reaches.
+pub poll(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let reply = attempt @http.get(url, headers: [], key_name: None) within 100 * millisecond
+  unit

@@ -1,0 +1,40 @@
+-- test: `L_res` with the precise `τ_conc` (ADR 0116 P9, `spec/27 §11`): a `tasks` statement whose started task makes a request runs in a branch beside work on a `secret`, so `τ_conc` of the statement, and `L_res`, are `secret`, and the deadline of a later request in a function no task reaches carries it, above the `internal` that the failure of `Http.get` carries (U4001 at the `within`), and the request runs under the timing floor (U4003)
+-- spec: spec/27 §11
+-- expect: error U4001 at src/residue.una:39:15
+-- expect: error U4003 at src/residue.una:39:23
+module residue
+
+import std.time (millisecond)
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- A request in a started task, which a cancellation of the task can leave on a helper.
+fetch(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- A `tasks` statement whose started task makes a request.
+serve(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  tasks
+    start fetch(url)
+  unit
+
+--- `serve` runs in a branch, beside work on `key`: `τ_conc` of its `tasks` statement.
+pub both(key: secret Int, url: Text) -> Unit
+  uses @http: Http[get]
+=
+  together
+    let a = crunch(key)
+    let b = serve(url)
+  unit
+
+--- A later request under a deadline, in a function no task reaches.
+pub poll(url: Text) -> Unit
+  uses @http: Http[get]
+=
+  let reply = attempt @http.get(url, headers: [], key_name: None) within 100 * millisecond
+  unit

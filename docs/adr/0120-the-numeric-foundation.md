@@ -927,3 +927,7 @@ ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release
 - `divide`, `remainder`: O(d²) when the divisor or the quotient has fewer than 64 limbs, O(M(d) log d) above (Burnikel-Ziegler), M(d) the cost of `*`.
 - Rendering a coefficient the program grew: O(d²) below 32 limbs, O(M(d) log d) above (divide and conquer over powers of ten).
 - `parse_decimal` and `as_decimal` are unchanged: at most 4,300 digits (the cap of #914), read by Horner's rule.
+
+## Amendment (2026-11-06): the target is edition `0.5` (ADR 0139)
+
+The Target line reads: edition `0.5`. Editions `0.1` to `0.4` do not change, except for the U7007 of ADR 0139 rule 7 in edition `0.4`. Every "edition `0.4`" of this record that names the edition its constructs exist in, including rule 1 and the section "Edition `0.4`", reads "edition `0.5`", and each comparison with edition `0.3` is made with edition `0.4`. `F64` and the rules of ADR 0114 stay in edition `0.3`. No other rule changes.

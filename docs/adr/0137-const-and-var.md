@@ -1,8 +1,8 @@
 # 0137. `const` and `var` replace `let` and `let edit`
 
-- Status: Proposed
+- Status: Accepted (2026-11-06), accepted by the project's decision of 2026-11-06, together with ADR 0126.
 - Date: 2026-11-05
-- Deciders:
+- Deciders: Una project (accepted on 2026-11-06)
 - Resolves: issue #1627
 - Related:
   - ADR 0126 (module constants), whose constants are written `const` under this record, and which moves with it to edition `0.5`;

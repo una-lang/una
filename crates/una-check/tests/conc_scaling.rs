@@ -1,14 +1,15 @@
 //! Scaling of the labels of concurrent work (ADR 0116 P2 to P4, slice 2 of #1087): `κ` of each
 //! construct from its seed, `ctx` down each body's construct tree, and `conc` of every node in one
 //! pass over the strongly connected components of the reversed graph, O(V + E + F) joins in all.
-//! Four shapes, each at four sizes: a chain of `n` functions, each holding a `together` whose
+//! Five shapes, each at four sizes: a chain of `n` functions, each holding a `together` whose
 //! branch calls the next; the same chain whose last branch reaches one `within`, so that every
 //! round of the probe of pass 2 computes the labels (slice 3); one function holding `n`
-//! constructs one after another; and one
+//! constructs one after another; `n` `tasks` statements whose tasks make requests, each of which
+//! `L_res` counts with its `τ_conc` (slice 4); and one
 //! function holding `together for`s nested `d` deep, one call at each level, where a `ctx` that
 //! walked the parents of each construct would take O(d²). Counted first (ADR 0077): the package
 //! pass steps, which the process-wide counter `pass_steps` counts, must at most double with each
-//! doubling, with a margin of 10 %. The first three shapes are also timed, as a fallback, over a
+//! doubling, with a margin of 10 %. The first four shapes are also timed, as a fallback, over a
 //! span of 8 times the size, by the shared helper of `una-cli/tests/common/timing.rs` (#1197).
 //! The nested shape is counted only: checking nested bodies is superlinear in time already,
 //! before this analysis (the copying of items into every open frame, amendment E, which slice 8
@@ -59,6 +60,24 @@ fn chain_within(n: usize) -> String {
     );
     text.push_str(
         "\ntimed(n: Int) -> Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n",
+    );
+    text
+}
+
+/// `n` functions, each with a `tasks` statement whose started task makes a request, and one
+/// `within`: `L_res` counts each statement with the precise `τ_conc` of its site (slice 4 of
+/// #1087), O(1) joins each once the labels are computed, so the probe's rounds stay linear.
+fn requests(n: usize) -> String {
+    let mut text = String::from(
+        "module app\n\nimport std.time (millisecond)\n\nstep(n: Int) -> Int = n + 1\n\nfetch(url: Text) -> Unit\n  uses @http: Http[get]\n=\n  let outcome = attempt @http.get(url, headers: [], key_name: None)\n  unit\n",
+    );
+    for i in 0..n {
+        text.push_str(&format!(
+            "\npub s{i}(url: Text) -> Unit\n  uses @http: Http[get]\n=\n  tasks\n    start fetch(url)\n  unit\n"
+        ));
+    }
+    text.push_str(
+        "\npub timed(n: Int) -> internal Int\n=\n  let w = step(n) within 10 * millisecond\n    if error use 0\n  w\n",
     );
     text
 }
@@ -146,6 +165,7 @@ fn the_labels_of_concurrent_work_scale_linearly() {
         ("a chain", chain as fn(usize) -> String),
         ("many constructs", many),
         ("a chain with a `within`", chain_within),
+        ("`tasks` statements that make requests", requests),
     ] {
         let counts: Vec<usize> = sizes
             .iter()
