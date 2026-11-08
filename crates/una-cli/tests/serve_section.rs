@@ -1,7 +1,8 @@
 //! The `serve` section of `ita.una` (`spec/31 §7`, ADR 0123 rules 16 and 22): the usage errors of
 //! `una run` and `una build` for a module without the shapes of `handle` and `on_stop` and for a
-//! run without a `serve:` grant, the driver's fail-closed usage error while it does not run, the
-//! tests that call `handle` directly, and the report's server entries. Every package lies below a
+//! run without a `serve:` grant, the driver that `una run` runs, the build's fail-closed usage
+//! error while it does not build the driver, the tests that call `handle` directly, and the
+//! report's server entries. Every package lies below a
 //! sealed directory (#1560).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -67,7 +68,57 @@ fn package(name: &str, grants: &str, health: &str) -> PathBuf {
 
 const LOOPBACK: &str = "    serve \"http://127.0.0.1:8080\"";
 
-const PENDING: &str = "does not run in this release yet";
+/// The usage error of `una build` of a package with a `serve` section (`spec/31 §7` rule 5).
+const PENDING: &str = "`una build` does not build the driver in this release yet";
+
+/// A port the kernel had free a moment ago.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Spawns `command`, which serves the section of `HEALTH` on `port`, asks it `GET /health` once
+/// it listens, then sends it SIGTERM: the reply's status line and the run's exit code.
+fn serve_once(mut command: Command, port: u16) -> (String, Option<i32>, String) {
+    use std::io::{Read, Write};
+    let mut served = command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mut stream = loop {
+        if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            break stream;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the run never listened"
+        );
+        assert!(served.try_wait().unwrap().is_none(), "the run ended");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut reply = Vec::new();
+    let _ = stream.read_to_end(&mut reply);
+    let reply = String::from_utf8_lossy(&reply).into_owned();
+    let status = reply.lines().next().unwrap_or("").to_owned();
+    let killed = Command::new("kill")
+        .args(["-TERM", &served.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let ended = served.wait_with_output().unwrap();
+    (status, ended.status.code(), stderr(&ended))
+}
 
 #[test]
 fn a_module_without_handle_of_its_shape_is_a_usage_error() {
@@ -143,13 +194,20 @@ fn a_run_without_a_serve_grant_is_a_usage_error() {
         "{}",
         stderr(&output)
     );
-    // A flag grants one, and the run reaches the driver, which fails closed.
-    let output = una(
-        &dir,
-        &["run", ".", "--grant", "serve:http://127.0.0.1:8080"],
-    );
-    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
-    assert!(stderr(&output).contains(PENDING), "{}", stderr(&output));
+    // A flag grants one, and the run's driver serves (`spec/31 §1` rule 10).
+    let port = free_port();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+    command
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .args(["run", ".", "--grant"])
+        .arg(format!("serve:http://127.0.0.1:{port}"))
+        .current_dir(&dir);
+    let (status, code, message) = serve_once(command, port);
+    assert_eq!(status, "HTTP/1.1 200 OK", "{message}");
+    assert_eq!(code, Some(0), "{message}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -187,31 +245,65 @@ fn a_requires_on_handle_is_refused() {
 }
 
 #[test]
-fn the_driver_fails_closed_before_any_listener_is_bound() {
-    // A port in use by this test: a run that bound its listener would fail on it differently.
-    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = held.local_addr().unwrap().port();
+fn una_run_serves_and_the_build_fails_closed_before_anything_is_made() {
+    // `spec/31 §1` rule 10, §7 rule 5: `una run` runs the driver, which answers `GET /health`
+    // with `200` and ends with exit code 0 at a host stop; `una build` still refuses the
+    // package, exit code 2, and writes no executable.
+    let port = free_port();
     let dir = package(
-        "pending",
+        "runs",
         &format!("    serve \"http://127.0.0.1:{port}\""),
         HEALTH,
     );
     let check = una(&dir, &["check", "."]);
     assert!(check.status.success(), "{}", stderr(&check));
-    let run = una(&dir, &["run", "."]);
-    assert_eq!(run.status.code(), Some(2), "{}", stderr(&run));
-    assert!(
-        stderr(&run).contains("the `serve` section's module `health` is checked")
-            && stderr(&run).contains(PENDING),
-        "{}",
-        stderr(&run)
-    );
-    assert!(!stderr(&run).contains("address"), "{}", stderr(&run));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+    command
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .args(["run", "."])
+        .current_dir(&dir);
+    let (status, code, message) = serve_once(command, port);
+    assert_eq!(status, "HTTP/1.1 200 OK", "{message}");
+    assert_eq!(code, Some(0), "{message}");
     let build = una(&dir, &["build", ".", "--out", "app"]);
     assert_eq!(build.status.code(), Some(2), "{}", stderr(&build));
-    assert!(stderr(&build).contains(PENDING), "{}", stderr(&build));
+    assert!(
+        stderr(&build).contains("the `serve` section's module `health` is checked")
+            && stderr(&build).contains(PENDING),
+        "{}",
+        stderr(&build)
+    );
+    assert!(!stderr(&build).contains("address"), "{}", stderr(&build));
     assert!(!dir.join("app").exists(), "no executable is written");
-    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn una_run_refuses_a_serve_section_with_within_before_it_serves() {
+    // `spec/31 §7` rule 3 item 7: every `within` of a section is U4003 under the preview's
+    // `L_srv`, so `una run` refuses the package before any listener is bound.
+    let port = free_port();
+    let dir = package(
+        "within-run",
+        &format!("    serve \"http://127.0.0.1:{port}\""),
+        HEALTH,
+    );
+    let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        manifest.replace("  module health\n", "  module health\n  within 5000\n"),
+    )
+    .unwrap();
+    let run = una(&dir, &["run", "."]);
+    assert_eq!(run.status.code(), Some(1), "{}", stderr(&run));
+    assert!(stderr(&run).contains("U4003"), "{}", stderr(&run));
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "a listener is open"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -361,7 +453,7 @@ fn an_executable_without_a_serve_grant_is_the_usage_error_of_rule_1() {
     let interpreted = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("NO_COLOR", "1")
-        .env("UNA_TEST_RUN_SERVER", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
         .args(["run", "."])
         .current_dir(&dir)
         .output()

@@ -86,7 +86,8 @@ pub const NEEDS_GRANT: &str =
     "`--serve-script` replaces the listeners of the run's `serve:` grants, and the run has none";
 
 /// A run whose script was read and checked: its connections do not run in this release yet
-/// (`spec/31 §8`), as a program that serves does not (`spec/31 §1` rule 10).
+/// outside the toolchain's own test builds (`spec/31 §8`), although `una run` serves live peers
+/// (`spec/31 §1` rule 10).
 pub const PENDING: &str =
     "the scripted connections of `--serve-script` do not run in this release yet";
 
