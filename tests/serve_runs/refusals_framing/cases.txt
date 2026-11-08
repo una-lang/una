@@ -1,0 +1,26 @@
+1	chunk extension 400, then a request behind it
+2	space in a chunk size 400
+3	17 hex digits 400
+4	chunk data not followed by CRLF 400
+5	bare LF in the chunked framing 400
+6	chunk past body 413
+7	a head of 10 KiB and a trailer of 8 KiB, each under 16 KiB, over it together: trailers share the head's allowance 431
+8	a small head and the same trailer of 8 KiB, accepted 200
+9	61 header lines (Host, Transfer-Encoding and 59 more) and 50 trailer lines, each under 100, over it together 431
+10	Transfer-Encoding twice 400
+11	chunked, chunked 400
+12	empty Transfer-Encoding 400
+13	Transfer-Encoding with a parameter 400
+14	Transfer-Encoding in HTTP/1.0 400
+15	gzip, chunked 501
+16	Content-Length +1 400
+17	Content-Length 1, 1 400
+18	Content-Length of 20 digits 400
+19	Content-Length 0x1 400
+20	Content-Length over body 413
+21	Content-Length with chunked, a smuggled request behind 400
+22	two Content-Length, 0 and 40, a request behind 400
+23	folded Transfer-Encoding, a request behind 400
+24	a valid, a refused and a valid request in one write: p1 200, p2 400, p3 never read
+25	a valid chunked body 200
+26	valid request answered
