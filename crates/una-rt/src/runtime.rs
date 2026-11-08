@@ -2103,10 +2103,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // ADR 0116 rule 18: only a run that can reach a `for ever` or runs a driver changes what
     // SIGINT and SIGTERM do; any other keeps their default actions.
     if meta.stops
-        && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install()
+        && let Err(failed) = una_sys::signals::install()
     {
-        let _ = writeln!(stderr, "error: {message}");
-        return 3;
+        let _ = writeln!(stderr, "error: {}", failed.message);
+        // A soft limit of open files too small for the runtime is a usage error (#1757).
+        return if failed.usage { USAGE } else { 3 };
     }
     // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
     // Its guard ends the watch on every way out, a panic's included.

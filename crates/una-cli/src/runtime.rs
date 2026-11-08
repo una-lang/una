@@ -726,8 +726,18 @@ pub(crate) fn run_command(
             }
         }));
     }
-    if stops && let Err(una_sys::signals::InstallError(message)) = una_sys::signals::install() {
-        writeln!(stderr, "internal compiler error (U8001): {message}")?;
+    if stops && let Err(failed) = una_sys::signals::install() {
+        // A soft limit of open files too small for the runtime is the run's configuration, a
+        // usage error, not an internal one (#1757).
+        if failed.usage {
+            writeln!(stderr, "error: {}", failed.message)?;
+            return Ok(ExitStatus::Usage);
+        }
+        writeln!(
+            stderr,
+            "internal compiler error (U8001): {}",
+            failed.message
+        )?;
         return Ok(ExitStatus::Internal);
     }
     // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
