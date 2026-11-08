@@ -886,16 +886,29 @@ fn read_out(text: &str) -> Vec<WireLine> {
 /// trace, `--serve-out` to `out`: its exit code, its output lines, its stderr, its trace and
 /// what `--serve-out` wrote.
 fn run_flags(
-    mut command: std::process::Command,
+    command: std::process::Command,
     package: &Path,
     script: &str,
     out: &Path,
 ) -> (i32, Vec<String>, String, Vec<Value>, String) {
-    let script_path = package.join("flag-script.jsonl");
-    std::fs::write(&script_path, script).unwrap();
     let trace = package.join("flag-trace.json");
     let _ = std::fs::remove_file(&trace);
-    let ran = command
+    run_flags_traced(command, package, script, out, &trace)
+}
+
+/// [`run_flags`] with the trace written to `trace`. A run that has not ended after [`HANG`]
+/// is killed and fails the case, so a blocking open is a failure, not a hung suite. Only
+/// regular files are read back: the test reads no FIFO it made.
+fn run_flags_traced(
+    mut command: std::process::Command,
+    package: &Path,
+    script: &str,
+    out: &Path,
+    trace: &Path,
+) -> (i32, Vec<String>, String, Vec<Value>, String) {
+    let script_path = package.join("flag-script.jsonl");
+    std::fs::write(&script_path, script).unwrap();
+    let child = command
         .env("UNA_TEST_RUN_SERVER", "1")
         .env("NO_COLOR", "1")
         .args(["--virtual-time", "--serve-script"])
@@ -903,18 +916,38 @@ fn run_flags(
         .arg("--serve-out")
         .arg(out)
         .arg("--trace")
-        .arg(&trace)
+        .arg(trace)
         .current_dir(package)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    let pid = child.id();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let ran = match receiver.recv_timeout(HANG) {
+        Ok(ran) => ran.unwrap(),
+        Err(_) => {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            panic!("{}: the run did not end", package.display());
+        }
+    };
     let output = String::from_utf8_lossy(&ran.stdout)
         .lines()
         .map(str::to_owned)
         .collect();
-    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap_or_default())
-        .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()));
-    // Only a regular file is read back: the test reads no FIFO it made.
-    let wire = if std::fs::symlink_metadata(out).is_ok_and(|m| m.is_file()) {
+    let regular = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+    let events: Value = if regular(trace) {
+        serde_json::from_str(&std::fs::read_to_string(trace).unwrap_or_default())
+            .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()))
+    } else {
+        json!([])
+    };
+    let wire = if regular(out) {
         std::fs::read_to_string(out).unwrap_or_default()
     } else {
         String::new()
@@ -953,6 +986,13 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
         "refusals_host_and_target",
         "refusals_framing",
         "refusal_drains_at_most_64_kib",
+        "waiting_full_answers_503",
+        "rate_delays_delivery",
+        "body_over_buffers_answers_503",
+        "body_over_peer_buffers_answers_503",
+        "ipv6_peers_count_per_slash_64",
+        "timers_idle_read_write",
+        "stop_ends_queued_in_flight_and_idle",
     ] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/serve_runs")
@@ -979,7 +1019,9 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
             let wire = expected_wire(&dir, renumber);
             assert!(!wire.is_empty(), "{case}");
             for (engine, command) in engines() {
-                let out = package.join("serve-out.jsonl");
+                // Each engine its own file, made afresh, so neither passes on the other's.
+                let out = package.join(format!("serve-out-{engine}.jsonl"));
+                let _ = std::fs::remove_file(&out);
                 let (code, printed, stderr, trace, text) =
                     run_flags(command, &package, &script, &out);
                 let at = format!("{case} {numbering} {engine}");
@@ -1044,8 +1086,9 @@ fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_bot
     assert_eq!(seen[0], seen[1]);
     assert_eq!(seen[0].0, 2);
     // A writable file keeps the run's own exit code.
-    let out = package.join("serve-out.jsonl");
     for (engine, command) in engines() {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
         let (code, _, stderr, _, text) = run_flags(command, &package, &script, &out);
         assert_eq!(code, 1, "{engine}: {stderr}");
         assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
@@ -1056,8 +1099,9 @@ fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_bot
 #[test]
 fn serve_out_follows_no_link_never_blocks_and_is_private() {
     // `spec/31 §8` rule 6: `--serve-out` follows no symbolic link, never blocks on a FIFO,
-    // refuses a file that is not regular, and leaves the file with mode 0600, an existing one's
-    // included, in both engines.
+    // refuses a file that is not regular (a device) or that has another name (a hard link),
+    // truncates an existing file to the wire, and leaves it with mode 0600, in both engines. A
+    // run that blocked would be killed after `HANG` and fail.
     use std::os::unix::fs::PermissionsExt;
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/worker_pool");
     let (scratch, package, name) = build_native(&dir, "-out-files");
@@ -1074,7 +1118,12 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
             .unwrap()
             .success()
     );
-    let existing = package.join("existing.jsonl");
+    let other = package.join("other.txt");
+    std::fs::write(&other, "the operator's\n").unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let hard = package.join("hard.jsonl");
+    std::fs::hard_link(&other, &hard).unwrap();
+    let device = PathBuf::from("/dev/null");
     let engines = || {
         let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
         interpreter
@@ -1083,24 +1132,38 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
         let native = std::process::Command::new(package.join("target/una").join(&name));
         [("interpreter", interpreter), ("native", native)]
     };
-    for refused in [&link, &fifo] {
+    for (refused, why) in [
+        (&link, ""),
+        (&fifo, ""),
+        (&device, "it is not a regular file"),
+        (&hard, "it is a hard link"),
+    ] {
+        let mut lines = Vec::new();
         for (engine, command) in engines() {
-            let started = Instant::now();
             let (code, _, stderr, _, _) = run_flags(command, &package, &script, refused);
-            assert!(started.elapsed() < HANG, "{engine}: blocked");
             assert_eq!(code, 2, "{engine} {}: {stderr}", refused.display());
-            assert!(
-                stderr.contains("cannot write the connections to"),
-                "{engine}: {stderr}"
-            );
+            let line = stderr
+                .lines()
+                .find(|line| line.contains("cannot write the connections to"))
+                .unwrap_or_else(|| panic!("{engine}: {stderr}"))
+                .to_owned();
+            assert!(line.contains(why), "{engine}: {line}");
+            lines.push(line);
         }
+        assert_eq!(lines[0], lines[1], "{}", refused.display());
     }
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept\n");
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "the operator's\n");
+    let mode = std::fs::metadata(&other).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o644);
     for (engine, command) in engines() {
-        std::fs::write(&existing, "old\n").unwrap();
+        // An existing file longer than the wire ends with the wire alone.
+        let existing = package.join(format!("existing-{engine}.jsonl"));
+        std::fs::write(&existing, "x".repeat(200_000)).unwrap();
         std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o644)).unwrap();
         let (code, _, stderr, _, text) = run_flags(command, &package, &script, &existing);
         assert_eq!(code, 0, "{engine}: {stderr}");
+        assert!(text.len() < 200_000, "{engine}");
         assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
         let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{engine}");
@@ -1231,6 +1294,141 @@ fn the_hard_stop_ends_a_run_with_u6007_and_503_alike_in_both_engines() {
         runs.push((printed, trace, text));
     }
     assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// A package beside `scratch` with the language-form server of `language_form`, its `on stop`
+/// aborting the run (U6003) when `aborts`, and a script of `n` connections, each from its own
+/// peer address with one request: its directory and the script in the form of `--serve-script`.
+/// Its trace holds two events a request, far more than a pipe buffer holds.
+fn many_requests(scratch: &Path, n: u32, aborts: bool) -> (PathBuf, String) {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    let dir = scratch.join(if aborts { "many_aborts" } else { "many" });
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    let manifest = std::fs::read_to_string(from.join("ita.una")).unwrap();
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    let mut program = std::fs::read_to_string(from.join("src/srv.una")).unwrap();
+    if aborts {
+        program = program.replace(
+            "    on stop\n      @server.close()\n",
+            "    on stop\n      @server.close()\n      bomb()\n",
+        );
+        program.push_str("\n--- Aborts the run: an integer of more than 4300 digits written as text.\nbomb() -> Unit\n=\n  let edit big = 1\n  for i in 1..2000\n    big = big * 1000\n  let shown = \"{big}\"\n  unit\n");
+    }
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    let mut script = String::new();
+    for k in 0..n {
+        let peer = format!("10.{}.{}.{}", k / 62_500, (k / 250) % 250, k % 250 + 1);
+        script.push_str(&format!(
+            "{{\"at\":{k},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"{peer}\",\"reads\":\"eager\"}}\n"
+        ));
+        let request = format!("GET /r{k} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        script.push_str(&format!(
+            "{{\"at\":{k},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+            script::encode(request.as_bytes())
+        ));
+    }
+    (dir, script)
+}
+
+/// A FIFO at `path` whose reader, on its own thread, takes the first byte the run writes and
+/// leaves: every later write of the run fails, since the run writes more than the byte and a
+/// pipe buffer hold. No timing decides it.
+fn failing_trace(path: &Path) -> std::thread::JoinHandle<()> {
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let reading = path.to_path_buf();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(reading).unwrap();
+        let mut first = [0u8; 1];
+        file.read_exact(&mut first).unwrap();
+    })
+}
+
+#[test]
+fn a_trace_that_fails_at_the_end_still_writes_serve_out_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: when `--trace` cannot be written, both engines still write
+    // `--serve-out`, the same file, and report the trace last, a usage error, exit code 2.
+    let scratch = std::env::temp_dir().join(format!("una-trace-fails-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (dir, script) = many_requests(&scratch, 2_000, false);
+    let (built, package, name) = build_native(&dir, "-trace-fails");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run");
+    let native = std::process::Command::new(package.join("target/una").join(&name));
+    let mut files = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let fifo = package.join(format!("trace-{engine}.fifo"));
+        let reader = failing_trace(&fifo);
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let (code, _, stderr, _, text) = run_flags_traced(command, &package, &script, &out, &fifo);
+        reader.join().unwrap();
+        assert_eq!(code, 2, "{engine}: {stderr}");
+        let last = stderr.lines().last().unwrap_or_default();
+        assert!(
+            last.starts_with(&format!(
+                "error: cannot write the trace to `{}`: ",
+                fifo.display()
+            )),
+            "{engine}: {stderr}"
+        );
+        // Each connection's reply and its close, at least.
+        assert!(read_out(&text).len() >= 2 * 2_000, "{engine}");
+        files.push(text);
+    }
+    assert_eq!(files[0], files[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn an_aborted_run_reports_its_abort_then_serve_out_then_the_trace_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: after a scripted run that aborts, both engines report the abort,
+    // then a `--serve-out` that cannot be written, then a trace that cannot be written, in that
+    // order, with the higher exit code, 2.
+    let scratch = std::env::temp_dir().join(format!("una-abort-trace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (dir, script) = many_requests(&scratch, 2_000, true);
+    let (built, package, name) = build_native(&dir, "-abort-trace");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run");
+    let native = std::process::Command::new(package.join("target/una").join(&name));
+    let unwritable = package.join("missing-dir/serve-out.jsonl");
+    let mut tails = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let fifo = package.join(format!("trace-{engine}.fifo"));
+        let reader = failing_trace(&fifo);
+        let (code, _, stderr, _, _) =
+            run_flags_traced(command, &package, &script, &unwritable, &fifo);
+        reader.join().unwrap();
+        assert_eq!(code, 2, "{engine}: {stderr}");
+        let at = |needle: &str| {
+            stderr
+                .find(needle)
+                .unwrap_or_else(|| panic!("{engine}: no {needle}: {stderr}"))
+        };
+        let abort = at("[U6003]");
+        let out = at("error: cannot write the connections to");
+        let trace = at("error: cannot write the trace to");
+        assert!(abort < out && out < trace, "{engine}: the order: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        tails.push(lines[lines.len() - 2..].join("\n"));
+    }
+    assert_eq!(tails[0].lines().next(), tails[1].lines().next());
     let _ = std::fs::remove_dir_all(&built);
     let _ = std::fs::remove_dir_all(&scratch);
 }
