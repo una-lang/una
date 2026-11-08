@@ -986,6 +986,13 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
         "refusals_host_and_target",
         "refusals_framing",
         "refusal_drains_at_most_64_kib",
+        "waiting_full_answers_503",
+        "rate_delays_delivery",
+        "body_over_buffers_answers_503",
+        "body_over_peer_buffers_answers_503",
+        "ipv6_peers_count_per_slash_64",
+        "timers_idle_read_write",
+        "stop_ends_queued_in_flight_and_idle",
     ] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/serve_runs")
@@ -1161,6 +1168,147 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
         let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{engine}");
     }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// The server of the hard stop's test: it holds its first exchange, answers the others in its
+/// loop, and, at the host stop, counts in its `on stop` for longer than any grace period before
+/// it would answer the first.
+const OUTLASTS_ITS_GRACE: &str = "module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Counts to `n`, one check point a turn.
+spin(n: Int) -> Int
+=
+  let edit count = 0
+  for i in 1..n
+    count = count + 1
+  count
+
+--- Answers `next` with `body`, or nothing when it failed.
+answer(next: Result[internal Exchange, ServeError], body: Text) -> Unit
+  uses @server: HttpServer[reply]
+=
+  when next
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+        if error use unit
+    is Err(failure) -> unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let first = attempt @server.next()
+  for ever
+    let next = attempt @server.next()
+    answer(next, body: \"in the loop\")
+  on stop
+    let counted = spin(1000000000000)
+    @console.print(\"counted {counted}\")
+    answer(first, body: \"first\")
+  @server.close()
+";
+
+#[test]
+fn the_hard_stop_ends_a_run_with_u6007_and_503_alike_in_both_engines() {
+    // ADR 0123 rule 18, `spec/31 §6` rule 9, `spec/26 §6`: at the script's end the host stops the
+    // run; the server's `on stop` outlasts `--stop-grace 1`, so the hard stop ends it with U6007,
+    // exit code 1, and the exchange it held is answered `503` with `Retry-After: 1`, while the one
+    // its loop answered before the stop keeps its `200`. Both engines give the same bytes, output
+    // and trace; how long the grace takes is not compared.
+    let scratch = std::env::temp_dir().join(format!("una-hard-stop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let dir = scratch.join("outlasts_its_grace");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        std::fs::read_to_string(from.join("ita.una"))
+            .unwrap()
+            .replace("ita language_form", "ita outlasts_its_grace"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/srv.una"), OUTLASTS_ITS_GRACE).unwrap();
+    let request = |k: u64, target: &str| {
+        let text = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        format!(
+            "{{\"at\":{k},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"192.0.2.{k}\",\"reads\":\"eager\"}}\n{{\"at\":{k},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+            script::encode(text.as_bytes())
+        )
+    };
+    let script = format!("{}{}", request(1, "/held"), request(2, "/answered"));
+    let (built, package, name) = build_native(&dir, "-hard-stop");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["run", "--stop-grace", "1"]);
+    let mut native = std::process::Command::new(package.join("target/una").join(&name));
+    native.args(["--stop-grace", "1"]);
+    let mut runs = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
+        let (code, printed, stderr, trace, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 1, "{engine}: {stderr}");
+        assert!(stderr.contains("U6007"), "{engine}: {stderr}");
+        assert!(
+            printed.is_empty(),
+            "{engine}: the on stop never printed: {printed:?}"
+        );
+        let wire = read_out(&text);
+        let replies: Vec<(u64, String)> = wire
+            .iter()
+            .filter(|(_, _, kind, _)| kind == "bytes")
+            .map(|(_, k, _, value)| {
+                let bytes: Vec<u8> = serde_json::from_value(value.clone()).unwrap();
+                (*k, String::from_utf8(bytes).unwrap())
+            })
+            .collect();
+        let of = |k: u64| {
+            replies
+                .iter()
+                .find(|(connection, _)| *connection == k)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            of(1).starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{engine}: {}",
+            of(1)
+        );
+        assert!(
+            of(1).contains("\r\nRetry-After: 1\r\n"),
+            "{engine}: {}",
+            of(1)
+        );
+        assert!(
+            of(2).starts_with("HTTP/1.1 200 OK\r\n"),
+            "{engine}: {}",
+            of(2)
+        );
+        assert!(of(2).ends_with("in the loop"), "{engine}: {}", of(2));
+        // The loop's last `next` is the one the host stop ends, so it is the run's last server
+        // operation: the `on stop` then runs, and the hard stop ends it. Its outcome,
+        // `Interrupted`, is `internal` and so redacted in the trace (`spec/31 §1` rule 7).
+        let server: Vec<&Value> = trace
+            .iter()
+            .filter(|event| event["capability"] == "HttpServer")
+            .collect();
+        let last = server.last().copied().cloned().unwrap_or_default();
+        assert_eq!(last["op"], "next", "{engine}: {last}");
+        assert_eq!(
+            server.iter().filter(|event| event["op"] == "next").count(),
+            3,
+            "{engine}: the first, the one answered in the loop, the one the stop ends"
+        );
+        runs.push((printed, trace, text));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
