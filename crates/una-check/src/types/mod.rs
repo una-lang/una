@@ -436,7 +436,9 @@ pub struct TypeCheck {
     /// What the checker resolved, by span, for the language server (ADR 0063).
     pub index: Index,
     /// The sites whose deadlines turn timing into values, in source order, with their timing
-    /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list.
+    /// labels: each `for ever within` (ADR 0116 rule 21), for the report's `timing` list; and
+    /// each `task switch`, a check point whose count data above `public`, at most `internal`,
+    /// decide in a program that starts tasks (`spec/27 §8` rule 5, #1708).
     pub timing: Vec<TimingSite>,
     /// `L_lim` (ADR 0117 IF4): the timing label of the package's `Http` requests, which a grant
     /// with limits needs at most `internal`; `public` without such a request. `una build`
@@ -895,16 +897,17 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     ));
     // `spec/07 §5` rule 7: the timing sites a `via` function reaches (#1673).
     authority::via_timing(&env, &findings, &mut report);
-    timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
     server::start_rights(&env, &findings, &mut report);
-    // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684).
-    switch::switch_points(
+    // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684);
+    // those that data at most `internal` decide go to the report (#1708).
+    timing_sites.extend(switch::switch_points(
         &env,
         &findings,
         package.settings.serve.is_some(),
         &mut report,
-    );
+    ));
+    timing_sites.sort_by_key(|(_, _, span, _)| (span.file, span.start, span.end));
     authority::budget(&env, &findings, package.settings, &mut report);
     // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
     dead::judge(
@@ -1241,7 +1244,7 @@ pub(crate) struct Findings {
     /// The `tasks` statements checked, each with the seed of `κ` of the whole statement, for
     /// the residue label `L_res` (ADR 0116 P9).
     pub(crate) tasks_sites: Vec<timing::TasksSite>,
-    /// The check points that data above `internal` can decide, reported when the package's
+    /// The check points that data above `public` can decide, reported when the package's
     /// program can run started tasks (`spec/27 §8` rule 5, #1684).
     pub(crate) switch_sites: Vec<switch::SwitchSite>,
     /// The calls of generic functions, with the labels their type arguments can carry, for

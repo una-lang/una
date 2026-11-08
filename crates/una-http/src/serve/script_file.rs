@@ -168,8 +168,9 @@ pub fn load(path: &std::path::Path, listeners: &[String]) -> Result<Vec<Event>, 
 /// Writes the text of `--serve-out` to `path`, which holds what the program sent, `internal`
 /// data and credentials included, unredacted (`spec/31 §8` rule 6): the last component of the
 /// path is never followed as a symbolic link, the open never blocks (a FIFO with no reader is
-/// refused), a file that is not a regular file is refused, and the file's mode is 0600, an
-/// existing file's included, before it is truncated and written.
+/// refused), a file that is not a regular file or that has more than one name (a hard link) is
+/// refused, and the file's mode is 0600, an existing file's included, before it is truncated
+/// and written.
 pub fn write_out(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -179,8 +180,15 @@ pub fn write_out(path: &std::path::Path, text: &str) -> std::io::Result<()> {
         .mode(0o600)
         .custom_flags(una_sys::server::WRITE_FLAGS)
         .open(path)?;
-    if !file.metadata()?.is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(std::io::Error::other("it is not a regular file"));
+    }
+    // A second name of another file: writing would change that file under its other names.
+    if std::os::unix::fs::MetadataExt::nlink(&metadata) > 1 {
+        return Err(std::io::Error::other(
+            "it is a hard link: the file has other names",
+        ));
     }
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     file.set_len(0)?;

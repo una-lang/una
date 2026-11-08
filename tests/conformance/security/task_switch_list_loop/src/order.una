@@ -1,0 +1,39 @@
+-- test: a `for` loop over a list whose label is `secret`, whose length that data chose, in a started task; that data would decide how many check points the task passes, so the check point is U4002 (spec/27 §8 rule 5, #1684); its `internal` twin is `task_switch_internal_list_loop` (#1708)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:18:3
+module order
+
+noop() -> Unit = unit
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+total(xs: secret List[Int]) -> secret Int
+=
+  let edit acc: secret Int = 0
+  for x in xs
+    acc = acc + x
+  acc
+
+worker(k: Int, key: secret Int, big: List[Int]) -> Unit
+  uses @console: Console[print]
+=
+  let b = bit(k, key: key)
+  let xs: secret List[Int] = if b == 1 then big else []
+  let t = total(xs)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  let edit big: List[Int] = []
+  for i in 0..<3000
+    big = append(big, item: i)
+  tasks
+    for k in 0..<8
+      start worker(k, key: key, big: big)
