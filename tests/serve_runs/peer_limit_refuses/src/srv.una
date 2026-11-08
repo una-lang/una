@@ -1,0 +1,27 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Answers one request with `body`, or nothing when none came.
+answer(next: Result[internal Exchange, ServeError], body: Text) -> Unit
+  uses @server: HttpServer[reply]
+=
+  when next
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+        if error use unit
+    is Err(failure) -> unit
+
+--- One peer address opens three connections on a grant that allows it two: the third is
+--- refused at accept, and the two others, from distinct ports of that address, are served, as
+--- is a connection from another address (ADR 0123 rule 9, `spec/31 §8` rule 6).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let one = attempt @server.next()
+  answer(one, body: "one")
+  let two = attempt @server.next()
+  answer(two, body: "two")
+  let four = attempt @server.next()
+  answer(four, body: "four")
+  @server.close()
