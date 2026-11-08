@@ -397,7 +397,7 @@ fn literal(ty: &str, wrong: bool) -> &'static str {
 /// The module of a probe of `b`: a call with arguments of its written parameter types whose
 /// result is bound to its written result type, or, when `negative`, the same call with one
 /// argument of another type, or its result bound to another type when it takes none. A
-/// receiver of `std.collections` is imported, which editions before 0.4 refuse with U1001.
+/// receiver of `std.collections` is imported, which editions before 0.5 refuse with U1001.
 fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
     let receiver = instantiate(b.receiver, fixed);
     let result = instantiate(&b.result, fixed);
@@ -433,7 +433,7 @@ fn builtin_probe(b: &Builtin, fixed: &str, negative: bool) -> String {
         format!("  let x: {receiver} = r\n  let out: {bound} = {call}\n")
     };
     // A receiver of a collection type of `std.collections` names it, so the probe imports it
-    // (ADR 0119 rule 0); before edition 0.4 the import itself is U1001.
+    // (ADR 0119 rule 0); before edition 0.5 the import itself is U1001.
     // A result that names the kind `Ranked`, as `pop_ranked`'s does, imports it too.
     let head = receiver.split('[').next().unwrap_or_default();
     let import = if una_core::Coll::from_name(head).is_some() {

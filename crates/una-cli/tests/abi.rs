@@ -123,8 +123,10 @@ fn the_report_of_the_events_example() {
     // ADR 0067 added `generic_results`, after `native`; ADR 0081 `handler_authority`, after
     // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present; ADR 0094
     // `premises`, after `assumptions`; ADR 0123 rule 22 `warnings`, after `out_of_model`, and
-    // `tcb.serve_grants`, `tcb.server` and `tcb.tls`, empty for a package that serves nothing.
-    assert_eq!(keys.len(), 19);
+    // `tcb.serve_grants`, `tcb.server` and `tcb.tls`, empty for a package that serves nothing;
+    // ADR 0121 rule 8 `edition`, after `package`.
+    assert_eq!(keys.len(), 20);
+    assert_eq!(report["edition"], json!({"name": "0.1", "preview": false}));
     assert_eq!(report["warnings"], json!([]));
     assert_eq!(report["tcb"]["serve_grants"], json!([]));
     assert_eq!(report["tcb"]["server"], json!(null));
@@ -175,12 +177,156 @@ fn the_report_of_the_events_example() {
         "{}",
         stdout(&output)
     );
-    // ADR 0109 rule 7: the profile follows the package's name, `app` by default.
+    // ADR 0109 rule 7: the profile follows the package's name, `app` by default; ADR 0121
+    // rule 8: the edition follows, without `(preview)` for a stable one.
     assert!(
-        stdout(&output).starts_with("package events-example 0.1.0\nprofile: app\nlock: "),
+        stdout(&output)
+            .starts_with("package events-example 0.1.0\nprofile: app\nedition: 0.1\nlock: "),
         "{}",
         stdout(&output)
     );
+}
+
+#[test]
+fn the_previews_of_una_version_are_the_markers_of_spec_13_section_7() {
+    // ADR 0121 rule 7 and its tests: the `preview` of `una --version` and the markers of
+    // `spec/13 §7`, which the website reads, name the same editions, so they cannot disagree.
+    // The test applies the rules of the website's reader, so a text it would refuse fails here.
+    let output = una(&["--json", "--version"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let version = json(&output);
+    let editions: Vec<&str> = version["editions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    let preview: Vec<&str> = version["preview"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    let section =
+        &spec13[spec13.find("## 7. Project files").unwrap()..spec13.find("## 8.").unwrap()];
+    // The website's reader (`website/scripts/preview/editions.mjs`, `releaseEditions`): a
+    // marker is "**Edition `X` is a preview**", with `X` quoted or not, and a marker of an
+    // edition the release does not serve is an error.
+    let mut marked: Vec<String> = Vec::new();
+    for (at, _) in section.match_indices("**Edition `") {
+        let rest = &section[at + "**Edition `".len()..];
+        let Some((name, after)) = rest.split_once('`') else {
+            continue;
+        };
+        if !after.starts_with(" is a preview**") {
+            continue;
+        }
+        let name = name.trim_matches('"');
+        assert!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "spec/13 §7: a preview marker names `{name}`, which is no edition"
+        );
+        assert!(
+            editions.contains(&name),
+            "spec/13 §7 names {name} a preview, but the release does not serve it"
+        );
+        marked.push(name.to_owned());
+    }
+    assert_eq!(preview, marked, "spec/13 §7 and `una --version` disagree");
+    // Every preview has every construct of the edition before it, stable or not, in the
+    // sentence the website reads (each edition quoted or not); without it the website cannot
+    // read a list that ends at the newest stable edition as "and later".
+    for (i, edition) in editions.iter().enumerate() {
+        if !preview.contains(edition) || i == 0 {
+            continue;
+        }
+        let before = editions[i - 1];
+        let found = [edition.to_string(), format!("\"{edition}\"")]
+            .iter()
+            .any(|e| {
+                [before.to_string(), format!("\"{before}\"")]
+                    .iter()
+                    .any(|b| {
+                        section.contains(&format!(
+                            "Edition `{e}` has every construct, keyword and rule of edition `{b}`"
+                        ))
+                    })
+            });
+        assert!(
+            found,
+            "spec/13 §7 does not say that edition {edition} has every construct of edition {before}"
+        );
+    }
+    // A preview edition is always newer than every stable one: editions are cumulative.
+    let first = editions.iter().position(|e| preview.contains(e)).unwrap();
+    assert!(
+        editions[first..].iter().all(|e| preview.contains(e)),
+        "{editions:?} {preview:?}"
+    );
+}
+
+#[test]
+fn the_report_names_the_edition_and_whether_it_is_a_preview() {
+    // ADR 0121 rule 8: `edition` follows `package`, in JSON and in the human form, for a
+    // stable edition (`una.toml`) and a preview one (`ita.una`).
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-report-edition");
+    let _ = std::fs::remove_dir_all(&root);
+    for (edition, preview) in [("0.2", false), ("0.4", true), ("0.5", true)] {
+        let dir = root.join(edition);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/m.una"),
+            "module m\n\npub f(x: Int) -> Int = x\n",
+        )
+        .unwrap();
+        if preview {
+            std::fs::write(
+                dir.join("ita.una"),
+                format!("ita demo\n  version 0.1.0\n  edition {edition}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("ita.lock"),
+                "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+            )
+            .unwrap();
+        } else {
+            std::fs::write(
+                dir.join("una.toml"),
+                format!(
+                    "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+                ),
+            )
+            .unwrap();
+            std::fs::copy(
+                repository().join("verification.lock"),
+                dir.join("verification.lock"),
+            )
+            .unwrap();
+        }
+        let output = una_in(&dir, &["--json", "report", "."]);
+        assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+        let report = json(&output);
+        assert_eq!(
+            report["edition"],
+            json!({ "name": edition, "preview": preview })
+        );
+        let text = stdout(&output);
+        let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
+        assert!(
+            at("package") < at("edition") && at("edition") < at("lock"),
+            "{text}"
+        );
+        let output = una_in(&dir, &["report", "."]);
+        let line = if preview {
+            format!("\nedition: {edition} (preview)\nlock: ")
+        } else {
+            format!("\nedition: {edition}\nlock: ")
+        };
+        assert!(stdout(&output).contains(&line), "{}", stdout(&output));
+    }
 }
 
 #[test]
