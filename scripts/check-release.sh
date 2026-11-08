@@ -238,14 +238,15 @@ echo "ok: the runtime built into una has no debug section"
 # in the shipped `una` or `libuna_rt.a`. The same holds for the test hooks of the `Http`
 # client's reach pool, a lookup and a connect function a test can make hang and a pool started
 # on a first request (#1148), and the scripted serve engine of `tests/serve_runs/` (ADR 0123
-# rule 21, una-rt's `test-hooks`), which only una-http's `test-hooks` feature compiles, and which
-# can unify into the workspace's test builds.
+# rule 21, una-rt's `test-hooks`), and the placement probe of the serve threads, which writes
+# each connection's owner and can place by `port mod M` with no key (#1660), all of which only
+# una-http's `test-hooks` feature compiles, and which can unify into the workspace's test builds.
 for artifact in "$una" "$runtime"; do
     for marker in UNA_HASH_TEST_HOOKS_MARKER UNA_HTTP_TEST_HOOKS_MARKER; do
         if nm -a "$artifact" 2>/dev/null | grep -q "$marker" || LC_ALL=C grep -a -q "$marker" "$artifact"; then
             case $marker in
                 UNA_HASH_*) what="keyed hashing's test hooks (ADR 0119 rule 9)" ;;
-                *) what="the Http client's test hooks (#1148)" ;;
+                *) what="una-http's test hooks: the Http client's (#1148), the scripted serve engine or the placement probe (#1660)" ;;
             esac
             echo "error: $artifact was built with $what" >&2
             exit 1

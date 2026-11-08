@@ -47,11 +47,14 @@
 //! `public` key to change whether a later `next` under a deadline receives its request, the
 //! channels SC2 and SC3 that `L_srv` labels; their `secret` versions are conformance cases
 //! refused with U4003, which each oracle checks are its program.
-//! `serve_owner_spread` (#1660, SC1) times the replies to 8 connections over 8 serve threads:
-//! whose source ports the harness found to be multiples of 8 (std cannot bind a source port
-//! before it connects) against ports as they come, the keyed-placement check, and one serve
-//! thread against 8, its positive control; a key that makes the set-up 0 or 300 ms long
-//! guards only a placement that depends on the time at accept.
+//! `serve_owner_spread` (#1660, SC1) observes, through the placement probe of the runtime's
+//! `test-hooks` (decision D-24), which serve thread owns each of 8 connections over 8 serve
+//! threads whose source ports the harness found to be multiples of 8 (std cannot bind a source
+//! port before it connects): the keyed placement must spread them as a keyed hash would, for
+//! both keys of its program, and its positive control, placement by `port mod 8` with no key,
+//! must put all 8 on one owner in every run. Its timings (crafted ports against ports as they
+//! come, one serve thread against 8) are logged diagnostics, not asserted: timing could not
+//! show the owner on the gate machine (PR #1779).
 //! Each of these five runs in both engines (decision D-20 of #1660), as `<oracle>_native`, the
 //! executable that `una build` made, and `<oracle>_interpreter`, `una run`, since the serve
 //! engine's waiting and waking is separate code in each; one harness, parameterized by
@@ -1028,6 +1031,21 @@ fn serve_package_with(
     limits: &str,
     engine: Engine,
 ) -> PathBuf {
+    serve_package_linked(name, port, program, grants, limits, engine, false)
+}
+
+/// As [`serve_package_with`]; with `hooked`, a native executable links the runtime built with
+/// its `test-hooks` ([`native_build::hooked_runtime`]), whose placement probe
+/// `serve_owner_spread` reads (decision D-24 of #1660).
+fn serve_package_linked(
+    name: &str,
+    port: u16,
+    program: &str,
+    grants: &str,
+    limits: &str,
+    engine: Engine,
+    hooked: bool,
+) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -1051,7 +1069,11 @@ fn serve_package_with(
         }
         Engine::Interpreter => "check",
     };
-    let built = Command::new(env!("CARGO_BIN_EXE_una"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+    if hooked && matches!(engine, Engine::Native) {
+        command.env("UNA_RT_LIB", native_build::hooked_runtime());
+    }
+    let built = command
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("UNA_TEST_BUILD_SERVER", "1")
         .env("NO_COLOR", "1")
@@ -1644,8 +1666,10 @@ const SPREAD_THREADS: u16 = 8;
 /// first, about 32; a host that runs out fails the run visibly, never passes it.
 const SPREAD_PEERS: usize = 8;
 const SPREAD_CANDIDATES: usize = 120;
-/// The least ratio of the median times of one serve thread and of 8 with ports as they come,
-/// below which the control of `serve_owner_spread` fails: a placement that concentrated every
+/// A diagnostic only since decision D-24 of #1660: printed beside the measured ratio, never
+/// asserted, as the owner is now observed directly (`serve_owner_spread`). It was the least
+/// ratio of the median times of one serve thread and of 8 with ports as they come, below
+/// which the timing control of `serve_owner_spread` failed: a placement that concentrated every
 /// connection on one owner would make the two arms equal, and a significance test alone passes
 /// on any small consistent shift. Taken before the oracle's first gate-machine run (decision
 /// of #1660) and fixed: it is never fitted to a measured ratio. The first quiet run on the
@@ -1653,7 +1677,7 @@ const SPREAD_CANDIDATES: usize = 120;
 /// each connection in its own thread from one barrier, and measurements for #1660 found the
 /// serve threads are not what bounds these replies on macOS loopback (8 replies of 8 MiB, or
 /// 8 requests with bodies of 8 MiB, take about 35 to 40 ms on 1 serve thread and on 8), so the
-/// control fails visibly until a workload whose cost is the serve threads' own is found.
+/// timing control failed in both engines (PR #1779: 9 workloads, ratios 0.4 to 1.17).
 const SPREAD_EFFECT: f64 = 1.5;
 
 /// The program of `serve_owner_spread` (SC1 of the S4 design, M1): as [`prefix_program`], a
@@ -1748,7 +1772,11 @@ impl Drop for Reaped {
 /// every one waits in the kernel's backlog, since nothing is accepted before the first server
 /// operation. Once the program prints `ready`, the kept connections each send `/probe` at once
 /// and read their 8 MiB reply. Returns the time to `ready` and the time until the last reply
-/// was read, in milliseconds; then the host stop ends the run, which must end with 0.
+/// was read, in milliseconds, and each kept connection's source port with the serve thread
+/// placement chose for it, in the order of the ports, as the run's placement probe wrote them (`place::probe`, the
+/// `test-hooks` feature; decision D-24 of #1660); then the host stop ends the run, which must
+/// end with 0. With `unkeyed` the probe places by `port mod M`, with no key: the oracle's
+/// positive control.
 ///
 /// `std::net` cannot bind a source port before it connects (decision of #1660: std only, no
 /// new `unsafe` and no new crate), so the ports are found among the ephemeral ones rather than
@@ -1759,22 +1787,27 @@ fn spread_run(
     port: u16,
     threads: u16,
     ports: Ports,
+    unkeyed: bool,
     engine: Engine,
-) -> (f64, f64) {
+) -> (f64, f64, Vec<(u16, usize)>) {
     use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
+    let owners_file = dir.join("owners.txt");
+    let _ = std::fs::remove_file(&owners_file);
     let began = Instant::now();
     let threads = threads.to_string();
-    let mut child = Reaped(Some(
-        engine
-            .command(
-                dir,
-                name,
-                &["--serve-threads", &threads, "--stop-grace", "10"],
-            )
-            .spawn()
-            .unwrap(),
-    ));
+    let mut command = engine.command(
+        dir,
+        name,
+        &["--serve-threads", &threads, "--stop-grace", "10"],
+    );
+    command.env("UNA_TEST_SERVE_OWNERS", &owners_file);
+    if unkeyed {
+        command.env("UNA_TEST_SERVE_UNKEYED", "1");
+    } else {
+        command.env_remove("UNA_TEST_SERVE_UNKEYED");
+    }
+    let mut child = Reaped(Some(command.spawn().unwrap()));
     let stdout = child.0.as_mut().unwrap().stdout.take().unwrap();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -1825,6 +1858,11 @@ fn spread_run(
             kept
         }
     };
+    let mut kept_ports: Vec<u16> = kept
+        .iter()
+        .map(|stream| stream.local_addr().unwrap().port())
+        .collect();
+    kept_ports.sort_unstable();
     let chosen = Instant::now();
     let ready = ready_rx
         .recv_timeout(Duration::from_secs(60))
@@ -1867,7 +1905,34 @@ fn spread_run(
     let ended = child.0.take().unwrap().wait_with_output().unwrap();
     assert_eq!(ended.status.code(), Some(0), "{name}: {ended:?}");
     reader.join().unwrap();
-    (ready.duration_since(began).as_secs_f64() * 1000.0, took)
+    // Every connection the run accepted, the closed candidates too, has one line
+    // `127.0.0.1:<port> <owner>`; each kept port must have exactly one.
+    let log = std::fs::read_to_string(&owners_file).expect("the placement probe wrote no file");
+    let owners = kept_ports
+        .iter()
+        .map(|port| {
+            let found: Vec<usize> = log
+                .lines()
+                .filter_map(|line| {
+                    let (peer, owner) = line.split_once(' ')?;
+                    let peer: std::net::SocketAddr = peer.parse().ok()?;
+                    (peer.port() == *port).then(|| owner.parse().unwrap())
+                })
+                .collect();
+            assert_eq!(
+                found.len(),
+                1,
+                "{name}: the probe placed the kept port {port} {} times:\n{log}",
+                found.len()
+            );
+            (*port, found[0])
+        })
+        .collect();
+    (
+        ready.duration_since(began).as_secs_f64() * 1000.0,
+        took,
+        owners,
+    )
 }
 
 #[test]
@@ -1883,27 +1948,65 @@ fn serve_owner_spread_interpreter() {
     serve_owner_spread(Engine::Interpreter);
 }
 
+/// The pooled bounds of `serve_owner_spread`: over the 160 connections of 20 runs of one keyed
+/// arm, every serve thread must own at least [`SPREAD_POOLED_LEAST`] and at most
+/// [`SPREAD_POOLED_MOST`]. Under the keyed hash, with a fresh key per run and 8 distinct source
+/// ports per run, each connection's owner is modeled as uniform over the 8 threads and
+/// independent of the others (SipHash-2-4 as a pseudorandom function: assumed, not proven), so
+/// one thread's count is Binomial(160, 1/8), mean 20, standard deviation 4.18. Exact tails:
+/// P(count < 3) = 1.49e-7 and P(count > 44) = 1.02e-7, so 2.51e-7 per thread. Fixed before the
+/// first run from the distribution alone (decision D-24 of #1660), never fitted to a run.
+const SPREAD_POOLED_LEAST: usize = 3;
+const SPREAD_POOLED_MOST: usize = 44;
+
 /// The oracle of `serve_owner_spread_native` and `serve_owner_spread_interpreter`.
 #[allow(clippy::print_stderr)]
 fn serve_owner_spread(engine: Engine) {
-    // ADR 0123, S4 amendment IF-S1 and B.4, S4 design §4 (M1) and §11.5, SC1, on the real
-    // clock. A connection's owner is a keyed hash of its own addresses under a key of the run.
-    // Five arms, each 20 runs, their order rotated every round:
+    // ADR 0123, S4 amendment IF-S1 and B.4, S4 design §4 (M1) and §11.5, SC1. A connection's
+    // owner is a keyed hash of its own addresses under a key of the run. Timing cannot show
+    // the owner on this machine (PR #1779: 9 workloads, ratios 0.4 to 1.17 of one serve
+    // thread to 8, in both engines), so the oracle observes it directly (decision D-24): the
+    // run's placement probe, under the `test-hooks` feature only, writes the serve thread that
+    // placement chose for each accepted connection, before the peer's admission
+    // (`una_http::serve::place::probe`).
+    //
+    // Six arms, each 20 runs, their order rotated every round:
     //
     // 1. key 0 and 2. key 1, crafted ports, 8 serve threads: a key makes set-up code before
-    //    the first server operation 0 or about 300 ms long. The harness, not the program,
-    //    picks the connections, all wait in the backlog before `ready` for both keys, and the
-    //    backlog is accepted in order, so this comparison guards only a placement that
-    //    depends on the time at accept. It cannot see a placement without the key, by accept
-    //    order or by the thread that accepted: those give both keys the same owners.
-    // 3. key 1 again: the control of the machine's noise.
-    // 4. key 0, ports as they come, 8 serve threads: the keyed-placement check. The crafted
-    //    ports are all multiples of 8, the family that `port mod 8` without a key puts on one
-    //    serve thread, while ports as they come spread over all 8 under it. Under the keyed
-    //    hash both spread alike, so arm 1 against arm 4 MUST NOT separate.
-    // 5. key 0, ports as they come, one serve thread, every connection on one owner: arm 5
-    //    against arm 4 MUST separate, by the rank test and by at least [`SPREAD_EFFECT`] in
-    //    the ratio of medians, so that a concentration of the crafted ports would show.
+    //    the first server operation 0 or about 300 ms long; the harness, not the program,
+    //    picks the connections, all of whose source ports are multiples of 8, the family that
+    //    `port mod 8` without a key puts on one serve thread.
+    // 3. key 1 again.
+    // 4. key 0, ports as they come, 8 serve threads.
+    // 5. key 0, ports as they come, one serve thread.
+    // 6. key 0, crafted ports, 8 serve threads, the unkeyed port-mod-8 placement (`port mod 8`
+    //    with no key): the positive control.
+    //
+    // ASSERTED, on the owners: in each run of arms 1, 2 and 3, the 8 crafted connections are
+    // not all on one owner (false fail 8 * 8^-8 = 4.8e-7 per run under the model of
+    // [`SPREAD_POOLED_LEAST`]); over the 160 connections of each of those arms, every serve
+    // thread owns between [`SPREAD_POOLED_LEAST`] and [`SPREAD_POOLED_MOST`] (2.5e-7 per
+    // thread and arm). By the union bound, the false-fail probability of one engine's oracle
+    // is at most 60 * 4.8e-7 + 24 * 2.5e-7 = 3.5e-5. In every run of arm 6 all 8 crafted
+    // connections are on one owner, so the observation and the crafted ports do separate the
+    // unkeyed port-mod-8 placement from the keyed one. They separate only that one: other
+    // placements without a fresh key spread multiples of 8 and pass every asserted check,
+    // such as `(port >> 3) mod 8`, an unkeyed SipHash, round-robin by accept order, the
+    // thread that accepted, or the keyed hash under a fixed key, since the ports differ from
+    // run to run and cannot be replayed (std cannot bind a source port). A fixed key is not
+    // covered by this oracle: the owners of a port that recurs across keyed runs are logged,
+    // with how often they agree (about 1 in 8 under fresh keys, always under a fixed key), as
+    // a diagnostic only, since how many ports recur is not known in advance.
+    //
+    // LOGGED ONLY, never asserted: the timings of every arm, the rank tests of PR #1779 (key 0
+    // against key 1, key 1 against itself, crafted against as they come, one serve thread
+    // against 8) and the ratio against [`SPREAD_EFFECT`], as diagnostics.
+    //
+    // What it cannot show: it observes the test build's placement, not a shipped build's
+    // (the same `place::owner`, which the probe calls unchanged when not unkeyed); it shows
+    // the spread of 8 connections from one address whose ports a harness found, not that no
+    // peer can predict an owner (that rests on the key's secrecy and SipHash, assumed); and it
+    // says nothing of how long a reply takes on its owner, the timing channel itself.
     let port = serve_port();
     let engine_name = engine.name();
     let setup = engine.iterations(3_000_000);
@@ -1913,103 +2016,168 @@ fn serve_owner_spread(engine: Engine) {
     ];
     let limits = "      connections at most 4096\n      replies at most 256 MiB\n";
     let dirs = [
-        serve_package_with(
+        serve_package_linked(
             &names[0],
             port,
             &spread_program(0, setup),
             "",
             limits,
             engine,
+            true,
         ),
-        serve_package_with(
+        serve_package_linked(
             &names[1],
             port,
             &spread_program(1, setup),
             "",
             limits,
             engine,
+            true,
         ),
     ];
     let arms = [
-        (0usize, SPREAD_THREADS, Ports::Crafted),
-        (1, SPREAD_THREADS, Ports::Crafted),
-        (1, SPREAD_THREADS, Ports::Crafted),
-        (0, SPREAD_THREADS, Ports::AsTheyCome),
-        (0, 1, Ports::AsTheyCome),
+        (0usize, SPREAD_THREADS, Ports::Crafted, false),
+        (1, SPREAD_THREADS, Ports::Crafted, false),
+        (1, SPREAD_THREADS, Ports::Crafted, false),
+        (0, SPREAD_THREADS, Ports::AsTheyCome, false),
+        (0, 1, Ports::AsTheyCome, false),
+        (0, SPREAD_THREADS, Ports::Crafted, true),
     ];
-    let mut samples: [Vec<f64>; 5] = Default::default();
+    let threads = usize::from(SPREAD_THREADS);
+    let mut samples: [Vec<f64>; 6] = Default::default();
     let mut readies: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
+    let mut pooled = [[0usize; SPREAD_THREADS as usize]; 6];
+    let mut problems = Vec::new();
+    // The owners of each source port over the keyed runs of 8 serve threads (arms 1 to 4),
+    // for the diagnostic of a fixed key.
+    let mut by_port: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
     for round in 0..20 {
         for step in 0..arms.len() {
             let sample = (step + round) % arms.len();
-            let (key, threads, ports) = arms[sample];
-            let (ready, took) = spread_run(&dirs[key], &names[key], port, threads, ports, engine);
-            eprintln!(
-                "{engine_name} round {round} arm {} key {key} on {threads} serve threads, {ports:?} ports: ready at {ready:.1} ms, replies {took:.2} ms",
-                sample + 1
+            let (key, run_threads, ports, unkeyed) = arms[sample];
+            let (ready, took, owners) = spread_run(
+                &dirs[key],
+                &names[key],
+                port,
+                run_threads,
+                ports,
+                unkeyed,
+                engine,
             );
+            let mut counts = [0usize; SPREAD_THREADS as usize];
+            for &(source, owner) in &owners {
+                assert!(owner < threads, "{engine_name}: owner {owner} of {threads}");
+                counts[owner] += 1;
+                if sample < 4 {
+                    by_port.entry(source).or_default().push(owner);
+                }
+            }
+            for (total, count) in pooled[sample].iter_mut().zip(counts) {
+                *total += count;
+            }
+            let most = counts.iter().copied().max().unwrap_or(0);
+            eprintln!(
+                "{engine_name} round {round} arm {} key {key} on {run_threads} serve threads, {ports:?} ports{}: ready at {ready:.1} ms, replies {took:.2} ms; owners {owners:?}, per thread {counts:?}",
+                sample + 1,
+                if unkeyed { ", unkeyed" } else { "" }
+            );
+            if sample < 3 && most == SPREAD_PEERS {
+                problems.push(format!(
+                    "round {round} arm {}: all {SPREAD_PEERS} crafted connections on one owner under the keyed placement: {owners:?}",
+                    sample + 1
+                ));
+            }
+            if sample == 5 && most != SPREAD_PEERS {
+                problems.push(format!(
+                    "round {round} arm 6: the unkeyed port-mod-8 placement did not put the {SPREAD_PEERS} crafted connections on one owner: {owners:?}; the probe or the crafted ports do not separate"
+                ));
+            }
             if sample < 3 {
                 readies[key].push(ready);
             }
             samples[sample].push(took);
         }
     }
+    // Diagnostic only: a port seen in several keyed runs keeps its owner about 1 time in 8
+    // under fresh keys, and always under a fixed key.
+    let (mut pairs, mut agreeing) = (0usize, 0usize);
+    for owners in by_port.values() {
+        for (i, a) in owners.iter().enumerate() {
+            for b in &owners[i + 1..] {
+                pairs += 1;
+                agreeing += usize::from(a == b);
+            }
+        }
+    }
+    eprintln!(
+        "{engine_name}: diagnostic: {} source ports recur across the keyed runs; of {pairs} pairs of runs that share a port, {agreeing} give it the same owner (fresh keys: about {:.1}; a fixed key: all {pairs})",
+        by_port.values().filter(|owners| owners.len() > 1).count(),
+        pairs as f64 / 8.0
+    );
+    for (arm, counts) in pooled.iter().enumerate() {
+        eprintln!(
+            "{engine_name}: arm {}: connections per serve thread over 20 runs: {counts:?}",
+            arm + 1
+        );
+    }
+    for (arm, counts) in pooled.iter().enumerate().take(3) {
+        if counts
+            .iter()
+            .any(|&c| !(SPREAD_POOLED_LEAST..=SPREAD_POOLED_MOST).contains(&c))
+        {
+            problems.push(format!(
+                "arm {}: connections per serve thread over 20 runs {counts:?} leave [{SPREAD_POOLED_LEAST}, {SPREAD_POOLED_MOST}]: the crafted ports do not spread as a keyed hash would, as under the unkeyed port-mod-8 placement",
+                arm + 1
+            ));
+        }
+    }
+    // The timing diagnostics of PR #1779, printed only.
     let median = |values: &[f64]| {
         let mut sorted = values.to_vec();
         sorted.sort_by(f64::total_cmp);
         sorted[sorted.len() / 2]
     };
     let (ready0, ready1) = (median(&readies[0]), median(&readies[1]));
-    eprintln!("{engine_name}: median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms");
-    assert!(
-        ready1 - ready0 >= 100.0,
-        "{engine_name}: the set-up of key 1 did not take longer: the input compared is not the channel's"
+    eprintln!(
+        "{engine_name}: diagnostic: median time to ready: key 0 {ready0:.1} ms, key 1 {ready1:.1} ms"
     );
-    let secret = mann_whitney(&samples[0], &samples[1]);
-    let control = mann_whitney(&samples[1], &samples[2]);
-    let keyed = mann_whitney(&samples[0], &samples[3]);
-    let concentrated = mann_whitney(&samples[4], &samples[3]);
     let ratio = median(&samples[4]) / median(&samples[3]);
     for (what, test) in [
-        ("key 0 against key 1", &secret),
-        ("control, key 1 against key 1", &control),
-        ("crafted ports against ports as they come", &keyed),
+        (
+            "key 0 against key 1",
+            mann_whitney(&samples[0], &samples[1]),
+        ),
+        (
+            "control, key 1 against key 1",
+            mann_whitney(&samples[1], &samples[2]),
+        ),
+        (
+            "crafted ports against ports as they come",
+            mann_whitney(&samples[0], &samples[3]),
+        ),
         (
             "one serve thread against 8, ports as they come",
-            &concentrated,
+            mann_whitney(&samples[4], &samples[3]),
         ),
     ] {
         eprintln!(
-            "{engine_name}: {what}: U = {}, z = {:.3}, p = {:.3e}",
+            "{engine_name}: diagnostic: {what}: U = {}, z = {:.3}, p = {:.3e}",
             test.u, test.z, test.p
         );
     }
     eprintln!(
-        "{engine_name}: medians: crafted {:.2} ms, as they come {:.2} ms, one serve thread {:.2} ms; ratio of one serve thread to 8: {ratio:.3} (at least {SPREAD_EFFECT})",
+        "{engine_name}: diagnostic: medians: crafted {:.2} ms, as they come {:.2} ms, one serve thread {:.2} ms, unkeyed {:.2} ms; ratio of one serve thread to 8: {ratio:.3} (the former threshold {SPREAD_EFFECT}, not asserted)",
         median(&samples[0]),
         median(&samples[3]),
-        median(&samples[4])
-    );
-    assert!(
-        control.p >= 0.001,
-        "{engine_name}: the control failed: the machine's noise alone separates one input from itself"
-    );
-    assert!(
-        concentrated.p < 0.001 && ratio >= SPREAD_EFFECT,
-        "{engine_name}: one serve thread and 8 with ports as they come do not differ enough (p = {:.3e}, ratio {ratio:.3}, least {SPREAD_EFFECT}): either this machine does not show a concentration of connections on one owner, or the placement over 8 serve threads concentrates them too, which is a placement defect, not noise",
-        concentrated.p
-    );
-    assert!(
-        keyed.p >= 0.001,
-        "{engine_name}: crafted ports and ports as they come differ: p = {:.3e}; the placement is not keyed, so a peer's choice of source ports decides how its connections share the serve threads",
-        keyed.p
-    );
-    assert!(
-        secret.p >= 0.001,
-        "{engine_name}: key 0 and key 1 differ: p = {:.3e}; the placement of connections depends on the time of the set-up",
-        secret.p
+        median(&samples[4]),
+        median(&samples[5])
     );
     for dir in &dirs {
         let _ = std::fs::remove_dir_all(dir);
     }
+    assert!(
+        problems.is_empty(),
+        "{engine_name}: the placement of connections over the serve threads:\n{}",
+        problems.join("\n")
+    );
 }

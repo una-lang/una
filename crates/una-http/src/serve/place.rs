@@ -40,6 +40,66 @@ pub fn owner(key: SipKey, threads: usize, listener: usize, peer: SocketAddr) -> 
     (hash % threads.max(1) as u64) as usize
 }
 
+/// The placement probe of the oracle `serve_owner_spread` (#1660, decision D-24), with the
+/// `test-hooks` feature only, which no shipped `una` or `libuna_rt.a` has
+/// (`scripts/check-release.sh` refuses the feature's marker, which [`probe::install`] keeps):
+/// a run can write the serve thread that placement chose for each connection it accepted, one
+/// line `<peer address> <owner>` each, written before the peer's admission, so a connection that
+/// admission then refuses has a line too, and can place by `port mod M` with no key, the placement
+/// the key exists to prevent, as the oracle's positive control. A process installs it at
+/// most once, before its serve threads start; without it placement is [`owner`] alone.
+#[cfg(feature = "test-hooks")]
+pub mod probe {
+    use std::fs::File;
+    use std::io::Write as _;
+    use std::net::SocketAddr;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    use una_hash::SipKey;
+
+    struct Probe {
+        unkeyed: bool,
+        log: Option<Mutex<File>>,
+    }
+
+    static PROBE: OnceLock<Probe> = OnceLock::new();
+
+    /// Installs the probe: with `unkeyed`, placement is `port mod M`; with `log`, every
+    /// placement is written to that file, created afresh. A second install changes nothing,
+    /// and does not touch its file.
+    pub fn install(unkeyed: bool, log: Option<&Path>) -> std::io::Result<()> {
+        let _ = std::hint::black_box(&crate::resolve::UNA_HTTP_TEST_HOOKS_MARKER);
+        if PROBE.get().is_some() {
+            return Ok(());
+        }
+        let log = match log {
+            Some(path) => Some(Mutex::new(File::create(path)?)),
+            None => None,
+        };
+        let _ = PROBE.set(Probe { unkeyed, log });
+        Ok(())
+    }
+
+    /// The owner [`super::owner`] names, or `port mod threads` under an unkeyed probe.
+    pub(crate) fn placed(key: SipKey, threads: usize, listener: usize, peer: SocketAddr) -> usize {
+        match PROBE.get() {
+            Some(probe) if probe.unkeyed => usize::from(peer.port()) % threads.max(1),
+            _ => super::owner(key, threads, listener, peer),
+        }
+    }
+
+    /// Writes that `owner` serves the connection from `peer`, when the probe logs.
+    pub(crate) fn record(peer: SocketAddr, owner: usize) {
+        if let Some(log) = PROBE.get().and_then(|probe| probe.log.as_ref()) {
+            let mut file = log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = writeln!(file, "{peer} {owner}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

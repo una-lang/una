@@ -44,6 +44,37 @@ pub fn runtime() {
     });
 }
 
+/// The runtime library built with its `test-hooks` feature, once, in a target directory of its
+/// own, so that the shipped-shape library beside `una` stays without them: its path, for
+/// `UNA_RT_LIB`. As `runtime`, in the profile of the test build (the placement probe of
+/// `serve_owner_spread`, #1660, as the scripted engine of `serve_runs.rs`).
+pub fn hooked_runtime() -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let (profile_args, profile): (&[&str], &str) = if cfg!(debug_assertions) {
+                (&[], "debug")
+            } else {
+                (&["--release"], "release")
+            };
+            let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("serve-hooks");
+            let status = Command::new(env!("CARGO"))
+                .args(["build", "--quiet", "--locked", "-p", "una-rt"])
+                .args(profile_args)
+                .args(["--features", "una-rt/test-hooks", "--target-dir"])
+                .arg(&target)
+                .current_dir(root())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "cargo build -p una-rt --features una-rt/test-hooks failed"
+            );
+            target.join(profile).join("libuna_rt.a")
+        })
+        .clone()
+}
+
 /// Runs `una` in `dir`, once the runtime library is built: `una build` links it, and cargo
 /// builds the test binaries before the staticlib on a cold target directory.
 pub fn una(dir: &Path, args: &[&str]) -> Output {
