@@ -952,9 +952,8 @@ pub main() -> Unit
 enum Engine {
     /// The executable that `una build` made, run directly.
     Native,
-    /// `una run`, of the toolchain's test build, which runs a program that serves while
-    /// `spec/31 §1` rule 10 stands when `UNA_TEST_RUN_SERVER` is 1, and ignores the variable
-    /// once the rule is lifted for `una run`.
+    /// `una run`, which runs a program that serves with no test flag (`spec/31 §1` rule 10):
+    /// the run starts with `UNA_TEST_RUN_SERVER` removed, as a shipped `una` would see it.
     Interpreter,
 }
 
@@ -988,7 +987,7 @@ impl Engine {
                 let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
                 command
                     .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-                    .env("UNA_TEST_RUN_SERVER", "1")
+                    .env_remove("UNA_TEST_RUN_SERVER")
                     .args(["run", "."]);
                 command
             }
@@ -1006,8 +1005,8 @@ impl Engine {
 /// A package of edition `0.4` named `name` whose entry module is `program`, granted `console`
 /// and `serve` on `port` with room for the early peers of [`serve_prefix_run`] (no share per
 /// peer, since every peer is `127.0.0.1`), for `engine`: for [`Engine::Native`] built by a
-/// `una` of the toolchain's tests, which builds a program that serves while `spec/31 §1`
-/// rule 10 stands (`UNA_TEST_BUILD_SERVER`).
+/// `una` of the toolchain's tests, which builds a program that serves while `una build` of one
+/// is refused (`spec/31 §1` rule 10, `UNA_TEST_BUILD_SERVER`).
 fn serve_package(name: &str, port: u16, program: &str, engine: Engine) -> Package {
     serve_package_with(
         name,
