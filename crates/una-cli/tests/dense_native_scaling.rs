@@ -30,14 +30,14 @@ fn nested_sets(rows: usize) -> String {
     )
 }
 
-/// The executable of `source`, built in `dir` as a package of edition 0.4 with the lock of a
-/// conformance case of edition 0.4 (ADR 0122).
+/// The executable of `source`, built in `dir` as a package of edition 0.5, which has the dense
+/// values (ADR 0139 rule 6), with the lock of a conformance case (ADR 0122).
 fn built(dir: &Path, source: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
-        "ita scaling\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry main\n",
+        "ita scaling\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry main\n",
     )
     .unwrap();
     std::fs::copy(

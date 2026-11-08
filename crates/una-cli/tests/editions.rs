@@ -7,11 +7,13 @@
 //! that does not differ fails the test, so the list stays exact.
 //!
 //! Every edition `0.3` package, checked as edition `0.4`, does the same, but for the rules that
-//! target edition `0.4` and list what they may break: the words that ADR 0116 rule 0 reserves,
-//! and the functions named like a built-in method of a collection, or `update` on a `Map`, of
-//! ADR 0119 rules 0 and 18. Each is in `EXPECTED_DIFFERENCES_0_4`, the edition test of ADR 0119
-//! rule 0. No edition `0.4` package of the suite that predates ADR 0119 declares such a function.
-//! Each `0.3` package is moved to edition `0.4` by `una migrate` before the comparison, as the
+//! target edition `0.4` and list what they may break, such as the words that ADR 0116 rule 0
+//! reserves. Each is in `EXPECTED_DIFFERENCES_0_4`. Every edition `0.4` package, checked as
+//! edition `0.5`, does the same, but for the rules of ADRs 0119 and 0120, which ADR 0139 rule 6
+//! moves from edition `0.4` to edition `0.5`: the functions named like a built-in method of a
+//! collection, or `update` on a `Map` (ADR 0119 rules 0 and 18), and the built-in names of the
+//! numeric foundation. Each is in `EXPECTED_DIFFERENCES_0_5`, the edition test of ADR 0119 rule
+//! 0 as its amendment of 2026-11-06 makes it. Each `0.3` package is moved to edition `0.4` by `una migrate` before the comparison, as the
 //! note of ADR 0122 Question 8.1 on ADR 0121 rule 11 says, since edition `0.4` is written in
 //! `ita.una`; what the migration alone changes, the manifest's own diagnostics, is not compared.
 
@@ -399,35 +401,10 @@ struct Difference04 {
     removed: &'static [(&'static str, &'static str)],
 }
 
-/// The edition `0.3` packages whose output in edition `0.4` differs by design.
+/// The edition `0.3` packages whose output in edition `0.4` differs by design. The rules of ADRs
+/// 0119 and 0120 are no longer among them: ADR 0139 rule 6 moves them to edition `0.5`, so their
+/// packages are in `EXPECTED_DIFFERENCES_0_5`.
 const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
-    // ADR 0119 rule 0: `std.collections` is an importable module from edition 0.4.
-    Difference04 {
-        case: "names/collections_import_before_0_4",
-        added: &[],
-        removed: &[("U1001", "src/m.una:6:8")],
-    },
-    // ADR 0120 rule 4 (`spec/29 §18` rule 6, `§16` rule 5): the built-in `to_f32` and
-    // `to_decimal` resolve ahead of a package function of their name from edition 0.4, so one
-    // on an integer, an `F64` or a type parameter is refused there.
-    Difference04 {
-        case: "names/conversion_functions_in_0_3",
-        added: &[
-            ("U1002", "src/a.una:3:5"),
-            ("U1002", "src/b.una:3:5"),
-            ("U1002", "src/c.una:3:5"),
-            ("U1002", "src/d.una:3:5"),
-            ("U1002", "src/e.una:3:5"),
-            ("U1002", "src/m.una:6:5"),
-        ],
-        removed: &[],
-    },
-    // ADR 0120 (`spec/29 §16`): `Decimal[s]` is a type from edition 0.4.
-    Difference04 {
-        case: "names/decimal_edition_0_3",
-        added: &[],
-        removed: &[("U0101", "src/m.una:6:22")],
-    },
     // ADR 0123 rule 0 (`spec/31 §1`): `std.host` exports `HttpServer` from edition 0.4.
     Difference04 {
         case: "names/host_server_import_0_3",
@@ -461,28 +438,6 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U1001", "src/m.una:6:21")],
     },
-    // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
-    Difference04 {
-        case: "names/map_update_function_in_0_3",
-        added: &[("U1002", "src/a.una:6:5")],
-        removed: &[],
-    },
-    // ADR 0120 rule 1 (`spec/29 §16` rule 1, `§17` rule 1, `§18` rule 1): `F32`, `Decimal`,
-    // `Complex`, `Array`, `Matrix`, `Tensor` and `Lu` are built-in names from edition 0.4, so a
-    // kind, variant or unit of one of those names is refused there.
-    Difference04 {
-        case: "names/numeric_names_in_0_3",
-        added: &[
-            ("U1002", "src/m.una:6:10"),
-            ("U1002", "src/m.una:8:10"),
-            ("U1002", "src/m.una:11:10"),
-            ("U1002", "src/m.una:14:10"),
-            ("U1002", "src/m.una:16:18"),
-            ("U1002", "src/m.una:16:27"),
-            ("U1002", "src/m.una:18:13"),
-        ],
-        removed: &[],
-    },
     // ADR 0117 rule 6: `first of` is an expression from edition 0.4.
     Difference04 {
         case: "syntax/first_of_before_0_4",
@@ -505,16 +460,6 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         case: "syntax/loop_exits_before_0_4",
         added: &[],
         removed: &[("U0101", "src/before.una:10:10")],
-    },
-    // ADR 0120 rule 1 (`spec/01 §5`): `simd` is reserved before edition 0.4 and an identifier
-    // from it.
-    Difference04 {
-        case: "syntax/simd_word_in_0_3",
-        added: &[],
-        removed: &[
-            ("U0103", "src/simd03.una:9:7"),
-            ("U0103", "src/simd03.una:10:3"),
-        ],
     },
     // ADR 0105, amendment of 2026-11-05 (`spec/01 §5`): `example` is reserved in edition 0.3
     // and an identifier from edition 0.4. A name `example` is accepted there, and an `example`
@@ -565,11 +510,89 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[("U2028", "src/late.una:10:26")],
         removed: &[("U0101", "src/late.una:10:19")],
     },
-    // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.4, so a
-    // package that declares them is refused there, and `Lu(size: 3)` is U2001, since the type
-    // has no constructor (ADR 0120 rule 3, `spec/29 §17` rules 1 and 28).
+];
+
+/// The edition `0.4` packages whose output in edition `0.5` differs by design: those that use,
+/// or clash with, a construct of ADR 0119 or ADR 0120, which ADR 0139 rule 6 moves from edition
+/// `0.4` to edition `0.5`. Each is the edition `0.4` twin of an edition `0.3` package that this
+/// comparison made with edition `0.4` before the move (ADR 0119 and ADR 0120, amendments of
+/// 2026-11-06: "each comparison with edition `0.3` is made with edition `0.4`").
+const EXPECTED_DIFFERENCES_0_5: &[Difference04] = &[
+    // ADR 0119 rule 0: `std.collections` is an importable module from edition 0.5.
     Difference04 {
-        case: "types/dense_edition_0_3",
+        case: "names/collections_import_0_4",
+        added: &[],
+        removed: &[("U1001", "src/m.una:6:8")],
+    },
+    // ADR 0120 rule 4 (`spec/29 §18` rule 6, `§16` rule 5): the built-in `to_f32` and
+    // `to_decimal` resolve ahead of a package function of their name from edition 0.5.
+    Difference04 {
+        case: "names/conversion_functions_in_0_4",
+        added: &[
+            ("U1002", "src/a.una:3:5"),
+            ("U1002", "src/b.una:3:5"),
+            ("U1002", "src/c.una:3:5"),
+            ("U1002", "src/d.una:3:5"),
+            ("U1002", "src/e.una:3:5"),
+            ("U1002", "src/m.una:6:5"),
+        ],
+        removed: &[],
+    },
+    // ADR 0120 (`spec/29 §16`): `Decimal[s]` is a type from edition 0.5.
+    Difference04 {
+        case: "names/decimal_edition_0_4",
+        added: &[],
+        removed: &[("U0101", "src/m.una:6:22")],
+    },
+    // ADR 0119 rule 18: a package function `update` whose first parameter is a `Map`.
+    Difference04 {
+        case: "names/map_update_function_in_0_4",
+        added: &[("U1002", "src/a.una:6:5")],
+        removed: &[],
+    },
+    // ADR 0120 rule 1: `F32`, `Decimal`, `Complex`, `Array`, `Matrix`, `Tensor` and `Lu` are
+    // built-in names from edition 0.5, so a kind, variant or unit of one of those names is
+    // refused there.
+    Difference04 {
+        case: "names/numeric_names_in_0_4",
+        added: &[
+            ("U1002", "src/m.una:6:10"),
+            ("U1002", "src/m.una:8:10"),
+            ("U1002", "src/m.una:11:10"),
+            ("U1002", "src/m.una:14:10"),
+            ("U1002", "src/m.una:16:18"),
+            ("U1002", "src/m.una:16:27"),
+            ("U1002", "src/m.una:18:13"),
+        ],
+        removed: &[],
+    },
+    // ADR 0120: the names of the numeric foundation resolve from edition 0.5, where
+    // `as_decimal` returns the `Option[Decimal[2]]` that edition 0.4 cannot write.
+    Difference04 {
+        case: "names/numerics_in_0_4",
+        added: &[("U2001", "src/m.una:17:38")],
+        removed: &[
+            ("U1001", "src/m.una:11:13"),
+            ("U1001", "src/m.una:13:13"),
+            ("U2002", "src/m.una:15:13"),
+            ("U1001", "src/m.una:17:38"),
+            ("U1001", "src/m.una:19:15"),
+            ("U1001", "src/m.una:19:26"),
+        ],
+    },
+    // ADR 0120 rule 1 (`spec/01 §5`): `simd` is reserved before edition 0.5 and an identifier
+    // from it.
+    Difference04 {
+        case: "syntax/simd_word_in_0_4",
+        added: &[],
+        removed: &[
+            ("U0103", "src/simd04.una:9:7"),
+            ("U0103", "src/simd04.una:10:3"),
+        ],
+    },
+    // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.5.
+    Difference04 {
+        case: "types/dense_edition_0_4",
         added: &[
             ("U1002", "src/dense.una:6:10"),
             ("U1002", "src/dense.una:8:10"),
@@ -844,6 +867,172 @@ fn every_edition_0_3_package_checks_the_same_in_edition_0_4() {
                                 name.clone(),
                                 compare_migrated(package, &work, added, removed),
                             )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    let mut wrong: Vec<String> = results
+        .into_iter()
+        .filter_map(|(name, result)| result.err().map(|why| format!("{name}: {why}")))
+        .collect();
+    wrong.sort();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The edition line of `ita.una` that the comparison of editions `0.4` and `0.5` replaces.
+const ITA_EDITION_0_4: &str = "  edition 0.4";
+
+/// Every package directory under `dir` described by `ita.una`, dependencies included, in a
+/// stable order.
+fn ita_packages(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .collect();
+    entries.sort();
+    for entry in entries {
+        if entry.join("ita.una").is_file() {
+            out.push(entry.clone());
+        }
+        ita_packages(&entry, out);
+    }
+}
+
+/// The exit status and the code and `file:line:col` of each diagnostic of `una --json check .`
+/// on a fresh copy of `package` at `work`, its `ita.una` naming `edition`.
+fn ita_check_as(
+    package: &Path,
+    work: &Path,
+    edition: &str,
+) -> (Option<i32>, Vec<(String, String)>) {
+    if work.exists() {
+        std::fs::remove_dir_all(work).unwrap();
+    }
+    copy_dir(package, work);
+    let manifest = work.join("ita.una");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let replaced: String = text
+        .lines()
+        .map(|line| {
+            if line == ITA_EDITION_0_4 {
+                edition
+            } else {
+                line
+            }
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&manifest, replaced).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(["--json", "check", "."])
+        .current_dir(work)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(work).unwrap();
+    assert!(
+        matches!(output.status.code(), Some(0 | 1)) && output.stdout.starts_with(DOCUMENT),
+        "{} as {edition}: status {:?}, stdout {:?}, stderr {:?}",
+        package.display(),
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    (output.status.code(), sites(&document))
+}
+
+/// Every edition `0.4` package of the conformance suite, checked as edition `0.5`, reports the
+/// same diagnostics, codes and positions, in order, and the same exit status, but for the
+/// packages of `EXPECTED_DIFFERENCES_0_5`, each of which gains exactly its `added` diagnostics
+/// and loses exactly its `removed` ones: edition `0.5` accepts every package that edition `0.4`
+/// accepts, and moving a package to edition `0.5` changes nothing else (ADR 0139 rules 6 and 8).
+/// Messages may differ, as a message that lists what an edition has does. Linear in the
+/// packages, each checked twice.
+#[test]
+fn every_edition_0_4_package_checks_the_same_in_edition_0_5() {
+    let root = conformance();
+    let mut all = Vec::new();
+    ita_packages(&root, &mut all);
+    let cases: Vec<(String, PathBuf)> = all
+        .into_iter()
+        .filter(|package| {
+            std::fs::read_to_string(package.join("ita.una"))
+                .unwrap()
+                .lines()
+                .any(|line| line == ITA_EDITION_0_4)
+        })
+        .map(|package| {
+            let name = package
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            (name, package)
+        })
+        .collect();
+    for Difference04 { case: name, .. } in EXPECTED_DIFFERENCES_0_5 {
+        assert!(
+            cases.iter().any(|(case, _)| case == name),
+            "{name} is not an edition 0.4 package"
+        );
+    }
+    let workers = 4;
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("editions_0_5");
+    let results: Vec<(String, Result<(), String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let cases = &cases;
+                let work = scratch.join(format!("w{worker}"));
+                scope.spawn(move || {
+                    cases
+                        .iter()
+                        .skip(worker)
+                        .step_by(workers)
+                        .map(|(name, package)| {
+                            let listed = EXPECTED_DIFFERENCES_0_5
+                                .iter()
+                                .find(|difference| difference.case == name);
+                            let added = listed.map_or(&[][..], |difference| difference.added);
+                            let removed = listed.map_or(&[][..], |difference| difference.removed);
+                            let (status_0_4, mut before) =
+                                ita_check_as(package, &work, ITA_EDITION_0_4);
+                            let (status_0_5, mut after) =
+                                ita_check_as(package, &work, "  edition 0.5");
+                            let mut missing = Vec::new();
+                            for (list, wanted, which) in [
+                                (&mut after, added, "added"),
+                                (&mut before, removed, "removed"),
+                            ] {
+                                for (code, at) in wanted {
+                                    match list.iter().position(|(c, a)| c == code && a == at) {
+                                        Some(index) => {
+                                            list.remove(index);
+                                        }
+                                        None => missing.push(format!("{which} {code} at {at}")),
+                                    }
+                                }
+                            }
+                            let result = if !missing.is_empty() {
+                                Err(format!("lacks the listed {}", missing.join(", ")))
+                            } else if before != after {
+                                Err(format!(
+                                    "edition 0.5 reports {after:?} besides the listed diagnostics, and edition 0.4 {before:?}"
+                                ))
+                            } else if listed.is_none() && status_0_4 != status_0_5 {
+                                Err(format!("exits {status_0_5:?} in edition 0.5 and {status_0_4:?} in edition 0.4"))
+                            } else {
+                                Ok(())
+                            };
+                            (name.clone(), result)
                         })
                         .collect::<Vec<_>>()
                 })

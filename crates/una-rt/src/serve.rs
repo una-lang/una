@@ -878,18 +878,68 @@ pub(crate) mod script {
         Ok(true)
     }
 
+    use std::io::Write as _;
+
+    /// Where `--serve-out` writes, set once by [`install_from_script`].
+    static OUT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+    /// Installs the scripted engine over the checked events of `--serve-script` (`spec/31 §8`
+    /// rule 6) when the environment says `UNA_TEST_RUN_SERVER=1`, as `una run` of the same
+    /// test build does: whether it did. `out` is the file of `--serve-out`.
+    pub(crate) fn install_from_script(
+        grants: &[una_core::http::serve::ServeGrant],
+        events: &[una_http::serve::script_file::Event],
+        out: Option<std::path::PathBuf>,
+    ) -> bool {
+        #[allow(clippy::disallowed_methods)]
+        if std::env::var_os("UNA_TEST_RUN_SERVER").is_none_or(|v| v != "1") {
+            return false;
+        }
+        let port = Arc::new(una_http::serve::script::ScriptPort::from_script(
+            grants,
+            events,
+            Box::new(|| {
+                if let Some(stop) = crate::runtime::run_stop() {
+                    stop.request_local();
+                }
+            }),
+        ));
+        let _ = OUT.set(out);
+        let mut serving = Serving::new(Arc::clone(&port) as Arc<dyn Port + Send + Sync>);
+        serving.script = Some(port);
+        *lock(&SERVING) = Some(Arc::new(serving));
+        true
+    }
+
     /// Ends the scripted engine at the run's end and writes what each connection received, one
     /// JSON line each, then `{"rights_left": n, "problems": [...]}`, to the file that
-    /// `UNA_TEST_SERVE_WIRE` names.
-    pub(crate) fn end() {
+    /// `UNA_TEST_SERVE_WIRE` names. A run of `--serve-script` reports what the engine left not
+    /// at rest as warnings and writes `--serve-out`, as `una run` does: the message of a file
+    /// that cannot be written is the `Err`, a usage error.
+    pub(crate) fn end() -> Result<(), String> {
         let Some(port) = serving().and_then(|serving| serving.script.clone()) else {
-            return;
+            return Ok(());
         };
         let left = live();
         let ended = port.end();
+        let mut written = Ok(());
+        if let Some(out) = OUT.get() {
+            let mut stderr = std::io::stderr();
+            for problem in &ended.problems {
+                let _ = writeln!(
+                    stderr,
+                    "warning: the scripted engine at the end of the run: {problem}"
+                );
+            }
+            if let Some(path) = out {
+                let text = una_http::serve::script::out_text(&ended.wire);
+                written = una_http::serve::script_file::write_out(path, &text)
+                    .map_err(|error| una_http::serve::script_file::out_error(path, &error));
+            }
+        }
         #[allow(clippy::disallowed_methods)]
         let Some(path) = std::env::var_os("UNA_TEST_SERVE_WIRE") else {
-            return;
+            return written;
         };
         let mut text = String::new();
         for line in &ended.wire {
@@ -901,6 +951,7 @@ pub(crate) mod script {
         );
         text.push('\n');
         let _ = std::fs::write(path, text);
+        written
     }
 }
 

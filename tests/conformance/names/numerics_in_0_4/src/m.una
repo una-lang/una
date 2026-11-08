@@ -1,0 +1,19 @@
+-- test: in edition 0.4, the names of the numeric foundation are unknown, since ADR 0139 rule 6 moves them to edition 0.5: each is U1001, with the advice to write `edition 0.5`, and `Array` is the variant of `Json` (U2002); edition 0.5 resolves each of them, and accepts the module that writes `Option[Decimal[2]]`, a type edition 0.4 cannot write, for `Option[Int]` (ADR 0139 rule 7, names/numerics_in_0_5)
+-- spec: spec/29 §16
+-- expect: error U1001 at src/m.una:11:13
+-- expect: error U1001 at src/m.una:13:13
+-- expect: error U2002 at src/m.una:15:13
+-- expect: error U1001 at src/m.una:17:38
+-- expect: error U1001 at src/m.una:19:15
+-- expect: error U1001 at src/m.una:19:26
+module m
+
+pub half(x: F32) -> Int = 0
+
+pub real(z: Complex[F64]) -> Int = 0
+
+pub size(a: Array[Int]) -> Int = 0
+
+pub parsed(j: Json) -> Option[Int] = as_decimal(j, scale: 2)
+
+pub mode() -> Rounding = HalfEven

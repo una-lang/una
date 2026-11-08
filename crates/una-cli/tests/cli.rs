@@ -1095,7 +1095,7 @@ fn version_names_the_editions_and_the_pinned_z3() {
     // (ADR 0124 rule 19); a release build prints neither.
     assert_eq!(
         stdout(&output),
-        format!("una {version}\neditions: 0.1, 0.2, 0.3, 0.4\nz3: 5.1.0\ndevelopment build\n")
+        format!("una {version}\neditions: 0.1, 0.2, 0.3, 0.4, 0.5\nz3: 5.1.0\ndevelopment build\n")
     );
     assert_eq!(stderr(&output), "");
     let output = una(&["--json", "--version"]);
@@ -1103,7 +1103,7 @@ fn version_names_the_editions_and_the_pinned_z3() {
     assert_eq!(
         stdout(&output),
         format!(
-            "{{\"schema\":\"una.version/1\",\"version\":\"{version}\",\"editions\":[\"0.1\",\"0.2\",\"0.3\",\"0.4\"],\"z3\":\"5.1.0\",\"build\":\"development\"}}\n"
+            "{{\"schema\":\"una.version/1\",\"version\":\"{version}\",\"editions\":[\"0.1\",\"0.2\",\"0.3\",\"0.4\",\"0.5\"],\"z3\":\"5.1.0\",\"build\":\"development\"}}\n"
         )
     );
     // The pinned Z3 is the one of the repository's lock.

@@ -279,8 +279,8 @@ pub(crate) fn build_command(
         {
             object.insert("float_environment".to_owned(), json!(true));
         }
-        // ADR 0120 rule 5: edition 0.4 adds the binary32 probes.
-        if manifest.edition >= una_project::Edition::V0_4
+        // ADR 0120 rule 5: edition 0.5 adds the binary32 probes.
+        if manifest.edition.has_collections_and_numerics()
             && let Some(object) = meta.as_object_mut()
         {
             object.insert("float32_probes".to_owned(), json!(true));

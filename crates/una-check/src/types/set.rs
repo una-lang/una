@@ -37,7 +37,7 @@ fn set_of(item: Ty) -> Ty {
 }
 
 impl Checker<'_, '_, '_> {
-    /// `s.op(args)` when `s` is a `Set` in edition 0.4 and `op` is one of its built-in methods
+    /// `s.op(args)` when `s` is a `Set` in edition 0.5 and `op` is one of its built-in methods
     /// (`spec/28 §6`); `None` otherwise, so the call resolves as before. `place` is the type of
     /// the receiver as a place, when it is written `edit s.add(...)` or `edit s.remove(...)`.
     #[allow(clippy::too_many_arguments)]
@@ -51,7 +51,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_4 {
+        if self.env.edition < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);

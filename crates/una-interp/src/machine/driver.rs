@@ -6,7 +6,9 @@
 //! started task per request that calls `handle` with the request, turns a failure of `handle`
 //! into `500` with an empty body, and gives the reply to `reply`, whose failure it ignores. At a
 //! host stop `next` fails with `Interrupted`, the loop stops at its next iteration, the started
-//! tasks drain, and `on_stop` runs on the root task. Each request costs O(1) beside `handle`
+//! tasks drain, and `on_stop` runs on the root task. The statement is bounded by the sum of the
+//! grants' `/once` ([`crate::Grant::serve_driver_bound`]), so `start` waits for a place while
+//! that many `handle` tasks run, even when their exchanges ended. Each request costs O(1) beside `handle`
 //! and the bytes of the request and the reply: one `next`, one `start`, one move of one right,
 //! one `reply`.
 
@@ -65,8 +67,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         let run = Rc::clone(&self.run);
         let _root = super::serve::RootRights(&run);
         let caps = server_caps();
+        // The grants' `/once` bounds the started tasks (decision S6-D6, #1724).
+        let bound = crate::Grant::serve_driver_bound(self.grants, self.max_memory, self.run.cap);
         let result = self
-            .tasks_with(None, |machine| machine.serve_loop(handle, &caps))
+            .tasks_with(Some(bound), |machine| machine.serve_loop(handle, &caps))
             .and_then(|_| match on_stop {
                 Some(on_stop) => self.call_hosted(on_stop, Vec::new()).map(|_| Value::Unit),
                 None => Ok(Value::Unit),

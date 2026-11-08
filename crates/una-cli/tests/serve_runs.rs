@@ -56,6 +56,8 @@
     clippy::unwrap_used
 )]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/timing.rs"]
 mod timing;
 
@@ -694,19 +696,17 @@ fn answered(wire: &[Value]) -> usize {
         .count()
 }
 
-/// The seconds the native executable built in `package` takes to serve its script.
+/// The processor seconds the native executable built in `package` takes to serve its script.
 fn native_seconds(package: &Path, name: &str, n: usize) -> f64 {
     let wire = package.join("wire.jsonl");
-    let (ran, seconds) = timing::timed(|| {
+    let (ran, seconds) = cpu::cpu_output(
         std::process::Command::new(package.join("target/una").join(name))
             .env("UNA_TEST_SERVE_SCRIPT", package)
             .env("UNA_TEST_SERVE_WIRE", &wire)
             .env("UNA_TEST_SERVE_REVEAL", "0")
             .arg("--virtual-time")
-            .current_dir(package)
-            .output()
-            .unwrap()
-    });
+            .current_dir(package),
+    );
     assert_eq!(ran.status.code(), Some(0), "{ran:?}");
     assert_eq!(answered(&lines(&wire)), n);
     seconds
@@ -724,7 +724,24 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn a_serve_section_takes_constant_time_per_request() {
+fn a_serve_section_takes_constant_cpu_time_per_request() {
+    // Each run is measured by its processor time (`cpu`, #1662): the interpreter's in a child of
+    // this test binary, the executable's itself. Neither engine waits by spinning: under the
+    // script and virtual time the serve engine's operations do their work in the calling task,
+    // the scheduler's workers block on a condition variable or park, and no slicer runs, so the
+    // processor time is the requests' work whatever runs beside the test.
+    const TEST: &str = "a_serve_section_takes_constant_cpu_time_per_request";
+    if let Some(dir) = cpu::child() {
+        let (n, dir) = dir.split_once(' ').unwrap();
+        let (wire, _) = run(Path::new(dir));
+        assert_eq!(
+            answered(&wire),
+            n.parse::<usize>().unwrap(),
+            "interpreted: {n} requests"
+        );
+        cpu::ran();
+        return;
+    }
     // `spec/31 §7` rule 4: each request costs one `next`, one `start`, one move of one reply
     // right and one `reply`, O(1) beside `handle`, so serving `n` requests takes O(n) in both
     // engines. From 2,500 to 10,000 requests four times as many take about four times as long;
@@ -736,9 +753,7 @@ fn a_serve_section_takes_constant_time_per_request() {
     let interpreted = |n: usize| {
         let dir = requests_case(n);
         let _scratch = Scratch(vec![dir.clone()]);
-        let ((wire, _), seconds) = timing::timed(|| run(&dir));
-        assert_eq!(answered(&wire), n, "interpreted: {n} requests");
-        seconds
+        cpu::in_child(TEST, &format!("{n} {}", dir.display()))
     };
     let fixed = timing::best_of_three(|| interpreted(100));
     timing::assert_growth(
@@ -770,4 +785,318 @@ fn a_serve_section_takes_constant_time_per_request() {
     let fixed = timing::best_of_three(|| native(100));
     timing::assert_growth("native requests", &sizes, fixed, 1e-3, 8.0, native);
     drop(scratch);
+}
+
+/// The lines of the case `dir`'s script in the form of `--serve-script` (`spec/31 §8` rule
+/// 6): `text` as `bytes` in base64, each connection number mapped by `renumber`.
+fn flag_script(dir: &Path, renumber: &dyn Fn(u64) -> u64) -> String {
+    let mut text = String::new();
+    for mut line in lines(&dir.join("script.jsonl")) {
+        let object = line.as_object_mut().unwrap();
+        if let Some(Value::String(sent)) = object.remove("text") {
+            object.insert("bytes".to_owned(), json!(script::encode(sent.as_bytes())));
+        }
+        let k = object["connection"].as_u64().unwrap();
+        object.insert("connection".to_owned(), json!(renumber(k)));
+        text.push_str(&line.to_string());
+        text.push('\n');
+    }
+    text
+}
+
+/// One line of the wire, as the test reads it from `expected.jsonl` or `--serve-out` itself:
+/// `(at, connection, kind, bytes or value)`.
+type WireLine = (u64, u64, String, Value);
+
+/// The order rule 6 gives the kinds of lines of one time and connection.
+fn kind_rank(kind: &str) -> usize {
+    ["bytes", "shutdown", "closed", "refused"]
+        .iter()
+        .position(|k| *k == kind)
+        .unwrap()
+}
+
+/// The lines of `expected.jsonl` of the case `dir`, each connection number mapped by `renumber`,
+/// in the order of rule 6: time, then connection, then kind.
+fn expected_wire(dir: &Path, renumber: &dyn Fn(u64) -> u64) -> Vec<WireLine> {
+    let mut wire: Vec<WireLine> = lines(&dir.join("expected.jsonl"))
+        .into_iter()
+        .map(|line| {
+            let at = line["at"].as_u64().unwrap();
+            let k = renumber(line["connection"].as_u64().unwrap());
+            let object = line.as_object().unwrap();
+            if let Some(Value::String(sent)) = object.get("text") {
+                return (at, k, "bytes".to_owned(), json!(sent.as_bytes()));
+            }
+            let (kind, value) = object
+                .iter()
+                .find(|(key, _)| *key != "at" && *key != "connection")
+                .unwrap();
+            if kind == "bytes" {
+                let bytes = una_http::serve::script_file::base64(value.as_str().unwrap()).unwrap();
+                return (at, k, "bytes".to_owned(), json!(bytes));
+            }
+            (at, k, kind.clone(), value.clone())
+        })
+        .collect();
+    wire.sort_by_key(|(at, k, kind, _)| (*at, *k, kind_rank(kind)));
+    wire
+}
+
+/// The lines of a `--serve-out` text, checked against rule 6 of `spec/31 §8` independently of
+/// the writer: each line LF-ended, its keys `at`, `connection` and exactly one of `bytes`,
+/// `shutdown`, `closed` and `refused`, in lexicographic order and compact, `bytes` decoded as
+/// padded standard base64.
+fn read_out(text: &str) -> Vec<WireLine> {
+    assert!(text.is_empty() || text.ends_with('\n'), "{text:?}");
+    text.lines()
+        .map(|line| {
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(serde_json::to_string(&value).unwrap(), line);
+            let object = value.as_object().unwrap();
+            let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+            let kind = keys
+                .iter()
+                .find(|key| **key != "at" && **key != "connection")
+                .copied()
+                .unwrap();
+            let mut wanted = vec!["at", "connection", kind];
+            wanted.sort_unstable();
+            assert_eq!(keys, wanted, "{line}");
+            let at = object["at"].as_u64().unwrap();
+            let k = object["connection"].as_u64().unwrap();
+            let value = match kind {
+                "bytes" => json!(
+                    una_http::serve::script_file::base64(object["bytes"].as_str().unwrap())
+                        .unwrap()
+                ),
+                "shutdown" | "closed" => {
+                    assert_eq!(object[kind], json!(true), "{line}");
+                    json!(true)
+                }
+                "refused" => object[kind].clone(),
+                other => panic!("`{other}` is not a kind of rule 6: {line}"),
+            };
+            (at, k, kind.to_owned(), value)
+        })
+        .collect()
+}
+
+/// Runs `command` with the flags of a script in `package`, `UNA_TEST_RUN_SERVER=1` and a
+/// trace, `--serve-out` to `out`: its exit code, its output lines, its stderr, its trace and
+/// what `--serve-out` wrote.
+fn run_flags(
+    mut command: std::process::Command,
+    package: &Path,
+    script: &str,
+    out: &Path,
+) -> (i32, Vec<String>, String, Vec<Value>, String) {
+    let script_path = package.join("flag-script.jsonl");
+    std::fs::write(&script_path, script).unwrap();
+    let trace = package.join("flag-trace.json");
+    let _ = std::fs::remove_file(&trace);
+    let ran = command
+        .env("UNA_TEST_RUN_SERVER", "1")
+        .env("NO_COLOR", "1")
+        .args(["--virtual-time", "--serve-script"])
+        .arg(&script_path)
+        .arg("--serve-out")
+        .arg(out)
+        .arg("--trace")
+        .arg(&trace)
+        .current_dir(package)
+        .output()
+        .unwrap();
+    let output = String::from_utf8_lossy(&ran.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()));
+    // Only a regular file is read back: the test reads no FIFO it made.
+    let wire = if std::fs::symlink_metadata(out).is_ok_and(|m| m.is_file()) {
+        std::fs::read_to_string(out).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    (
+        ran.status.code().unwrap_or(-1),
+        output,
+        String::from_utf8_lossy(&ran.stderr).into_owned(),
+        events.as_array().cloned().unwrap_or_default(),
+        wire,
+    )
+}
+
+#[test]
+fn a_script_runs_through_the_flags_alike_in_both_engines() {
+    // ADR 0123 rule 21, `spec/31 §8` rule 6: in the toolchain's own test builds, `una run` and an
+    // executable given `--serve-script` serve the script's connections in place of listeners,
+    // and `--serve-out` writes what each connection received, in the script's form. Both give the
+    // bytes, output and trace that the harness's own runs of the case recorded, read here
+    // independently of the writer, for any connection numbers, the largest included.
+    let renumberings: [(&str, &dyn Fn(u64) -> u64); 3] = [
+        ("as written", &|k| k),
+        ("from 50000", &|k| 50_000 + k),
+        ("at the top", &|k| u64::MAX - k),
+    ];
+    for case in [
+        "worker_pool",
+        "cancelled_task_503",
+        "reply_after_answer_deadline",
+        // Several connections from one peer address, one of them refused at accept.
+        "peer_limit_refuses",
+    ] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/serve_runs")
+            .join(case);
+        let recorded = lines(&dir.join("run.jsonl"));
+        assert_eq!(recorded[0]["completion"], json!({"ok": "unit"}), "{case}");
+        let output: Vec<String> = recorded[0]["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap().to_owned())
+            .collect();
+        let (scratch, package, name) = build_native(&dir, "-flags");
+        let engines = || {
+            let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+            interpreter
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .arg("run");
+            let native = std::process::Command::new(package.join("target/una").join(&name));
+            [("interpreter", interpreter), ("native", native)]
+        };
+        for (numbering, renumber) in renumberings {
+            let script = flag_script(&dir, renumber);
+            let wire = expected_wire(&dir, renumber);
+            assert!(!wire.is_empty(), "{case}");
+            for (engine, command) in engines() {
+                let out = package.join("serve-out.jsonl");
+                let (code, printed, stderr, trace, text) =
+                    run_flags(command, &package, &script, &out);
+                let at = format!("{case} {numbering} {engine}");
+                assert_eq!(code, 0, "{at}: {stderr}");
+                assert!(!stderr.contains("warning:"), "{at}: {stderr}");
+                assert_eq!(printed, output, "{at}");
+                assert_eq!(trace, recorded[1..], "{at}");
+                assert_eq!(read_out(&text), wire, "{at}");
+            }
+        }
+        // A `--serve-out` that cannot be written is the same usage error in both engines,
+        // after the run.
+        let script = flag_script(&dir, &|k| k);
+        let unwritable = package.join("missing-dir/serve-out.jsonl");
+        let mut messages = Vec::new();
+        for (engine, command) in engines() {
+            let (code, _, stderr, _, _) = run_flags(command, &package, &script, &unwritable);
+            assert_eq!(code, 2, "{case} {engine}: {stderr}");
+            let line = stderr
+                .lines()
+                .find(|line| line.contains("cannot write the connections to"))
+                .unwrap_or_else(|| panic!("{case} {engine}: {stderr}"))
+                .to_owned();
+            messages.push(line);
+        }
+        assert_eq!(messages[0], messages[1], "{case}");
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+#[test]
+fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: after a scripted run, both engines report the run's own diagnostics,
+    // then a `--serve-out` that cannot be written, with the higher of the run's exit code and 2.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/serve_runs/aborted_root_without_tasks");
+    let recorded = lines(&dir.join("run.jsonl"));
+    assert_eq!(abort_code(&recorded[0]["completion"]), Some("U6003"));
+    let (scratch, package, name) = build_native(&dir, "-aborts");
+    let script = flag_script(&dir, &|k| k);
+    let engines = || {
+        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        interpreter
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .arg("run");
+        let native = std::process::Command::new(package.join("target/una").join(&name));
+        [("interpreter", interpreter), ("native", native)]
+    };
+    let unwritable = package.join("missing-dir/serve-out.jsonl");
+    let mut seen = Vec::new();
+    for (engine, command) in engines() {
+        let (code, _, stderr, _, _) = run_flags(command, &package, &script, &unwritable);
+        let abort = stderr
+            .find("[U6003]")
+            .unwrap_or_else(|| panic!("{engine}: {stderr}"));
+        let out = stderr
+            .find("error: cannot write the connections to")
+            .unwrap_or_else(|| panic!("{engine}: {stderr}"));
+        assert!(abort < out, "{engine}: the abort comes first: {stderr}");
+        seen.push((code, stderr.lines().last().unwrap().to_owned()));
+    }
+    assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen[0].0, 2);
+    // A writable file keeps the run's own exit code.
+    let out = package.join("serve-out.jsonl");
+    for (engine, command) in engines() {
+        let (code, _, stderr, _, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 1, "{engine}: {stderr}");
+        assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn serve_out_follows_no_link_never_blocks_and_is_private() {
+    // `spec/31 §8` rule 6: `--serve-out` follows no symbolic link, never blocks on a FIFO,
+    // refuses a file that is not regular, and leaves the file with mode 0600, an existing one's
+    // included, in both engines.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/worker_pool");
+    let (scratch, package, name) = build_native(&dir, "-out-files");
+    let script = flag_script(&dir, &|k| k);
+    let target = package.join("target-of-link.jsonl");
+    std::fs::write(&target, "kept\n").unwrap();
+    let link = package.join("link.jsonl");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let fifo = package.join("fifo.jsonl");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let existing = package.join("existing.jsonl");
+    let engines = || {
+        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        interpreter
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .arg("run");
+        let native = std::process::Command::new(package.join("target/una").join(&name));
+        [("interpreter", interpreter), ("native", native)]
+    };
+    for refused in [&link, &fifo] {
+        for (engine, command) in engines() {
+            let started = Instant::now();
+            let (code, _, stderr, _, _) = run_flags(command, &package, &script, refused);
+            assert!(started.elapsed() < HANG, "{engine}: blocked");
+            assert_eq!(code, 2, "{engine} {}: {stderr}", refused.display());
+            assert!(
+                stderr.contains("cannot write the connections to"),
+                "{engine}: {stderr}"
+            );
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept\n");
+    for (engine, command) in engines() {
+        std::fs::write(&existing, "old\n").unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (code, _, stderr, _, text) = run_flags(command, &package, &script, &existing);
+        assert_eq!(code, 0, "{engine}: {stderr}");
+        assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
+        let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{engine}");
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
 }

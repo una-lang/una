@@ -11,6 +11,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 /// Std names no `O_*` constant, and `OpenOptionsExt::custom_flags` takes raw flags.
 pub const OPEN_FLAGS: i32 = libc::O_NONBLOCK | libc::O_NOCTTY;
 
+/// Flags added to the open of a file a run writes for the operator (`--serve-out`): no
+/// blocking on a FIFO, no controlling terminal, and no symbolic link followed in its last
+/// component.
+pub const WRITE_FLAGS: i32 = libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_NOFOLLOW;
+
 /// The effective user and group, and the supplementary groups, of the process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {

@@ -1,4 +1,4 @@
--- test: in edition 0.4, `edit m.update(key:, initial:, change:)` sets the key to `change` of its value, or of `initial` when the map lacks it, calling `change` once; when `change` fails, the map keeps its value; a function `update` on another type stays reachable by method syntax; both engines agree (ADR 0119 rule 18)
+-- test: in edition 0.5, `edit m.update(key:, initial:, change:)` sets the key to `change` of its value, or of `initial` when the map lacks it, calling `change` once; when `change` fails, the map keeps its value; a function `update` on another type stays reachable by method syntax; both engines agree (ADR 0119 rule 18)
 -- spec: spec/21 §2
 -- grant: console
 -- expect: run-output "counts: {\"be\": 2, \"not\": 1, \"or\": 1, \"to\": 2}"

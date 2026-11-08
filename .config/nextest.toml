@@ -16,7 +16,12 @@
 #
 # A scaling test that measures the processor time of the children it runs (`una` or a built executable) rather
 # than the wall clock holds `cpu_time` in its name and is left out (#1656): a child's user and system time stay
-# what its work costs when other tests run beside it.
+# what its work costs when other tests run beside it. A test whose work runs in its own process runs it in a
+# child of its test binary and reads that child's time (#1662, `cpu::in_child`).
+#
+# The longest tests outside the exclusive group, una-rt's FFI scenario (about 80 s) and the serve section's
+# scaling test (about 30 s alone, longer beside others), start as soon as the exclusive tests have run
+# (`priority = 90`), so that neither ends the run alone (#1662).
 
 experimental = ["setup-scripts"]
 
@@ -38,3 +43,7 @@ filter = '(test(/scale|scaling|linear|n_log_n|bounded_share|limiter|virtual_time
 threads-required = "num-cpus"
 priority = 100
 slow-timeout = { period = "120s", terminate-after = 30 }
+
+[[profile.default.overrides]]
+filter = '(package(una-rt) & test(=ffi::tests::every_entry_point_takes_any_word_in_a_run)) | (binary_id(una-cli::serve_runs) & test(=a_serve_section_takes_constant_cpu_time_per_request))'
+priority = 90

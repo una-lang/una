@@ -1,4 +1,4 @@
--- test: in edition 0.4, a list and a map that `for` loops update hold their final values when read after the loops, a copy bound before a loop and a closure created before it keep the values from before, and a closure created in an iteration keeps what it captured when the body then updates the list, in both engines (#1196, spec/17 §5 rule 4, §7)
+-- test: in edition 0.5, a list and a map that `for` loops update hold their final values when read after the loops, a copy bound before a loop and a closure created before it keep the values from before, and a closure created in an iteration keeps what it captured when the body then updates the list, in both engines (#1196, spec/17 §5 rule 4, §7)
 -- spec: spec/17 §7
 -- grant: console
 -- expect: run-output "list: [10, 20, 30]"

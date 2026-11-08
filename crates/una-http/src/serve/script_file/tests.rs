@@ -306,3 +306,32 @@ fn many_keys_in_one_line_are_refused_at_the_first_unknown_one() {
         "line 1: `k0` is not a key of this line"
     );
 }
+
+#[test]
+fn one_peer_address_opens_at_most_one_connection_per_port() {
+    let script = |n: u32, peer: &str| {
+        let mut text = String::new();
+        for k in 0..n {
+            text.push_str(&format!(
+                "{{\"at\": 0, \"connection\": {k}, \"grant\": \"127.0.0.1:8080\", \"peer\": \"{peer}\", \"reads\": \"eager\"}}\n"
+            ));
+        }
+        text
+    };
+    assert!(parse(&script(PEER_CONNECTIONS, "192.0.2.1"), &listeners()).is_ok());
+    let error = parse(&script(PEER_CONNECTIONS + 1, "192.0.2.1"), &listeners()).unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "line {}: `192.0.2.1` opens more than 64512 connections, one per port it has",
+            PEER_CONNECTIONS + 1
+        )
+    );
+    // Another peer address has its own ports.
+    let mixed = format!(
+        "{}{}",
+        script(PEER_CONNECTIONS, "192.0.2.1"),
+        r#"{"at": 0, "connection": 99999999, "grant": "127.0.0.1:8080", "peer": "192.0.2.2", "reads": "eager"}"#
+    );
+    assert!(parse(&mixed, &listeners()).is_ok());
+}

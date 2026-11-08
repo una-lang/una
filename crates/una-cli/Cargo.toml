@@ -43,7 +43,7 @@ sha2.workspace = true
 # stand-in program in the solver child's place, named by UNA_SOLVER_STAND_IN, so that tests can
 # answer a query with anything. No shipped `una` enables it; scripts/check-release.sh refuses a
 # binary that has it.
-test-hooks = []
+test-hooks = ["una-http/test-hooks"]
 
 [dev-dependencies]
 # The tests run the binary with the test hooks on (a dev-dependency on the crate itself enables

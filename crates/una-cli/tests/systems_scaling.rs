@@ -2,16 +2,18 @@
 //! operations, each a quantifier-free query of the size of a fixed-width one. A module with
 //! 10, 100 and 1,000 `Int` operations, each proven, verifies in time linear in their number: the
 //! cost per operation stays within a factor of 3 from one size to the next, ten times larger.
-//! Only the verification is timed, and a miss is measured twice more (#341).
+//! Only the verification is timed, by its processor time in a child of the test binary
+//! (`common/cpu.rs`, #1662), and a miss is measured twice more (#341).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/timing.rs"]
 mod timing;
 
 use std::path::Path;
-use std::time::Instant;
 
 use una_cli::Tier;
 
@@ -46,28 +48,20 @@ fn additions(n: usize) -> String {
 }
 
 #[test]
-fn int_overflow_obligations_verify_in_linear_time() {
+fn int_overflow_obligations_verify_in_linear_cpu_time() {
+    if let Some(argument) = cpu::child() {
+        let (n, dir) = argument.split_once(' ').unwrap();
+        verify_here(Path::new(dir), n.parse().unwrap());
+        cpu::ran();
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("una-systems-scaling-{}", std::process::id()));
     let verify = |n: usize| {
         package(&dir, &additions(n));
-        let started = Instant::now();
-        let checked = una_cli::check(&dir, Tier::One).unwrap();
-        let seconds = started.elapsed().as_secs_f64();
-        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-        // Every operation carries its obligation, and every one is proven.
-        let overflow: Vec<_> = checked
-            .verification
-            .iter()
-            .flat_map(|verification| verification.obligations.iter().zip(&verification.outcomes))
-            .filter(|(obligation, _)| obligation.kind == una_diag::ObligationKind::Overflow)
-            .collect();
-        assert_eq!(overflow.len(), n);
-        assert!(
-            overflow
-                .iter()
-                .all(|(_, outcome)| outcome.status == una_diag::ObligationStatus::Proven)
-        );
-        seconds
+        cpu::in_child(
+            "int_overflow_obligations_verify_in_linear_cpu_time",
+            &format!("{n} {}", dir.display()),
+        )
     };
     let fixed = timing::best_of_three(|| verify(1));
     // Ten times as many operations take about ten times as long past the fixed cost: within
@@ -81,4 +75,24 @@ fn int_overflow_obligations_verify_in_linear_time() {
         verify,
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The measured step, in the child: the tier-1 check of the package in `dir`, whose `n`
+/// operations each carry an `overflow` obligation, every one proven.
+fn verify_here(dir: &Path, n: usize) {
+    let checked = una_cli::check(dir, Tier::One).unwrap();
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    // Every operation carries its obligation, and every one is proven.
+    let overflow: Vec<_> = checked
+        .verification
+        .iter()
+        .flat_map(|verification| verification.obligations.iter().zip(&verification.outcomes))
+        .filter(|(obligation, _)| obligation.kind == una_diag::ObligationKind::Overflow)
+        .collect();
+    assert_eq!(overflow.len(), n);
+    assert!(
+        overflow
+            .iter()
+            .all(|(_, outcome)| outcome.status == una_diag::ObligationStatus::Proven)
+    );
 }

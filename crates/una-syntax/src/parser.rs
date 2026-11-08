@@ -1529,10 +1529,10 @@ impl<'a> Parser<'a> {
         match self.peek() {
             TokenKind::UpperIdent(_) => {
                 let name = self.upper_name("a type")?;
-                // Edition 0.4: `Decimal[s]`, whose argument is a scale, an integer literal
-                // (ADR 0120 rule 2). Any other argument parses as a type, which the checker
-                // refuses (U2037).
-                if self.v0_4
+                // Edition 0.5: `Decimal[s]`, whose argument is a scale, an integer literal
+                // (ADR 0120 rule 2, moved to edition 0.5 by ADR 0139 rule 6). Any other argument
+                // parses as a type, which the checker refuses (U2037).
+                if self.keywords >= KeywordSet::V0_5
                     && self.interner.resolve(name.name) == "Decimal"
                     && self.at(&TokenKind::LBracket)
                     && let TokenKind::Int(digits) = self.peek_at(1)
@@ -3626,8 +3626,8 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        // Edition 0.4: `with:` and `and:` label the arguments of the dense methods
-        // (`spec/29 §17`, ADR 0120); the lexer interns them only in that edition.
+        // Edition 0.5: `with:` and `and:` label the arguments of the dense methods
+        // (`spec/29 §17`, ADR 0120); the lexer interns them only from edition 0.5.
         let from = from.or_else(|| match (self.peek(), self.peek_at(1)) {
             (TokenKind::Keyword(Keyword::With), TokenKind::Colon) => self.with_label,
             (TokenKind::Keyword(Keyword::And), TokenKind::Colon) => self.and_label,

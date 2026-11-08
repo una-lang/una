@@ -2178,7 +2178,9 @@ fn i3_i4_a_json_parse_over_its_memory_budget_in_a_task_stops_at_one_site_in_both
 }
 
 #[test]
-fn a_text_appended_in_a_loop_grows_in_linear_time() {
+fn a_text_appended_in_a_loop_grows_in_linear_cpu_time_natively() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): natively too, `t = "{t}x"` appends in place
     // when nothing else holds `t`.
     let sizes = [100_000, 1_000_000];
@@ -2207,12 +2209,9 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // Times a run of the executable built for `steps` appends.
     let measure = |steps: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-        let (output, seconds) = timing::timed(|| {
-            Command::new(dir.join("target/una").join(format!("grow{steps}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+        let (output, seconds) = cpu::cpu_output(
+            Command::new(dir.join("target/una").join(format!("grow{steps}"))).current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
@@ -3657,7 +3656,9 @@ fn a_call_that_would_retain_every_owned_argument_takes_the_borrowed_entry() {
 }
 
 #[test]
-fn a_list_given_while_live_then_appended_through_calls_grows_in_linear_time() {
+fn a_list_given_while_live_then_appended_through_calls_grows_in_linear_cpu_time() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // #284: `fill` owns its list, but the caller's `xs` stays live, so the call takes the
     // borrowed entry. Its loop takes the list as its state, copied once at the first append;
     // each later call of `grown` moves the state into the owned entry, which appends in
@@ -3683,15 +3684,13 @@ fn a_list_given_while_live_then_appended_through_calls_grows_in_linear_time() {
         .collect();
     let measure = |steps: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
-        let (output, seconds) = timing::timed(|| {
+        let (output, seconds) = cpu::cpu_output(
             Command::new(
                 dir.join("target/una")
                     .join(format!("live-then-owned-{steps}")),
             )
-            .current_dir(dir)
-            .output()
-            .unwrap()
-        });
+            .current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
@@ -3769,7 +3768,9 @@ fn json_parses_and_writes_in_linear_cpu_time_natively() {
 const TEXT_SCALE: &str = "module scale\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit parts: List[Text] = []\n  for i in 0..<COUNT\n    parts = parts.append(item: \"ab\")\n  let empty = \"\"\n  let t = parts.join(separator: empty)\n  let c = \"c\"\n  let a = \"a\"\n  let b = \"b\"\n  let missing = t.find(text: c)\n  let swapped = t.replace(pattern: a, by: c)\n  let pieces = t.split(on: b)\n  @console.print(\"{t.len} {missing} {swapped.len} {pieces.len}\")\n";
 
 #[test]
-fn native_text_search_replace_and_split_take_linear_time() {
+fn native_text_search_replace_and_split_take_linear_cpu_time() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // `spec/22 §2` rule 8 and the performance rule, natively: ten times the text takes under
     // 30 times as long, about 10x when linear against about 100x when quadratic. A miss is
     // measured twice more before it fails (#341).
@@ -3799,12 +3800,9 @@ fn native_text_search_replace_and_split_take_linear_time() {
     // Times a run of the executable built for `count` pieces.
     let measure = |count: usize| {
         let dir = &dirs[sizes.iter().position(|&s| s == count).unwrap()];
-        let (output, seconds) = timing::timed(|| {
-            Command::new(dir.join(format!("target/una/text_{count}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+        let (output, seconds) = cpu::cpu_output(
+            Command::new(dir.join(format!("target/una/text_{count}"))).current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0));
         let (len, pieces) = (2 * count, count + 1);
         assert_eq!(
@@ -4024,7 +4022,9 @@ fn native_text_reads_stop_at_the_first_difference_in_cpu_time_whatever_the_text_
 }
 
 #[test]
-fn native_contains_over_short_texts_does_not_depend_on_the_length_of_the_item() {
+fn native_contains_over_short_texts_does_not_depend_on_the_length_of_the_item_in_cpu_time() {
+    // Each run is measured by the processor time of the executable (`cpu::cpu_output`, #1662),
+    // which other tests running beside it do not change, so the test needs no exclusive slot.
     // `spec/22 §2` and the complexity rule of the Proposed ADR for the standard library:
     // `contains` of a long item over 100 000 short texts compares
     // each element in O(1) when the lengths differ, so the cost is linear in size(xs) and a
@@ -4049,24 +4049,18 @@ fn native_contains_over_short_texts_does_not_depend_on_the_length_of_the_item() 
         &[("N", 0)],
     );
     let run_idle = || {
-        timing::timed(|| {
-            Command::new(idle[0].join("target/una/contains_idle_8"))
-                .current_dir(&idle[0])
-                .output()
-                .unwrap()
-        })
+        cpu::cpu_output(
+            Command::new(idle[0].join("target/una/contains_idle_8")).current_dir(&idle[0]),
+        )
         .1
     };
     let fixed = timing::best_of_three(run_idle);
     let measure = |size: usize| {
         let log = size.trailing_zeros() as usize - 1;
         let dir = &dirs[logs.iter().position(|&s| s == log).unwrap()];
-        let (output, seconds) = timing::timed(|| {
-            Command::new(dir.join(format!("target/una/contains_{log}")))
-                .current_dir(dir)
-                .output()
-                .unwrap()
-        });
+        let (output, seconds) = cpu::cpu_output(
+            Command::new(dir.join(format!("target/una/contains_{log}"))).current_dir(dir),
+        );
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(String::from_utf8_lossy(&output.stdout), "false true\n");
         seconds
@@ -4304,7 +4298,8 @@ fn records_made_anew_grow_with_the_loop_and_copies_do_not_292() {
     }
 }
 
-/// A package of edition 0.4, with `ita.una` holding `sections` after its head, and the lock of
+/// A package of edition 0.5, which has every construct of edition 0.4 and the collections and
+/// numerics (ADR 0139 rule 6), with `ita.una` holding `sections` after its head, and the lock of
 /// the conformance cases.
 fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
@@ -4312,7 +4307,7 @@ fn ita_package(name: &str, sections: &str, files: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
-        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n{sections}"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.5\n{sections}"),
     )
     .unwrap();
     std::fs::copy(

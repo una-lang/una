@@ -3205,14 +3205,15 @@ pub(crate) fn drive_timing(
         callees: BTreeSet::from([step]),
         ..super::timing::TimingSeed::default()
     };
-    let concurrent = super::timing::concurrent_functions(findings);
-    let timing = super::timing::timing(
+    // ADR 0116 C: `conc(step)`, the labels of the work that can run beside a call of `step`
+    // anywhere in the package (`spec/27 §11`), keeping `HostHandlers::Installed`.
+    let concurrency = super::timing::concurrency_of(env, findings);
+    let timing = super::timing::timing_with(
         env,
         findings,
         &seed,
-        Some(step),
         super::timing::HostHandlers::Installed,
-        &concurrent,
+        concurrency.conc_of_function(step),
     );
     // ADR 0116 P9 and C: the residue of cancelled requests slows the step, through its
     // requests and through the helpers' work on the machine's cores, and so the tick.
@@ -3408,7 +3409,9 @@ pub(crate) fn limit_timing(
 /// accepts, `internal` (`spec/24 §5`): U4001 at the loop when `τ` is above it, naming the
 /// largest source of `τ`. `τ` joins the residue label `L_res` (ADR 0116 P9), computed once.
 /// Returns each loop, in source order, with its function and `τ`, for the report's `timing`
-/// list (rule 21). O(loops × (functions + call edges + operations)).
+/// list (rule 21). O(V + E) and O((V + E) · h) once for the summaries
+/// ([`super::timing::Summaries`]), then O(size of the seed) per loop, and one search per loop
+/// that is reported.
 pub(crate) fn deadline_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -3418,19 +3421,25 @@ pub(crate) fn deadline_timing(
     if findings.deadline_loops.is_empty() {
         return Vec::new();
     }
-    let concurrent = super::timing::concurrent_functions(findings);
+    // ADR 0116 C: `τ_conc` taken at the loop (`spec/27 §11`).
+    let concurrency = super::timing::concurrency_of(env, findings);
+    // `τ` from the summaries (slice 7 of #1087); the search runs only for a loop it reports.
+    let summaries = super::timing::summaries(env, findings);
     let mut loops: Vec<&super::DeadlineLoop> = findings.deadline_loops.iter().collect();
     loops.sort_by_key(|site| (site.span.file, site.span.start));
     let mut sites = Vec::new();
+    let count = loops.len();
     for site in loops {
-        let timing = super::timing::timing(
-            env,
-            findings,
-            &site.seed,
-            site.function,
-            super::timing::HostHandlers::All,
-            &concurrent,
-        );
+        let timing = summaries.timing(env, &site.seed, concurrency.tau_conc(&site.seed));
+        super::timing::cross_check(env, count, &timing, || {
+            super::timing::timing_precise(
+                env,
+                findings,
+                &site.seed,
+                super::timing::HostHandlers::All,
+                &concurrency,
+            )
+        });
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let function = site
@@ -3454,7 +3463,17 @@ pub(crate) fn deadline_timing(
         });
         if let Some((op, bound)) = interrupted {
             let tau = &timing.label;
-            let culprit = timing.culprit(&bound);
+            // The search, for the sources the message names (E, the error path).
+            let explained = residue.join_into(super::timing::timing_precise(
+                env,
+                findings,
+                &site.seed,
+                super::timing::HostHandlers::All,
+                &concurrency,
+            ));
+            // INVARIANT: the summaries give the label of the search (`timing::Summaries`).
+            debug_assert_eq!(&explained.label, tau, "summary and search disagree");
+            let culprit = explained.culprit(&bound);
             let mut diagnostic = report.make(
                 Code::U4001,
                 site.span,
@@ -3478,7 +3497,9 @@ pub(crate) fn deadline_timing(
 /// `τ_conc`, the program's other tasks. `Limited` is labeled `internal`, so `τ` of that
 /// statement MUST flow to `internal`; U4001 at the binding otherwise, naming what raised it
 /// (`spec/27 §10`). The label is joined with the residue label `L_res` (ADR 0116 P9), as at
-/// every timing site. O(sites × (functions + call edges + operations)).
+/// every timing site. O(V + E) and O((V + E) · h) once for the summaries
+/// ([`super::timing::Summaries`]), then O(size of the seed) per site, and one search per site
+/// that is reported.
 pub(crate) fn limiter_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -3496,21 +3517,41 @@ pub(crate) fn limiter_timing(
     let mut sites: Vec<&super::LimiterSite> = findings.limiter_sites.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.span);
+    // `τ` from the summaries (slice 7 of #1087), with the preview's `τ_conc`; the search runs
+    // only for a site it reports.
+    let summaries = super::timing::summaries(env, findings);
+    let top = Label::top(&env.categories);
+    let count = sites.len();
     for site in sites {
-        let timing = super::timing::timing(
+        let beside = super::timing::preview_concurrent(&site.seed, site.function, &concurrent)
+            .then(|| top.clone());
+        let fast = summaries.timing(env, &site.seed, beside);
+        super::timing::cross_check(env, count, &fast, || {
+            super::timing::timing(
+                env,
+                findings,
+                &site.seed,
+                site.function,
+                super::timing::HostHandlers::All,
+                &concurrent,
+            )
+        });
+        let timing = residue.join_into(fast);
+        if timing.label.flows_to(&internal) {
+            continue;
+        }
+        let tau = &timing.label;
+        let explained = residue.join_into(super::timing::timing(
             env,
             findings,
             &site.seed,
             site.function,
             super::timing::HostHandlers::All,
             &concurrent,
-        );
-        let timing = residue.join_into(timing);
-        if timing.label.flows_to(&internal) {
-            continue;
-        }
-        let tau = &timing.label;
-        let culprit = timing.culprit(&internal);
+        ));
+        // INVARIANT: the summaries give the label of the search (`timing::Summaries`).
+        debug_assert_eq!(&explained.label, tau, "summary and search disagree");
+        let culprit = explained.culprit(&internal);
         let mut diagnostic = report.make(
             Code::U4001,
             site.span,
@@ -3534,7 +3575,21 @@ pub(crate) fn limiter_timing(
 /// captures (#1023, the refinement F item 7 of the amendment leaves to a separate issue), joined
 /// with `τ_conc(F)` at the race's own site, is `t`. The coarser `κ` of [`Concurrency`], `⊤` for a
 /// branch that calls `map`, is the one the sites inside the branches take through `ctx`.
+///
+/// **From the summaries** (slice 7 of #1087): the label and the operations of `Http`, without
+/// the sources, which [`within_site_explained`] adds for a site that is reported.
 fn within_site_timing(
+    env: &Env<'_>,
+    site: &super::within::WithinSite,
+    concurrency: &super::timing::Concurrency,
+    summaries: &super::timing::Summaries,
+) -> super::timing::Timing {
+    summaries.timing(env, &site.seed, concurrency.tau_conc(&site.seed))
+}
+
+/// [`within_site_timing`] by the search over the graph, with the sources a message names: the
+/// same label (`timing::Summaries`), computed only for a site that is reported.
+fn within_site_explained(
     env: &Env<'_>,
     findings: &Findings,
     site: &super::within::WithinSite,
@@ -3547,8 +3602,8 @@ fn within_site_timing(
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
 /// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
 /// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass
-/// 2. O(sites × (functions + call edges + operations)), and O(V + E + size of the seeds) once
-/// for `L_res`.
+/// 2. O(V + E) and O((V + E) · h) once for the summaries ([`super::timing::Summaries`]), then
+/// O(size of the seed) per site, and O(V + E + size of the seeds) once for `L_res`.
 pub(crate) fn within_labels(
     env: &Env<'_>,
     findings: &Findings,
@@ -3557,10 +3612,11 @@ pub(crate) fn within_labels(
         return (BTreeMap::new(), super::timing::Residue::none());
     }
     let concurrency = super::timing::concurrency_of(env, findings);
+    let summaries = super::timing::summaries(env, findings);
     let residue = super::timing::residue_of(env, findings);
     let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
     for site in &findings.withins {
-        let timing = within_site_timing(env, findings, site, &concurrency);
+        let timing = within_site_timing(env, site, &concurrency, &summaries);
         let timing = residue.join_into(timing);
         // A site checked twice, as an `attempt` inside a probe, keeps the join.
         let label = match labels.get(&site.key) {
@@ -3579,8 +3635,9 @@ pub(crate) fn within_labels(
 ///   failure at most `internal`, so `τ(e)` above it is U4001 at the `within`;
 /// - each `within` whose `τ` is above `public` joins the report's `timing` list.
 ///
-/// Returns the report's entries, in source order. O(sites × (functions + call edges +
-/// operations)).
+/// Returns the report's entries, in source order. O(V + E) and O((V + E) · h) once for the
+/// summaries ([`super::timing::Summaries`]), then O(size of the seed) per site, and one search
+/// per site that is reported.
 pub(crate) fn within_timing(
     env: &Env<'_>,
     findings: &Findings,
@@ -3591,12 +3648,17 @@ pub(crate) fn within_timing(
         return Vec::new();
     }
     let concurrency = super::timing::concurrency_of(env, findings);
+    let summaries = super::timing::summaries(env, findings);
     let mut sites: Vec<&super::within::WithinSite> = findings.withins.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.key);
     let mut entries = Vec::new();
+    let count = sites.len();
     for site in sites {
-        let timing = within_site_timing(env, findings, site, &concurrency);
+        let timing = within_site_timing(env, site, &concurrency, &summaries);
+        super::timing::cross_check(env, count, &timing, || {
+            within_site_explained(env, findings, site, &concurrency)
+        });
         // ADR 0116 P9 and C: every timing site joins `L_res`.
         let timing = residue.join_into(timing);
         let used = env
@@ -3639,7 +3701,12 @@ pub(crate) fn within_timing(
         });
         if let Some((op, bound)) = interrupted {
             let tau = &timing.label;
-            let culprit = timing.culprit(&bound);
+            // The search, for the sources the message names (E, the error path).
+            let explained =
+                residue.join_into(within_site_explained(env, findings, site, &concurrency));
+            // INVARIANT: the summaries give the label of the search (`timing::Summaries`).
+            debug_assert_eq!(&explained.label, tau, "summary and search disagree");
+            let culprit = explained.culprit(&bound);
             let mut diagnostic = report.make(
                 Code::U4001,
                 site.span,

@@ -80,13 +80,15 @@ pub fn lines(text: &str) -> Result<Vec<Value>, String> {
         .collect()
 }
 
-fn peer_address(peer: &str, k: u64) -> String {
-    let ip: std::net::IpAddr = peer.parse().expect("a peer address");
-    match ip {
-        std::net::IpAddr::V4(_) => format!("{ip}:{}", 20_000 + k),
-        std::net::IpAddr::V6(_) => format!("[{ip}]:{}", 20_000 + k),
-    }
-}
+/// The first port of a scripted peer's connections: each peer address numbers its own, in the
+/// order the script opens them, so no connection number can make a port overflow.
+const FIRST_PORT: u16 = 1024;
+
+/// The ports a scripted peer address has, `FIRST_PORT` to 65535: at most this many connections
+/// per peer address in a script, which `script_file` checks.
+pub const PEER_PORTS: u32 = super::script_file::PEER_CONNECTIONS;
+
+const _: () = assert!(FIRST_PORT as u32 + PEER_PORTS == 65_536);
 
 /// The engine of a run over a script: the serve thread, its clock and the script's events,
 /// which the program's waits advance.
@@ -101,6 +103,8 @@ struct Scripted {
     stop: Box<dyn Fn() + Send>,
     /// The last time the script named, in milliseconds.
     last: u64,
+    /// The connections each peer address opened so far, which give the next one its port.
+    ports: std::collections::HashMap<std::net::IpAddr, u32>,
 }
 
 impl Scripted {
@@ -126,7 +130,15 @@ impl Scripted {
                 .iter()
                 .position(|l| Some(l.as_str()) == grant.as_str())
                 .expect("a grant of the case");
-            let from = peer_address(event["peer"].as_str().expect("peer"), k);
+            let ip: std::net::IpAddr = event["peer"]
+                .as_str()
+                .and_then(|peer| peer.parse().ok())
+                .expect("a peer address");
+            let opened = self.ports.entry(ip).or_insert(0);
+            let port = u16::try_from(u32::from(FIRST_PORT) + *opened)
+                .expect("at most PEER_PORTS connections from one peer address");
+            *opened += 1;
+            let from = std::net::SocketAddr::new(ip, port).to_string();
             let reads = match event["reads"].as_str() {
                 Some("paced") => Reads::Paced,
                 _ => Reads::Eager,
@@ -175,7 +187,26 @@ impl ScriptPort {
     /// fed by the lines of `script`; `stop` is the run's host stop, which the script's `stop`
     /// line and its end request.
     pub fn new(grants: &[&str], script: Vec<Value>, stop: Box<dyn Fn() + Send>) -> ScriptPort {
-        let sim = Sim::new(grants, 1);
+        ScriptPort::over(Sim::new(grants, 1), script, stop)
+    }
+
+    /// The engine of the grants `grants` of a run, fed by the script `events` of
+    /// `--serve-script`, read and checked (`super::script_file`): what `una run` and executables
+    /// of the toolchain's own test builds serve in place of listeners (`spec/31 §8` rule 6).
+    pub fn from_script(
+        grants: &[crate::grant::serve::ServeGrant],
+        events: &[super::script_file::Event],
+        stop: Box<dyn Fn() + Send>,
+    ) -> ScriptPort {
+        let listeners: Vec<String> = grants.iter().map(|g| g.listener()).collect();
+        ScriptPort::over(
+            Sim::from_grants(grants, 1),
+            script_lines(events, &listeners),
+            stop,
+        )
+    }
+
+    fn over(sim: Sim, script: Vec<Value>, stop: Box<dyn Fn() + Send>) -> ScriptPort {
         let listeners: Vec<String> = sim
             .shared
             .grants
@@ -191,6 +222,7 @@ impl ScriptPort {
             stopped: false,
             stop,
             last: 0,
+            ports: std::collections::HashMap::new(),
         });
         ScriptPort {
             scripted,
@@ -221,7 +253,7 @@ impl ScriptPort {
         let begun = scripted.begun;
         let sim = &mut scripted.sim;
         sim.flush();
-        sim.run_to_ms(last + 3_600_000);
+        sim.run_to_ms(last.saturating_add(3_600_000));
         let mut problems = Vec::new();
         for grant in &sim.shared.grants {
             if !grant.is_quiet() {
@@ -242,7 +274,7 @@ impl ScriptPort {
         }
         let mut out: Vec<(u64, u64, u8, Value)> = Vec::new();
         for (k, why, at) in &sim.refused {
-            let reason = format!("{why:?}").to_lowercase();
+            let reason = refusal_name(*why);
             out.push((
                 at / 1_000_000,
                 *k,
@@ -286,6 +318,61 @@ impl ScriptPort {
             problems,
         }
     }
+}
+
+/// The name of an accept refusal on the wire (`spec/31 §8` rule 6), one fixed word each.
+fn refusal_name(why: super::grant::AcceptRefusal) -> &'static str {
+    use super::grant::AcceptRefusal as R;
+    match why {
+        R::Full => "full",
+        R::PeerLimit => "peerlimit",
+        R::Handshakes => "handshakes",
+        R::PeerHandshakes => "peerhandshakes",
+        R::NoThread => "nothread",
+        R::Fault => "fault",
+        R::Failed => "failed",
+    }
+}
+
+/// The lines of the scripted engine for the checked events of a script: `grant` written back as
+/// its listener, bytes in base64. O(n) in the script.
+fn script_lines(events: &[super::script_file::Event], listeners: &[String]) -> Vec<Value> {
+    use super::script_file::{Action, PeerReads};
+    events
+        .iter()
+        .map(|event| {
+            let (at, k) = (event.at, event.connection);
+            match &event.action {
+                Action::Open { grant, peer, reads } => json!({
+                    "at": at,
+                    "connection": k,
+                    "grant": listeners.get(*grant).cloned().unwrap_or_default(),
+                    "peer": peer.to_string(),
+                    "reads": if *reads == PeerReads::Paced { "paced" } else { "eager" },
+                }),
+                Action::Bytes(bytes) => json!({"at": at, "connection": k, "bytes": encode(bytes)}),
+                Action::Read(n) => json!({"at": at, "connection": k, "read": n}),
+                Action::Close => json!({"at": at, "connection": k, "close": true}),
+            }
+        })
+        .collect()
+}
+
+/// The text of `--serve-out` for the wire `wire` (`spec/31 §8` rule 6): one JSON object per
+/// line, LF-ended, in the form of the script, bytes always in base64. O(n) in the wire.
+pub fn out_text(wire: &[Value]) -> String {
+    let mut text = String::new();
+    for line in wire {
+        let mut line = line.clone();
+        if let Some(object) = line.as_object_mut()
+            && let Some(Value::String(sent)) = object.remove("text")
+        {
+            object.insert("bytes".to_owned(), Value::String(encode(sent.as_bytes())));
+        }
+        text.push_str(&line.to_string());
+        text.push('\n');
+    }
+    text
 }
 
 /// The wire's bytes as a line of `expected.jsonl`: text when they are UTF-8.

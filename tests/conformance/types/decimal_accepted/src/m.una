@@ -1,4 +1,4 @@
--- test: Decimal[s] in edition 0.4: literals at and below their scale, with the exponent form; a literal operand taking the other operand's scale; comparisons across scales with a literal at its own digits; the methods with literal scales and written roundings; the prelude functions; a map keyed by decimals; all accepted
+-- test: Decimal[s] in edition 0.5: literals at and below their scale, with the exponent form; a literal operand taking the other operand's scale; comparisons across scales with a literal at its own digits; the methods with literal scales and written roundings; the prelude functions; a map keyed by decimals; all accepted
 -- spec: spec/29 §16
 -- expect: ok
 module m

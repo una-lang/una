@@ -175,16 +175,16 @@ impl<'a> Resolver<'_, '_, 'a> {
                     // Edition 0.3: the functions of `F64` (`spec/29`, ADR 0114 rule 3.9).
                     || (prelude::FLOAT_0_3.contains(&name)
                         && self.checker.package.settings.edition >= Edition::V0_3)
-                    // Edition 0.4: the functions of `Decimal` (`spec/29 §16`, ADR 0120), of
+                    // Edition 0.5: the functions of `Decimal` (`spec/29 §16`, ADR 0120), of
                     // `F32` (ADR 0120 rule 5) and of `Complex` (ADR 0120 rule 22).
-                    || ((prelude::DECIMAL_0_4.contains(&name)
-                        || prelude::FLOAT_0_4.contains(&name)
-                        || prelude::COMPLEX_0_4.contains(&name))
-                        && self.checker.package.settings.edition >= Edition::V0_4)
-                    // Edition 0.4: the constructors of dense values (`spec/29 §17`, ADR 0120
+                    || ((prelude::DECIMAL_0_5.contains(&name)
+                        || prelude::FLOAT_0_5.contains(&name)
+                        || prelude::COMPLEX_0_5.contains(&name))
+                        && self.checker.package.settings.edition >= Edition::V0_5)
+                    // Edition 0.5: the constructors of dense values (`spec/29 §17`, ADR 0120
                     // rule 32).
-                    || (prelude::DENSE_0_4.contains(&name)
-                        && self.checker.package.settings.edition >= Edition::V0_4)
+                    || (prelude::DENSE_0_5.contains(&name)
+                        && self.checker.package.settings.edition >= Edition::V0_5)
             }
             Space::Upper => {
                 self.types.find(name).is_some()
@@ -210,17 +210,20 @@ impl<'a> Resolver<'_, '_, 'a> {
                             || JSON_NAMES.contains(&name)
                             || HTTP_NAMES.contains(&name)))
                     || (self.checker.package.settings.edition >= Edition::V0_3 && name == "F64")
-                    // Edition 0.4: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
+                    // Edition 0.4: the variants `HttpError` gains (ADR 0116 rule 12, ADR 0117
+                    // rule 8).
                     || (self.checker.package.settings.edition >= Edition::V0_4
-                        && (prelude::ROUNDING_0_4.contains(&name)
-                            || prelude::HTTP_0_4.contains(&name)))
-                    // Edition 0.4: the dense types (`spec/29 §17`, ADR 0120 rule 3).
-                    || (self.checker.package.settings.edition >= Edition::V0_4
+                        && prelude::HTTP_0_4.contains(&name))
+                    // Edition 0.5: `Rounding` and its variants (`spec/29 §16`, ADR 0120).
+                    || (self.checker.package.settings.edition >= Edition::V0_5
+                        && prelude::ROUNDING_0_5.contains(&name))
+                    // Edition 0.5: the dense types (`spec/29 §17`, ADR 0120 rule 3).
+                    || (self.checker.package.settings.edition >= Edition::V0_5
                         && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu"))
-                    // Edition 0.4: `F32`, the finite kinds and `Complex` (ADR 0120 rules 5, 11
+                    // Edition 0.5: `F32`, the finite kinds and `Complex` (ADR 0120 rules 5, 11
                     // and 22).
-                    || (self.checker.package.settings.edition >= Edition::V0_4
-                        && prelude::UPPER_0_4.contains(&name))
+                    || (self.checker.package.settings.edition >= Edition::V0_5
+                        && prelude::UPPER_0_5.contains(&name))
             }
         }
     }
@@ -249,6 +252,13 @@ impl<'a> Resolver<'_, '_, 'a> {
                 ident.span,
                 format!("cannot find {what} `{name}` in this module, its imports or the prelude"),
             );
+            // ADR 0139 rule 7: a name that edition 0.5 has and edition 0.4 lost, first.
+            if self.checker.package.settings.edition == Edition::V0_4 && prelude::moved_to_0_5(name)
+            {
+                diagnostic
+                    .repairs
+                    .push(Checker::advice(prelude::moved_to_0_5_advice(name)));
+            }
             // #419: the names in scope closest to it, as advice only. A typo's fix is a guess,
             // and an edit that an agent applies unread could bind another name that checks
             // (an edit comes only when the fix is unambiguous; R-1, #125).
@@ -295,11 +305,11 @@ impl<'a> Resolver<'_, '_, 'a> {
                 if self.checker.package.settings.edition >= Edition::V0_3 {
                     names.extend(prelude::FLOAT_0_3);
                 }
-                if self.checker.package.settings.edition >= Edition::V0_4 {
-                    names.extend(prelude::DECIMAL_0_4);
-                    names.extend(prelude::DENSE_0_4);
-                    names.extend(prelude::FLOAT_0_4);
-                    names.extend(prelude::COMPLEX_0_4);
+                if self.checker.package.settings.edition >= Edition::V0_5 {
+                    names.extend(prelude::DECIMAL_0_5);
+                    names.extend(prelude::DENSE_0_5);
+                    names.extend(prelude::FLOAT_0_5);
+                    names.extend(prelude::COMPLEX_0_5);
                 }
             }
             Space::Upper => {
@@ -326,10 +336,12 @@ impl<'a> Resolver<'_, '_, 'a> {
                     names.push("F64");
                 }
                 if self.checker.package.settings.edition >= Edition::V0_4 {
-                    names.extend(prelude::ROUNDING_0_4);
                     names.extend(prelude::HTTP_0_4);
+                }
+                if self.checker.package.settings.edition >= Edition::V0_5 {
+                    names.extend(prelude::ROUNDING_0_5);
                     names.extend(["Matrix", "Tensor", "Lu"]);
-                    names.extend(prelude::UPPER_0_4);
+                    names.extend(prelude::UPPER_0_5);
                 }
             }
         }
@@ -370,8 +382,8 @@ impl<'a> Resolver<'_, '_, 'a> {
         for param in params {
             let name = self.name(param);
             self.checker.upper_convention(param, "type parameter");
-            // Edition 0.4: no declaration hides a dense type (`spec/29 §17` rule 1).
-            if self.checker.package.settings.edition >= Edition::V0_4
+            // Edition 0.5: no declaration hides a dense type (`spec/29 §17` rule 1).
+            if self.checker.package.settings.edition >= Edition::V0_5
                 && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
             {
                 let diagnostic = self.checker.make(

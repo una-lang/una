@@ -97,4 +97,4 @@ Within `una.report/2`, additive:
 - S6-D3 (accepted) `handle` and `on_stop` cannot use `HttpServer`: the engine owns the connections in this form, one owner per listener; checked U3033-style over their effect sets.
 - S6-D4 The driver is engine code equivalent to rule 16's program, not synthesized Una or Core IR; `handle` stays an ordinary function for the checker, the verifier and the formal track.
 - S6-D5 The report adds `serve_grants` and `warnings` as new keys, and turns `out_of_model` into a per-package list; all within `una.report/2`.
-- S6-D6 `tasks` of the driver has no `at most`: the grant's `/once` bounds the work in flight, as rule 15 states for either bound.
+- S6-D6 `tasks` of the driver has no `at most`: the grant's `/once` bounds the work in flight, as rule 15 states for either bound. Revised 2026-11-07 (#1724): `/once` alone did not bound the started tasks, since an exchange that ends when its peer leaves gives back its place while `handle` runs on; the driver's `tasks` is now bounded by the sum of `/once` over the run's grants, within the default bound of `spec/27 §7` (`spec/31 §7` rule 4).

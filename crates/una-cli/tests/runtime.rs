@@ -630,7 +630,9 @@ fn checking_many_generic_functions_is_linear_in_their_number() {
 }
 
 #[test]
-fn a_text_appended_in_a_loop_grows_in_linear_time() {
+fn a_text_appended_in_a_loop_grows_in_linear_cpu_time() {
+    // Each run is measured by the processor time of `una` (`cpu::cpu_output`, #1662), which
+    // other tests running beside it do not change, so the test needs no exclusive slot.
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
     // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The
     // interpreter counts no copies, so the check is timing. The fixed cost of a run (checking,
@@ -656,7 +658,10 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
             ),
         )
         .unwrap();
-        let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{steps}\n"));
         seconds
@@ -1916,7 +1921,7 @@ fn queue_and_stack_pushes_and_pops_scale_linearly_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita sequence_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita sequence_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
@@ -1985,11 +1990,11 @@ fn set_updates_lookups_and_operations_scale_as_n_log_n_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita set_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita set_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2059,11 +2064,11 @@ fn hash_table_updates_lookups_and_operations_scale_linearly_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita hash_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita hash_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2133,11 +2138,11 @@ fn priority_queue_pushes_and_pops_scale_as_n_log_n_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita priority_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita priority_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
-        repository().join("tests/conformance/names/collections_exports_in_0_4/ita.lock"),
+        repository().join("tests/conformance/names/collections_exports_in_0_5/ita.lock"),
         root.join("ita.lock"),
     )
     .unwrap();
@@ -2204,7 +2209,7 @@ fn bit_set_updates_and_lookups_scale_linearly_in_cpu_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("ita.una"),
-        "ita bit_set_scale\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry scale\n  grants\n    console\n",
+        "ita bit_set_scale\n  version 0.1.0\n  edition 0.5\n\nrun\n  entry scale\n  grants\n    console\n",
     )
     .unwrap();
     std::fs::copy(
@@ -2379,7 +2384,9 @@ fn json_parses_and_writes_in_linear_time() {
 const TEXT_SCALE: &str = "module scale\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit parts: List[Text] = []\n  for i in 0..<COUNT\n    parts = parts.append(item: \"ab\")\n  let empty = \"\"\n  let t = parts.join(separator: empty)\n  let c = \"c\"\n  let a = \"a\"\n  let b = \"b\"\n  let missing = t.find(text: c)\n  let swapped = t.replace(pattern: a, by: c)\n  let pieces = t.split(on: b)\n  @console.print(\"{t.len} {missing} {swapped.len} {pieces.len}\")\n";
 
 #[test]
-fn text_search_replace_and_split_take_linear_time() {
+fn text_search_replace_and_split_take_linear_cpu_time() {
+    // Each run is measured by the processor time of `una` (`cpu::cpu_output`, #1662), which
+    // other tests running beside it do not change, so the test needs no exclusive slot.
     // `spec/22 §2` rule 8 and the performance rule: `find`, `replace` and `split` are linear
     // in the text, the search included. Ten times the text takes under 30 times as long, about
     // 10x when linear against about 100x when quadratic. A miss is measured twice more before
@@ -2400,8 +2407,10 @@ fn text_search_replace_and_split_take_linear_time() {
             TEXT_SCALE.replace("COUNT", &count.to_string()),
         )
         .unwrap();
-        let (output, seconds) =
-            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
+        let (output, seconds) = cpu::cpu_output(&una_command(
+            Path::new("."),
+            &["run", dir, "--grant", "console", "--max-memory", "1024"],
+        ));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         let (len, pieces) = (2 * count, count + 1);
         assert_eq!(stdout(&output), format!("{len} None {len} {pieces}\n"));
@@ -2507,7 +2516,9 @@ const ALIASED: &str = "module aliased\n\npub main() -> Unit\n  uses @console: Co
 const ALIASED_OUTPUT: &str = "[1, 2] [1, 2, 3] [1, 2, 4] [1, 2, 5] [1, 2, 6] [1, 2, 7, 8] [1, 2]\n";
 
 #[test]
-fn a_list_built_through_function_values_grows_in_linear_time() {
+fn a_list_built_through_function_values_grows_in_linear_cpu_time() {
+    // Each run is measured by the processor time of `una` (`cpu::cpu_output`, #1662), which
+    // other tests running beside it do not change, so the test needs no exclusive slot.
     // #312: in the interpreter too, a binding at its last use moves into a call through
     // a function value, so appends through function values and `fold` stay in place. Each
     // tenfold step stays under 30x, against about 100x when every call copies. A miss is
@@ -2529,7 +2540,10 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
                 appends_through_function_values(shape, steps),
             )
             .unwrap();
-            let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
+            let (output, seconds) = cpu::cpu_output(&una_command(
+                Path::new("."),
+                &["run", dir, "--grant", "console"],
+            ));
             assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
             assert_eq!(stdout(&output), format!("{steps}\n"));
             seconds

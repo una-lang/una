@@ -193,13 +193,18 @@ impl Sim {
             .iter()
             .map(|spec| ServeGrant::parse(spec).expect("a valid serve grant"))
             .collect();
+        Sim::from_grants(&grants, threads)
+    }
+
+    /// A simulated server of the grants `grants`, parsed already, on `threads` threads.
+    pub fn from_grants(grants: &[ServeGrant], threads: usize) -> Sim {
         let clock = Arc::new(SimClock::default());
         let wakes = Arc::new(AtomicU64::new(0));
         let wakers: Vec<Box<dyn Waker>> = (0..threads)
             .map(|_| Box::new(CountWake(Arc::clone(&wakes))) as Box<dyn Waker>)
             .collect();
         let key = SipKey::from_bytes([0x42; 16]);
-        let (shared, inboxes) = Shared::new(&grants, threads, key, clock.clone(), wakers);
+        let (shared, inboxes) = Shared::new(grants, threads, key, clock.clone(), wakers);
         let threads = (0..shared.threads)
             .map(|index| Thread::new(index, shared.clone(), Box::new(SimReadiness), 0))
             .collect();
