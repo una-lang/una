@@ -1,7 +1,9 @@
 ---
 name: merge
-description: Merge a pull request into main safely - base check, build, tests, merge commit, cleanup of branch and worktree. Use for every merge.
+description: Merge a pull request into main (process v5): pr-check in the slot, then ops/merge.sh. Use for every merge.
 ---
+**Process v5 (pilot):** run `../ops/pr-check.sh` in the PR's slot on the exact head, then `../ops/merge.sh <N>`; the script does the base check, the NIGHTLY-RED check, the merge, the read-back, the card and the branch. The steps below are the v4 manual path, kept for a case the scripts refuse (explain it in the PR).
+
 1. `gh pr view <N> --json headRefOid,baseRefName,mergeable,files`; the base must be `main` (`gh pr edit <N> --base main` for a stacked PR whose base just merged - retarget BEFORE deleting the old base branch).
 2. The head must contain origin/main: in the PR's worktree `git fetch origin && git merge origin/main`, resolve (git rerere is on), push.
 3. Build gate per merge: `cargo build --workspace && cargo test --workspace --locked --no-fail-fast` (plus `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check`); a PR touching una-rt, una-sys or una-codegen also runs `scripts/sanitize.sh` only when the change is in unsafe code or memory handling - otherwise it waits for the release gates.

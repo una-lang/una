@@ -2,7 +2,7 @@
 name: release
 description: Cut and publish a release of Una (patch of a release line or a new minor) with the full gate set. Use only when a version is declared stable.
 ---
-Releases are the only time the heavy gates run (docs/release-gates.md). Steps:
+Releases are the only time the heavy gates run (docs/release-gates.md). Process v5: a release is cut when its MUR is met or its time box ends; step 0 is the **release validation**: cut `rc/<version>` from main, run the area reviews in parallel (information flow; tasks, timing, scheduler; serve and Http; toolchain and install; docs and examples) on the diff since the previous release, run the MUR smoke test from a clean install, record findings as `rc-blocker` or `rc-defer` cards, fix only blockers, then steps 1 to 5. Steps:
 1. Decide the line: patch = branch release/v0.X from its last tag plus cherry-picked fixes; minor = tag on main. CHANGELOG.md gets the version section; advisories in docs/security/advisories.md name only tagged releases in "Fixed in" (add the new version right after the tag).
 2. Preflight on this Mac: Docker Desktop context desktop-linux, amd64 under Rosetta (`docker run --rm --platform linux/amd64 una-local-ci:1.98.1 sh -c 'grep -io rosetta /proc/self/maps | head -1; uname -m'`), fileproviderd idle, 1-min load < 5, >= 60 GB free. Nothing else runs during the gates (the hunt gate has a time budget).
 3. `DOCKER_CONTEXT=desktop-linux scripts/release-gates.sh <40-hex sha> <OUT>` with OUT under /Users/leocardoso/Projects/una-lang/ops/gates/<version>.noindex (never /tmp). Every gate must be PASS; never edit a verdict; fix and rerun the whole set on the new tip.
