@@ -67,6 +67,12 @@ const LOOK: u64 = 100;
 /// The least time between two tries to start the reactor.
 const RETRY: Duration = Duration::from_secs(1);
 
+/// How many waits of the reactor's poller failed, in tests: none should, whatever the waits'
+/// timeouts (#1726 review 2, M3).
+#[cfg(test)]
+pub(crate) static FAILED_WAITS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// How a parked wait ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Woken {
@@ -152,12 +158,13 @@ impl Table {
         }
     }
 
-    /// Adds a wait with `wake`, due at `at`, on the list of host stops when `stop` names its
+    /// Adds a wait with `wake`, due at `at` when given (else with no timer, so only its wake,
+    /// its stop or a cancellation ends it), on the list of host stops when `stop` names its
     /// run; its slot and generation, or `None` when the table or the wheel is full.
     fn insert(
         &mut self,
         wake: Wake,
-        at: u64,
+        at: Option<u64>,
         stop: Option<&'static RunStop>,
     ) -> Option<(u32, u32)> {
         let slot = match self.free.pop() {
@@ -179,15 +186,19 @@ impl Table {
             }
         };
         let generation = self.slots.get(slot as usize)?.generation;
-        let Ok(timer) = self.wheel.arm(at, (slot, generation)) else {
-            self.free.push(slot);
-            return None;
+        let timer = match at.map(|at| self.wheel.arm(at, (slot, generation))) {
+            None => None,
+            Some(Ok(timer)) => Some(timer),
+            Some(Err(_)) => {
+                self.free.push(slot);
+                return None;
+            }
         };
         let head = self.head;
         let entry = self.slots.get_mut(slot as usize)?;
         entry.used = true;
         entry.wake = Some(wake);
-        entry.timer = Some(timer);
+        entry.timer = timer;
         entry.stop = stop;
         entry.prev = NIL;
         entry.next = if stop.is_some() { head } else { NIL };
@@ -410,6 +421,8 @@ impl Reactor {
                 (until != u64::MAX).then(|| Duration::from_millis(until.saturating_sub(millis())))
             };
             if self.poller.wait(&mut events, timeout).is_err() {
+                #[cfg(test)]
+                FAILED_WAITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 // A failing wait, as for `ENOMEM`: the timers still fire, a little later.
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -454,22 +467,23 @@ impl Reactor {
         }
     }
 
-    /// Parks the calling task until `fd` is ready (when given), `timeout` passes, the run of
+    /// Parks the calling task until `fd` is ready (when given), `timeout` passes (when given: a
+    /// wait without one arms no timer, so the reactor's own wait is never bounded by it), the run of
     /// `stop` stops (when given), a cancellation of one of `entries` comes, or the party that
     /// `arm` hands its wake to wakes it (`Ready`). `arm` runs once the wait is registered; it
     /// returns true when what the wait is for has come already, and the task does not park.
     /// O(1), besides the registration of `entries` ([`crate::interrupt`]).
-    fn wait_on(
+    pub(crate) fn wait_on(
         &self,
         fd: Option<(BorrowedFd<'_>, Interest)>,
-        timeout: Duration,
+        timeout: Option<Duration>,
         stop: Option<&'static RunStop>,
         entries: &[Cancel],
         arm: impl FnOnce(&crate::interrupt::Wake) -> bool,
     ) -> Woken {
         let (sender, receiver) = sched::channel::<Woken>();
         let wake: Wake = Arc::new(sender);
-        let at = deadline(timeout);
+        let at = timeout.map(deadline);
         let inserted = {
             let mut table = self.lock();
             if stop.is_some()
@@ -484,12 +498,13 @@ impl Reactor {
             // [`LOOK`]: the reactor is woken when it sleeps longer, to shorten its sleep.
             let look = millis().saturating_add(LOOK);
             let looking = stop.is_some() && table.pipe != Pipe::Watched && table.until > look;
-            let early = at < table.until || looking;
+            let early = at.is_some_and(|at| at < table.until) || looking;
             if id.is_some() && early {
-                table.until = table
-                    .until
-                    .min(at)
-                    .min(if looking { look } else { u64::MAX });
+                table.until = table.until.min(at.unwrap_or(u64::MAX)).min(if looking {
+                    look
+                } else {
+                    u64::MAX
+                });
             }
             id.map(|id| (id, early))
         };
@@ -546,7 +561,9 @@ impl Reactor {
         stop: Option<&'static RunStop>,
         entries: &[Cancel],
     ) -> Woken {
-        self.wait_on(Some((fd, interest)), timeout, stop, entries, |_| false)
+        self.wait_on(Some((fd, interest)), Some(timeout), stop, entries, |_| {
+            false
+        })
     }
 }
 
@@ -666,7 +683,7 @@ impl<'a> Parked<'a> {
                 let mut armed: Option<Option<Permit>> = None;
                 let woken = self
                     .reactor
-                    .wait_on(None, left, None, self.entries, |ready| {
+                    .wait_on(None, Some(left), None, self.entries, |ready| {
                         let taken = gate.take_or_wait(&waiter, ready);
                         let now = taken.is_some();
                         armed = Some(taken);
@@ -784,7 +801,7 @@ impl Interrupt for Parked<'_> {
         };
         let woken = self
             .reactor
-            .wait_on(None, left, None, self.entries, |done| {
+            .wait_on(None, Some(left), None, self.entries, |done| {
                 let done = Arc::clone(done);
                 let boxed: Box<dyn FnOnce() + Send> = Box::new(move || job(done));
                 // A pool that could start no thread runs nothing: the job runs here, as inline.
@@ -828,12 +845,12 @@ mod tests {
     #[test]
     fn the_table_wakes_each_wait_once_and_ignores_stale_tokens() {
         let mut table = Table::new();
-        let (slot, generation) = table.insert(wake(), u64::MAX - 1, None).unwrap();
+        let (slot, generation) = table.insert(wake(), Some(u64::MAX - 1), None).unwrap();
         assert!(table.take(slot, generation).is_some());
         assert!(table.take(slot, generation).is_none());
         table.remove(slot, generation);
         // The slot is reused with a new generation: the old token wakes nothing.
-        let (again, next) = table.insert(wake(), u64::MAX - 1, None).unwrap();
+        let (again, next) = table.insert(wake(), Some(u64::MAX - 1), None).unwrap();
         assert_eq!(again, slot);
         assert_ne!(next, generation);
         assert!(table.take(slot, generation).is_none());
@@ -859,7 +876,7 @@ mod tests {
         ];
         let ids: Vec<(u32, u32)> = runs
             .iter()
-            .map(|run| table.insert(wake(), now + 1_000_000, *run).unwrap())
+            .map(|run| table.insert(wake(), Some(now + 1_000_000), *run).unwrap())
             .collect();
         // Remove a listed one from the middle of the list.
         let (slot, generation) = ids.get(2).copied().unwrap();
@@ -894,7 +911,9 @@ mod tests {
             let ids: Vec<(u32, u32)> = (0..count)
                 .map(|i| {
                     let run = (i % 2 == 0).then_some(stop);
-                    table.insert(wake(), now + 60_000 + i as u64, run).unwrap()
+                    table
+                        .insert(wake(), Some(now + 60_000 + i as u64), run)
+                        .unwrap()
                 })
                 .collect();
             for (slot, generation) in &ids {
@@ -1187,7 +1206,7 @@ mod tests {
         let reactor = get().unwrap();
         let sched = sched::Scheduler::new(settings(1));
         let waited = in_task(&sched, move || {
-            reactor.wait_on(None, Duration::from_secs(30), None, &[], |ready| {
+            reactor.wait_on(None, Some(Duration::from_secs(30)), None, &[], |ready| {
                 let ready = Arc::clone(ready);
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(50));
@@ -1201,7 +1220,7 @@ mod tests {
             Woken::Ready
         );
         let at_once = in_task(&sched, move || {
-            reactor.wait_on(None, Duration::from_secs(30), None, &[], |_| true)
+            reactor.wait_on(None, Some(Duration::from_secs(30)), None, &[], |_| true)
         });
         assert_eq!(
             at_once.recv_timeout(Duration::from_secs(10)).unwrap(),

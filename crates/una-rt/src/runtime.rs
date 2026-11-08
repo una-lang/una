@@ -2454,10 +2454,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return if written.is_ok() { 1 } else { USAGE };
         }
         state.sched = Some(sched);
-        // The reactor too, for a run whose grants include `Http` under the real clock (ADR
-        // 0116 amendment, P8; ADR 0117 slice S7): started here, never at a task's first wait.
-        // Under virtual time no task parks on it (`reactor::parks`).
-        if !http_grants(&state.grants).is_empty()
+        // The reactor too, for a run whose grants include `Http` or `serve:` under the real
+        // clock (ADR 0116 amendment, P8; ADR 0117 slice S7): started here, never at a task's
+        // first wait. A task's `next` parks on it, so that a wait for a request holds no helper
+        // (#1723). Under virtual time no task parks on it (`reactor::parks`).
+        if (!http_grants(&state.grants).is_empty()
+            || state
+                .grants
+                .iter()
+                .any(|grant| matches!(grant, Grant::Serve { .. })))
             && !clock().is_virtual()
             && !crate::reactor::start_up_front()
         {

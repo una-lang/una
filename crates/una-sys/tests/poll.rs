@@ -111,3 +111,28 @@ fn registrations_cost_the_same_at_every_count() {
     );
     assert!(large < small * 40.0 + 0.05, "{small} then {large}");
 }
+
+#[test]
+fn a_wait_with_a_huge_timeout_still_returns_the_ready_events() {
+    // #1726 review 2, M3: XNU's `kevent` refused a timeout above `INT32_MAX` seconds with
+    // `EINVAL`, even with an event ready, so a reactor whose next timer was far away failed
+    // every wait. The timeout is cut to what the system takes, on both platforms.
+    let poller = Poller::new().unwrap();
+    let (mut a, b) = UnixStream::pair().unwrap();
+    a.write_all(b"x").unwrap();
+    let mut events = Events::with_capacity(4);
+    for timeout in [
+        Duration::MAX,
+        Duration::from_secs(1 << 31),
+        Duration::from_secs(u64::from(u32::MAX)),
+        Duration::from_secs(1),
+    ] {
+        poller.add(b.as_fd(), Interest::Read, 7).unwrap();
+        assert_eq!(
+            poller.wait(&mut events, Some(timeout)).unwrap(),
+            1,
+            "{timeout:?}"
+        );
+        assert_eq!(events.tokens().collect::<Vec<_>>(), [7], "{timeout:?}");
+    }
+}
