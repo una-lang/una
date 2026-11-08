@@ -1,4 +1,4 @@
--- test: a request task with no recursion whose depth is the longest chain its code shows, four calls here, could end alone past a `--task-depth` an operator lowers below it, so which chain runs must not depend on data above `internal`; that choice is a branch, a check point that `secret` data decide in a program that starts tasks, so it is refused (U4002, spec/27 §8 rule 5) and no run with a lowered `--task-depth` can turn it into a `500` that tells the data (spec/31 §1, #1681)
+-- test: a request task with no recursion whose depth is the longest chain its code shows, four calls here, could end alone past a `--task-depth` an operator lowers below it, so which chain runs must not depend on data above `internal`; that choice is a branch, a check point that `secret` data decide in a program that starts tasks, so it is refused (U4002, spec/27 §8 rule 5, which an amendment withdrawing it must replace with a depth rule) and no run with a lowered `--task-depth` can turn it into a `500` that tells the data (spec/31 §1, #1681)
 -- spec: spec/31 §1
 -- expect: error U4002 at src/srv.una:20:5
 module srv
