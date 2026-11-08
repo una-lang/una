@@ -8,7 +8,7 @@
 4. `adr/`: why key decisions were made.
 5. `plan/`: roadmap, v0.1 milestones, deferred backlog.
 6. `reviews/`: triage of external design reviews, and the independent review of v0.1 (`reviews/v0.1-review/`).
-7. `guide/syntax-reference.md`: the language guide; `guide/una-for-agents.md`: a compact reference for agents writing Una. `guide/language/` and `guide/configure/` contain construct and `una.toml` pages with examples, edge cases, editions and normative sources; the guide tests their code blocks (#585).
+7. `guide/syntax-reference.md`: the language guide; `guide/una-for-agents.md`: a compact reference for agents writing Una. `guide/known-limits.md`: what this release does not do, or does only with limits, with the rule of each item. `guide/language/` and `guide/configure/` contain construct and `una.toml` pages with examples, edge cases, editions and normative sources; the guide tests their code blocks (#585).
 8. `fixes/`: fix requests and their progress.
 9. `history/v0.1/`: the record of how v0.1 was built: the run instructions, the milestone and closure plans, the decision log and the status report.
 
