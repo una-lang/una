@@ -4,13 +4,13 @@ Status: Normative, edition 0.4 preview (ADR 0123).
 
 A server answers HTTP/1.1 requests through the host capability `HttpServer`, granted by address with limits. The rules of ADR 0123 join this chapter as they land, each with its tests. A program names the capability and is checked against §1, and a package's `serve` section against §7. Its operations run in both engines over the host code of §2 to §6 (`crates/una-http`), on serve threads that start before `main` (§6 rule 14), but `una run` and `una build` of a program that serves, and the driver of §7, still fail closed (§1 rule 10, §7 rule 5).
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.4` (`spec/13 §7`). Earlier editions do not change, and the client of `spec/24` does not change.
+**Editions.** The rules of this chapter apply only to packages of edition `0.4` and later (`spec/13 §7`). Earlier editions do not change, and the client of `spec/24` does not change.
 
 ## 1. The capability
 
 The declarations of ADR 0123 rules 0 to 5 and the static rules of its Information flow, with the label `L_srv` of its S4 amendment (IF-S1), are in this section. The operations of `HttpServer` run in both engines, and only the toolchain's own tests reach them yet (rule 10).
 
-1. **Edition and names.** Every name of this section exists only in packages of edition `0.4`. `std.host` declares them, and the prelude does not put them in scope: a module imports them, as `import std.host (HttpServer, Request, Reply)` (`spec/10 §11` rule 10). An import of one is never redundant, an import of `Method` or `ServeError` brings its variants, and a kind of the package named `Request` or `Reply` stays legal. In earlier editions an import of these names is U1001, as an unknown name is. This section adds no keyword.
+1. **Edition and names.** Every name of this section exists only in packages of edition `0.4` and later. `std.host` declares them, and the prelude does not put them in scope: a module imports them, as `import std.host (HttpServer, Request, Reply)` (`spec/10 §11` rule 10). An import of one is never redundant, an import of `Method` or `ServeError` brings its variants, and a kind of the package named `Request` or `Reply` stays legal. In earlier editions an import of these names is U1001, as an unknown name is. This section adds no keyword.
 2. **Declarations.** `std.host` declares, in edition `0.4`:
 
    ```una
@@ -392,7 +392,7 @@ ADR 0123 rules 16 and 22, with decisions S6-D1 to S6-D6 of `docs/plan/0123-s6-de
 
 ## 8. Tests
 
-The functions of `std.testing` for servers, ADR 0123 rule 21 (`spec/14 §4`). They exist only in edition `0.4`, and, as every function of `std.testing`, only tests and the handlers that only tests install call them (U3015).
+The functions of `std.testing` for servers, ADR 0123 rule 21 (`spec/14 §4`). They exist only in edition `0.4` and later, and, as every function of `std.testing`, only tests and the handlers that only tests install call them (U3015).
 
 1. **`test_request(method: Method, target: Text, body: Text) -> Request fails TestRequestError`** gives the request the host would read from a peer that sent the request line of `method` and `target` with `HTTP/1.1`, the one header `Host: test`, and `body` framed by its length. The host's own reader reads it (§3, §4), with no limit but the request's own size, so only the target's form can refuse it:
    - the target is read by §4: origin-form, or the absolute-form on the authority `test` with the scheme `http`, rewritten to origin-form; `segments` and `params` are decoded as the host decodes them;

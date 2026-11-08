@@ -51,8 +51,8 @@
 | `spec/24-http.md` | The HTTP client capability `Http` |
 | `spec/25-units-of-measure.md` | Units of measure, edition `0.3` |
 | `spec/26-long-running-programs.md` | Long-running programs, edition `0.4` |
-| `spec/28-collections.md` | Collections, edition `0.4` (moving to edition `0.5`, ADR 0139, #1621) |
-| `spec/29-numerics.md` | Numerics: `F64` in edition `0.3`, the numeric foundation in edition `0.4` (moving to edition `0.5`, ADR 0139, #1621) |
+| `spec/28-collections.md` | Collections, edition `0.5` (moved from edition `0.4`, ADR 0139) |
+| `spec/29-numerics.md` | Numerics: `F64` in edition `0.3`, the numeric foundation in edition `0.5` (moved from edition `0.4`, ADR 0139) |
 | `spec/30-packages.md` | Packages and dependencies: `ita.una` and `ita.lock`, edition `0.4` |
 | `spec/31-http-servers.md` | HTTP servers, edition `0.4` |
 | `spec/32-quality.md` | Una Quality: metrics, configuration, gates and the `UQ` registry (Draft, ADR 0127 accepted) |
