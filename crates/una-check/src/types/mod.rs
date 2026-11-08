@@ -1250,6 +1250,9 @@ pub(crate) struct Findings {
     /// The calls of generic functions, with the labels their type arguments can carry, for
     /// the sites of `switch_sites` that only a type parameter decides (#1684).
     pub(crate) switch_calls: Vec<switch::GenericCall>,
+    /// The functions whose body evaluates a `checked` predicate, in the refinement language,
+    /// whose decisions record no check point with its label (#1682).
+    pub(crate) unlabeled_checks: std::collections::BTreeSet<usize>,
     /// The installations of `limiter` of `std.limit` by `with` or `given` (ADR 0117 rule 9,
     /// IF5): each one's binding, its function and the seed of the timing label of the statement
     /// it scopes over.

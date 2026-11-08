@@ -2238,6 +2238,13 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.pass == Pass::Check && self.base != Base::Quiet {
             self.findings.checked.push((self.module, span));
         }
+        // #1682: a body that evaluates a `checked` predicate counts as imprecise for the depth
+        // rule, conservatively.
+        if self.pass == Pass::Check
+            && let Some(f) = self.current
+        {
+            self.findings.unlabeled_checks.insert(f);
+        }
         let ty = self.expr(value, None);
         // The failure of `checked` reveals whether the predicate holds: it depends on the value
         // and on every other value the predicate reads, each with every label of its type

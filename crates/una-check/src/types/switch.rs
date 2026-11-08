@@ -286,7 +286,7 @@ fn run_reach(env: &Env<'_>, findings: &Findings) -> Vec<bool> {
 /// site above `bound` only through a symbolic label, and, through a worklist over the generic
 /// calls, each generic function that passes a symbolic label to one of them.
 /// O((sites + calls) log n).
-fn decided_by_type(findings: &Findings, bound: &Label) -> BTreeSet<usize> {
+pub(crate) fn decided_by_type(findings: &Findings, bound: &Label) -> BTreeSet<usize> {
     let mut decided: BTreeSet<usize> = BTreeSet::new();
     let mut work: Vec<usize> = Vec::new();
     for site in &findings.switch_sites {

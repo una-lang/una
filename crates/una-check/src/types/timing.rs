@@ -1421,6 +1421,15 @@ pub(crate) struct Reach {
     foreign: Vec<bool>,
     /// Whether each node reaches `Λ`.
     to_lambda: Vec<bool>,
+    /// Whether each node reaches a function with a call that data above `internal` decide, a
+    /// check point of `spec/27 §8` rule 5, or a call that instantiates a generic function whose
+    /// calls such data decide (#1682).
+    decided: Vec<bool>,
+    /// Whether each node reaches code whose calls the findings do not attribute to a function,
+    /// or do not record with their labels: `Λ`, a handler's operations, a `via` function, a
+    /// predicate or a body that evaluates a `checked` predicate, or code the checker does not
+    /// see (#1682).
+    imprecise: Vec<bool>,
     /// The label of `Λ` with its symbols, when a lambda of the package holds a value whose
     /// label is a type parameter's.
     lambda_symbols: Option<Label>,
@@ -1632,6 +1641,34 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()
     };
+    // #1682: the functions whose own calls data above `internal` decide, as the checking of
+    // their bodies recorded them for `spec/27 §8` rule 5, whether or not that rule reports them.
+    let mut decided_own = vec![false; nodes];
+    for f in decided_functions(findings) {
+        if f < graph.functions
+            && let Some(slot) = decided_own.get_mut(f)
+        {
+            *slot = true;
+        }
+    }
+    let mut imprecise_own = vec![false; nodes];
+    for (node, slot) in imprecise_own.iter_mut().enumerate() {
+        let handler = node >= graph.functions && node < graph.functions + graph.handlers;
+        let unseen = matches!(own.get(node), Some(Some(Unbounded::Unseen(_))));
+        // A `via` body is checked without labels (`spec/07 §5` rule 3), so what decides the
+        // calls it and its callees make is not recorded.
+        let via = node < graph.functions && env.vias.contains_key(&node);
+        // A predicate, and a body that evaluates a `checked` predicate, count as imprecise,
+        // conservatively: a `reflect` predicate's body records its check points, and `checked`
+        // on labeled data is refused (`spec/07 §3`), so this only makes the test coarser.
+        let unlabeled = node < graph.functions
+            && (findings.unlabeled_checks.contains(&node)
+                || env
+                    .functions
+                    .get(node)
+                    .is_some_and(|def| matches!(def.kind, super::env::FnKind::Predicate { .. })));
+        *slot = handler || unseen || via || unlabeled || node == graph.lambda;
+    }
     let above: Vec<Option<usize>> = local
         .iter()
         .enumerate()
@@ -1647,6 +1684,8 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
             a.or(*b)
         }),
         foreign: close(&succ, &foreign, |a: &bool, b: &bool| *a || *b),
+        decided: close(&succ, &decided_own, |a: &bool, b: &bool| *a || *b),
+        imprecise: close(&succ, &imprecise_own, |a: &bool, b: &bool| *a || *b),
         to_lambda: {
             let mut is_lambda = vec![false; nodes];
             if let Some(slot) = is_lambda.get_mut(graph.lambda) {
@@ -1664,6 +1703,35 @@ pub(crate) fn start_reaches(env: &Env<'_>, findings: &Findings) -> Reach {
     }
 }
 
+/// The functions whose body holds a call, an operation or a loop that data above `internal`
+/// decide (`spec/27 §8` rule 5), with a concrete label, lambdas written in them included, or a
+/// call of a generic function whose calls a type argument above `internal` decides. O((sites +
+/// calls) log n).
+pub(crate) fn decided_functions(findings: &Findings) -> BTreeSet<usize> {
+    let internal = Label {
+        level: una_syntax::ast::Level::Internal,
+        ..Label::public()
+    };
+    let by_type = super::switch::decided_by_type(findings, &internal);
+    let mut out: BTreeSet<usize> = BTreeSet::new();
+    for site in &findings.switch_sites {
+        if !site.label.concrete().flows_to(&internal)
+            && let Some(f) = site.function
+        {
+            out.insert(f);
+        }
+    }
+    for call in &findings.switch_calls {
+        if by_type.contains(&call.callee)
+            && !call.label.concrete().flows_to(&internal)
+            && let Some(f) = call.caller
+        {
+            out.insert(f);
+        }
+    }
+    out
+}
+
 /// What a `start` reaches (#1674), as [`start_reach`] finds it.
 pub(crate) struct StartReach {
     /// A node it reaches that is [`Unbounded`].
@@ -1674,6 +1742,11 @@ pub(crate) struct StartReach {
     pub(crate) labeled: Option<usize>,
     /// The join of its own data and of that node's label.
     pub(crate) label: Label,
+    /// Whether it reaches a function whose calls data above `internal` decide (#1682).
+    pub(crate) decided: bool,
+    /// Whether it reaches code whose calls are not attributed to a function, or its own data
+    /// carry a type parameter's label: the precise test does not apply (#1682).
+    pub(crate) imprecise: bool,
 }
 
 /// What a `start` whose expression's checking recorded `seed` reaches (#1674): a node that is
@@ -1693,7 +1766,11 @@ pub(crate) fn start_reach(
     let mut labeled: Option<usize> = None;
     let mut lambda = false;
     let mut foreign = captures_function;
+    let mut decided = false;
+    let mut imprecise = false;
     let mut look = |node: usize| {
+        decided |= reach.decided.get(node).copied().unwrap_or(false);
+        imprecise |= reach.imprecise.get(node).copied().unwrap_or(true);
         if unbounded.is_none() {
             unbounded = reach.unbounded.get(node).copied().flatten();
         }
@@ -1753,11 +1830,16 @@ pub(crate) fn start_reach(
             );
         }
     }
+    // A `start` in a generic body takes its type parameters' values from callers outside it. A
+    // lambda in its reach is `Λ`, imprecise already.
+    imprecise |= !label.symbols.is_empty();
     StartReach {
         unbounded,
         source,
         labeled,
         label,
+        decided,
+        imprecise,
     }
 }
 

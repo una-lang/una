@@ -1233,3 +1233,60 @@ fn a_driver_task_s_place_is_given_back_when_handle_ends() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// #1682: a request task that recurses on `internal` request data and holds a `secret` key that
+/// decides none of its calls, accepted by the precise depth rule. `KEY` is the key's value.
+const HOLDS_SECRET: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: secret Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(4000 - exchange.request.body.len)
+  let masked: secret Int = key * 2 + 1
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let key: secret Int = KEY
+  @console.print("serving")
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, key: key)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")
+"#;
+
+#[test]
+fn a_task_holding_a_secret_that_decides_no_call_answers_by_its_request_alone() {
+    // #1682: the task is accepted, and whether it ends alone past `--task-depth` follows the
+    // request's length only: with two keys, both engines answer `200` for a body of 4000 bytes
+    // (depth 0) and `500` for an empty one (depth 4000, past the default 1000).
+    for engine in ENGINES {
+        for key in ["1", "4321"] {
+            internal_twin(
+                &format!("holds_secret_{key}"),
+                &HOLDS_SECRET.replace("KEY", key),
+                4000,
+                engine,
+            );
+        }
+    }
+}

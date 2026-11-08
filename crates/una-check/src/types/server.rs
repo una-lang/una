@@ -355,6 +355,7 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
     let mut seen: BTreeSet<Span> = BTreeSet::new();
     // Built once, at the first `start` that moves reply rights.
     let mut reach = None;
+    let mut decided_here: Option<BTreeSet<usize>> = None;
     for site in &findings.server_starts {
         if !moves_rights(env, site) || !seen.insert(site.keyword) {
             continue;
@@ -370,7 +371,22 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
             site.function_value,
             &internal,
         );
-        let deep = found.unbounded.is_some() && !found.label.flows_to(&internal);
+        // #1682: when every call the task can make is code the findings attribute to a
+        // function, its depth follows only the calls that data decide, so the task is refused
+        // only when one of them, or a call in the body that holds the `start`, is decided by
+        // data above `internal`; otherwise, the coarse test of #1674 on what it holds.
+        let decided =
+            decided_here.get_or_insert_with(|| super::timing::decided_functions(findings));
+        // A `start` in a handler's operation body has no function to look up: the coarse test.
+        let by_data = if found.imprecise || site.function.is_none() {
+            !found.label.flows_to(&internal)
+        } else {
+            found.decided
+                || site
+                    .function
+                    .is_some_and(|f| decided.contains(&f) || findings.unlabeled_checks.contains(&f))
+        };
+        let deep = found.unbounded.is_some() && by_data;
         if site.pc.join(&tau).flows_to(&internal) && !deep {
             continue;
         }
@@ -397,15 +413,21 @@ pub(crate) fn start_rights(env: &Env<'_>, findings: &Findings, report: &mut Repo
                     "its task calls a function value, whose code the call does not show".to_owned()
                 }
             };
-            let data = match (&found.source, found.labeled) {
-                (Some(source), _) => source.clone(),
-                (None, Some(node)) => format!("the data of {}", reach.name(env, node)),
-                (None, None) => "its data".to_owned(),
-            };
-            format!(
-                "{how}, and it holds `{}` data, {data}, which may decide how deep it goes; a started task that runs past `--task-depth` ends alone and its rights are answered `500`",
-                found.label
-            )
+            if found.imprecise || site.function.is_none() {
+                let data = match (&found.source, found.labeled) {
+                    (Some(source), _) => source.clone(),
+                    (None, Some(node)) => format!("the data of {}", reach.name(env, node)),
+                    (None, None) => "its data".to_owned(),
+                };
+                format!(
+                    "{how}, and it holds `{}` data, {data}, which may decide how deep it goes; a started task that runs past `--task-depth` ends alone and its rights are answered `500`",
+                    found.label
+                )
+            } else {
+                format!(
+                    "{how}, and data above `internal` decide some of its calls, which may decide how deep it goes; a started task that runs past `--task-depth` ends alone and its rights are answered `500`"
+                )
+            }
         };
         let mut diagnostic = report.make(
             Code::U4003,
