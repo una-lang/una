@@ -10,6 +10,7 @@
 10	Connection: host 400
 11	Content_Length 400
 12	exactly 100 header lines, Host and 99 more, accepted 200
-13	101 header lines besides Host, 102 in all 431
-14	header section over 16 KiB 431
-15	valid request answered
+13	exactly 101 header lines, Host and 100 more, one over the limit 431
+14	101 header lines besides Host, 102 in all 431
+15	header section over 16 KiB 431
+16	valid request answered
