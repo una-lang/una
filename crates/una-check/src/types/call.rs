@@ -172,6 +172,17 @@ impl<'a> Checker<'_, 'a, '_> {
                     .edit(format!("write `{close}`"), name.span, close),
             );
         }
+        // ADR 0139 rule 7: `Map.update` moved to edition 0.5 with no diagnostic of its own, so
+        // edition 0.4 gives the ordinary U1001, with the advice to raise the edition (#1743).
+        if self.env.edition == Edition::V0_4
+            && call
+            && member == "update"
+            && matches!(ty, Ty::Map(..))
+        {
+            diagnostic.repairs.push(Report::advice(
+                "`Map.update` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it",
+            ));
+        }
         self.report.push(diagnostic);
     }
 

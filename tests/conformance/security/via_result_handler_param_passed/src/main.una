@@ -1,0 +1,24 @@
+-- test: a handler whose parameter holds a function value, installed by the policy's caller, hands it to a package function that calls it, so a call of a function value in the `via`'s reach may run a value made outside it (#1710): every function named as a value counts, and `spin`'s `within`, beside the tasks of `pair`, is refused (U4001 at the `within`, spec/07 §5 rule 7); its twin `via_result_handler_param_passed_alone` has no task beside it
+-- spec: spec/07 §5
+-- expect: error U4001 at src/main.una:11:27
+module main
+
+import release (Tool, key_of, with_fn)
+import std.time (millisecond)
+
+spin(x: internal Int) -> internal Int
+=
+  let v: restricted Int = 1 within 1 * millisecond
+    if error use 0
+  x
+
+pub once(n: internal Int) -> Int
+=
+  key_of(n) with @tool = with_fn(f: spin)
+
+pub pair(a: Int, b: Int) -> Int
+=
+  together
+    let x = a + 1
+    let y = b + 1
+  x + y

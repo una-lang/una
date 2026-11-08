@@ -423,6 +423,337 @@ fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
     );
 }
 
+/// A package in `scratch` named `name`, of edition 0.4, whose `srv` module is `program` and
+/// whose one `serve:` grant on `127.0.0.1:8080` has the item lines `items`: its directory.
+fn generated_package(scratch: &Path, name: &str, program: &str, items: &[&str]) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    let dir = scratch.join(name);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    let items: String = items.iter().map(|item| format!("      {item}\n")).collect();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:8080\"\n{items}"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    dir
+}
+
+/// A line of a script in the form of `--serve-script` that opens connection `k` from `peer`.
+fn open_line(at: u64, k: u64, peer: &str, reads: &str) -> String {
+    format!(
+        "{{\"at\":{at},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"{peer}\",\"reads\":\"{reads}\"}}\n"
+    )
+}
+
+/// A line of a script in the form of `--serve-script` that sends `bytes` on connection `k`.
+fn bytes_line(at: u64, k: u64, bytes: &str) -> String {
+    format!(
+        "{{\"at\":{at},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+        script::encode(bytes.as_bytes())
+    )
+}
+
+/// The two engines of `package`, its executable `name`, each given `args` before the flags of
+/// a script.
+fn both_engines(
+    package: &Path,
+    name: &str,
+    args: &[&str],
+) -> [(&'static str, std::process::Command); 2] {
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run")
+        .args(args);
+    let mut native = std::process::Command::new(package.join("target/una").join(name));
+    native.args(args);
+    [("interpreter", interpreter), ("native", native)]
+}
+
+/// The replies of a `--serve-out` text, by connection: the bytes each received, as text.
+fn received(text: &str) -> BTreeMap<u64, String> {
+    let mut out: BTreeMap<u64, String> = BTreeMap::new();
+    for (_, k, kind, value) in read_out(text) {
+        if kind == "bytes" {
+            let bytes: Vec<u8> = serde_json::from_value(value).unwrap();
+            out.entry(k)
+                .or_default()
+                .push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    out
+}
+
+/// When each connection that a `--serve-out` text shows closed was closed, in virtual ms.
+fn closed(text: &str) -> BTreeMap<u64, u64> {
+    read_out(text)
+        .into_iter()
+        .filter(|(_, _, kind, _)| kind == "closed")
+        .map(|(at, k, _, _)| (k, at))
+        .collect()
+}
+
+/// The server of the pressure test: it answers `/big1` with a body of 1 MiB, `/big3` with one of
+/// 3 MiB, and anything else with `ok`, a task per request.
+const BIG_REPLIES: &str = "module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- A text of 2^n bytes.
+filler(n: Int) -> Text
+=
+  let edit t = \"x\"
+  for i in 1..n
+    t = \"{t}{t}\"
+  t
+
+--- Answers one request by the first segment of its path.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> \"\"
+  let body = if first == \"big1\" then filler(20) else if first == \"big3\" then \"{filler(21)}{filler(20)}\" else \"ok\"
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+    if error use unit
+
+--- The language form of `spec/31 §1` rule 6: a task per request, `close` at the host stop.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+";
+
+#[test]
+fn a_fresh_request_is_answered_under_pressure_alike_in_both_engines() {
+    // ADR 0123 Conformance, rule 13, `spec/31 §6` rules 6 and 13: 64 paced connections that
+    // never read their 1 MiB replies, 64 that never read their 3 MiB replies, and 64 that
+    // trickle 1 MiB bodies, with the grant's defaults (`replies` and `buffers` 64 MiB). A fresh
+    // client's request is answered; the 3 MiB connections, the furthest over their share of
+    // `replies`, are closed with no byte written; the tricklers are answered `408` at `read`;
+    // the run ends with exit code 0 and no U6003. Both engines give the same bytes, output and
+    // trace; no time is measured.
+    let scratch = std::env::temp_dir().join(format!("una-pressure-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let dir = generated_package(&scratch, "pressure", BIG_REPLIES, &[]);
+    let get = |target: &str| format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let mut script = String::new();
+    for i in 0..64u64 {
+        script.push_str(&open_line(i, 1 + i, &format!("10.1.0.{}", i + 1), "paced"));
+        script.push_str(&bytes_line(i, 1 + i, &get("/big1")));
+    }
+    for i in 0..64u64 {
+        script.push_str(&open_line(
+            100 + i,
+            65 + i,
+            &format!("10.3.0.{}", i + 1),
+            "paced",
+        ));
+        script.push_str(&bytes_line(100 + i, 65 + i, &get("/big3")));
+    }
+    let trickler = |k: u64| (129..=192).contains(&k);
+    for i in 0..64u64 {
+        let k = 129 + i;
+        script.push_str(&open_line(
+            200 + i,
+            k,
+            &format!("10.9.0.{}", i + 1),
+            "eager",
+        ));
+        script.push_str(&bytes_line(
+            200 + i,
+            k,
+            "POST /up HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n",
+        ));
+    }
+    // The tricklers send one byte a second, from 1 s to 15 s.
+    for second in 1..=15u64 {
+        for i in 0..64u64 {
+            script.push_str(&bytes_line(second * 1000 + 200 + i, 129 + i, "x"));
+        }
+    }
+    script.push_str(&open_line(16_000, 200, "192.0.2.200", "eager"));
+    script.push_str(&bytes_line(
+        16_000,
+        200,
+        "GET /fresh HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    ));
+    script.push_str(&open_line(40_000, 201, "192.0.2.201", "eager"));
+    let (built, package, name) = build_native(&dir, "-pressure");
+    let mut runs = Vec::new();
+    for (engine, command) in both_engines(&package, &name, &[]) {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
+        let (code, printed, stderr, trace, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 0, "{engine}: {stderr}");
+        assert!(!stderr.contains("U6003"), "{engine}: {stderr}");
+        let replies = received(&text);
+        let fresh = replies.get(&200).cloned().unwrap_or_default();
+        assert!(
+            fresh.starts_with("HTTP/1.1 200 OK\r\n"),
+            "{engine}: {fresh}"
+        );
+        assert!(fresh.ends_with("\r\n\r\nok"), "{engine}: {fresh}");
+        // Pressure closes the connections furthest over their share as the replies are
+        // reserved, never the one reserving: every 3 MiB connection but the last one reserved
+        // is closed then, long before `write` (30 s) would close it. None gets a byte.
+        let gone = closed(&text);
+        let early = (65..=128u64)
+            .filter(|k| gone.get(k).is_some_and(|at| *at < 1_000))
+            .count();
+        assert_eq!(
+            early, 63,
+            "{engine}: 3 MiB connections closed under pressure"
+        );
+        let late: Vec<u64> = (65..=128u64)
+            .filter(|k| gone.get(k).is_some_and(|at| *at >= 30_000))
+            .collect();
+        assert_eq!(
+            late.len(),
+            1,
+            "{engine}: the one reserving is closed at `write`: {late:?}"
+        );
+        for k in 65..=128u64 {
+            assert!(
+                gone.contains_key(&k),
+                "{engine}: 3 MiB connection {k} not closed"
+            );
+            assert!(
+                !replies.contains_key(&k),
+                "{engine}: 3 MiB connection {k} got bytes"
+            );
+        }
+        // Each trickler is answered `408` at `read`, 20 s after its accept at 200 + i ms.
+        let first_bytes: BTreeMap<u64, u64> = read_out(&text)
+            .into_iter()
+            .filter(|(_, _, kind, _)| kind == "bytes")
+            .fold(BTreeMap::new(), |mut first, (at, k, _, _)| {
+                first.entry(k).or_insert(at);
+                first
+            });
+        for k in (129..=192u64).filter(|k| trickler(*k)) {
+            assert_eq!(
+                first_bytes.get(&k).copied(),
+                Some(20_000 + 200 + (k - 129)),
+                "{engine}: trickler {k}"
+            );
+            let reply = replies.get(&k).cloned().unwrap_or_default();
+            assert!(
+                reply.starts_with("HTTP/1.1 408 Request Timeout\r\n"),
+                "{engine}: trickler {k}: {reply}"
+            );
+        }
+        runs.push((printed, trace, text));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// The server of the memory test: before it serves, it builds a map of 32 texts of 1 MiB each,
+/// which it keeps for the whole run, and answers each request with the map's size.
+const HOLDS_ITS_STATE: &str = "module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- A text of 2^n bytes.
+filler(n: Int) -> Text
+=
+  let edit t = \"x\"
+  for i in 1..n
+    t = \"{t}{t}\"
+  t
+
+--- Answers one request with `held`.
+answer(exchange: internal Exchange, held: Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: \"held {held}\"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let chunk = filler(20)
+  let edit parts: Map[Int, Text] = empty_map()
+  for i in 1..32
+    edit parts.set(key: i, value: \"{chunk}{i}\")
+  let held = parts.len
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, held: held)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print(\"kept {parts.len}\")
+";
+
+#[test]
+fn a_program_that_holds_most_of_its_memory_still_serves_alike_in_both_engines() {
+    // ADR 0123 Conformance: a program that holds at least 80% of `--max-memory` in its own
+    // state still delivers and answers requests, since the host's buffers are not the program's
+    // memory. The state cannot be built under 61 MiB, 80% of 76 MiB, in either engine, which
+    // shows that it holds more than 80% of a budget of 76 MiB; under 76 MiB it serves, in both
+    // engines alike.
+    let scratch = std::env::temp_dir().join(format!("una-memory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let dir = generated_package(&scratch, "holds_its_state", HOLDS_ITS_STATE, &[]);
+    let mut script = String::new();
+    for k in 1..=8u64 {
+        script.push_str(&open_line(k, k, &format!("192.0.2.{k}"), "eager"));
+        script.push_str(&bytes_line(
+            k,
+            k,
+            &format!("GET /r{k} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+        ));
+    }
+    let (built, package, name) = build_native(&dir, "-memory");
+    for (engine, command) in both_engines(&package, &name, &["--max-memory", "61"]) {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let (code, _, stderr, _, _) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 1, "{engine}: {stderr}");
+        assert!(stderr.contains("U6003"), "{engine}: {stderr}");
+    }
+    let mut runs = Vec::new();
+    for (engine, command) in both_engines(&package, &name, &["--max-memory", "76"]) {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
+        let (code, printed, stderr, trace, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 0, "{engine}: {stderr}");
+        assert_eq!(printed, ["kept 32"], "{engine}");
+        let replies = received(&text);
+        for k in 1..=8u64 {
+            let reply = replies.get(&k).cloned().unwrap_or_default();
+            assert!(
+                reply.starts_with("HTTP/1.1 200 OK\r\n"),
+                "{engine}: {k}: {reply}"
+            );
+            assert!(reply.ends_with("held 32"), "{engine}: {k}: {reply}");
+        }
+        runs.push((printed, trace, text));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// The runtime library with its test hook of the scripted engine (`una-rt`'s `test-hooks`),
 /// built once for this test binary in a target directory of its own, so that the plain
 /// `libuna_rt.a` that the other tests of the toolchain link is never replaced, even for a
@@ -886,16 +1217,29 @@ fn read_out(text: &str) -> Vec<WireLine> {
 /// trace, `--serve-out` to `out`: its exit code, its output lines, its stderr, its trace and
 /// what `--serve-out` wrote.
 fn run_flags(
-    mut command: std::process::Command,
+    command: std::process::Command,
     package: &Path,
     script: &str,
     out: &Path,
 ) -> (i32, Vec<String>, String, Vec<Value>, String) {
-    let script_path = package.join("flag-script.jsonl");
-    std::fs::write(&script_path, script).unwrap();
     let trace = package.join("flag-trace.json");
     let _ = std::fs::remove_file(&trace);
-    let ran = command
+    run_flags_traced(command, package, script, out, &trace)
+}
+
+/// [`run_flags`] with the trace written to `trace`. A run that has not ended after [`HANG`]
+/// is killed and fails the case, so a blocking open is a failure, not a hung suite. Only
+/// regular files are read back: the test reads no FIFO it made.
+fn run_flags_traced(
+    mut command: std::process::Command,
+    package: &Path,
+    script: &str,
+    out: &Path,
+    trace: &Path,
+) -> (i32, Vec<String>, String, Vec<Value>, String) {
+    let script_path = package.join("flag-script.jsonl");
+    std::fs::write(&script_path, script).unwrap();
+    let child = command
         .env("UNA_TEST_RUN_SERVER", "1")
         .env("NO_COLOR", "1")
         .args(["--virtual-time", "--serve-script"])
@@ -903,18 +1247,38 @@ fn run_flags(
         .arg("--serve-out")
         .arg(out)
         .arg("--trace")
-        .arg(&trace)
+        .arg(trace)
         .current_dir(package)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    let pid = child.id();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let ran = match receiver.recv_timeout(HANG) {
+        Ok(ran) => ran.unwrap(),
+        Err(_) => {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            panic!("{}: the run did not end", package.display());
+        }
+    };
     let output = String::from_utf8_lossy(&ran.stdout)
         .lines()
         .map(str::to_owned)
         .collect();
-    let events: Value = serde_json::from_str(&std::fs::read_to_string(&trace).unwrap_or_default())
-        .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()));
-    // Only a regular file is read back: the test reads no FIFO it made.
-    let wire = if std::fs::symlink_metadata(out).is_ok_and(|m| m.is_file()) {
+    let regular = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+    let events: Value = if regular(trace) {
+        serde_json::from_str(&std::fs::read_to_string(trace).unwrap_or_default())
+            .unwrap_or_else(|e| panic!("{}: the trace: {e}: {ran:?}", package.display()))
+    } else {
+        json!([])
+    };
+    let wire = if regular(out) {
         std::fs::read_to_string(out).unwrap_or_default()
     } else {
         String::new()
@@ -953,6 +1317,13 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
         "refusals_host_and_target",
         "refusals_framing",
         "refusal_drains_at_most_64_kib",
+        "waiting_full_answers_503",
+        "rate_delays_delivery",
+        "body_over_buffers_answers_503",
+        "body_over_peer_buffers_answers_503",
+        "ipv6_peers_count_per_slash_64",
+        "timers_idle_read_write",
+        "stop_ends_queued_in_flight_and_idle",
     ] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/serve_runs")
@@ -979,7 +1350,9 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
             let wire = expected_wire(&dir, renumber);
             assert!(!wire.is_empty(), "{case}");
             for (engine, command) in engines() {
-                let out = package.join("serve-out.jsonl");
+                // Each engine its own file, made afresh, so neither passes on the other's.
+                let out = package.join(format!("serve-out-{engine}.jsonl"));
+                let _ = std::fs::remove_file(&out);
                 let (code, printed, stderr, trace, text) =
                     run_flags(command, &package, &script, &out);
                 let at = format!("{case} {numbering} {engine}");
@@ -1044,8 +1417,9 @@ fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_bot
     assert_eq!(seen[0], seen[1]);
     assert_eq!(seen[0].0, 2);
     // A writable file keeps the run's own exit code.
-    let out = package.join("serve-out.jsonl");
     for (engine, command) in engines() {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
         let (code, _, stderr, _, text) = run_flags(command, &package, &script, &out);
         assert_eq!(code, 1, "{engine}: {stderr}");
         assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
@@ -1056,8 +1430,9 @@ fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_bot
 #[test]
 fn serve_out_follows_no_link_never_blocks_and_is_private() {
     // `spec/31 §8` rule 6: `--serve-out` follows no symbolic link, never blocks on a FIFO,
-    // refuses a file that is not regular, and leaves the file with mode 0600, an existing one's
-    // included, in both engines.
+    // refuses a file that is not regular (a device) or that has another name (a hard link),
+    // truncates an existing file to the wire, and leaves it with mode 0600, in both engines. A
+    // run that blocked would be killed after `HANG` and fail.
     use std::os::unix::fs::PermissionsExt;
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/worker_pool");
     let (scratch, package, name) = build_native(&dir, "-out-files");
@@ -1074,7 +1449,12 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
             .unwrap()
             .success()
     );
-    let existing = package.join("existing.jsonl");
+    let other = package.join("other.txt");
+    std::fs::write(&other, "the operator's\n").unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let hard = package.join("hard.jsonl");
+    std::fs::hard_link(&other, &hard).unwrap();
+    let device = PathBuf::from("/dev/null");
     let engines = || {
         let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
         interpreter
@@ -1083,27 +1463,317 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
         let native = std::process::Command::new(package.join("target/una").join(&name));
         [("interpreter", interpreter), ("native", native)]
     };
-    for refused in [&link, &fifo] {
+    for (refused, why) in [
+        (&link, ""),
+        (&fifo, ""),
+        (&device, "it is not a regular file"),
+        (&hard, "it is a hard link"),
+    ] {
+        let mut lines = Vec::new();
         for (engine, command) in engines() {
-            let started = Instant::now();
             let (code, _, stderr, _, _) = run_flags(command, &package, &script, refused);
-            assert!(started.elapsed() < HANG, "{engine}: blocked");
             assert_eq!(code, 2, "{engine} {}: {stderr}", refused.display());
-            assert!(
-                stderr.contains("cannot write the connections to"),
-                "{engine}: {stderr}"
-            );
+            let line = stderr
+                .lines()
+                .find(|line| line.contains("cannot write the connections to"))
+                .unwrap_or_else(|| panic!("{engine}: {stderr}"))
+                .to_owned();
+            assert!(line.contains(why), "{engine}: {line}");
+            lines.push(line);
         }
+        assert_eq!(lines[0], lines[1], "{}", refused.display());
     }
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept\n");
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "the operator's\n");
+    let mode = std::fs::metadata(&other).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o644);
     for (engine, command) in engines() {
-        std::fs::write(&existing, "old\n").unwrap();
+        // An existing file longer than the wire ends with the wire alone.
+        let existing = package.join(format!("existing-{engine}.jsonl"));
+        std::fs::write(&existing, "x".repeat(200_000)).unwrap();
         std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o644)).unwrap();
         let (code, _, stderr, _, text) = run_flags(command, &package, &script, &existing);
         assert_eq!(code, 0, "{engine}: {stderr}");
+        assert!(text.len() < 200_000, "{engine}");
         assert_eq!(read_out(&text), expected_wire(&dir, &|k| k), "{engine}");
         let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{engine}");
     }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// The server of the hard stop's test: it holds its first exchange, answers the others in its
+/// loop, and, at the host stop, counts in its `on stop` for longer than any grace period before
+/// it would answer the first.
+const OUTLASTS_ITS_GRACE: &str = "module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Counts to `n`, one check point a turn.
+spin(n: Int) -> Int
+=
+  let edit count = 0
+  for i in 1..n
+    count = count + 1
+  count
+
+--- Answers `next` with `body`, or nothing when it failed.
+answer(next: Result[internal Exchange, ServeError], body: Text) -> Unit
+  uses @server: HttpServer[reply]
+=
+  when next
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+        if error use unit
+    is Err(failure) -> unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let first = attempt @server.next()
+  for ever
+    let next = attempt @server.next()
+    answer(next, body: \"in the loop\")
+  on stop
+    let counted = spin(1000000000000)
+    @console.print(\"counted {counted}\")
+    answer(first, body: \"first\")
+  @server.close()
+";
+
+#[test]
+fn the_hard_stop_ends_a_run_with_u6007_and_503_alike_in_both_engines() {
+    // ADR 0123 rule 18, `spec/31 §6` rule 9, `spec/26 §6`: at the script's end the host stops the
+    // run; the server's `on stop` outlasts `--stop-grace 1`, so the hard stop ends it with U6007,
+    // exit code 1, and the exchange it held is answered `503` with `Retry-After: 1`, while the one
+    // its loop answered before the stop keeps its `200`. Both engines give the same bytes, output
+    // and trace; how long the grace takes is not compared.
+    let scratch = std::env::temp_dir().join(format!("una-hard-stop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let dir = scratch.join("outlasts_its_grace");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        std::fs::read_to_string(from.join("ita.una"))
+            .unwrap()
+            .replace("ita language_form", "ita outlasts_its_grace"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/srv.una"), OUTLASTS_ITS_GRACE).unwrap();
+    let request = |k: u64, target: &str| {
+        let text = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        format!(
+            "{{\"at\":{k},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"192.0.2.{k}\",\"reads\":\"eager\"}}\n{{\"at\":{k},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+            script::encode(text.as_bytes())
+        )
+    };
+    let script = format!("{}{}", request(1, "/held"), request(2, "/answered"));
+    let (built, package, name) = build_native(&dir, "-hard-stop");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["run", "--stop-grace", "1"]);
+    let mut native = std::process::Command::new(package.join("target/una").join(&name));
+    native.args(["--stop-grace", "1"]);
+    let mut runs = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
+        let (code, printed, stderr, trace, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 1, "{engine}: {stderr}");
+        assert!(stderr.contains("U6007"), "{engine}: {stderr}");
+        assert!(
+            printed.is_empty(),
+            "{engine}: the on stop never printed: {printed:?}"
+        );
+        let wire = read_out(&text);
+        let replies: Vec<(u64, String)> = wire
+            .iter()
+            .filter(|(_, _, kind, _)| kind == "bytes")
+            .map(|(_, k, _, value)| {
+                let bytes: Vec<u8> = serde_json::from_value(value.clone()).unwrap();
+                (*k, String::from_utf8(bytes).unwrap())
+            })
+            .collect();
+        let of = |k: u64| {
+            replies
+                .iter()
+                .find(|(connection, _)| *connection == k)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            of(1).starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{engine}: {}",
+            of(1)
+        );
+        assert!(
+            of(1).contains("\r\nRetry-After: 1\r\n"),
+            "{engine}: {}",
+            of(1)
+        );
+        assert!(
+            of(2).starts_with("HTTP/1.1 200 OK\r\n"),
+            "{engine}: {}",
+            of(2)
+        );
+        assert!(of(2).ends_with("in the loop"), "{engine}: {}", of(2));
+        // The loop's last `next` is the one the host stop ends, so it is the run's last server
+        // operation: the `on stop` then runs, and the hard stop ends it. Its outcome,
+        // `Interrupted`, is `internal` and so redacted in the trace (`spec/31 §1` rule 7).
+        let server: Vec<&Value> = trace
+            .iter()
+            .filter(|event| event["capability"] == "HttpServer")
+            .collect();
+        let last = server.last().copied().cloned().unwrap_or_default();
+        assert_eq!(last["op"], "next", "{engine}: {last}");
+        assert_eq!(
+            server.iter().filter(|event| event["op"] == "next").count(),
+            3,
+            "{engine}: the first, the one answered in the loop, the one the stop ends"
+        );
+        runs.push((printed, trace, text));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// A package beside `scratch` with the language-form server of `language_form`, its `on stop`
+/// aborting the run (U6003) when `aborts`, and a script of `n` connections, each from its own
+/// peer address with one request: its directory and the script in the form of `--serve-script`.
+/// Its trace holds two events a request, far more than a pipe buffer holds.
+fn many_requests(scratch: &Path, n: u32, aborts: bool) -> (PathBuf, String) {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    let dir = scratch.join(if aborts { "many_aborts" } else { "many" });
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    let manifest = std::fs::read_to_string(from.join("ita.una")).unwrap();
+    std::fs::write(dir.join("ita.una"), manifest).unwrap();
+    let mut program = std::fs::read_to_string(from.join("src/srv.una")).unwrap();
+    if aborts {
+        program = program.replace(
+            "    on stop\n      @server.close()\n",
+            "    on stop\n      @server.close()\n      bomb()\n",
+        );
+        program.push_str("\n--- Aborts the run: an integer of more than 4300 digits written as text.\nbomb() -> Unit\n=\n  let edit big = 1\n  for i in 1..2000\n    big = big * 1000\n  let shown = \"{big}\"\n  unit\n");
+    }
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    let mut script = String::new();
+    for k in 0..n {
+        let peer = format!("10.{}.{}.{}", k / 62_500, (k / 250) % 250, k % 250 + 1);
+        script.push_str(&format!(
+            "{{\"at\":{k},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"{peer}\",\"reads\":\"eager\"}}\n"
+        ));
+        let request = format!("GET /r{k} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        script.push_str(&format!(
+            "{{\"at\":{k},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+            script::encode(request.as_bytes())
+        ));
+    }
+    (dir, script)
+}
+
+/// A FIFO at `path` whose reader, on its own thread, takes the first byte the run writes and
+/// leaves: every later write of the run fails, since the run writes more than the byte and a
+/// pipe buffer hold. No timing decides it.
+fn failing_trace(path: &Path) -> std::thread::JoinHandle<()> {
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let reading = path.to_path_buf();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(reading).unwrap();
+        let mut first = [0u8; 1];
+        file.read_exact(&mut first).unwrap();
+    })
+}
+
+#[test]
+fn a_trace_that_fails_at_the_end_still_writes_serve_out_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: when `--trace` cannot be written, both engines still write
+    // `--serve-out`, the same file, and report the trace last, a usage error, exit code 2.
+    let scratch = std::env::temp_dir().join(format!("una-trace-fails-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (dir, script) = many_requests(&scratch, 2_000, false);
+    let (built, package, name) = build_native(&dir, "-trace-fails");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run");
+    let native = std::process::Command::new(package.join("target/una").join(&name));
+    let mut files = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let fifo = package.join(format!("trace-{engine}.fifo"));
+        let reader = failing_trace(&fifo);
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let (code, _, stderr, _, text) = run_flags_traced(command, &package, &script, &out, &fifo);
+        reader.join().unwrap();
+        assert_eq!(code, 2, "{engine}: {stderr}");
+        let last = stderr.lines().last().unwrap_or_default();
+        assert!(
+            last.starts_with(&format!(
+                "error: cannot write the trace to `{}`: ",
+                fifo.display()
+            )),
+            "{engine}: {stderr}"
+        );
+        // Each connection's reply and its close, at least.
+        assert!(read_out(&text).len() >= 2 * 2_000, "{engine}");
+        files.push(text);
+    }
+    assert_eq!(files[0], files[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn an_aborted_run_reports_its_abort_then_serve_out_then_the_trace_alike_in_both_engines() {
+    // `spec/31 §8` rule 6: after a scripted run that aborts, both engines report the abort,
+    // then a `--serve-out` that cannot be written, then a trace that cannot be written, in that
+    // order, with the higher exit code, 2.
+    let scratch = std::env::temp_dir().join(format!("una-abort-trace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (dir, script) = many_requests(&scratch, 2_000, true);
+    let (built, package, name) = build_native(&dir, "-abort-trace");
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run");
+    let native = std::process::Command::new(package.join("target/una").join(&name));
+    let unwritable = package.join("missing-dir/serve-out.jsonl");
+    let mut tails = Vec::new();
+    for (engine, command) in [("interpreter", interpreter), ("native", native)] {
+        let fifo = package.join(format!("trace-{engine}.fifo"));
+        let reader = failing_trace(&fifo);
+        let (code, _, stderr, _, _) =
+            run_flags_traced(command, &package, &script, &unwritable, &fifo);
+        reader.join().unwrap();
+        assert_eq!(code, 2, "{engine}: {stderr}");
+        let at = |needle: &str| {
+            stderr
+                .find(needle)
+                .unwrap_or_else(|| panic!("{engine}: no {needle}: {stderr}"))
+        };
+        let abort = at("[U6003]");
+        let out = at("error: cannot write the connections to");
+        let trace = at("error: cannot write the trace to");
+        assert!(abort < out && out < trace, "{engine}: the order: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        tails.push(lines[lines.len() - 2..].join("\n"));
+    }
+    assert_eq!(tails[0].lines().next(), tails[1].lines().next());
+    let _ = std::fs::remove_dir_all(&built);
     let _ = std::fs::remove_dir_all(&scratch);
 }

@@ -1547,6 +1547,19 @@ impl<'a> Parser<'a> {
                         scale_span,
                     });
                 }
+                // ADR 0139 rule 7: in edition 0.4 a scale is the syntax error edition 0.3
+                // gives it, with the advice to raise the edition (#1743).
+                if self.keywords == KeywordSet::V0_4
+                    && self.interner.resolve(name.name) == "Decimal"
+                    && self.at(&TokenKind::LBracket)
+                    && matches!(self.peek_at(1), TokenKind::Int(_))
+                {
+                    self.advance();
+                    return Err(self.unexpected_with(
+                        "a type",
+                        "`Decimal[s]` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it",
+                    ));
+                }
                 let mut args = Vec::new();
                 if self.eat(&TokenKind::LBracket) {
                     args.push(self.ty()?);
@@ -3633,6 +3646,19 @@ impl<'a> Parser<'a> {
             (TokenKind::Keyword(Keyword::And), TokenKind::Colon) => self.and_label,
             _ => None,
         });
+        // ADR 0139 rule 7: in edition 0.4 `with:` and `and:` are the syntax error edition 0.3
+        // gives them, with the advice to raise the edition (#1743).
+        if from.is_none()
+            && self.keywords == KeywordSet::V0_4
+            && self.peek_at(1) == &TokenKind::Colon
+            && let TokenKind::Keyword(keyword @ (Keyword::With | Keyword::And)) = self.peek()
+        {
+            let advice = format!(
+                "the label `{}:` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it",
+                keyword.as_str()
+            );
+            return Err(self.unexpected_with("an expression", advice));
+        }
         let labeled = matches!(
             self.peek(),
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_)

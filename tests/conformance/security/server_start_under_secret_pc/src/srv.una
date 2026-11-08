@@ -8,7 +8,7 @@ import std.host (Exchange)
 
 idle(exchange: internal Exchange) -> Unit = unit
 
-serve_all(exchanges: internal List[Exchange], key: secret Int) -> Unit
+pub serve_all(exchanges: internal List[Exchange], key: secret Int) -> Unit
 =
   tasks
     for exchange in exchanges

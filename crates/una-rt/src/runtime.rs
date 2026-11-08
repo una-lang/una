@@ -2673,7 +2673,19 @@ fn finish(mut state: State) -> i32 {
         false,
     );
     if let Err(error) = state.shared.finish() {
-        let _ = writeln!(stderr, "error: cannot write the trace: {error}");
+        // The same line as `una run`'s, which names the file.
+        match TRACE_FILE.get() {
+            Some(path) => {
+                let _ = writeln!(
+                    stderr,
+                    "error: cannot write the trace to `{}`: {error}",
+                    path.display()
+                );
+            }
+            None => {
+                let _ = writeln!(stderr, "error: cannot write the trace: {error}");
+            }
+        }
         code = USAGE;
     }
     code

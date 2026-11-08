@@ -11,7 +11,7 @@ pub main() -> Unit
 =
   @server.close()
 
-spawn(jobs: internal List[fn() -> Unit], key: secret Int) -> Unit
+pub spawn(jobs: internal List[fn() -> Unit], key: secret Int) -> Unit
 =
   tasks
     for job in jobs

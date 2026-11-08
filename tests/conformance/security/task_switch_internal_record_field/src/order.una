@@ -1,0 +1,42 @@
+-- test: the residual of #1708, the twin of `task_switch_record_field` with `internal` data: a `internal` key read from a field of a record decides a branch around a call, in a started task. The rule's bound is `internal` (spec/27 §8 rule 5), so it is accepted, and the report lists the check point as a `task switch` at `internal` (spec/13 §6)
+-- spec: spec/27 §8
+-- grant: console
+-- expect: run-output "0"
+-- expect: run-output "2"
+-- expect: run-output "5"
+-- expect: run-output "7"
+-- expect: run-output "1"
+-- expect: run-output "3"
+-- expect: run-output "4"
+-- expect: run-output "6"
+module order
+
+noop() -> Unit = unit
+
+bit(k: Int, key: internal Int) -> internal Int
+=
+  let edit x: internal Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+kind Box
+  key: internal Int
+
+worker(k: Int, box: Box) -> Unit
+  uses @console: Console[print]
+=
+  let b = bit(k, key: box.key)
+  for i in 0..<3000
+    if b == 1
+      noop()
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: internal Int = 90
+  let box = Box(key: key)
+  tasks
+    for k in 0..<8
+      start worker(k, box: box)
