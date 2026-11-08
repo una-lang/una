@@ -334,6 +334,8 @@ pub mod counters {
     static GIVES: AtomicUsize = AtomicUsize::new(0);
     #[cfg(feature = "counters")]
     static PASSES: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(feature = "counters")]
+    static FRAMES: AtomicUsize = AtomicUsize::new(0);
 
     /// A set was made.
     #[inline]
@@ -430,6 +432,28 @@ pub mod counters {
         #[cfg(feature = "counters")]
         {
             PASSES.load(Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "counters"))]
+        {
+            0
+        }
+    }
+
+    /// A step of the timing labels of the frames of a pass in the checker (ADR 0116 amendment
+    /// of 2026-10-25, E, issue #1087): an item joined bottom up, a step of the sweep of the
+    /// reads, and a probe of the search for a read's outermost frame.
+    #[inline]
+    pub fn frame_step() {
+        #[cfg(feature = "counters")]
+        FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The frame steps the checker took so far in this process; always 0 without the feature
+    /// `counters`.
+    pub fn frame_steps() -> usize {
+        #[cfg(feature = "counters")]
+        {
+            FRAMES.load(Ordering::Relaxed)
         }
         #[cfg(not(feature = "counters"))]
         {

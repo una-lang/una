@@ -107,8 +107,11 @@ impl Poller {
     /// One `kevent` call: applies the changes `ins`, then waits up to `wait` for events in `out`.
     #[cfg(target_os = "macos")]
     fn kevent(&self, ins: &[Raw], out: &mut [Raw], wait: Option<Duration>) -> io::Result<usize> {
+        // XNU refuses a timeout above `INT32_MAX` seconds with `EINVAL`, even with an event
+        // ready, so a longer one is cut to it, as `epoll_wait` takes at most `c_int::MAX` ms.
         let spec = wait.map(|left| libc::timespec {
-            tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
+            tv_sec: libc::time_t::try_from(left.as_secs().min(i32::MAX as u64))
+                .unwrap_or(libc::time_t::MAX),
             tv_nsec: libc::c_long::from(left.subsec_nanos()),
         });
         let at = spec.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
