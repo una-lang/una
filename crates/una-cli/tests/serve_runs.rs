@@ -423,6 +423,316 @@ fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
     );
 }
 
+/// A package in `scratch` named `name`, of edition 0.4, whose `srv` module is `program` and
+/// whose one `serve:` grant on `127.0.0.1:8080` has the item lines `items`: its directory.
+fn generated_package(scratch: &Path, name: &str, program: &str, items: &[&str]) -> PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/serve_runs/language_form");
+    let dir = scratch.join(name);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    let items: String = items.iter().map(|item| format!("      {item}\n")).collect();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n    serve \"http://127.0.0.1:8080\"\n{items}"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    dir
+}
+
+/// A line of a script in the form of `--serve-script` that opens connection `k` from `peer`.
+fn open_line(at: u64, k: u64, peer: &str, reads: &str) -> String {
+    format!(
+        "{{\"at\":{at},\"connection\":{k},\"grant\":\"127.0.0.1:8080\",\"peer\":\"{peer}\",\"reads\":\"{reads}\"}}\n"
+    )
+}
+
+/// A line of a script in the form of `--serve-script` that sends `bytes` on connection `k`.
+fn bytes_line(at: u64, k: u64, bytes: &str) -> String {
+    format!(
+        "{{\"at\":{at},\"bytes\":\"{}\",\"connection\":{k}}}\n",
+        script::encode(bytes.as_bytes())
+    )
+}
+
+/// The two engines of `package`, its executable `name`, each given `args` before the flags of
+/// a script.
+fn both_engines(
+    package: &Path,
+    name: &str,
+    args: &[&str],
+) -> [(&'static str, std::process::Command); 2] {
+    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreter
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .arg("run")
+        .args(args);
+    let mut native = std::process::Command::new(package.join("target/una").join(name));
+    native.args(args);
+    [("interpreter", interpreter), ("native", native)]
+}
+
+/// The replies of a `--serve-out` text, by connection: the bytes each received, as text.
+fn received(text: &str) -> BTreeMap<u64, String> {
+    let mut out: BTreeMap<u64, String> = BTreeMap::new();
+    for (_, k, kind, value) in read_out(text) {
+        if kind == "bytes" {
+            let bytes: Vec<u8> = serde_json::from_value(value).unwrap();
+            out.entry(k)
+                .or_default()
+                .push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    out
+}
+
+/// When each connection that a `--serve-out` text shows closed was closed, in virtual ms.
+fn closed(text: &str) -> BTreeMap<u64, u64> {
+    read_out(text)
+        .into_iter()
+        .filter(|(_, _, kind, _)| kind == "closed")
+        .map(|(at, k, _, _)| (k, at))
+        .collect()
+}
+
+/// The server of the pressure test: it answers `/big1` with a body of 1 MiB, `/big3` with one of
+/// 3 MiB, and anything else with `ok`, a task per request.
+const BIG_REPLIES: &str = "module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- A text of 2^n bytes.
+filler(n: Int) -> Text
+=
+  let edit t = \"x\"
+  for i in 1..n
+    t = \"{t}{t}\"
+  t
+
+--- Answers one request by the first segment of its path.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> \"\"
+  let body = if first == \"big1\" then filler(20) else if first == \"big3\" then \"{filler(21)}{filler(20)}\" else \"ok\"
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+    if error use unit
+
+--- The language form of `spec/31 §1` rule 6: a task per request, `close` at the host stop.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+";
+
+#[test]
+fn a_fresh_request_is_answered_under_pressure_alike_in_both_engines() {
+    // ADR 0123 Conformance, rule 13, `spec/31 §6` rules 6 and 13: 64 paced connections that
+    // never read their 1 MiB replies, 64 that never read their 3 MiB replies, and 64 that
+    // trickle 1 MiB bodies, with the grant's defaults (`replies` and `buffers` 64 MiB). A fresh
+    // client's request is answered; the 3 MiB connections, the furthest over their share of
+    // `replies`, are closed with no byte written; the tricklers are answered `408` at `read`;
+    // the run ends with exit code 0 and no U6003. Both engines give the same bytes, output and
+    // trace; no time is measured.
+    let scratch = std::env::temp_dir().join(format!("una-pressure-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let dir = generated_package(&scratch, "pressure", BIG_REPLIES, &[]);
+    let get = |target: &str| format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let mut script = String::new();
+    for i in 0..64u64 {
+        script.push_str(&open_line(i, 1 + i, &format!("10.1.0.{}", i + 1), "paced"));
+        script.push_str(&bytes_line(i, 1 + i, &get("/big1")));
+    }
+    for i in 0..64u64 {
+        script.push_str(&open_line(
+            100 + i,
+            65 + i,
+            &format!("10.3.0.{}", i + 1),
+            "paced",
+        ));
+        script.push_str(&bytes_line(100 + i, 65 + i, &get("/big3")));
+    }
+    let trickler = |k: u64| (129..=192).contains(&k);
+    for i in 0..64u64 {
+        let k = 129 + i;
+        script.push_str(&open_line(
+            200 + i,
+            k,
+            &format!("10.9.0.{}", i + 1),
+            "eager",
+        ));
+        script.push_str(&bytes_line(
+            200 + i,
+            k,
+            "POST /up HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n",
+        ));
+    }
+    // The tricklers send one byte a second, from 1 s to 15 s.
+    for second in 1..=15u64 {
+        for i in 0..64u64 {
+            script.push_str(&bytes_line(second * 1000 + 200 + i, 129 + i, "x"));
+        }
+    }
+    script.push_str(&open_line(16_000, 200, "192.0.2.200", "eager"));
+    script.push_str(&bytes_line(
+        16_000,
+        200,
+        "GET /fresh HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    ));
+    script.push_str(&open_line(40_000, 201, "192.0.2.201", "eager"));
+    let (built, package, name) = build_native(&dir, "-pressure");
+    let mut runs = Vec::new();
+    for (engine, command) in both_engines(&package, &name, &[]) {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
+        let (code, printed, stderr, trace, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 0, "{engine}: {stderr}");
+        assert!(!stderr.contains("U6003"), "{engine}: {stderr}");
+        let replies = received(&text);
+        let fresh = replies.get(&200).cloned().unwrap_or_default();
+        assert!(
+            fresh.starts_with("HTTP/1.1 200 OK\r\n"),
+            "{engine}: {fresh}"
+        );
+        assert!(fresh.ends_with("\r\n\r\nok"), "{engine}: {fresh}");
+        // Pressure closes the connections furthest over their share as the replies are
+        // reserved, never the one reserving: every 3 MiB connection but the last one reserved
+        // is closed then, long before `write` (30 s) would close it. None gets a byte.
+        let gone = closed(&text);
+        let early = (65..=128u64)
+            .filter(|k| gone.get(k).is_some_and(|at| *at < 1_000))
+            .count();
+        assert!(
+            early >= 63,
+            "{engine}: {early} 3 MiB connections closed under pressure"
+        );
+        for k in 65..=128u64 {
+            assert!(
+                gone.contains_key(&k),
+                "{engine}: 3 MiB connection {k} not closed"
+            );
+            assert!(
+                !replies.contains_key(&k),
+                "{engine}: 3 MiB connection {k} got bytes"
+            );
+        }
+        for k in (129..=192u64).filter(|k| trickler(*k)) {
+            let reply = replies.get(&k).cloned().unwrap_or_default();
+            assert!(
+                reply.starts_with("HTTP/1.1 408 Request Timeout\r\n"),
+                "{engine}: trickler {k}: {reply}"
+            );
+        }
+        runs.push((printed, trace, text));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// The server of the memory test: before it serves, it builds a map of 32 texts of 1 MiB each,
+/// which it keeps for the whole run, and answers each request with the map's size.
+const HOLDS_ITS_STATE: &str = "module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- A text of 2^n bytes.
+filler(n: Int) -> Text
+=
+  let edit t = \"x\"
+  for i in 1..n
+    t = \"{t}{t}\"
+  t
+
+--- Answers one request with `held`.
+answer(exchange: internal Exchange, held: Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: \"held {held}\"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  let chunk = filler(20)
+  let edit parts: Map[Int, Text] = empty_map()
+  for i in 1..32
+    edit parts.set(key: i, value: \"{chunk}{i}\")
+  let held = parts.len
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange, held: held)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print(\"kept {parts.len}\")
+";
+
+#[test]
+fn a_program_that_holds_most_of_its_memory_still_serves_alike_in_both_engines() {
+    // ADR 0123 Conformance: a program that holds at least 80% of `--max-memory` in its own
+    // state still delivers and answers requests, since the host's buffers are not the program's
+    // memory. The state cannot be built under 61 MiB, 80% of 76 MiB, in either engine, which
+    // shows that it holds more than 80% of a budget of 76 MiB; under 76 MiB it serves, in both
+    // engines alike.
+    let scratch = std::env::temp_dir().join(format!("una-memory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let dir = generated_package(&scratch, "holds_its_state", HOLDS_ITS_STATE, &[]);
+    let mut script = String::new();
+    for k in 1..=8u64 {
+        script.push_str(&open_line(k, k, &format!("192.0.2.{k}"), "eager"));
+        script.push_str(&bytes_line(
+            k,
+            k,
+            &format!("GET /r{k} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+        ));
+    }
+    let (built, package, name) = build_native(&dir, "-memory");
+    for (engine, command) in both_engines(&package, &name, &["--max-memory", "61"]) {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let (code, _, stderr, _, _) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 1, "{engine}: {stderr}");
+        assert!(stderr.contains("U6003"), "{engine}: {stderr}");
+    }
+    let mut runs = Vec::new();
+    for (engine, command) in both_engines(&package, &name, &["--max-memory", "76"]) {
+        let out = package.join(format!("serve-out-{engine}.jsonl"));
+        let _ = std::fs::remove_file(&out);
+        let (code, printed, stderr, trace, text) = run_flags(command, &package, &script, &out);
+        assert_eq!(code, 0, "{engine}: {stderr}");
+        assert_eq!(printed, ["kept 32"], "{engine}");
+        let replies = received(&text);
+        for k in 1..=8u64 {
+            let reply = replies.get(&k).cloned().unwrap_or_default();
+            assert!(
+                reply.starts_with("HTTP/1.1 200 OK\r\n"),
+                "{engine}: {k}: {reply}"
+            );
+            assert!(reply.ends_with("held 32"), "{engine}: {k}: {reply}");
+        }
+        runs.push((printed, trace, text));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let _ = std::fs::remove_dir_all(&built);
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// The runtime library with its test hook of the scripted engine (`una-rt`'s `test-hooks`),
 /// built once for this test binary in a target directory of its own, so that the plain
 /// `libuna_rt.a` that the other tests of the toolchain link is never replaced, even for a
