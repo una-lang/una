@@ -1,5 +1,5 @@
-//! The check points that data above `internal` can decide, in a package whose program can run
-//! started tasks (`spec/27 §8` rule 5, #1684).
+//! The check points that labeled data can decide, in a package whose program can run started
+//! tasks (`spec/27 §8` rule 5, #1684, #1708).
 //!
 //! The interpreter, and native code under `--virtual-time`, switch from the task that runs to
 //! the next ready one after 1024 check points in its turn: each call of Una code, each
@@ -13,17 +13,19 @@
 //! `internal`, the count of every task depends on data at most `internal`.
 //!
 //! While a body is checked, [`Checker::switch_site`] records each check point whose program
-//! counter, joined with the effect floor and the label of what decides it, is above
-//! `internal`, and [`Checker::switch_call`] each call of a generic function with the labels of
-//! its arguments. Once the package is checked, [`switch_points`] reports them, U4002, when its
-//! program can run started tasks. A site above `internal` only through a type parameter's
-//! label `ℓ_T` is reported at the calls that instantiate its function with data above
-//! `internal` instead, through the generic calls that pass `ℓ_T` on, and at the site itself
-//! when its function is used as a value, whose instances the checker does not follow.
+//! counter, joined with the effect floor and the label of what decides it, is above `public`,
+//! and [`Checker::switch_call`] each call of a generic function with the labels of its
+//! arguments. Once the package is checked, [`switch_points`] reports those above `internal`,
+//! U4002, when its program can run started tasks, and returns those above `public` but at most
+//! `internal`, the open residual of #1708, for the report's `information.timing` list as
+//! `task switch`. A site above the bound only through a type parameter's label `ℓ_T` is
+//! reported at the calls that instantiate its function with data above the bound instead,
+//! through the generic calls that pass `ℓ_T` on, and at the site itself when its function is
+//! used as a value, whose instances the checker does not follow.
 //!
 //! O(1) per check point and per call while checking, then O((sites + calls) log n) after the
-//! package, one pass over a worklist with ordered sets and maps: near linear in the size of the
-//! package.
+//! package for each of the two bounds, one pass over a worklist with ordered sets and maps:
+//! near linear in the size of the package.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,7 +39,7 @@ use super::check::Checker;
 use super::env::{Env, FnDef, FnKind};
 use super::label::Label;
 
-/// A check point that data above `internal` can decide (#1684).
+/// A check point that data above `public` can decide (#1684).
 #[derive(Clone, Debug)]
 pub(crate) struct SwitchSite {
     /// The construct.
@@ -64,7 +66,8 @@ pub(crate) struct GenericCall {
     pub(crate) label: Label,
 }
 
-/// `internal`, the most that the count of check points may depend on (#1684).
+/// `internal`, the most that the count of check points may depend on (#1684); a count that
+/// data above `public` decide is the residual of #1708, which the report lists.
 fn internal() -> Label {
     Label {
         level: una_syntax::ast::Level::Internal,
@@ -72,9 +75,14 @@ fn internal() -> Label {
     }
 }
 
+/// A check point whose count data above `public`, at most `internal`, decide, for the report's
+/// `information.timing` list: the construct `task switch`, the qualified name of the function
+/// that holds it, where it is, and its label (#1708).
+pub(crate) type SwitchEntry = (&'static str, String, Span, Label);
+
 impl Checker<'_, '_, '_> {
     /// Records the check point at `span`, named `what`, when the program counter, joined with
-    /// the effect floor and `raise`, what chooses it, is above `internal`. The timing floor of
+    /// the effect floor and `raise`, what chooses it, is above `public`. The timing floor of
     /// a `within` does not count: a deadline cuts at a check point when the clock passes it,
     /// and under the interpreter's virtual clock only the run moves the clock, never a count
     /// of check points; under the real clock the order is out of model (`spec/27 §8` rule 4).
@@ -87,7 +95,7 @@ impl Checker<'_, '_, '_> {
         if let Some(floor) = &self.ctx.floor {
             label = label.join(floor);
         }
-        if label.flows_to(&internal()) {
+        if label.flows_to(&Label::public()) {
             return;
         }
         let site = SwitchSite {
@@ -190,15 +198,16 @@ fn runs_tasks(env: &Env<'_>, findings: &Findings, serves: bool) -> bool {
             .any(|def| def.module < env.prelude && !env.reports(def.module))
 }
 
-/// The functions whose check points a type argument above `internal` can decide: those with a
-/// site above `internal` only through a symbolic label, and, through a worklist over the
-/// generic calls, each generic function that passes a symbolic label to one of them.
+/// The functions whose check points a type argument above `bound` can decide: those with a
+/// site above `bound` only through a symbolic label, and, through a worklist over the generic
+/// calls, each generic function that passes a symbolic label to one of them.
 /// O((sites + calls) log n).
-fn decided_by_type(findings: &Findings) -> BTreeSet<usize> {
+fn decided_by_type(findings: &Findings, bound: &Label) -> BTreeSet<usize> {
     let mut decided: BTreeSet<usize> = BTreeSet::new();
     let mut work: Vec<usize> = Vec::new();
     for site in &findings.switch_sites {
-        if site.label.concrete().flows_to(&internal())
+        if !site.label.flows_to(bound)
+            && site.label.concrete().flows_to(bound)
             && let Some(function) = site.function
             && decided.insert(function)
         {
@@ -223,24 +232,24 @@ fn decided_by_type(findings: &Findings) -> BTreeSet<usize> {
     decided
 }
 
-/// `spec/27 §8` rule 5 after pass 2 (#1684): in a package whose program can run started tasks,
-/// each check point that data above `internal` can decide is U4002. O((sites + calls) log n).
-pub(crate) fn switch_points(
-    env: &Env<'_>,
-    findings: &Findings,
-    serves: bool,
-    report: &mut Report<'_>,
-) {
-    if findings.switch_sites.is_empty() || !runs_tasks(env, findings, serves) {
-        return;
-    }
-    let decided = decided_by_type(findings);
-    let mut found: BTreeMap<Span, (String, Label)> = BTreeMap::new();
+/// What a found check point holds: how a message names it, its concrete label, and the
+/// function whose body holds it.
+type Found = BTreeMap<Span, (String, Label, Option<usize>)>;
+
+/// The check points whose count data above `bound` can decide: the sites whose label is above
+/// it, and the calls of generic functions that instantiate a site above it only through a
+/// type parameter. O((sites + calls) log n).
+fn above(env: &Env<'_>, findings: &Findings, bound: &Label) -> Found {
+    let decided = decided_by_type(findings, bound);
+    let mut found = Found::new();
     for site in &findings.switch_sites {
+        if site.label.flows_to(bound) {
+            continue;
+        }
         let concrete = site.label.concrete();
         // A site that only a type parameter decides counts at the instances of its function,
         // unless the function is used as a value, or lies outside every function.
-        let symbolic = concrete.flows_to(&internal());
+        let symbolic = concrete.flows_to(bound);
         let followed = site
             .function
             .is_some_and(|f| !findings.function_values.contains(&f));
@@ -249,11 +258,11 @@ pub(crate) fn switch_points(
         }
         found
             .entry(site.span)
-            .or_insert_with(|| (site.what.clone(), site.label.clone()));
+            .or_insert_with(|| (site.what.clone(), site.label.clone(), site.function));
     }
     for call in &findings.switch_calls {
         let concrete = call.label.concrete();
-        if !decided.contains(&call.callee) || concrete.flows_to(&internal()) {
+        if !decided.contains(&call.callee) || concrete.flows_to(bound) {
             continue;
         }
         let name = env.functions.get(call.callee).map_or("", |def| def.name);
@@ -261,13 +270,33 @@ pub(crate) fn switch_points(
             (
                 format!("what this call of `{name}` runs, whose type arguments decide how many check points it passes,"),
                 concrete,
+                call.caller,
             )
         });
     }
-    for (span, (what, label)) in found {
+    found
+}
+
+/// `spec/27 §8` rule 5 after pass 2 (#1684): in a package whose program can run started tasks,
+/// each check point that data above `internal` can decide is U4002. Returns, for the report,
+/// each other check point that data above `public` can decide, in source order: their count
+/// may still order the tasks' public effects, the open residual of #1708.
+/// O((sites + calls) log n).
+pub(crate) fn switch_points(
+    env: &Env<'_>,
+    findings: &Findings,
+    serves: bool,
+    report: &mut Report<'_>,
+) -> Vec<SwitchEntry> {
+    if findings.switch_sites.is_empty() || !runs_tasks(env, findings, serves) {
+        return Vec::new();
+    }
+    let refused = above(env, findings, &internal());
+    let residual = above(env, findings, &Label::public());
+    for (span, (what, label, _)) in &refused {
         let mut diagnostic = report.make(
             Code::U4002,
-            span,
+            *span,
             format!(
                 "{what} depends on `{label}` data, in a program that starts tasks; the schedule switches tasks after a count of calls, operations and loop iterations, so the order of the tasks' later effects would reveal that data"
             ),
@@ -277,4 +306,18 @@ pub(crate) fn switch_points(
         ));
         report.push(diagnostic);
     }
+    residual
+        .into_iter()
+        .filter(|(span, _)| !refused.contains_key(span))
+        .map(|(span, (_, label, function))| {
+            let function = function
+                .and_then(|id| env.functions.get(id))
+                .map(|def| {
+                    let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                    format!("{module}.{}", def.name)
+                })
+                .unwrap_or_default();
+            ("task switch", function, span, label.concrete())
+        })
+        .collect()
 }
