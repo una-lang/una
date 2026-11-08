@@ -613,9 +613,17 @@ fn a_fresh_request_is_answered_under_pressure_alike_in_both_engines() {
         let early = (65..=128u64)
             .filter(|k| gone.get(k).is_some_and(|at| *at < 1_000))
             .count();
-        assert!(
-            early >= 63,
-            "{engine}: {early} 3 MiB connections closed under pressure"
+        assert_eq!(
+            early, 63,
+            "{engine}: 3 MiB connections closed under pressure"
+        );
+        let late: Vec<u64> = (65..=128u64)
+            .filter(|k| gone.get(k).is_some_and(|at| *at >= 30_000))
+            .collect();
+        assert_eq!(
+            late.len(),
+            1,
+            "{engine}: the one reserving is closed at `write`: {late:?}"
         );
         for k in 65..=128u64 {
             assert!(
@@ -627,7 +635,20 @@ fn a_fresh_request_is_answered_under_pressure_alike_in_both_engines() {
                 "{engine}: 3 MiB connection {k} got bytes"
             );
         }
+        // Each trickler is answered `408` at `read`, 20 s after its accept at 200 + i ms.
+        let first_bytes: BTreeMap<u64, u64> = read_out(&text)
+            .into_iter()
+            .filter(|(_, _, kind, _)| kind == "bytes")
+            .fold(BTreeMap::new(), |mut first, (at, k, _, _)| {
+                first.entry(k).or_insert(at);
+                first
+            });
         for k in (129..=192u64).filter(|k| trickler(*k)) {
+            assert_eq!(
+                first_bytes.get(&k).copied(),
+                Some(20_000 + 200 + (k - 129)),
+                "{engine}: trickler {k}"
+            );
             let reply = replies.get(&k).cloned().unwrap_or_default();
             assert!(
                 reply.starts_with("HTTP/1.1 408 Request Timeout\r\n"),
