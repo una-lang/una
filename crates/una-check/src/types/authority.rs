@@ -3342,9 +3342,9 @@ pub(crate) fn limit_timing(
     residue: &super::timing::Residue,
     report: &mut Report<'_>,
 ) -> Label {
-    let concurrent = super::timing::concurrent_functions(findings);
     let graph = super::timing::graph(env, findings);
-    let limits = super::timing::limit_labels(env, findings, &graph, &concurrent, residue);
+    let concurrency = super::timing::concurrency(env, findings, &graph);
+    let limits = super::timing::limit_labels(env, findings, &graph, &concurrency, residue);
     let internal = Label {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()
