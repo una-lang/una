@@ -1,6 +1,6 @@
--- test: a `via` that calls a function value reaches every lambda's code and every function named as a value (#1673): the `within` that a lambda of `tally` runs, beside the tasks of `pair`, is refused although the policy is called from sequential code, a stated over-approximation of `spec/07 §5` rule 7 (U4001 at the `within`)
+-- test: a `via` that calls a function value can only call one that code it reaches makes, a lambda written there or a function it names as a value, when no function value can come from outside that code (#1710): `reveal_it` names `bump` and passes it to `twice`, so the lambda of `tally`, whose `within` runs beside the tasks of `pair`, is not code the `via` reaches, and the package is accepted; its negative twin `via_result_handler_value` gets the function value from a handler installed by the policy's caller (spec/07 §5 rule 7)
 -- spec: spec/07 §5
--- expect: error U4001 at src/main.una:11:27
+-- expect: ok
 module main
 
 import release (key_of)
