@@ -16,8 +16,8 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -97,6 +97,11 @@ struct Scripted {
     listeners: Vec<String>,
     events: VecDeque<Value>,
     epoch: u64,
+    /// How many times the engine signaled that a request was queued, an exchange ended or the
+    /// run stopped (`Shared::on_ready`), from any serve thread.
+    signals: Arc<AtomicU64>,
+    /// The count of `signals` that `epoch` already covers.
+    seen: u64,
     begun: bool,
     stopped: bool,
     /// The host stop of the run, as the program's operations see it.
@@ -115,6 +120,12 @@ impl Scripted {
             self.sim.shared.stop();
             self.sim.flush();
         }
+        self.advance();
+    }
+
+    /// Moves the epoch on, covering every signal of the engine so far.
+    fn advance(&mut self) {
+        self.seen = self.signals.load(Ordering::SeqCst);
         self.epoch += 1;
     }
 
@@ -160,7 +171,7 @@ impl Scripted {
             self.stop();
         }
         self.sim.flush();
-        self.epoch += 1;
+        self.advance();
     }
 }
 
@@ -213,11 +224,20 @@ impl ScriptPort {
             .iter()
             .map(|g| g.listener.clone())
             .collect();
+        let signals = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&signals);
+        // The scripted engine is this callback's only registrant: the program's side of a
+        // scripted run waits through `Port::wait`, never on `Shared::on_ready`.
+        let _ = sim.shared.on_ready(Arc::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
         let scripted = Mutex::new(Scripted {
             sim,
             listeners,
             events: script.into(),
             epoch: 0,
+            signals,
+            seen: 0,
             begun: false,
             stopped: false,
             stop,
@@ -417,6 +437,12 @@ impl Port for ScriptPort {
         if scripted.epoch != epoch {
             return Waited::Changed;
         }
+        // A request the serve threads queued during the flush, or an exchange that ended there,
+        // is seen at this instant, before the clock moves or the script ends (issue #1738).
+        if scripted.signals.load(Ordering::SeqCst) != scripted.seen {
+            scripted.advance();
+            return Waited::Changed;
+        }
         let next_at = scripted
             .events
             .front()
@@ -424,7 +450,7 @@ impl Port for ScriptPort {
         match (next_at, retry) {
             (next, Some(retry)) if next.is_none_or(|at| retry < at) => {
                 scripted.sim.run_to(retry);
-                scripted.epoch += 1;
+                scripted.advance();
                 Waited::Changed
             }
             (Some(at), _) => {
@@ -455,7 +481,7 @@ impl Port for ScriptPort {
     fn close(&self) {
         let mut scripted = self.scripted();
         scripted.sim.shared.stop();
-        scripted.epoch += 1;
+        scripted.advance();
     }
 
     /// All zeros under a script (ADR 0123 rule 1), so that two runs of one script, in either

@@ -4,12 +4,12 @@
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":3}
 {"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":4,"task":"s1.2"}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":5}
-{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":6}
-{"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":7,"task":"s1.3"}
+{"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":6,"task":"s1.3"}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":7}
 {"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":8,"task":"s1.4"}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":9}
-{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":10}
-{"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":11,"task":"s1.5"}
+{"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":10,"task":"s1.5"}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":11}
 {"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":12,"task":"s1.6"}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":13}
 {"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":14,"task":"s1.7"}
