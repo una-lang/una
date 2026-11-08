@@ -220,7 +220,7 @@ pub two() -> Int = 2
 
 ## Edition
 
-Edition `0.4` only, a preview.
+Edition `0.4` and later, a preview.
 
 ## Normative source
 

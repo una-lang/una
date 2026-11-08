@@ -141,7 +141,7 @@ The commands report the diagnostics of the files they read: see [`ita.una`](mani
 
 ## Edition
 
-Edition `0.4` only, a preview.
+Edition `0.4` and later, a preview.
 
 ## Normative source
 

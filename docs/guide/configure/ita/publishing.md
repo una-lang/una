@@ -134,7 +134,7 @@ audited 1 registry packages: none is yanked, advised, or of an owner whose keys 
 
 ## Edition
 
-Edition `0.4` only, a preview.
+Edition `0.4` and later, a preview.
 
 ## Normative source
 
