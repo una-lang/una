@@ -1290,3 +1290,68 @@ fn a_task_holding_a_secret_that_decides_no_call_answers_by_its_request_alone() {
         }
     }
 }
+
+/// `examples/health` (ADR 0123, "A health endpoint") in a fresh temporary directory, its grant
+/// moved to `port`; built natively for `engine`.
+fn health_example(port: u16, engine: Engine) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "una-serve-live-health-{engine:?}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let example = root().join("examples/health");
+    for file in ["ita.lock", "src/health.una"] {
+        std::fs::copy(example.join(file), dir.join(file)).unwrap();
+    }
+    let manifest = std::fs::read_to_string(example.join("ita.una")).unwrap();
+    assert!(manifest.contains("\"http://127.0.0.1:8080\""), "{manifest}");
+    std::fs::write(
+        dir.join("ita.una"),
+        manifest.replace("127.0.0.1:8080", &format!("127.0.0.1:{port}")),
+    )
+    .unwrap();
+    if engine == Engine::Native {
+        runtime();
+        let built = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env("UNA_TEST_BUILD_SERVER", "1")
+            .env("NO_COLOR", "1")
+            .args(["build", "."])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(built.status.code(), Some(0), "health: {built:?}");
+    }
+    dir
+}
+
+#[test]
+fn the_health_example_answers_get_over_loopback() {
+    // `examples/health` through the driver of `spec/31 §7` rule 4: `GET /health` is 200 with
+    // `ok`, another path 404, and the host stop ends the run with exit code 0.
+    for engine in ENGINES {
+        let port = free_port();
+        let dir = health_example(port, engine);
+        let run = start(&dir, "health", engine, &[]);
+        for (target, status, body) in [
+            ("/health", "HTTP/1.1 200 OK\r\n", "\r\n\r\nok"),
+            ("/other", "HTTP/1.1 404 Not Found\r\n", "\r\n\r\n"),
+        ] {
+            let mut stream = connect(port);
+            stream
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
+                .unwrap();
+            let answer = read_reply(&mut stream);
+            assert!(
+                answer.starts_with(status) && answer.ends_with(body),
+                "{engine:?} {target}: {answer:?}"
+            );
+        }
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert!(lines.is_empty(), "{engine:?}: {lines:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

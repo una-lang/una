@@ -164,14 +164,16 @@ fn text_nested_in_interpolations_is_bounded() {
     );
 }
 
-/// Every `.una` file under `examples/`, with its text.
+/// Every `.una` file under `examples/` but the `ita.una` manifests (ADR 0122), with its text.
 fn examples() -> Vec<(String, String)> {
     fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 walk(&path, files);
-            } else if path.extension().is_some_and(|extension| extension == "una") {
+            } else if path.extension().is_some_and(|extension| extension == "una")
+                && !path.ends_with("ita.una")
+            {
                 files.push(path);
             }
         }
@@ -190,10 +192,16 @@ fn examples() -> Vec<(String, String)> {
 }
 
 /// The keywords of the edition of the example file at `path`, which its package's `una.toml`
-/// names (`spec/13 §7`).
+/// names, or from edition 0.4 its `ita.una` (`spec/13 §7`).
 fn edition_of(path: &str) -> KeywordSet {
     let mut dir = std::path::Path::new(path).parent();
     while let Some(here) = dir {
+        if let Ok(ita) = std::fs::read_to_string(here.join("ita.una")) {
+            if ita.contains("\n  edition 0.4\n") {
+                return KeywordSet::V0_4;
+            }
+            return KeywordSet::V0_1;
+        }
         if let Ok(manifest) = std::fs::read_to_string(here.join("una.toml")) {
             if manifest.contains("edition = \"0.2\"") {
                 return KeywordSet::V0_2;

@@ -1,0 +1,24 @@
+module health
+
+import std.host (Method, Reply, Request)
+import std.testing (test_request)
+
+--- Answers `GET /health` with 200, and every other request with 404.
+pub handle(request: internal Request) -> internal Reply
+=
+  if request.method is Get and request.segments == ["health"]
+    Reply(status: 200, headers: [], body: "ok")
+  else
+    Reply(status: 404, headers: [], body: "")
+
+test "the health endpoint answers ok"
+  do handle(test_request(method: Get, target: "/health", body: ""))
+  expect result.status == 200
+
+test "every other path is not found"
+  do handle(test_request(method: Get, target: "/other", body: ""))
+  expect result.status == 404
+
+test "a request of another method is not found"
+  do handle(test_request(method: Post, target: "/health", body: ""))
+  expect result.status == 404

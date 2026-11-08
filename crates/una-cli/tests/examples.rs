@@ -2,7 +2,9 @@
 //! `examples/` is canonical, checks at tier 1 with every obligation proven, passes its examples,
 //! reports no trivial `ensures`, and runs when it has an entry; together they contain every
 //! construct of the language list of charter §5. Tier 1 needs Z3 at the version of
-//! `verification.lock` on the path.
+//! `verification.lock` on the path. A package of edition `0.4` is written in `ita.una` (ADR
+//! 0122); one with a `serve` section (`spec/31 §7`) is checked and tested, its tests calling
+//! `handle` directly, but not run: `una run` of a serving program waits for `spec/31 §1` rule 10.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -35,12 +37,15 @@ fn document(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// The packages of `examples/`, by directory name.
+/// The packages of `examples/`, by directory name: a manifest in `una.toml`, or in `ita.una`
+/// from edition `0.4` on (ADR 0122).
 fn packages() -> Vec<String> {
     let mut out: Vec<String> = std::fs::read_dir(repository().join("examples"))
         .unwrap()
         .map(|entry| entry.unwrap())
-        .filter(|entry| entry.path().join("una.toml").is_file())
+        .filter(|entry| {
+            entry.path().join("una.toml").is_file() || entry.path().join("ita.una").is_file()
+        })
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     out.sort();
@@ -374,6 +379,7 @@ fn the_examples_contain_every_construct_of_the_charter_scope() {
 fn every_example_package_is_canonical_verified_and_tested() {
     let packages = packages();
     assert!(packages.len() >= 3, "{packages:?}");
+    let mut serving = Vec::new();
     for name in &packages {
         let path = format!("examples/{name}");
         let fmt = una(&["fmt", "--check", &path]);
@@ -400,7 +406,10 @@ fn every_example_package_is_canonical_verified_and_tested() {
         );
         let declared: usize = sources(&repository().join(&path).join("src"))
             .iter()
-            .map(|source| source.matches("\nexample \"").count())
+            .map(|source| {
+                // `example` blocks, and their edition `0.4` name `test`.
+                source.matches("\nexample \"").count() + source.matches("\ntest \"").count()
+            })
             .sum();
         let tested = document(&test);
         assert_eq!(tested["failed"], 0, "{name}");
@@ -412,13 +421,29 @@ fn every_example_package_is_canonical_verified_and_tested() {
             0,
             "{name}"
         );
-        let manifest = std::fs::read_to_string(repository().join(&path).join("una.toml")).unwrap();
+        let (runs, serves) =
+            match std::fs::read_to_string(repository().join(&path).join("una.toml")) {
+                Ok(manifest) => (manifest.contains("\n[run]\n"), false),
+                Err(_) => {
+                    let manifest =
+                        std::fs::read_to_string(repository().join(&path).join("ita.una")).unwrap();
+                    (
+                        manifest.contains("\nrun\n  entry "),
+                        manifest.contains("\nserve\n"),
+                    )
+                }
+            };
         let expected = RUNS.iter().find(|(package, _)| package == name);
         assert_eq!(
-            manifest.contains("\n[run]\n"),
+            runs,
             expected.is_some(),
-            "{name}: a package with `[run]` has its output in RUNS"
+            "{name}: a package with an entry has its output in RUNS"
         );
+        // A serving package is tested through `handle`; it runs in `serve_live.rs`.
+        assert!(!(runs && serves), "{name}: a package runs one program");
+        if serves {
+            serving.push(name.as_str());
+        }
         if let Some((_, output)) = expected {
             // `examples/journal` copies its entry only when `JOURNAL_COPY` is set.
             let run = Command::new(env!("CARGO_BIN_EXE_una"))
@@ -433,4 +458,6 @@ fn every_example_package_is_canonical_verified_and_tested() {
             assert_eq!(text(&run.stdout), *output, "{name}");
         }
     }
+    // `examples/health` serves (ADR 0123, "A health endpoint").
+    assert_eq!(serving, ["health"]);
 }
