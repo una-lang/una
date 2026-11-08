@@ -489,10 +489,11 @@ mod tests {
     }
 
     #[test]
-    fn idle_parked_waiters_cost_no_wake_and_one_signal_wakes_one() {
-        // The #1726 review, M1: a parked waiter with no deadline has no slice, so no timer
-        // wakes it while the engine is idle: counted, 0 wakes for 100 waiters over 200 ms. One
-        // signal wakes one of them, the oldest; the host stop wakes each of the others once.
+    fn parked_waiters_without_a_deadline_get_no_slice_and_one_signal_wakes_one() {
+        // The #1726 review, M1: a parked waiter with no deadline gets no slice, so its caller
+        // arms no timer for it (counted at the runtime's side, `una-rt` `serve::tests`). One
+        // signal wakes one of 100 waiters, the oldest; the host stop wakes each of the others
+        // once.
         let waiters = 100;
         let (live, counts) = engine(waiters);
         let epoch = live.epoch();
@@ -509,7 +510,6 @@ mod tests {
                 "{look:?}"
             );
         }
-        std::thread::sleep(Duration::from_millis(200));
         assert_eq!(total(&counts), 0);
         live.pass();
         assert_eq!(total(&counts), 1);

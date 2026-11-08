@@ -614,10 +614,10 @@ fn parked_wait(
     all.push((Arc::clone(&serving.entry), RUN_ENTRY));
     loop {
         // The park lasts until the deadline or the retry time, else until a wake only: the
-        // reactor's timer is then never due.
+        // reactor then arms no timer for it (#1726 review 2, M3).
         let slice = match serving.port.look(epoch, retry, deadline, &stopped, None)? {
             Look::Done(waited) => return Some(waited),
-            Look::Park { slice, .. } => slice.unwrap_or(std::time::Duration::MAX),
+            Look::Park { slice, .. } => slice,
         };
         let ticket = std::cell::Cell::new(None);
         let done = std::cell::Cell::new(None);
@@ -906,7 +906,166 @@ pub(crate) mod script {
 
 #[cfg(test)]
 mod tests {
-    use super::{own_deadline, wake_at};
+    #![allow(clippy::unwrap_used)]
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use una_http::serve::program::{Look, Port, Waited, Waker};
+    use una_http::serve::run::Next;
+    use una_http::serve::trace::TraceKey;
+
+    use super::{Serving, own_deadline, parked_wait, wake_at};
+    use crate::{reactor, sched};
+
+    /// An engine that counts the looks of its waiters, holds the wake each one leaves, and ends
+    /// every wait once `release` is set.
+    #[derive(Default)]
+    struct Counted {
+        looks: AtomicUsize,
+        wake: Mutex<Option<Waker>>,
+        release: AtomicBool,
+    }
+
+    impl Port for Counted {
+        fn begin(&self) {}
+        fn epoch(&self) -> u64 {
+            0
+        }
+        fn next(&self) -> Next {
+            Next::Empty
+        }
+        fn wait(
+            &self,
+            _: u64,
+            _: Option<u64>,
+            _: Option<std::time::Instant>,
+            _: &dyn Fn() -> bool,
+        ) -> Waited {
+            Waited::Changed
+        }
+        fn look(
+            &self,
+            _: u64,
+            _: Option<u64>,
+            _: Option<std::time::Instant>,
+            _: &dyn Fn() -> bool,
+            wake: Option<Waker>,
+        ) -> Option<Look> {
+            let n = self.looks.fetch_add(1, Ordering::SeqCst);
+            if self.release.load(Ordering::SeqCst) {
+                return Some(Look::Done(Waited::Changed));
+            }
+            let ticket = wake.map(|wake| {
+                *self.wake.lock().unwrap() = Some(wake);
+                n as u64
+            });
+            Some(Look::Park {
+                ticket,
+                slice: None,
+            })
+        }
+        fn close(&self) {}
+        fn trace_key(&self) -> TraceKey {
+            TraceKey::ZERO
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn an_idle_parked_next_is_looked_at_only_when_woken_and_fails_no_poller_wait() {
+        // #1726 reviews 1 (M1) and 2 (M3, L5, L6): a task's `next` with no deadline parks on
+        // the reactor with no timer. Counted: over 300 ms with no signal, its wait makes its
+        // two looks (the attempt and the one that leaves the wake) and no more, where a 10 ms
+        // re-look would make about 60; the wake the engine calls makes exactly one more; and no
+        // wait of the reactor's poller fails meanwhile, with a wait of `Duration::MAX` beside
+        // it, whose timeout `kevent` refused before.
+        let reactor = reactor::get().unwrap();
+        let failed = reactor::FAILED_WAITS.load(Ordering::SeqCst);
+        let sched = sched::Scheduler::new(una_interp::Concurrency {
+            workers: 2,
+            task_depth: 10,
+            io_threads: 1,
+            file_threads: 1,
+        });
+        let port = Arc::new(Counted::default());
+        let serving = Arc::new(Serving::new(
+            Arc::clone(&port) as Arc<dyn Port + Send + Sync>
+        ));
+        let (sent, seen) = std::sync::mpsc::channel();
+        let waiting = Arc::clone(&serving);
+        sched
+            .spawn(
+                1,
+                256 * 1024,
+                move || {
+                    sent.send(parked_wait(reactor, &waiting, &[], 0, None, None))
+                        .unwrap()
+                },
+                || {},
+            )
+            .unwrap();
+        let far = Arc::new(AtomicBool::new(false));
+        let (far_sent, far_seen) = std::sync::mpsc::channel();
+        let far_wake: Arc<Mutex<Option<crate::interrupt::Wake>>> = Arc::default();
+        let held = Arc::clone(&far_wake);
+        let parked = Arc::clone(&far);
+        sched
+            .spawn(
+                1,
+                256 * 1024,
+                move || {
+                    let woken = reactor.wait_on(None, Some(Duration::MAX), None, &[], |ready| {
+                        *held.lock().unwrap() = Some(Arc::clone(ready));
+                        parked.store(true, Ordering::SeqCst);
+                        false
+                    });
+                    far_sent.send(woken).unwrap();
+                },
+                || {},
+            )
+            .unwrap();
+        // A short wait beside them makes the reactor pass again: once its timer fires, the far
+        // one is the reactor's next, whose timeout the poller must take.
+        let (short_sent, short_seen) = std::sync::mpsc::channel();
+        sched
+            .spawn(
+                1,
+                256 * 1024,
+                move || {
+                    let woken =
+                        reactor
+                            .wait_on(None, Some(Duration::from_millis(50)), None, &[], |_| false);
+                    short_sent.send(woken).unwrap();
+                },
+                || {},
+            )
+            .unwrap();
+        assert_eq!(
+            short_seen.recv_timeout(Duration::from_secs(10)).unwrap(),
+            reactor::Woken::TimedOut
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(far.load(Ordering::SeqCst));
+        assert_eq!(port.looks.load(Ordering::SeqCst), 2);
+        assert!(seen.try_recv().is_err(), "the wait ended with no wake");
+        port.release.store(true, Ordering::SeqCst);
+        let wake = port.wake.lock().unwrap().take().unwrap();
+        wake();
+        assert_eq!(
+            seen.recv_timeout(Duration::from_secs(10)).unwrap(),
+            Some(Waited::Changed)
+        );
+        assert_eq!(port.looks.load(Ordering::SeqCst), 3);
+        let far_wake = far_wake.lock().unwrap().take().unwrap();
+        far_wake();
+        assert_eq!(
+            far_seen.recv_timeout(Duration::from_secs(10)).unwrap(),
+            reactor::Woken::Ready
+        );
+        assert_eq!(reactor::FAILED_WAITS.load(Ordering::SeqCst), failed);
+    }
 
     #[test]
     fn a_wait_ends_at_the_earliest_deadline_of_any_waiter() {
