@@ -1,6 +1,7 @@
 //! `una migrate [path]` (ADR 0122 rule 64): moves a package from `una.toml` and
-//! `verification.lock` to `ita.una` and `ita.lock`, edition `0.4`, and rewrites its modules in
-//! the canonical form of edition `0.4` (ADR 0125, amendment of 2026-10-25).
+//! `verification.lock` to `ita.una` and `ita.lock` of edition `0.4`, or of edition `0.5` when
+//! `una.toml` names it (no migration lowers an edition), and rewrites its modules in the
+//! canonical form of edition `0.4`, which `0.5` keeps (ADR 0125, amendment of 2026-10-25).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -60,10 +61,11 @@ pub(crate) struct MigrateOptions<'a> {
 /// `una migrate [path] [--dry-run] [--name <name>]`.
 ///
 /// Writes `ita.una` and `ita.lock` through temporary files and renames, rewrites each module
-/// that parses in edition `0.4` in its canonical form there, which wraps long lines (ADR 0125,
-/// amendment of 2026-10-25), then removes `una.toml` and `verification.lock`. Then checks the
-/// package, so rewritten, at tier 0 in edition `0.4`, and prints the diagnostics the change of
-/// edition causes: those it has in edition `0.4` and not in its own. It applies none of their
+/// that parses in the edition it writes, `0.4` or the later `0.5` that `una.toml` named, in the
+/// canonical form, which wraps long lines (ADR 0125, amendment of 2026-10-25; #1744), then
+/// removes `una.toml` and `verification.lock`. Then checks the package, so rewritten, at tier 0
+/// in that edition, and prints the diagnostics the change of edition causes: those it has in
+/// that edition and not in its own. It applies none of their
 /// repairs, which `una fix` does. With `--dry-run` it writes nothing. Edition-gated: a package that already has `ita.una`, or that is not a
 /// package directory, is a usage error.
 pub(crate) fn migrate_command(
