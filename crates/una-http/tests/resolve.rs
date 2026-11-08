@@ -62,9 +62,9 @@ fn get(timeout: Duration, abandon_after: Option<Duration>) -> (Result<(), Error>
 #[test]
 fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     // A pool of 2, every lookup of which hangs. Twice as many requests as the pool at once, each
-    // with a deadline of 300 ms: the first 2 lookups hold both threads for good, the other 2
-    // queue behind them, and every request still fails with `TimedOut` at its own deadline,
-    // within a tight bound, while the pool never starts a third thread.
+    // with a deadline of 300 ms: the name's one lookup (#1265) holds a thread for good, the
+    // other requests join it, and every request still fails with `TimedOut` at its own
+    // deadline, within a tight bound, while the pool never starts a third thread.
     resolve::use_test_lookup(hangs);
     // 8 helpers: a lookup pool of 2, and a connect pool of 8, which no request reaches here.
     resolve::start(8).unwrap();

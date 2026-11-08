@@ -1323,6 +1323,8 @@ fn run_command(
                 deadline,
                 stop_grace,
                 trace,
+                serve_script,
+                serve_out,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -1347,6 +1349,8 @@ fn run_command(
                     deadline,
                     stop_grace,
                     trace: trace.as_deref(),
+                    serve_script: serve_script.as_deref(),
+                    serve_out: serve_out.as_deref(),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -1402,6 +1406,8 @@ fn run_command(
                     deadline: None,
                     stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
                     trace: None,
+                    serve_script: None,
+                    serve_out: None,
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
