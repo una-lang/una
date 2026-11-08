@@ -1,0 +1,1 @@
+- **Host and hard stops of a scripted run alike in both engines** (#1009, ADR 0123 rule 18, `spec/31 §6` rule 9): a host stop with a request in flight, one queued, one being read and idle connections, and a hard stop after `--stop-grace` that ends with U6007 and answers the held exchange `503`, give the same bytes, output and trace in the interpreter and in native code.
