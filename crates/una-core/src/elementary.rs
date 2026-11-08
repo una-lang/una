@@ -15,11 +15,14 @@
 //! - **Otherwise** the precision doubles, from 128 bits. The loop ends for every input: for a
 //!   nonzero rational `x`, which every finite `F64` is, `exp(x)` is transcendental
 //!   (Lindemann-Weierstrass), so it is never a rounding boundary (a midpoint, or the overflow
-//!   threshold), and the bracket around it eventually excludes every boundary. The published
-//!   hard-case searches for binary64 put every input within the first or second round.
+//!   threshold), and the bracket around it eventually excludes every boundary. How many rounds
+//!   an input needs is a cost, not a correctness, question: the tests check, on a sample of
+//!   every binade, that every sampled input is decided by the second round (256 bits). That is
+//!   tested, not proven for every input.
 //!
-//! Cost: O(1) per call. A round at precision `p` sums O(p / log p) terms of a series, each one
-//! product of `p`-bit integers. The time of a call depends on its argument (how many rounds it
+//! Cost: O(1) per call. A round at precision `p` sums O(p / log p) terms of the Taylor series,
+//! each one product of `p`-bit integers, and `ln 2` by its `atanh(1/3)` series costs O(p)
+//! divisions by small integers. The time of a call depends on its argument (how many rounds it
 //! takes), which is out of the model, as the timing of subnormals is (ADR 0114 rule 11.2).
 
 use crate::bigint::{BigInt, BigUint, Sign};

@@ -292,7 +292,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.findings.deadline_loops.push(super::DeadlineLoop {
                     span: stmt.span,
                     function: self.current,
-                    seed,
+                    frame: seed,
                 });
             }
         }
@@ -855,11 +855,11 @@ impl<'a> Checker<'_, 'a, '_> {
         self.part_close();
         let seed = self.timing_end();
         // ADR 0116 P2: `κ` of the statement, its bound and its block.
-        self.construct_seed(construct, seed.clone());
+        self.construct_seed(construct, seed);
         self.findings.tasks_sites.push(super::timing::TasksSite {
             span: stmt.span,
             function: self.current,
-            seed,
+            frame: seed,
         });
         self.discarded(value_span(&stmt.block), &ty);
     }
@@ -1399,7 +1399,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     self.findings.limiter_sites.push(super::LimiterSite {
                         span,
                         function: self.current,
-                        seed: seed.clone(),
+                        frame: seed,
                     });
                 }
             }

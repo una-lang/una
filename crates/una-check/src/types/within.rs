@@ -29,7 +29,6 @@ use una_syntax::ast::{Convention, Expr, ExprKind};
 use super::check::Checker;
 use super::label::Label;
 use super::memory::place_root;
-use super::timing::TimingSeed;
 use super::ty::Ty;
 
 /// The construct of a timed site.
@@ -63,8 +62,8 @@ pub(crate) struct WithinSite {
     pub(crate) span: Span,
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
-    /// The seed of `τ(e)`, the deadline's label included.
-    pub(crate) seed: TimingSeed,
+    /// The frame of `τ(e)`, the deadline's label included.
+    pub(crate) frame: super::timing::TimingFrame,
 }
 
 /// What [`Checker::within_open`] saved, for [`Checker::within_close`].
@@ -128,7 +127,7 @@ impl Checker<'_, '_, '_> {
             key: open.key,
             span: open.span,
             function: self.current,
-            seed,
+            frame: seed,
         });
         let failure = self.within_failure(inner);
         self.records.withins.insert(open.key, failure.clone());
@@ -167,7 +166,7 @@ impl Checker<'_, '_, '_> {
     /// Closes the `first of` that `open` opened, once its branches are checked: records the
     /// site, and returns `t`, the label of its value, and the race's seed, from which `κ` of the
     /// race comes (ADR 0116 P2).
-    pub(crate) fn race_close(&mut self, open: &OpenWithin) -> (Label, TimingSeed) {
+    pub(crate) fn race_close(&mut self, open: &OpenWithin) -> (Label, super::timing::TimingFrame) {
         self.ctx.timing = open.saved.clone();
         let seed = self.timing_end();
         self.findings.withins.push(WithinSite {
@@ -175,7 +174,7 @@ impl Checker<'_, '_, '_> {
             key: open.key,
             span: open.span,
             function: self.current,
-            seed: seed.clone(),
+            frame: seed,
         });
         (open.tau.clone(), seed)
     }

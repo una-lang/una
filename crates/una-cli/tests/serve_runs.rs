@@ -979,6 +979,13 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
         "reply_after_answer_deadline",
         // Several connections from one peer address, one of them refused at accept.
         "peer_limit_refuses",
+        "pipelined_in_order",
+        "refusals_close",
+        "refusals_request_line",
+        "refusals_header_lines",
+        "refusals_host_and_target",
+        "refusals_framing",
+        "refusal_drains_at_most_64_kib",
     ] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/serve_runs")

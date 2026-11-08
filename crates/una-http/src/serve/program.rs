@@ -15,7 +15,8 @@
 //! for a change from that epoch.
 
 use std::net::{IpAddr, SocketAddr};
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::run::Next;
 use super::trace::TraceKey;
@@ -30,6 +31,29 @@ pub enum Waited {
     /// The run's host stop came first.
     Stopped,
 }
+
+/// What one look of a wait that parks outside the engine found ([`Port::look`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// The wait ends, as [`Port::wait`] would have ended it.
+    Done(Waited),
+    /// Nothing yet: the caller parks for at most `slice`, or until its wake when `slice` is
+    /// `None`, then looks again. When the look was given a wake, the engine holds it as
+    /// `ticket` and calls it at most once, at a signal the waiter may claim or at any stop of
+    /// the engine; the caller gives the ticket back with [`Port::unpark`] after its park. The
+    /// caller's own conditions (its `stopped` test) must wake the park by the caller's means,
+    /// since no look comes in between.
+    Park {
+        /// The wake's place among the engine's parked waiters, when one was given.
+        ticket: Option<u64>,
+        /// The time left before the wait's deadline or a rate's retry time, the earlier; `None`
+        /// when it has neither.
+        slice: Option<Duration>,
+    },
+}
+
+/// What wakes a waiter that parks outside the engine: called at most once per look.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// The serve engine of a run, as the program's operations meet it, from any thread of the run.
 pub trait Port: Sync {
@@ -57,6 +81,30 @@ pub trait Port: Sync {
         deadline: Option<Instant>,
         stopped: &dyn Fn() -> bool,
     ) -> Waited;
+
+    /// One look of a wait that parks its caller outside the engine, as a task parks on the
+    /// native runtime's reactor without holding a thread (#1723): the same tests, in the same
+    /// order, as one pass of [`Port::wait`], without its sleep. With `wake`, a look that finds
+    /// nothing registers it, under the lock its signals are sent under, so a signal sent after
+    /// the look calls it and none is lost between the look and the park. `None` when the engine
+    /// has no such waits: its caller waits with [`Port::wait`].
+    fn look(
+        &self,
+        epoch: u64,
+        retry: Option<u64>,
+        deadline: Option<Instant>,
+        stopped: &dyn Fn() -> bool,
+        wake: Option<Waker>,
+    ) -> Option<Look> {
+        let _ = (epoch, retry, deadline, stopped, wake);
+        None
+    }
+
+    /// Gives back the place of a parked waiter's wake ([`Look::Park`]), whether or not a signal
+    /// called it. A spare call does nothing.
+    fn unpark(&self, ticket: u64) {
+        let _ = ticket;
+    }
 
     /// Hands on a wake that a wait ended with [`Waited::Changed`] and that its caller will not
     /// use: a `next` that leaves without a further attempt, as at a cancellation, calls it so
