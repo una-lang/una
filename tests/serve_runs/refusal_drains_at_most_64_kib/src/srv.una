@@ -1,0 +1,32 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- Answers one request with the first segment of its path.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> ""
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "hello {first}"))
+    if error use unit
+
+--- After a refusal the host reads and drops what the peer sends, at most 64 KiB or for one
+--- second, then closes (`spec/31 §6` rule 8): past 64 KiB it closes at once, under them after one
+--- second; a valid request after them is answered.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")

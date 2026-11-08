@@ -3,13 +3,15 @@
 //!
 //! Two steps, so that every construct with a deadline uses the same rule:
 //! 1. While a site is checked, [`Checker::timing_start`] and [`Checker::timing_end`] record
-//!    its [`TimingSeed`]: the program counter, the bindings it reads from outside it, the
-//!    functions it calls, the operations it performs, the handlers it installs and whether it
-//!    calls a function value. Every value checked joins `ℓ*` of its type into the seeds of the
-//!    open sites and into the body label of its function or handler ([`Checker::timing_value`]).
-//! 2. Once every body is checked, [`timing`] closes the seed over the call graph of the whole
-//!    package: `τ⁰` from the functions the site reaches, their operations and the handlers that
-//!    can serve them, and `τ_conc` from the parts of task constructs that can run beside it.
+//!    its frame ([`TimingFrames`]): the program counter, the bindings it reads from outside it,
+//!    the functions it calls, the operations it performs, the handlers it installs and whether
+//!    it calls a function value, each recorded once, in the innermost open frame. Every value
+//!    checked joins `ℓ*` of its type into the frames and into the body label of its function or
+//!    handler ([`Checker::timing_value`]).
+//! 2. Once every body is checked, the summaries of the graph give every frame's label bottom up
+//!    ([`Summaries::frames`]), with `τ_conc` from the parts of task constructs that can run
+//!    beside it ([`Concurrency`]); the search over the graph ([`timing`]) runs on a frame's
+//!    rebuilt seed only to name the source of a label that is reported.
 //!
 //! The function of a `[drive]` step (IF7) is a site whose seed is the step's parameters and the
 //! step itself as its one callee.
@@ -192,8 +194,9 @@ pub(crate) struct ConstructNode {
     pub(crate) node: Option<Caller>,
     /// The innermost construct whose part holds it.
     pub(crate) parent: Option<usize>,
-    /// The seed of `κ`, `τ⁰` of the whole construct (P2): its parts, its list and its bound.
-    pub(crate) seed: TimingSeed,
+    /// The frame of `κ`, `τ⁰` of the whole construct (P2): its parts, its list and its bound;
+    /// `None` until it is recorded, which counts as `⊤` (fail closed).
+    pub(crate) frame: Option<TimingFrame>,
 }
 
 /// What checking records for the open sites, in the innermost one (ADR 0116 amendment of
@@ -202,9 +205,10 @@ pub(crate) struct ConstructNode {
 enum Event {
     /// A source of the frame itself: its program counter, a deadline's label.
     Source(Label, String),
-    /// A read of the local `name` at `position`, with `ℓ*` of its type: free in every frame of
-    /// the stack whose mark is above the position.
-    Read(Label, String, usize),
+    /// A read of the local `name` at `position`, with `ℓ*` of its type, and the depth of the
+    /// outermost open frame whose mark is above the position: the read is free in that frame
+    /// and in every open frame inside it, since the marks of the stack never decrease.
+    Read(Label, String, usize, usize),
     /// A call of, or a reference to, a function.
     Callee(usize),
     /// An operation performed.
@@ -227,44 +231,219 @@ enum Event {
 #[derive(Clone, Debug, Default)]
 struct FrameNode {
     mark: usize,
+    parent: Option<usize>,
+    depth: usize,
     children: Vec<usize>,
     seed: TimingSeed,
     events: Vec<(u64, Event)>,
 }
 
-/// The frames of the sites being checked: a tree by nesting, with the open ones on a stack,
-/// innermost last. Each item checking records goes once into the innermost open frame, not into
-/// every open frame, and the seed of a frame is rebuilt from its subtree when it ends. The tree
-/// is cleared whenever no frame is open, so it holds the frames of one outermost site at most.
+/// A frame of [`TimingFrames`]: the site whose checking recorded it, by its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TimingFrame(usize);
+
+/// The frames of the sites a pass checked (ADR 0116 amendment of 2026-10-25, E): a tree by
+/// nesting for each body. Each item checking records goes once into the innermost open frame,
+/// not into every open frame ([`Checker::timing_start`]), and a site keeps its frame, whose seed
+/// is rebuilt from its subtree when a consumer asks for it ([`TimingFrames::seed`]).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TimingFrames {
     tree: Vec<FrameNode>,
-    stack: Vec<usize>,
     next: u64,
 }
 
 impl TimingFrames {
-    /// Records `event` in the innermost open frame, if any.
-    fn record(&mut self, event: Event) {
-        if let Some(&at) = self.stack.last()
-            && let Some(frame) = self.tree.get_mut(at)
-        {
+    /// Records `event` in the frame `at`, the innermost open one.
+    fn record(&mut self, at: usize, event: Event) {
+        if let Some(frame) = self.tree.get_mut(at) {
             frame.events.push((self.next, event));
             self.next += 1;
         }
     }
 
-    /// Whether a frame is open.
-    fn is_open(&self) -> bool {
-        !self.stack.is_empty()
+    /// The seed of `frame`, rebuilt from its subtree ([`TimingFrames::seed_of`]): only for a
+    /// consumer that needs its items one by one, as the search that names a reported site's
+    /// source, or the reach of a `start`.
+    pub(crate) fn seed(&self, frame: TimingFrame) -> TimingSeed {
+        self.seed_of(frame.0, true)
     }
 
+    /// The fields of `frame` itself, with none of its items: its node, its home, its innermost
+    /// construct and whether it is unplaced, which `τ_conc`, the preview's `τ_conc` and the
+    /// `via` rule read. O(1).
+    pub(crate) fn own(&self, frame: TimingFrame) -> TimingSeed {
+        self.tree
+            .get(frame.0)
+            .map_or_else(TimingSeed::default, |node| TimingSeed {
+                unplaced: node.seed.unplaced,
+                node: node.seed.node,
+                home: node.seed.home,
+                construct: node.seed.construct,
+                ..TimingSeed::default()
+            })
+    }
+
+    /// For every frame, the join of `item` over the items of its subtree other than sources and
+    /// reads, bottom up: a frame's parent has a smaller id, so one pass over the ids in
+    /// descending order adds each frame's join into its parent's. O(F + N) joins for the `F`
+    /// frames and `N` items (slice 8b of #1087, amendment E: "items bottom-up").
+    fn fold_up<T: Clone>(
+        &self,
+        zero: &T,
+        item: impl Fn(&Event) -> Option<T>,
+        join: impl Fn(&T, &T) -> T,
+    ) -> Vec<T> {
+        let mut out: Vec<T> = vec![zero.clone(); self.tree.len()];
+        for at in (0..self.tree.len()).rev() {
+            let Some(frame) = self.tree.get(at) else {
+                continue;
+            };
+            let mut own = out.get(at).cloned().unwrap_or_else(|| zero.clone());
+            for (_, event) in &frame.events {
+                una_core::label_counters::frame_step();
+                if let Some(value) = item(event) {
+                    own = join(&own, &value);
+                }
+            }
+            if let Some(parent) = frame.parent
+                && let Some(slot) = out.get_mut(parent)
+            {
+                *slot = join(slot, &own);
+            }
+            if let Some(slot) = out.get_mut(at) {
+                *slot = own;
+            }
+        }
+        out
+    }
+
+    /// For every frame, the join of its own sources (its program counter, a deadline's label)
+    /// and of the reads free in it, which may lie in its subtree (amendment E, "reads"):
+    /// - its frames are numbered in the order the walk of its tree visits them, so that each
+    ///   frame's subtree is the interval from its id to the end of its subtree;
+    /// - the depths are swept upward; at depth `j`, each read whose outermost frame is at depth
+    ///   `j` joins a segment tree over the ids at its frame's id;
+    /// - each frame at depth `j` then asks for the join over its interval.
+    ///
+    /// So a frame counts a read in its subtree exactly when the read is free in it. O((R + F) log
+    /// F) joins for the `R` reads and the `F` frames of the whole pass, and a counting sort of
+    /// the depths. One segment tree serves every body of the pass, so the logarithm is that of
+    /// the pass's frames, not of one body's as amendment E states it per body: within a
+    /// logarithm of the best possible either way.
+    fn sources_up(&self) -> Vec<Label> {
+        let n = self.tree.len();
+        // The end of each subtree: its last id, plus one. Children have larger ids.
+        let mut end: Vec<usize> = (1..=n).collect();
+        for at in (0..n).rev() {
+            if let Some(parent) = self.tree.get(at).and_then(|frame| frame.parent) {
+                let last = end.get(at).copied().unwrap_or(at + 1);
+                if let Some(slot) = end.get_mut(parent) {
+                    *slot = (*slot).max(last);
+                }
+            }
+        }
+        let depth_of = |at: usize| self.tree.get(at).map_or(0, |frame| frame.depth);
+        let deepest = (0..n).map(depth_of).max().unwrap_or(0);
+        let mut frames_at: Vec<Vec<usize>> = vec![Vec::new(); deepest + 1];
+        let mut reads_at: Vec<Vec<(usize, &Label)>> = vec![Vec::new(); deepest + 1];
+        let mut out: Vec<Label> = vec![Label::public(); n];
+        for (at, frame) in self.tree.iter().enumerate() {
+            if let Some(slot) = frames_at.get_mut(frame.depth) {
+                slot.push(at);
+            }
+            for (_, event) in &frame.events {
+                una_core::label_counters::frame_step();
+                match event {
+                    Event::Source(label, _) => {
+                        if let Some(slot) = out.get_mut(at) {
+                            *slot = slot.join(label);
+                        }
+                    }
+                    Event::Read(label, _, _, outer) => {
+                        if let Some(slot) = reads_at.get_mut(*outer) {
+                            slot.push((at, label));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut tree = JoinTree::new(n);
+        for (depth, frames) in frames_at.iter().enumerate() {
+            for &(at, label) in reads_at.get(depth).map_or(&[][..], Vec::as_slice) {
+                tree.join_at(at, label);
+            }
+            for &at in frames {
+                let reads = tree.join_over(at, end.get(at).copied().unwrap_or(at + 1));
+                if let Some(slot) = out.get_mut(at) {
+                    *slot = slot.join(&reads);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A segment tree of labels under join, over `n` positions: a join at a position and the join
+/// over an interval, each O(log n) joins, counted.
+struct JoinTree {
+    size: usize,
+    nodes: Vec<Label>,
+}
+
+impl JoinTree {
+    fn new(n: usize) -> JoinTree {
+        let size = n.next_power_of_two().max(1);
+        JoinTree {
+            size,
+            nodes: vec![Label::public(); 2 * size],
+        }
+    }
+
+    /// Joins `label` into position `at`.
+    fn join_at(&mut self, at: usize, label: &Label) {
+        let mut node = self.size + at;
+        while node >= 1 {
+            una_core::label_counters::frame_step();
+            if let Some(slot) = self.nodes.get_mut(node) {
+                *slot = slot.join(label);
+            }
+            node /= 2;
+        }
+    }
+
+    /// The join over positions `from..to`.
+    fn join_over(&self, from: usize, to: usize) -> Label {
+        let mut out = Label::public();
+        let (mut low, mut high) = (from + self.size, to + self.size);
+        while low < high {
+            una_core::label_counters::frame_step();
+            if low % 2 == 1 {
+                if let Some(label) = self.nodes.get(low) {
+                    out = out.join(label);
+                }
+                low += 1;
+            }
+            if high % 2 == 1 {
+                high -= 1;
+                if let Some(label) = self.nodes.get(high) {
+                    out = out.join(label);
+                }
+            }
+            low /= 2;
+            high /= 2;
+        }
+        out
+    }
+}
+
+impl TimingFrames {
     /// The seed of the frame `at`, rebuilt from the items of its subtree in the order checking
     /// recorded them, exactly as the copying into every open frame built it: its own sources and
     /// fields; each read of a local bound before its mark, once per name, in order; and the
     /// callees, operations, installations, values, bindings, value calls and opaque
     /// applications of the whole subtree. O(k log k) for the `k` items of the subtree.
-    fn seed_of(&self, at: usize) -> TimingSeed {
+    fn seed_of(&self, at: usize, counted: bool) -> TimingSeed {
         let Some(frame) = self.tree.get(at) else {
             return TimingSeed::default();
         };
@@ -284,6 +463,13 @@ impl TimingFrames {
             );
         }
         events.sort_unstable_by_key(|(sequence, _)| *sequence);
+        // Counted as frame steps, so that a test sees each rebuild (slice 8b of #1087), except the rebuilds of a
+        // cross-check in a build with debug assertions, which a release build never makes.
+        if counted {
+            for _ in &events {
+                una_core::label_counters::frame_step();
+            }
+        }
         let mut read: BTreeSet<&str> = BTreeSet::new();
         let join = |slot: &mut Option<Label>, label: &Label| {
             *slot = Some(match slot {
@@ -294,7 +480,7 @@ impl TimingFrames {
         for (_, event) in events {
             match event {
                 Event::Source(label, source) => seed.sources.push((label.clone(), source.clone())),
-                Event::Read(label, name, position) => {
+                Event::Read(label, name, position, _) => {
                     if *position < frame.mark && read.insert(name.as_str()) {
                         seed.sources
                             .push((label.clone(), format!("the binding `{name}`")));
@@ -332,23 +518,33 @@ impl Checker<'_, '_, '_> {
             construct: self.parts.last().copied(),
             ..TimingSeed::default()
         };
-        let at = self.timing.tree.len();
-        if let Some(&parent) = self.timing.stack.last()
-            && let Some(frame) = self.timing.tree.get_mut(parent)
+        let frames = &mut self.findings.frames;
+        let at = frames.tree.len();
+        if let Some(&parent) = self.timing.last()
+            && let Some(frame) = frames.tree.get_mut(parent)
         {
             frame.children.push(at);
         }
-        self.timing.tree.push(FrameNode {
+        frames.tree.push(FrameNode {
             mark: self.locals.len(),
+            parent: self.timing.last().copied(),
+            depth: self.timing.len(),
             children: Vec::new(),
             seed: std::mem::take(&mut seed),
             events: Vec::new(),
         });
-        self.timing.stack.push(at);
-        self.timing.record(Event::Source(
+        self.timing.push(at);
+        self.timing_record(Event::Source(
             self.ctx.pc.clone(),
             "the program counter".to_owned(),
         ));
+    }
+
+    /// Records `event` in the innermost open frame, if any: once, not in every open frame.
+    fn timing_record(&mut self, event: Event) {
+        if let Some(&at) = self.timing.last() {
+            self.findings.frames.record(at, event);
+        }
     }
 
     /// Whether code checked here runs where the structure of its function does not show what
@@ -416,8 +612,8 @@ impl Checker<'_, '_, '_> {
     }
 
     /// Records that the code being checked binds, or receives from an operation, a value whose
-    /// deep label is `label`: in its node of the graph of ADR 0116 P1 and in every open site,
-    /// for the reach of a `start` (ADR 0123 IF6, #1674). O(open sites + log n).
+    /// deep label is `label`: in its node of the graph of ADR 0116 P1, and once in the innermost
+    /// open site ([`TimingFrames`]), for the reach of a `start` (ADR 0123 IF6, #1674). O(log n).
     pub(crate) fn reach_label(&mut self, label: &Label) {
         if label.is_public() {
             return;
@@ -430,7 +626,7 @@ impl Checker<'_, '_, '_> {
                 .or_insert_with(Label::public);
             *slot = slot.join(label);
         }
-        self.timing.record(Event::Bound(label.clone()));
+        self.timing_record(Event::Bound(label.clone()));
     }
 
     /// Records that the code being checked installs the handler `handler` at `span`.
@@ -448,23 +644,17 @@ impl Checker<'_, '_, '_> {
             span,
             node: self.caller(),
             parent: self.parts.last().copied(),
-            // `⊤` until `construct_seed` records the seed, so a construct whose seed is never
+            // `⊤` until `construct_seed` records the frame, so a construct whose frame is never
             // recorded fails closed (P4, F item 6).
-            seed: TimingSeed {
-                sources: vec![(
-                    Label::top(&self.env.categories),
-                    "a construct whose seed was not recorded".to_owned(),
-                )],
-                ..TimingSeed::default()
-            },
+            frame: None,
         });
         id
     }
 
-    /// Records `seed`, that of `κ` (P2), for the construct `id`, once its parts are checked.
-    pub(crate) fn construct_seed(&mut self, id: usize, seed: TimingSeed) {
+    /// Records `frame`, that of `κ` (P2), for the construct `id`, once its parts are checked.
+    pub(crate) fn construct_seed(&mut self, id: usize, frame: TimingFrame) {
         if let Some(construct) = self.findings.constructs.get_mut(id) {
-            construct.seed = seed;
+            construct.frame = Some(frame);
         }
     }
 
@@ -496,35 +686,37 @@ impl Checker<'_, '_, '_> {
     /// a test runs alone, so nothing runs beside it, as nothing runs beside `main` (ADR 0116
     /// IF6); the code of a task or a lambda inside it stays unplaced by its own sites.
     pub(crate) fn timing_placed(&mut self) {
-        if let Some(&at) = self.timing.stack.last()
-            && let Some(frame) = self.timing.tree.get_mut(at)
+        if let Some(&at) = self.timing.last()
+            && let Some(frame) = self.findings.frames.tree.get_mut(at)
         {
             frame.seed.unplaced = false;
         }
     }
 
-    /// Ends the innermost site of [`Self::timing_start`] and returns its seed, rebuilt from the
-    /// items of its subtree ([`TimingFrames`]).
-    pub(crate) fn timing_end(&mut self) -> TimingSeed {
-        let Some(at) = self.timing.stack.pop() else {
-            return TimingSeed::default();
-        };
-        let seed = self.timing.seed_of(at);
-        if !self.timing.is_open() {
-            self.timing.tree.clear();
+    /// Ends the innermost site of [`Self::timing_start`] and returns its frame, whose seed the
+    /// consumers rebuild from its subtree ([`TimingFrames::seed`]). Without an open site, a
+    /// frame with no item.
+    pub(crate) fn timing_end(&mut self) -> TimingFrame {
+        match self.timing.pop() {
+            Some(at) => TimingFrame(at),
+            None => {
+                let frames = &mut self.findings.frames;
+                let at = frames.tree.len();
+                frames.tree.push(FrameNode::default());
+                TimingFrame(at)
+            }
         }
-        seed
     }
 
     /// Adds `label` from `source` to the innermost site, such as a deadline's label (IF5 item
     /// 5).
     pub(crate) fn timing_source(&mut self, label: Label, source: String) {
-        self.timing.record(Event::Source(label, source));
+        self.timing_record(Event::Source(label, source));
     }
 
     /// Records a read of the local `name` in every site it is free in (IF5 item 2).
     pub(crate) fn timing_read(&mut self, name: &str) {
-        if !self.timing.is_open() {
+        if self.timing.is_empty() {
             return;
         }
         let Some(position) = self.locals.position(name) else {
@@ -534,12 +726,23 @@ impl Checker<'_, '_, '_> {
             return;
         };
         let label = self.deep(&ty);
-        self.timing
-            .record(Event::Read(label, name.to_owned(), position));
+        // The outermost open frame the read is free in, by a binary search: the marks of the
+        // open frames never decrease inward, since a site's locals end before it does.
+        let frames = &self.findings.frames;
+        let outer = self.timing.partition_point(|&at| {
+            // Counted, so that a test sees the O(log d) of the search (slice 8b of #1087).
+            una_core::label_counters::frame_step();
+            frames
+                .tree
+                .get(at)
+                .is_none_or(|frame| frame.mark <= position)
+        });
+        self.timing_record(Event::Read(label, name.to_owned(), position, outer));
     }
 
     /// Records a value of type `ty` computed by the code being checked (#1685): `ℓ*` of `ty`,
-    /// its symbolic labels dropped, joins the values of every open site, of the function being
+    /// its symbolic labels dropped, joins the values of the open sites (once, in the innermost,
+    /// [`TimingFrames`]), of the function being
     /// checked ([`Findings::body_labels`]) and of the handler being checked. A type parameter's
     /// label `ℓ_T` is dropped, since the values of `T` come from the callers, whose own code
     /// counts them. O(size of `ty`) per expression, so checking a body stays linear.
@@ -555,7 +758,7 @@ impl Checker<'_, '_, '_> {
                 None => *values = Some(label.clone()),
             }
         }
-        self.timing.record(Event::Value(label.clone()));
+        self.timing_record(Event::Value(label.clone()));
         if let Some(current) = self.current {
             let body = self.findings.body_labels.entry(current).or_insert(None);
             raise(body, &label);
@@ -573,43 +776,48 @@ impl Checker<'_, '_, '_> {
         Some(self.findings.handler_seeds.entry(handler).or_default())
     }
 
-    /// Records a call of, or a reference to, the function `callee` in every open site, and in
+    /// Records a call of, or a reference to, the function `callee` for the open sites (once, in
+    /// the innermost, [`TimingFrames`]), and in
     /// the seed of the handler being checked.
     pub(crate) fn timing_callee(&mut self, callee: usize) {
-        self.timing.record(Event::Callee(callee));
+        self.timing_record(Event::Callee(callee));
         if let Some(seed) = self.handler_seed() {
             seed.callees.insert(callee);
         }
     }
 
-    /// Records the operation `op` of `capability` in every open site, and in the seed of the
+    /// Records the operation `op` of `capability` for the open sites (once, in the innermost,
+    /// [`TimingFrames`]), and in the seed of the
     /// handler being checked.
     pub(crate) fn timing_op(&mut self, capability: CapId, op: &str) {
-        self.timing.record(Event::Op(capability, op.to_owned()));
+        self.timing_record(Event::Op(capability, op.to_owned()));
         if let Some(seed) = self.handler_seed() {
             seed.ops.insert((capability, op.to_owned()));
         }
     }
 
-    /// Records the installation of the handler `handler` in every open site, and in the seed
+    /// Records the installation of the handler `handler` for the open sites (once, in the
+    /// innermost, [`TimingFrames`]), and in the seed
     /// of the handler being checked.
     pub(crate) fn timing_install(&mut self, handler: usize) {
-        self.timing.record(Event::Install(handler));
+        self.timing_record(Event::Install(handler));
         if let Some(seed) = self.handler_seed() {
             seed.handlers.insert(handler);
         }
     }
 
-    /// Records a call of a function value in every open site (IF5 item 4), and in the seed of
+    /// Records a call of a function value for the open sites (once, in the innermost,
+    /// [`TimingFrames`]; IF5 item 4), and in the seed of
     /// the handler being checked (#1436).
     pub(crate) fn timing_value_call(&mut self) {
-        self.timing.record(Event::ValueCall);
+        self.timing_record(Event::ValueCall);
         if let Some(seed) = self.handler_seed() {
             seed.value_call = true;
         }
     }
 
-    /// Records, in every open site, for the function being checked and in the seed of the
+    /// Records, for the open sites (once, in the innermost, [`TimingFrames`]), for the function
+    /// being checked and in the seed of the
     /// handler being checked, a call of the prelude
     /// function `callee`, one that applies a function argument ([`applies_function`]), whose
     /// code is not known at the call, or a use of `callee` as a value (IF5 item 4, #1023).
@@ -617,7 +825,7 @@ impl Checker<'_, '_, '_> {
         if let Some(current) = self.current {
             self.findings.opaque_applies.insert((current, callee));
         }
-        self.timing.record(Event::Opaque(callee));
+        self.timing_record(Event::Opaque(callee));
         if let Some(seed) = self.handler_seed() {
             seed.opaque_applies.insert(callee);
         }
@@ -1122,6 +1330,61 @@ fn seed_label(env: &Env<'_>, graph: &Graph, seed: &TimingSeed) -> (Label, bool) 
     (label, http)
 }
 
+/// [`seed_label`] of every frame of `frames`, without rebuilding a seed (slice 8b of #1087): its
+/// own sources and the reads free in it ([`TimingFrames::sources_up`]), joined with what the
+/// items of its subtree reach over the graph of P1 ([`TimingFrames::fold_up`]), and whether
+/// they reach an operation of `Http`. O(F + N) joins and O((R + F) log F) for the reads.
+fn coarse_labels(env: &Env<'_>, graph: &Graph, frames: &TimingFrames) -> Vec<(Label, bool)> {
+    let top = Label::top(&env.categories);
+    let reached = |node: usize| {
+        Some((
+            graph.down.get(node).cloned().unwrap_or_else(Label::public),
+            graph.http.get(node).copied().unwrap_or(false),
+        ))
+    };
+    let item = |event: &Event| -> Option<(Label, bool)> {
+        match event {
+            Event::Callee(f) if *f < graph.functions => reached(*f),
+            Event::Install(h) if *h < graph.handlers => reached(graph.handler_node(*h)),
+            Event::Op(cap, op) => match graph.ops.get(&(*cap, op.clone())) {
+                Some(&node) => reached(node),
+                // An operation no `uses` names: its `ρ`, and its capability's handlers.
+                None => {
+                    let mut label = rho(env, *cap, op).unwrap_or_else(Label::public);
+                    let mut http = is_http(env, *cap);
+                    if *cap < graph.capabilities
+                        && let Some((down, more)) = reached(graph.cap_node(*cap))
+                    {
+                        label = label.join(&down);
+                        http |= more;
+                    }
+                    Some((label, http))
+                }
+            },
+            Event::ValueCall => {
+                let (down, http) = reached(graph.lambda).unwrap_or((Label::public(), false));
+                Some((top.join(&down), http))
+            }
+            Event::Value(label) => Some((label.clone(), false)),
+            _ => None,
+        }
+    };
+    let items = frames.fold_up(&(Label::public(), false), item, |a, b| {
+        (a.0.join(&b.0), a.1 || b.1)
+    });
+    let sources = frames.sources_up();
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(at, (label, http))| {
+            let label = sources
+                .get(at)
+                .map_or_else(|| label.clone(), |own| own.join(&label));
+            (label, http)
+        })
+        .collect()
+}
+
 /// Why the code of a node can push frames without a bound that its own code shows, for the
 /// reach of a `start` (ADR 0123 IF6, #1674).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1534,8 +1797,8 @@ pub(crate) struct TasksSite {
     pub(crate) span: una_syntax::Span,
     /// The function whose body holds it.
     pub(crate) function: Option<usize>,
-    /// The seed of `κ(T)`, recorded while the statement was checked.
-    pub(crate) seed: TimingSeed,
+    /// The frame of `κ(T)`, recorded while the statement was checked.
+    pub(crate) frame: TimingFrame,
 }
 
 /// The residue label `L_res` of ADR 0116 P9, with each construct that raises it, as a message
@@ -1586,8 +1849,9 @@ impl Residue {
 /// - over every `first of` `F` whose branches can reach an operation of `Http`,
 ///   `t(F) ⊔ τ_conc(F)`, which is at least `internal`, from `ρ` of `Http`.
 ///
-/// **The terms.** `κ` and `t` are `τ⁰` of the whole construct from its seed, closed over the
-/// graph of P1 ([`seed_label`]), so the reach of `Http` goes through handlers, capabilities and
+/// **The terms.** `κ` and `t` are `τ⁰` of the whole construct, its frame's label bottom up over
+/// the graph of P1 ([`coarse_labels`], which a build with debug assertions holds to
+/// [`seed_label`] of the rebuilt seed), so the reach of `Http` goes through handlers, capabilities and
 /// `Λ`. `τ_conc` is that of the construct's own site, from [`Concurrency`] (`spec/27 §11`):
 /// `conc` of its node joined with `ctx` at it, `⊤` in no node. `L_res` joins no timing label
 /// directly; it reaches one only through the values of item 7, which the probe of pass 2 raises
@@ -1642,11 +1906,11 @@ pub(crate) fn residue(
     let mut tasks: Vec<&TasksSite> = findings.tasks_sites.iter().collect();
     tasks.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     for site in tasks {
-        let (kappa, http) = seed_label(env, graph, &site.seed);
+        let (kappa, http) = concurrency.coarse(site.frame);
         if !http {
             continue;
         }
-        let label = kappa.join(&conc(&site.seed));
+        let label = kappa.join(&conc(&findings.frames.own(site.frame)));
         add(
             label,
             format!(
@@ -1663,11 +1927,11 @@ pub(crate) fn residue(
         .collect();
     races.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     for site in races {
-        let (t, http) = seed_label(env, graph, &site.seed);
+        let (t, http) = concurrency.coarse(site.frame);
         if !http {
             continue;
         }
-        let label = t.join(&conc(&site.seed));
+        let label = t.join(&conc(&findings.frames.own(site.frame)));
         add(
             label,
             format!(
@@ -2648,91 +2912,6 @@ impl Summaries {
     fn handler_node(&self, h: usize) -> usize {
         self.functions + h
     }
-
-    /// `τ` of a site whose checking recorded `seed`, with `beside` as `τ_conc`, as
-    /// [`timing_with`] gives it with [`HostHandlers::All`], but without its sources: the label,
-    /// and the operations of `Http` it reaches, which is all of `Timing::ops` that the callers
-    /// read. O(size of the seed) lookups.
-    pub(crate) fn timing(&self, env: &Env<'_>, seed: &TimingSeed, beside: Option<Label>) -> Timing {
-        let top = Label::top(&env.categories);
-        let mut label = seed
-            .sources
-            .iter()
-            .fold(Label::public(), |tau, (label, _)| tau.join(label));
-        if let Some(values) = &seed.values {
-            label = label.join(values);
-        }
-        if seed.value_call {
-            label = label.join(&top);
-        }
-        // A prelude function applied to an argument whose code is not known (#1023), which
-        // the seed reaches, since the call is one of its callees.
-        let opaque = seed.opaque_applies.iter().any(|&f| {
-            env.functions
-                .get(f)
-                .is_some_and(|def| applies_function(env, def))
-        });
-        if opaque {
-            label = label.join(&top);
-        }
-        let mut http: BTreeSet<usize> = BTreeSet::new();
-        let mut reach = |node: usize, label: &mut Label| {
-            una_core::label_counters::pass_step();
-            if let Some(down) = self.down.get(node) {
-                *label = label.join(down);
-            }
-            if let Some(ops) = self.http.get(node) {
-                http.extend(ops.iter().copied());
-            }
-        };
-        for &f in &seed.callees {
-            if f < self.functions {
-                reach(f, &mut label);
-            }
-        }
-        for &h in &seed.handlers {
-            if h < self.handlers {
-                reach(self.handler_node(h), &mut label);
-            }
-        }
-        let mut extra: BTreeSet<(CapId, String)> = BTreeSet::new();
-        for (cap, op) in &seed.ops {
-            match self.ops.get(&(*cap, op.clone())) {
-                Some(&node) => reach(node, &mut label),
-                // An operation no body or header names elsewhere: its `ρ` and its handlers.
-                None => {
-                    let Some(capability) = env.capabilities.get(*cap) else {
-                        continue;
-                    };
-                    if let Some(rho) = rho(env, *cap, op) {
-                        label = label.join(&rho);
-                    }
-                    if is_http(env, *cap) && capability.ops.iter().any(|d| d.name == *op) {
-                        extra.insert((*cap, op.clone()));
-                    }
-                    for &h in self.of_capability.get(cap).map_or(&[][..], Vec::as_slice) {
-                        reach(self.handler_node(h), &mut label);
-                    }
-                }
-            }
-        }
-        if let Some(beside) = beside
-            && !beside.is_public()
-        {
-            label = label.join(&beside);
-        }
-        let start = self.functions + self.handlers;
-        let mut ops: BTreeSet<(CapId, String)> = http
-            .into_iter()
-            .filter_map(|node| self.op_of.get(node.checked_sub(start)?).cloned())
-            .collect();
-        ops.extend(extra);
-        Timing {
-            label,
-            sources: Vec::new(),
-            ops,
-        }
-    }
 }
 
 /// The most sites of one kind whose summary [`cross_check`] holds to the search, in a build with
@@ -2775,6 +2954,114 @@ pub(crate) fn cross_check(
         fast.ops, http,
         "the summary and the search disagree on the operations of `Http`"
     );
+}
+
+/// The timing label of every frame of a pass from the summaries (slice 8b of #1087), without
+/// rebuilding any seed: a frame's own sources and the reads free in it
+/// ([`TimingFrames::sources_up`]), joined with what the items of its subtree reach through
+/// [`Summaries`] ([`TimingFrames::fold_up`]): the summary of each callee, handler installed and
+/// operation (for an operation no header names, its `ρ` and its capability's handlers), `⊤` for
+/// a call of a function value and for an opaque application of a prelude function such as
+/// `map` (#1023), and the values of IF5 item 7. That is the join the search makes over the
+/// frame's rebuilt seed, which [`cross_check`] holds it to. O(F + N) joins and O((R + F) log F)
+/// for the reads.
+pub(crate) struct FrameTimings {
+    /// Each frame's label before `τ_conc`.
+    label: Vec<Label>,
+    /// The operations of `Http` each frame's subtree reaches.
+    ops: Vec<BTreeSet<(CapId, String)>>,
+    /// `⊤`, for a frame it does not hold, failing closed (P4, F item 6).
+    top: Label,
+}
+
+impl FrameTimings {
+    /// `τ` of the site of `frame` with `beside` as `τ_conc`: the label and the operations of
+    /// `Http`, without the sources, which the search adds for a site that is reported. O(1)
+    /// joins.
+    pub(crate) fn timing(&self, frame: TimingFrame, beside: Option<Label>) -> Timing {
+        let mut label = self
+            .label
+            .get(frame.0)
+            .cloned()
+            .unwrap_or_else(|| self.top.clone());
+        if let Some(beside) = beside
+            && !beside.is_public()
+        {
+            label = label.join(&beside);
+        }
+        Timing {
+            label,
+            sources: Vec::new(),
+            ops: self.ops.get(frame.0).cloned().unwrap_or_default(),
+        }
+    }
+}
+
+impl Summaries {
+    /// [`FrameTimings`] of `frames`.
+    pub(crate) fn frames(&self, env: &Env<'_>, frames: &TimingFrames) -> FrameTimings {
+        let top = Label::top(&env.categories);
+        let start = self.functions + self.handlers;
+        let item = |event: &Event| -> Option<(Label, BTreeSet<(CapId, String)>)> {
+            let reached = |node: usize| {
+                let label = self.down.get(node).cloned().unwrap_or_else(Label::public);
+                let ops = self
+                    .http
+                    .get(node)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|&op| self.op_of.get(op.checked_sub(start)?).cloned())
+                    .collect();
+                Some((label, ops))
+            };
+            match event {
+                Event::Callee(f) if *f < self.functions => reached(*f),
+                Event::Install(h) if *h < self.handlers => reached(self.handler_node(*h)),
+                Event::Op(cap, op) => match self.ops.get(&(*cap, op.clone())) {
+                    Some(&node) => reached(node),
+                    None => {
+                        let capability = env.capabilities.get(*cap)?;
+                        let mut label = rho(env, *cap, op).unwrap_or_else(Label::public);
+                        let mut ops = BTreeSet::new();
+                        if is_http(env, *cap) && capability.ops.iter().any(|d| d.name == *op) {
+                            ops.insert((*cap, op.clone()));
+                        }
+                        for &h in self.of_capability.get(cap).map_or(&[][..], Vec::as_slice) {
+                            if let Some((down, more)) = reached(self.handler_node(h)) {
+                                label = label.join(&down);
+                                ops.extend(more);
+                            }
+                        }
+                        Some((label, ops))
+                    }
+                },
+                Event::ValueCall => Some((top.clone(), BTreeSet::new())),
+                Event::Opaque(f) => env
+                    .functions
+                    .get(*f)
+                    .is_some_and(|def| applies_function(env, def))
+                    .then(|| (top.clone(), BTreeSet::new())),
+                Event::Value(label) => Some((label.clone(), BTreeSet::new())),
+                _ => None,
+            }
+        };
+        let zero = (Label::public(), BTreeSet::new());
+        let items = frames.fold_up(&zero, item, |a, b| {
+            (a.0.join(&b.0), a.1.union(&b.1).cloned().collect())
+        });
+        let sources = frames.sources_up();
+        let mut label = Vec::with_capacity(items.len());
+        let mut ops = Vec::with_capacity(items.len());
+        for (at, (items, reached)) in items.into_iter().enumerate() {
+            label.push(
+                sources
+                    .get(at)
+                    .map_or_else(|| items.clone(), |own| own.join(&items)),
+            );
+            ops.push(reached);
+        }
+        FrameTimings { label, ops, top }
+    }
 }
 
 /// [`Summaries`] of the package: O(V + E) to build, and two passes over the strongly connected
@@ -3118,6 +3405,9 @@ pub(crate) struct Concurrency {
     pub(crate) ctx: Vec<Label>,
     /// `conc(n)` of each node of the graph (P3), `None` when no part of a construct reaches it.
     pub(crate) conc: Vec<Option<Label>>,
+    /// `τ⁰` of every frame over the graph of P1, and whether it reaches an operation of `Http`
+    /// ([`coarse_labels`]): what [`seed_label`] gives of the frame's rebuilt seed.
+    coarse: Vec<(Label, bool)>,
     /// The number of functions and of handlers, and the node `Λ`, to find a caller's node as
     /// [`Graph::node_of`] does.
     functions: usize,
@@ -3137,6 +3427,15 @@ impl Concurrency {
                 .cloned()
                 .unwrap_or_else(|| self.top.clone())
         })
+    }
+
+    /// [`seed_label`] of the frame `frame` ([`coarse_labels`]): `⊤` for an id that names no
+    /// frame, failing closed.
+    pub(crate) fn coarse(&self, frame: TimingFrame) -> (Label, bool) {
+        self.coarse
+            .get(frame.0)
+            .cloned()
+            .unwrap_or_else(|| (self.top.clone(), true))
     }
 
     /// `conc` of the function `f` (P3), `None` when no part of a construct reaches it: the label
@@ -3172,7 +3471,8 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 
 /// `κ`, `ctx` and `conc` of the package (ADR 0116 P2 to P4).
 ///
-/// - **`κ(C)`** is `τ⁰` of the seed of `C` over `graph` ([`seed_label`]), O(size of the seed).
+/// - **`κ(C)`** is `τ⁰` of the frame of `C` over `graph`, its label bottom up
+///   ([`coarse_labels`]), O(1) once the labels of every frame are computed.
 /// - **`ctx`** comes from the root of each body's tree down, as `ctx(parent) ⊔ κ(C)`: a parent
 ///   is recorded before the constructs nested in it, so one pass in the order of the ids gives
 ///   it, O(F) joins.
@@ -3189,10 +3489,37 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 /// tick (slice 5); limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the
 /// preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
+    let coarse = coarse_labels(env, graph, &findings.frames);
+    // In a build with debug assertions, and for a package with at most [`CROSS_CHECKED`]
+    // constructs and `tasks` statements, the labels bottom up are those of the rebuilt seeds.
+    let frames = findings
+        .constructs
+        .iter()
+        .filter_map(|c| c.frame)
+        .chain(findings.tasks_sites.iter().map(|site| site.frame));
+    if cfg!(debug_assertions)
+        && findings.constructs.len() + findings.tasks_sites.len() <= CROSS_CHECKED
+    {
+        for frame in frames {
+            let rebuilt = seed_label(env, graph, &findings.frames.seed_of(frame.0, false));
+            // INVARIANT: `coarse_labels` joins what `seed_label` joins over the rebuilt seed.
+            assert_eq!(
+                coarse.get(frame.0),
+                Some(&rebuilt),
+                "a frame's label bottom up disagrees"
+            );
+        }
+    }
     let kappa: Vec<Label> = findings
         .constructs
         .iter()
-        .map(|c| seed_label(env, graph, &c.seed).0)
+        .map(|c| match c.frame {
+            Some(frame) => coarse
+                .get(frame.0)
+                .map_or_else(|| Label::top(&env.categories), |(label, _)| label.clone()),
+            // A construct whose frame was not recorded fails closed (P4, F item 6).
+            None => Label::top(&env.categories),
+        })
         .collect();
     let mut ctx: Vec<Label> = Vec::with_capacity(kappa.len());
     let top = Label::top(&env.categories);
@@ -3236,6 +3563,7 @@ pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> 
         kappa,
         ctx,
         conc,
+        coarse,
         functions: graph.functions,
         handlers: graph.handlers,
         lambda: graph.lambda,
@@ -3378,19 +3706,26 @@ pub(crate) fn recorded_graph(env: &Env<'_>, findings: &Findings) -> TimingGraph 
     let mut sites: Vec<TimingPlace> = findings
         .withins
         .iter()
-        .map(|site| place(site.construct.words(), site.span, &site.seed))
+        .map(|site| {
+            place(
+                site.construct.words(),
+                site.span,
+                &findings.frames.own(site.frame),
+            )
+        })
         .collect();
-    sites.extend(
-        findings
-            .deadline_loops
-            .iter()
-            .map(|site| place("for ever within", site.span, &site.seed)),
-    );
+    sites.extend(findings.deadline_loops.iter().map(|site| {
+        place(
+            "for ever within",
+            site.span,
+            &findings.frames.own(site.frame),
+        )
+    }));
     sites.extend(
         findings
             .tasks_sites
             .iter()
-            .map(|site| place("tasks", site.span, &site.seed)),
+            .map(|site| place("tasks", site.span, &findings.frames.own(site.frame))),
     );
     TimingGraph {
         edges,

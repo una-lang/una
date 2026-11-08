@@ -1,0 +1,14 @@
+{"at":1,"connection":1,"text":"HTTP/1.1 400 Bad Request\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
+{"at":1,"connection":1,"shutdown":true}
+{"at":11,"connection":2,"text":"HTTP/1.1 400 Bad Request\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
+{"at":11,"connection":2,"shutdown":true}
+{"at":21,"connection":3,"text":"HTTP/1.1 400 Bad Request\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
+{"at":21,"connection":3,"shutdown":true}
+{"at":31,"connection":4,"text":"HTTP/1.1 400 Bad Request\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
+{"at":31,"connection":4,"shutdown":true}
+{"at":41,"connection":5,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 8\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello ok"}
+{"at":41,"closed":true,"connection":5}
+{"at":100,"closed":true,"connection":1}
+{"at":120,"closed":true,"connection":3}
+{"at":1011,"closed":true,"connection":2}
+{"at":1031,"closed":true,"connection":4}
