@@ -2,8 +2,11 @@
 //! programs, interpreted and native, against a local server, and the start-up checks of a
 //! limited `--grant`. No test needs the network. Since `L_lim` takes the precise `τ_conc` of
 //! `spec/27 §11` (#1154), a program whose requests run in started tasks beside work on `public`
-//! and `internal` data can carry limits, so the programs with requests in flight at once live
-//! here too: five requests of a `tasks` statement sharing a bucket, and a full queue. A slot
+//! and `internal` data can carry limits, so programs of started requests live here too: five
+//! requests of a `tasks` statement sharing a bucket, under `--virtual-time`, where both engines
+//! follow the interpreter's schedule and the requests reach the bucket one after another
+//! (`spec/27 §8` rule 3), and a full queue, the one case with requests in flight at once, natively
+//! on the real clock. A slot
 //! held by an interrupted request until its exchange returns, and crossing redirect chains, need
 //! requests in flight at once, which the interpreter, running started tasks and the branches of
 //! a race one at a time (`spec/27 §1` rule 5), never has: they are the client's tests, in
@@ -816,7 +819,8 @@ fn a_full_queue_gives_rate_limited_natively_and_waits_in_turn_interpreted() {
     assert_eq!(native.status.code(), Some(0), "{native:?}");
     let native = outcomes(&dir);
     // The interpreter runs started tasks one at a time (`spec/27 §1` rule 5), the sequential
-    // schedule of `spec/19 §6`: its requests never wait together, and all three are served.
+    // schedule of `spec/19 §8` rule 1 and `spec/27 §8` rule 2: its requests never wait together,
+    // and all three are served.
     assert_eq!(interpreted, ["ok 200", "ok 200", "ok 200"]);
     // The executable runs them at once: one in flight, one waiting, the third refused at once,
     // never sent.
