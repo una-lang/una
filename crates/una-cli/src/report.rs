@@ -117,6 +117,9 @@ fn covers(id: &str, capability: &str, op: &str) -> bool {
 struct Report {
     schema: &'static str,
     package: PackageDoc,
+    /// The package's edition and whether it is a preview (ADR 0121 rule 8): additive under
+    /// ADR 0076.
+    edition: EditionDoc,
     lock: LockDoc,
     proven: ProvenDoc,
     obligations: Counts,
@@ -243,6 +246,17 @@ struct PackageDoc {
     /// 0109 rule 4).
     #[serde(skip_serializing_if = "Option::is_none")]
     max_memory: Option<u64>,
+}
+
+/// The edition section of the report (ADR 0121 rule 8, `spec/13 §6`). Its third key,
+/// `preview_constructs`, is not emitted yet: it lands with the edition ledger of ADR 0121
+/// rule 9 (#1752).
+#[derive(Serialize)]
+struct EditionDoc {
+    /// The package's edition, as `ita.una` or `una.toml` names it.
+    name: &'static str,
+    /// Whether this release serves that edition as a preview (`spec/13 §7`).
+    preview: bool,
 }
 
 #[derive(Serialize)]
@@ -927,6 +941,10 @@ fn build(
     Report {
         schema: REPORT_SCHEMA,
         package: package_doc,
+        edition: EditionDoc {
+            name: manifest.edition.name(),
+            preview: manifest.edition.is_preview(),
+        },
         lock: LockDoc {
             solver_version: lock.solver_version.clone(),
             hash,
@@ -1325,6 +1343,12 @@ fn human(report: &Report) -> String {
     if let Some(max_memory) = report.package.max_memory {
         line(format!("max memory: {max_memory} MiB"));
     }
+    let preview = if report.edition.preview {
+        " (preview)"
+    } else {
+        ""
+    };
+    line(format!("edition: {}{preview}", report.edition.name));
     line(format!(
         "lock: z3 {}, sha256 {}",
         report.lock.solver_version, report.lock.hash

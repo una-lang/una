@@ -28,7 +28,7 @@ Check the version:
 una --version
 ```
 
-It prints three lines: `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3`, and the version of Z3 it needs.
+It prints `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3, 0.4, 0.5`, the editions among them that are previews, such as `preview: 0.3, 0.4, 0.5`, and the version of Z3 it needs. A release with no preview edition prints no `preview:` line.
 
 A release older than 0.3 has no `--version` flag, and answers with an error:
 

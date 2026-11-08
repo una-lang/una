@@ -325,6 +325,17 @@ impl Edition {
         self >= Edition::COLLECTIONS_AND_NUMERICS
     }
 
+    /// Whether this release serves the edition as a preview (`spec/13 §7`, ADR 0121, as its
+    /// amendment of 2026-11-06 extends it): `0.3`, `0.4` and `0.5` until the releases that
+    /// make them stable. `una --version` and the report name the previews by it (ADR 0121
+    /// rules 7 and 8), and a test checks it against the markers of `spec/13 §7`.
+    pub fn is_preview(self) -> bool {
+        match self {
+            Edition::V0_1 | Edition::V0_2 => false,
+            Edition::V0_3 | Edition::V0_4 | Edition::V0_5 => true,
+        }
+    }
+
     /// The keyword of the test declaration in this edition: `test` from edition `0.3`, and
     /// `example` in editions `0.1` and `0.2` (`spec/08 §2`, ADR 0105). Messages and the output
     /// of `una test` name the declaration by it.
