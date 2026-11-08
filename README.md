@@ -214,6 +214,7 @@ Every command takes `--json` and prints exactly one JSON document, with a `schem
 | [Getting started](docs/guide/getting-started.md) | A tutorial, from install to a verified, natively built program |
 | [Language guide](docs/guide/syntax-reference.md) | Every construct, with its diagnostics |
 | [Una for agents](docs/guide/una-for-agents.md) | A compact reference for agents writing Una; every code block is checked by the tests |
+| [Known limits](docs/guide/known-limits.md) | What this release does not do, or does only with limits, in edition 0.4, each item with its rule |
 | [Specification](docs/spec/) | The normative definition of the language |
 | [Charter](docs/00-charter.md) | What Una is for, what it proves and what it assumes |
 | [Design decisions](docs/adr/) | Why each key decision was made |
