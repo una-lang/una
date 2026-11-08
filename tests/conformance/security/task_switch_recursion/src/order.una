@@ -1,4 +1,4 @@
--- test: a recursion whose depth a `secret` value decides ends at a branch on it, so its recursive call is a check point under a `secret` program counter: U4002 in a program that starts tasks, with no labeled loop (spec/27 §8 rule 5, #1684)
+-- test: a recursion whose depth a `secret` value decides ends at a branch on it, so its recursive call is a check point under a `secret` program counter: U4002 in a program that starts tasks, with no labeled loop (spec/27 §8 rule 5, #1684); this rule is also what closes the depth channel of started tasks above `internal`, a task that ends alone past `--task-depth` (#1677), so an amendment that withdraws it must keep a depth rule
 -- spec: spec/27 §8
 -- expect: error U4002 at src/order.una:11:9
 module order
