@@ -390,7 +390,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                     Code::U1002,
                     param.span,
                     format!(
-                        "`{name}` is a built-in dense type from edition 0.4, so a type parameter cannot take its name"
+                        "`{name}` is a built-in dense type from edition 0.5, so a type parameter cannot take its name"
                     ),
                 );
                 self.checker.diagnostics.push(diagnostic);

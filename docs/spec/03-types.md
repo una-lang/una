@@ -55,7 +55,7 @@ A refinement predicate is written in the **refinement language** RL, a subset of
 
 - integer, boolean and text literals (text literals are distinct constants, `spec/12 §4`);
 - `it`, parameters of the enclosing function, and field access on them (`it.remaining`, `a.b.c`);
-- `.len` on `Text` and `List` values; (v0.4, ADR 0119 V5) `.len` on every collection of `spec/28`, `.size` on a `BitSet`, `s.has(item: x)` on a `Set`, a `HashSet` and a `BitSet`, and `m.has(key: k)` on a `HashMap` (`spec/28 §11`);
+- `.len` on `Text` and `List` values; (v0.5, ADR 0119 V5) `.len` on every collection of `spec/28`, `.size` on a `BitSet`, `s.has(item: x)` on a `Set`, a `HashSet` and a `BitSet`, and `m.has(key: k)` on a `HashMap` (`spec/28 §11`);
 - `+`, `-`, unary `-`; `*` where at least one operand is a literal; `/` and `mod` by a nonzero literal;
 - `==`, `!=`, `<`, `<=`, `>`, `>=`, `in range`, `is Variant`;
 - `and`, `or`, `not`, `implies`;

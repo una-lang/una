@@ -1251,7 +1251,7 @@ pub change(edit: Int) -> Int = edit
 
 ## 22. Migrating to edition 0.4
 
-From edition `0.4`, a package is described by `ita.una` and pinned by `ita.lock`, in Una's own syntax, in place of `una.toml` and `verification.lock` (`spec/30`). Edition `0.4` is a preview. The steps, in the package's directory:
+From edition `0.4`, a package is described by `ita.una` and pinned by `ita.lock`, in Una's own syntax, in place of `una.toml` and `verification.lock` (`spec/30`). Edition `0.4` is a preview. Collections and the numeric types after `F64` are in edition `0.5`, also a preview and also named in `ita.una`, as `edition 0.5` (ADR 0139); `una migrate` writes edition `0.4`, or keeps `0.5` when `una.toml` names it. The steps, in the package's directory:
 
 1. `una migrate --dry-run` prints the two files it would write and every diagnostic the new edition causes, and writes nothing.
 2. `una migrate` writes `ita.una` and `ita.lock`, rewrites each module in the canonical form of edition `0.4`, removes `una.toml` and `verification.lock`, and prints the same diagnostics, such as a function named `within`, a word edition `0.4` reserves (U0103). It exits with code 0: the diagnostics are the next steps. A `[package] name` that is not a package name, such as `events-example`, becomes `events_example`; `--name` gives another.

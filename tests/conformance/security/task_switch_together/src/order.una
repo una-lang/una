@@ -1,0 +1,36 @@
+-- test: a call reached in a branch of a `together` block, under a branch on a `secret` bit, inside a started task; that data would decide how many check points the task passes, so the check point is U4002 (spec/27 §8 rule 5, #1684); its `internal` twin is `task_switch_internal_together` (#1708)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:19:7
+module order
+
+noop() -> Unit = unit
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+side(b: secret Int) -> Unit
+=
+  for i in 0..<3000
+    if b == 1
+      noop()
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let b = bit(k, key: key)
+  together
+    let u = side(b)
+    let v = side(0)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)
