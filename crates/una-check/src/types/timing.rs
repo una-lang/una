@@ -2129,6 +2129,28 @@ pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
             false
         }
     };
+    // #1710: a search without `Λ` first. The function values that the code it reaches can
+    // call are then made in that code, a lambda written in a node it reaches or a function it
+    // names as a value, which it follows already, unless one can come from outside it
+    // ([`foreign_values`]): only then is `Λ`, every lambda and every value, opened.
+    let closed = search(&graph, &written, &opens_lambda, false, env);
+    if !foreign_values(env, &graph, &opens_lambda, &closed.by_node) {
+        return closed;
+    }
+    search(&graph, &written, &opens_lambda, true, env)
+}
+
+/// The search of [`via_reach`] from every `via` function at once, with `Λ` opened from code
+/// that runs code it does not show when `open_lambda`, else never. O(V log F + E).
+fn search(
+    graph: &Graph,
+    written: &[Vec<usize>],
+    opens_lambda: &dyn Fn(usize) -> bool,
+    open_lambda: bool,
+    env: &Env<'_>,
+) -> ViaReach {
+    let nodes = graph.succ.len();
+    let lambda = graph.lambda;
     let mut by_node: Vec<Option<usize>> = vec![None; nodes];
     let mut through_lambda = vec![false; nodes];
     let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
@@ -2146,7 +2168,7 @@ pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
         let late = through_lambda.get(node).copied().unwrap_or(false) || node == lambda;
         let own = graph.succ.get(node).map_or(&[][..], Vec::as_slice);
         let lambdas = written.get(node).map_or(&[][..], Vec::as_slice);
-        let open = (opens_lambda(node) || node == lambda).then_some(lambda);
+        let open = (open_lambda && (opens_lambda(node) || node == lambda)).then_some(lambda);
         for &to in own.iter().chain(lambdas).chain(open.iter()) {
             // `Λ` only from code that runs code it does not show, or from `Λ` itself.
             if to == lambda && open.is_none() {
@@ -2170,6 +2192,79 @@ pub(crate) fn via_reach(env: &Env<'_>, findings: &Findings) -> ViaReach {
         handlers: graph.handlers,
         lambda,
     }
+}
+
+/// Whether a function value made outside the code that the `via` functions reach (`reached`,
+/// by [`search`] without `Λ`) can reach it (#1710), so that a call of a function value there may
+/// run any lambda or function named as a value:
+/// - a `via` function with a parameter whose type can hold a function value, the policy's
+///   `from` value;
+/// - an operation whose answer can hold one;
+/// - a handler reached, whose parameters can hold one or whose operations call a function
+///   value, since its state and parameters come from code outside;
+/// - a function whose code the findings do not hold (a standard module, a dependency not
+///   checked with the package) whose result or parameters can hold one.
+///
+/// Otherwise every function value that code calls is a lambda written in a node it reaches or
+/// a function it names, whose code [`search`] follows from that node. O(V).
+fn foreign_values(
+    env: &Env<'_>,
+    graph: &Graph,
+    opens_lambda: &dyn Fn(usize) -> bool,
+    reached: &[Option<usize>],
+) -> bool {
+    // The prelude's functions are host code, which calls only the function values it is given.
+    let apart = |module: usize| {
+        let prelude = env.modules.get(module).is_some_and(|m| m.path == "prelude");
+        !prelude && (module >= env.prelude || !env.reports(module))
+    };
+    for (node, by) in reached.iter().enumerate() {
+        if by.is_none() {
+            continue;
+        }
+        if node < graph.functions {
+            let Some(def) = env.functions.get(node) else {
+                return true;
+            };
+            let params = def.params.iter().any(|p| holds_function(env, &p.ty.base));
+            if env.vias.contains_key(&node) && params {
+                return true;
+            }
+            if apart(def.module) && (params || holds_function(env, &def.result.base)) {
+                return true;
+            }
+        } else if node < graph.functions + graph.handlers {
+            let h = node - graph.functions;
+            let Some(handler) = env.handlers.get(h) else {
+                return true;
+            };
+            if opens_lambda(node)
+                || handler
+                    .params
+                    .iter()
+                    .any(|p| holds_function(env, &p.ty.base))
+            {
+                return true;
+            }
+        } else if node < graph.functions + graph.handlers + graph.capabilities {
+            // A capability's node leads to its handlers, each checked as a node here.
+        } else if node != graph.lambda {
+            let answers = graph
+                .ops
+                .iter()
+                .find(|(_, at)| **at == node)
+                .and_then(|((cap, op), _)| {
+                    env.capabilities
+                        .get(*cap)
+                        .and_then(|c| c.ops.iter().find(|d| d.name == *op))
+                })
+                .is_none_or(|d| holds_function(env, &d.result.base));
+            if answers {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Whether the preview's `τ_conc` of a site is `⊤` (ADR 0116 IF6): it lies inside a lambda, a
