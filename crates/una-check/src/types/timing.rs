@@ -2491,6 +2491,350 @@ pub(crate) fn timing_precise(
     timing_with(env, findings, seed, host, concurrency.tau_conc(seed))
 }
 
+/// `τ⁰` of every function, handler and operation, closed once per package over the graph that
+/// [`timing_with`] searches for each site (ADR 0116 amendment of 2026-10-25, E: summaries
+/// instead of a search per site; slice 7 of the plan on #1087), with the handlers of every
+/// capability counted ([`HostHandlers::All`]).
+///
+/// **The graph.** Its nodes are the functions, the handlers and the operations named anywhere.
+/// A function goes to what its body calls or names, its lambdas' included (the package's call
+/// edges, and a policy to its `via`), to the handlers it installs and to the operations of its
+/// `uses`; a handler goes to the operations of its `uses` and to what its operation bodies call,
+/// perform and install; an operation goes to every handler of its capability. A node's own
+/// label is what [`timing_with`] takes when it reaches the node:
+/// - a function: `⊤` when it calls a function value, `⊤` when it applies a prelude function such
+///   as `map` to an argument whose code is not known (#1023), and the values its body computes
+///   (IF5 item 7);
+/// - a handler: its parameters (`⊤` for one that may hold a function), the values its operation
+///   bodies compute, and `⊤` for a call of a function value or an opaque application there;
+/// - an operation: its `ρ`.
+///
+/// So `τ⁰` of a site is its own sources, values and calls of function values, joined with the
+/// summary of every node its seed names: the same join as the search, which reaches exactly the
+/// nodes the summary closes over. The search stays, run only for a site whose label is
+/// reported, to name its largest source (E, "the error path").
+///
+/// **Cost.** O(V + E) to build, for the `V` nodes and `E` edges above, then O(V + E) joins and
+/// O((V + E) · h) for the `h` operations of `Http` in the package, one pass over the strongly
+/// connected components each. A site then costs O(size of its seed) lookups, instead of a search
+/// of the graph.
+pub(crate) struct Summaries {
+    /// The number of functions, and of handlers, which are the first nodes.
+    functions: usize,
+    handlers: usize,
+    /// The node of each operation, after the handlers.
+    ops: BTreeMap<(CapId, String), usize>,
+    /// The handlers of each capability.
+    of_capability: BTreeMap<CapId, Vec<usize>>,
+    /// The summary of each node.
+    down: Vec<Label>,
+    /// The operations of the host's `Http` each node reaches, by their nodes.
+    http: Vec<BTreeSet<usize>>,
+    /// The operation of each operation node, after the handlers.
+    op_of: Vec<(CapId, String)>,
+}
+
+impl Summaries {
+    /// The node of the handler `h`.
+    fn handler_node(&self, h: usize) -> usize {
+        self.functions + h
+    }
+
+    /// `τ` of a site whose checking recorded `seed`, with `beside` as `τ_conc`, as
+    /// [`timing_with`] gives it with [`HostHandlers::All`], but without its sources: the label,
+    /// and the operations of `Http` it reaches, which is all of `Timing::ops` that the callers
+    /// read. O(size of the seed) lookups.
+    pub(crate) fn timing(&self, env: &Env<'_>, seed: &TimingSeed, beside: Option<Label>) -> Timing {
+        let top = Label::top(&env.categories);
+        let mut label = seed
+            .sources
+            .iter()
+            .fold(Label::public(), |tau, (label, _)| tau.join(label));
+        if let Some(values) = &seed.values {
+            label = label.join(values);
+        }
+        if seed.value_call {
+            label = label.join(&top);
+        }
+        // A prelude function applied to an argument whose code is not known (#1023), which
+        // the seed reaches, since the call is one of its callees.
+        let opaque = seed.opaque_applies.iter().any(|&f| {
+            env.functions
+                .get(f)
+                .is_some_and(|def| applies_function(env, def))
+        });
+        if opaque {
+            label = label.join(&top);
+        }
+        let mut http: BTreeSet<usize> = BTreeSet::new();
+        let mut reach = |node: usize, label: &mut Label| {
+            una_core::label_counters::pass_step();
+            if let Some(down) = self.down.get(node) {
+                *label = label.join(down);
+            }
+            if let Some(ops) = self.http.get(node) {
+                http.extend(ops.iter().copied());
+            }
+        };
+        for &f in &seed.callees {
+            if f < self.functions {
+                reach(f, &mut label);
+            }
+        }
+        for &h in &seed.handlers {
+            if h < self.handlers {
+                reach(self.handler_node(h), &mut label);
+            }
+        }
+        let mut extra: BTreeSet<(CapId, String)> = BTreeSet::new();
+        for (cap, op) in &seed.ops {
+            match self.ops.get(&(*cap, op.clone())) {
+                Some(&node) => reach(node, &mut label),
+                // An operation no body or header names elsewhere: its `ρ` and its handlers.
+                None => {
+                    let Some(capability) = env.capabilities.get(*cap) else {
+                        continue;
+                    };
+                    if let Some(rho) = rho(env, *cap, op) {
+                        label = label.join(&rho);
+                    }
+                    if is_http(env, *cap) && capability.ops.iter().any(|d| d.name == *op) {
+                        extra.insert((*cap, op.clone()));
+                    }
+                    for &h in self.of_capability.get(cap).map_or(&[][..], Vec::as_slice) {
+                        reach(self.handler_node(h), &mut label);
+                    }
+                }
+            }
+        }
+        if let Some(beside) = beside
+            && !beside.is_public()
+        {
+            label = label.join(&beside);
+        }
+        let start = self.functions + self.handlers;
+        let mut ops: BTreeSet<(CapId, String)> = http
+            .into_iter()
+            .filter_map(|node| self.op_of.get(node.checked_sub(start)?).cloned())
+            .collect();
+        ops.extend(extra);
+        Timing {
+            label,
+            sources: Vec::new(),
+            ops,
+        }
+    }
+}
+
+/// The most sites of one kind whose summary [`cross_check`] holds to the search, in a build with
+/// debug assertions: every package of the conformance suite is far below it, and the scaling
+/// tests, which must stay linear, are above it.
+pub(crate) const CROSS_CHECKED: usize = 200;
+
+/// In a build with debug assertions, and for a package with at most [`CROSS_CHECKED`] sites of
+/// the kind, `fast` from the summaries is the search's `slow`: the same label, and the same
+/// operations of `Http` (slice 7 of #1087). Release builds skip it.
+pub(crate) fn cross_check(
+    env: &Env<'_>,
+    sites: usize,
+    fast: &Timing,
+    slow: impl FnOnce() -> Timing,
+) {
+    if !cfg!(debug_assertions) || sites > CROSS_CHECKED {
+        return;
+    }
+    let slow = slow();
+    let http: BTreeSet<(CapId, String)> = slow
+        .ops
+        .iter()
+        .filter(|(cap, op)| {
+            is_http(env, *cap)
+                && env
+                    .capabilities
+                    .get(*cap)
+                    .is_some_and(|c| c.ops.iter().any(|d| d.name == *op))
+        })
+        .cloned()
+        .collect();
+    // INVARIANT: the summaries close over exactly the nodes the search reaches.
+    assert_eq!(
+        fast.label, slow.label,
+        "the summary and the search disagree on a label"
+    );
+    // INVARIANT: as above, for the operations of `Http` the callers read.
+    assert_eq!(
+        fast.ops, http,
+        "the summary and the search disagree on the operations of `Http`"
+    );
+}
+
+/// [`Summaries`] of the package: O(V + E) to build, and two passes over the strongly connected
+/// components of its graph.
+pub(crate) fn summaries(env: &Env<'_>, findings: &Findings) -> Summaries {
+    fn add(succ: &mut [Vec<usize>], from: usize, to: usize) {
+        if let Some(edges) = succ.get_mut(from) {
+            edges.push(to);
+        }
+    }
+    let top = Label::top(&env.categories);
+    let functions = env.functions.len();
+    let handlers = env.handlers.len();
+    let mut of_capability: BTreeMap<CapId, Vec<usize>> = BTreeMap::new();
+    for (id, handler) in env.handlers.iter().enumerate() {
+        if let Some(cap) = handler.capability {
+            of_capability.entry(cap).or_default().push(id);
+        }
+    }
+    // Every operation a header or a handler's operation body names gets a node.
+    let mut ops: BTreeMap<(CapId, String), usize> = BTreeMap::new();
+    let mut op_of: Vec<(CapId, String)> = Vec::new();
+    let mut name = |cap: CapId, op: &str, ops: &mut BTreeMap<(CapId, String), usize>| {
+        let key = (cap, op.to_owned());
+        if let Some(&node) = ops.get(&key) {
+            return node;
+        }
+        let node = functions + handlers + op_of.len();
+        op_of.push(key.clone());
+        ops.insert(key, node);
+        node
+    };
+    let mut uses: Vec<(usize, usize)> = Vec::new();
+    let needs = env
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(f, def)| (f, &def.uses))
+        .chain(
+            env.handlers
+                .iter()
+                .enumerate()
+                .map(|(h, handler)| (functions + h, &handler.uses)),
+        );
+    for (from, needs) in needs {
+        for need in needs {
+            if let Some(cap) = need.usage.capability {
+                for op in &need.usage.ops {
+                    uses.push((from, name(cap, op, &mut ops)));
+                }
+            }
+        }
+    }
+    for (&h, seed) in &findings.handler_seeds {
+        if h >= handlers {
+            continue;
+        }
+        for (cap, op) in &seed.ops {
+            uses.push((functions + h, name(*cap, op, &mut ops)));
+        }
+    }
+    let nodes = functions + handlers + op_of.len();
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+    let mut local: Vec<Label> = vec![Label::public(); nodes];
+    for (from, to) in uses {
+        add(&mut succ, from, to);
+    }
+    for (caller, callees) in callees_of(findings) {
+        for callee in callees {
+            if callee < functions {
+                add(&mut succ, caller, callee);
+            }
+        }
+    }
+    for &(f, h) in &findings.installs {
+        if h < handlers {
+            add(&mut succ, f, functions + h);
+        }
+    }
+    let applies = |f: usize| {
+        env.functions
+            .get(f)
+            .is_some_and(|def| applies_function(env, def))
+    };
+    for (f, slot) in local.iter_mut().enumerate().take(functions) {
+        if findings.value_callers.contains(&f) {
+            *slot = top.clone();
+        }
+        if let Some(Some(body)) = findings.body_labels.get(&f) {
+            *slot = slot.join(body);
+        }
+    }
+    for &(f, callee) in &findings.opaque_applies {
+        if applies(callee)
+            && let Some(slot) = local.get_mut(f)
+        {
+            *slot = top.clone();
+        }
+    }
+    for (h, handler) in env.handlers.iter().enumerate() {
+        let node = functions + h;
+        let mut own = Label::public();
+        for param in &handler.params {
+            own = own.join(&handler_param_label(env, &param.ty.base));
+        }
+        if let Some(seed) = findings.handler_seeds.get(&h) {
+            if let Some(values) = &seed.values {
+                own = own.join(values);
+            }
+            if seed.value_call || seed.opaque_applies.iter().any(|&f| applies(f)) {
+                own = own.join(&top);
+            }
+            for &h2 in &seed.handlers {
+                if h2 < handlers {
+                    add(&mut succ, node, functions + h2);
+                }
+            }
+            for &f in seed.callees.iter().chain(&seed.opaque_applies) {
+                if f < functions {
+                    add(&mut succ, node, f);
+                }
+            }
+        }
+        if let Some(slot) = local.get_mut(node) {
+            *slot = own;
+        }
+    }
+    let mut http_local: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); nodes];
+    for (i, (cap, op)) in op_of.iter().enumerate() {
+        let node = functions + handlers + i;
+        let Some(capability) = env.capabilities.get(*cap) else {
+            continue;
+        };
+        if let Some(rho) = rho(env, *cap, op)
+            && let Some(slot) = local.get_mut(node)
+        {
+            *slot = rho;
+        }
+        if is_http(env, *cap)
+            && capability.ops.iter().any(|d| d.name == *op)
+            && let Some(slot) = http_local.get_mut(node)
+        {
+            slot.insert(node);
+        }
+        for &h in of_capability.get(cap).map_or(&[][..], Vec::as_slice) {
+            add(&mut succ, node, functions + h);
+        }
+    }
+    for edges in &mut succ {
+        edges.sort_unstable();
+        edges.dedup();
+    }
+    let down = close(&succ, &local, |a: &Label, b: &Label| a.join(b));
+    let http = close(
+        &succ,
+        &http_local,
+        |a: &BTreeSet<usize>, b: &BTreeSet<usize>| a.union(b).copied().collect(),
+    );
+    Summaries {
+        functions,
+        handlers,
+        ops,
+        of_capability,
+        down,
+        http,
+        op_of,
+    }
+}
+
 /// [`timing`] with `beside` as `τ_conc`, `None` when no part of a construct can run beside the
 /// site.
 pub(crate) fn timing_with(
@@ -2732,8 +3076,9 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 ///
 /// In all O(V + E + F + size of the seeds) joins, each O(k) for `k` categories. The `within` and
 /// `first of` sites take their `τ_conc` from it ([`timing_precise`], slices 3 and 4 of the plan
-/// on #1087), and so do the constructs `L_res` counts ([`residue`]); `for ever within`, the
-/// tick, limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the preview's.
+/// on #1087), and so do the constructs `L_res` counts ([`residue`]), `for ever within` and the
+/// tick (slice 5); limiters, `L_lim`, `L_srv` and the rule of a `via`'s timing sites keep the
+/// preview's.
 pub(crate) fn concurrency(env: &Env<'_>, findings: &Findings, graph: &Graph) -> Concurrency {
     let kappa: Vec<Label> = findings
         .constructs
