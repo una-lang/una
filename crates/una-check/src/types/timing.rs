@@ -300,7 +300,7 @@ impl TimingFrames {
             };
             let mut own = out.get(at).cloned().unwrap_or_else(|| zero.clone());
             for (_, event) in &frame.events {
-                una_core::label_counters::pass_step();
+                una_core::label_counters::frame_step();
                 if let Some(value) = item(event) {
                     own = join(&own, &value);
                 }
@@ -326,7 +326,10 @@ impl TimingFrames {
     /// - each frame at depth `j` then asks for the join over its interval.
     ///
     /// So a frame counts a read in its subtree exactly when the read is free in it. O((R + F) log
-    /// F) joins for the `R` reads, and a counting sort of the depths.
+    /// F) joins for the `R` reads and the `F` frames of the whole pass, and a counting sort of
+    /// the depths. One segment tree serves every body of the pass, so the logarithm is that of
+    /// the pass's frames, not of one body's as amendment E states it per body: within a
+    /// logarithm of the best possible either way.
     fn sources_up(&self) -> Vec<Label> {
         let n = self.tree.len();
         // The end of each subtree: its last id, plus one. Children have larger ids.
@@ -349,6 +352,7 @@ impl TimingFrames {
                 slot.push(at);
             }
             for (_, event) in &frame.events {
+                una_core::label_counters::frame_step();
                 match event {
                     Event::Source(label, _) => {
                         if let Some(slot) = out.get_mut(at) {
@@ -400,7 +404,7 @@ impl JoinTree {
     fn join_at(&mut self, at: usize, label: &Label) {
         let mut node = self.size + at;
         while node >= 1 {
-            una_core::label_counters::pass_step();
+            una_core::label_counters::frame_step();
             if let Some(slot) = self.nodes.get_mut(node) {
                 *slot = slot.join(label);
             }
@@ -413,7 +417,7 @@ impl JoinTree {
         let mut out = Label::public();
         let (mut low, mut high) = (from + self.size, to + self.size);
         while low < high {
-            una_core::label_counters::pass_step();
+            una_core::label_counters::frame_step();
             if low % 2 == 1 {
                 if let Some(label) = self.nodes.get(low) {
                     out = out.join(label);
@@ -459,11 +463,11 @@ impl TimingFrames {
             );
         }
         events.sort_unstable_by_key(|(sequence, _)| *sequence);
-        // Counted, so that a test sees each rebuild (slice 8b of #1087), except the rebuilds of a
+        // Counted as frame steps, so that a test sees each rebuild (slice 8b of #1087), except the rebuilds of a
         // cross-check in a build with debug assertions, which a release build never makes.
         if counted {
             for _ in &events {
-                una_core::label_counters::timing_step();
+                una_core::label_counters::frame_step();
             }
         }
         let mut read: BTreeSet<&str> = BTreeSet::new();
@@ -726,6 +730,8 @@ impl Checker<'_, '_, '_> {
         // open frames never decrease inward, since a site's locals end before it does.
         let frames = &self.findings.frames;
         let outer = self.timing.partition_point(|&at| {
+            // Counted, so that a test sees the O(log d) of the search (slice 8b of #1087).
+            una_core::label_counters::frame_step();
             frames
                 .tree
                 .get(at)
@@ -1843,8 +1849,9 @@ impl Residue {
 /// - over every `first of` `F` whose branches can reach an operation of `Http`,
 ///   `t(F) ⊔ τ_conc(F)`, which is at least `internal`, from `ρ` of `Http`.
 ///
-/// **The terms.** `κ` and `t` are `τ⁰` of the whole construct from its seed, closed over the
-/// graph of P1 ([`seed_label`]), so the reach of `Http` goes through handlers, capabilities and
+/// **The terms.** `κ` and `t` are `τ⁰` of the whole construct, its frame's label bottom up over
+/// the graph of P1 ([`coarse_labels`], which a build with debug assertions holds to
+/// [`seed_label`] of the rebuilt seed), so the reach of `Http` goes through handlers, capabilities and
 /// `Λ`. `τ_conc` is that of the construct's own site, from [`Concurrency`] (`spec/27 §11`):
 /// `conc` of its node joined with `ctx` at it, `⊤` in no node. `L_res` joins no timing label
 /// directly; it reaches one only through the values of item 7, which the probe of pass 2 raises
@@ -2963,6 +2970,8 @@ pub(crate) struct FrameTimings {
     label: Vec<Label>,
     /// The operations of `Http` each frame's subtree reaches.
     ops: Vec<BTreeSet<(CapId, String)>>,
+    /// `⊤`, for a frame it does not hold, failing closed (P4, F item 6).
+    top: Label,
 }
 
 impl FrameTimings {
@@ -2974,7 +2983,7 @@ impl FrameTimings {
             .label
             .get(frame.0)
             .cloned()
-            .unwrap_or_else(Label::public);
+            .unwrap_or_else(|| self.top.clone());
         if let Some(beside) = beside
             && !beside.is_public()
         {
@@ -3051,7 +3060,7 @@ impl Summaries {
             );
             ops.push(reached);
         }
-        FrameTimings { label, ops }
+        FrameTimings { label, ops, top }
     }
 }
 
@@ -3462,7 +3471,8 @@ pub(crate) fn concurrency_of(env: &Env<'_>, findings: &Findings) -> Concurrency 
 
 /// `κ`, `ctx` and `conc` of the package (ADR 0116 P2 to P4).
 ///
-/// - **`κ(C)`** is `τ⁰` of the seed of `C` over `graph` ([`seed_label`]), O(size of the seed).
+/// - **`κ(C)`** is `τ⁰` of the frame of `C` over `graph`, its label bottom up
+///   ([`coarse_labels`]), O(1) once the labels of every frame are computed.
 /// - **`ctx`** comes from the root of each body's tree down, as `ctx(parent) ⊔ κ(C)`: a parent
 ///   is recorded before the constructs nested in it, so one pass in the order of the ids gives
 ///   it, O(F) joins.
