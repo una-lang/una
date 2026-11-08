@@ -5556,7 +5556,13 @@ const PROCESSOR_LIMIT_SECS: u64 = 120;
 /// enforces (`RLIMIT_CPU`, the POSIX `ulimit -t` of `sh`, which needs no `unsafe` code). The
 /// wall-clock limit ends a run that parks every worker with nothing to run.
 fn output_within(command: &Command, processor_secs: u64) -> std::process::Output {
-    run_within(command, processor_secs, WALL_LIMIT).unwrap_or_else(|reason| panic!("{reason}"))
+    let run = run_within(command, processor_secs, WALL_LIMIT);
+    assert!(
+        run.is_ok(),
+        "{}",
+        run.as_ref().err().map_or("", String::as_str)
+    );
+    run.unwrap()
 }
 
 /// [`output_within`], with the wall-clock limit as an argument, and a run past a limit as an

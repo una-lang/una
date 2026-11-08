@@ -51,7 +51,17 @@ slow-timeout = { period = "120s", terminate-after = 30 }
 # can stand in for, since a wait uses none. A loaded machine stretches the checks and builds
 # inside those runs past the bound (#1776: 80 s against 15 s at a load average of 60), so
 # they run alone, first, as the timing tests above do.
-filter = 'binary_id(una-cli::http_limits) & test(/^(a_redirect_to_the_same_origin_under_one_at_once|a_wait_at_a_limit_is_cut_by_within|the_http_timeout_covers_a_wait_at_a_limit)_in_both_engines$/)'
+filter = 'binary_id(una-cli::http_limits) & test(/^(a_redirect_to_the_same_origin_under_one_at_once_completes|a_wait_at_a_limit_is_cut_by_within|the_http_timeout_covers_a_wait_at_a_limit)_in_both_engines$/)'
+threads-required = "num-cpus"
+priority = 100
+slow-timeout = { period = "120s", terminate-after = 30 }
+
+[[profile.default.overrides]]
+# A processor-time scaling test whose measured child checks a package: each of its queries
+# starts a solver child, whose handshake must arrive within 2 seconds of wall clock (ADR 0124
+# rule 4), which a loaded machine misses (U5003). The bound stays processor time; the test
+# runs alone, first, until that window holds under load (#1776).
+filter = 'binary_id(una-cli::systems_scaling) & test(=int_overflow_obligations_verify_in_linear_cpu_time)'
 threads-required = "num-cpus"
 priority = 100
 slow-timeout = { period = "120s", terminate-after = 30 }
