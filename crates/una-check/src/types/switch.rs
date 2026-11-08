@@ -51,6 +51,8 @@ pub(crate) struct SwitchSite {
     pub(crate) what: String,
     /// The function whose body holds it, lambdas written in it included.
     pub(crate) function: Option<usize>,
+    /// The handler whose operation body holds it, outside every function.
+    pub(crate) handler: Option<usize>,
 }
 
 /// A call of a generic function, for the sites that its type arguments decide (#1684).
@@ -103,6 +105,7 @@ impl Checker<'_, '_, '_> {
             label,
             what: what(),
             function: self.current,
+            handler: self.handler,
         };
         self.findings.switch_sites.push(site);
     }
@@ -232,9 +235,12 @@ fn decided_by_type(findings: &Findings, bound: &Label) -> BTreeSet<usize> {
     decided
 }
 
-/// What a found check point holds: how a message names it, its concrete label, and the
-/// function whose body holds it.
-type Found = BTreeMap<Span, (String, Label, Option<usize>)>;
+/// Where a check point is: the function whose body holds it, or the handler whose operation
+/// body holds it.
+type Holder = (Option<usize>, Option<usize>);
+
+/// What a found check point holds: how a message names it, its concrete label, and its holder.
+type Found = BTreeMap<Span, (String, Label, Holder)>;
 
 /// The check points whose count data above `bound` can decide: the sites whose label is above
 /// it, and the calls of generic functions that instantiate a site above it only through a
@@ -256,9 +262,13 @@ fn above(env: &Env<'_>, findings: &Findings, bound: &Label) -> Found {
         if symbolic && followed {
             continue;
         }
-        found
-            .entry(site.span)
-            .or_insert_with(|| (site.what.clone(), site.label.clone(), site.function));
+        found.entry(site.span).or_insert_with(|| {
+            (
+                site.what.clone(),
+                site.label.clone(),
+                (site.function, site.handler),
+            )
+        });
     }
     for call in &findings.switch_calls {
         let concrete = call.label.concrete();
@@ -270,7 +280,7 @@ fn above(env: &Env<'_>, findings: &Findings, bound: &Label) -> Found {
             (
                 format!("what this call of `{name}` runs, whose type arguments decide how many check points it passes,"),
                 concrete,
-                call.caller,
+                (call.caller, None),
             )
         });
     }
@@ -309,15 +319,31 @@ pub(crate) fn switch_points(
     residual
         .into_iter()
         .filter(|(span, _)| !refused.contains_key(span))
-        .map(|(span, (_, label, function))| {
-            let function = function
-                .and_then(|id| env.functions.get(id))
-                .map(|def| {
-                    let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
-                    format!("{module}.{}", def.name)
-                })
-                .unwrap_or_default();
-            ("task switch", function, span, label.concrete())
+        .map(|(span, (_, label, holder))| {
+            (
+                "task switch",
+                holder_name(env, holder),
+                span,
+                label.concrete(),
+            )
         })
         .collect()
+}
+
+/// The qualified name of a check point's holder for the report (`spec/13 §6`): `m.f` for a
+/// function, `m.h` for a handler's operation body, and empty outside both, as for the other
+/// constructs of `information.timing`.
+fn holder_name(env: &Env<'_>, (function, handler): Holder) -> String {
+    let module = |id: usize| env.modules.get(id).map_or("", |m| m.path.as_str());
+    if let Some(def) = function.and_then(|id| env.functions.get(id)) {
+        return format!("{}.{}", module(def.module), def.name);
+    }
+    if let Some(def) = handler.and_then(|id| env.handlers.get(id)) {
+        return format!(
+            "{}.{}",
+            module(def.module),
+            env.text(def.module, def.ast.name.name)
+        );
+    }
+    String::new()
 }
