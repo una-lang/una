@@ -1350,3 +1350,244 @@ fn the_health_example_answers_get_over_loopback() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// A backend on `127.0.0.1` that accepts every connection and never answers, holding it open, on
+/// a thread of its own: its port. It stands for a backend that is slow or unreachable, with no
+/// network outside the machine (#1730).
+fn hung_backend() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            held.extend(stream.ok());
+        }
+    });
+    port
+}
+
+/// [`ANSWER`], whose `tasks` statement first starts a task that makes an `Http` call to the
+/// backend on port `BACK`, which never answers, and prints `backend done` once the call returned
+/// (#1730, the hunt of #1011, H1 repro (b)).
+const SLOW_ANSWER: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+backend() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  let back = attempt @http.get("http://127.0.0.1:BACK/", headers: [], key_name: None)
+  @console.print("backend done")
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> ""
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "hello {first}"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @http: Http[get]
+  uses @console: Console[print]
+  diverges
+=
+  @console.print("serving")
+  tasks at most 1000 at once
+    start backend()
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")
+"#;
+
+/// #1730: in the interpreter, an `Http` call that waits on a backend held the run's one thread,
+/// so no `next` delivered another request until the call returned at `--http-timeout`. In a run
+/// that serves, the interpreter now runs the call off its thread with the task parked, as native
+/// code does: a `GET /fast` sent while another task waits on a backend that never answers is
+/// answered at once, in both engines.
+#[test]
+fn a_waiting_http_call_does_not_stall_the_delivery_of_other_requests() {
+    for engine in ENGINES {
+        let back = hung_backend();
+        let port = free_port();
+        let grants = format!(
+            "    serve \"http://127.0.0.1:{port}\"\n    http \"http://127.0.0.1:{back}\" get\n"
+        );
+        let program = SLOW_ANSWER.replace("BACK", &back.to_string());
+        let dir = package_granted("live_http_offload", &grants, &program, engine, false);
+        let mut run = start(
+            &dir,
+            "live_http_offload",
+            engine,
+            &["--http-timeout", "8", "--stop-grace", "2"],
+        );
+        run.expect("serving");
+        // The backend task reaches its `Http` call first.
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        let mut fast = connect(port);
+        fast.write_all(b"GET /fast HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let reply = dateless(&read_reply(&mut fast));
+        let took = started.elapsed();
+        assert_eq!(
+            reply,
+            "HTTP/1.1 200 OK\r\nContent-Length: 10\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello fast",
+            "{engine:?}"
+        );
+        assert!(took < Duration::from_secs(4), "{engine:?}: `fast` after {took:?}");
+        // The call fails at `--http-timeout`, the task goes on, and the run ends at the host stop.
+        run.expect("backend done");
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert_eq!(
+            output(&lines),
+            ["serving", "backend done", "stopped"],
+            "{engine:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A pool of `WORKERS` tasks, each of which loops on `next`, then an `Http` call to the backend
+/// on port `BACK`, then answers `200` with `done`: the call is in the body of the `for ever`, so a
+/// host stop interrupts it.
+const SLOW_POOL: &str = r#"module srv
+
+import std.host (HttpServer, Reply)
+
+worker(n: Int) -> Unit
+  uses @server: HttpServer[next, reply]
+  uses @http: Http[get]
+  diverges
+=
+  for ever
+    let next = attempt @server.next()
+    when next
+      is Ok(exchange) ->
+        let back = attempt @http.get("http://127.0.0.1:BACK/", headers: [], key_name: None)
+        @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "done"))
+          if error use unit
+      is Err(failure) -> unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @http: Http[get]
+  uses @console: Console[print]
+  diverges
+=
+  @console.print("serving")
+  tasks at most 1000 at once
+    for n in 1..3
+      start worker(n)
+  @console.print("stopped")
+"#;
+
+/// Runs [`SLOW_POOL`] in `engine`, under `--http-timeout 30`, against a backend
+/// that never answers: the run, after it printed `serving`, and a connection that sent one
+/// request.
+fn slow_pool(name: &str, engine: Engine) -> (Running, TcpStream, PathBuf) {
+    let back = hung_backend();
+    let port = free_port();
+    let grants = format!(
+        "    serve \"http://127.0.0.1:{port}\"\n    http \"http://127.0.0.1:{back}\" get\n"
+    );
+    let program = SLOW_POOL.replace("BACK", &back.to_string());
+    let dir = package_granted(name, &grants, &program, engine, false);
+    let mut run = start(
+        &dir,
+        name,
+        engine,
+        &["--http-timeout", "30", "--stop-grace", "10"],
+    );
+    run.expect("serving");
+    let mut stream = connect(port);
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    (run, stream, dir)
+}
+
+/// #1730, the host stop: a call made off the interpreter's thread in the body of a `for ever` is
+/// interrupted by the host stop (ADR 0116 rule 12), so the run drains and ends long before
+/// `--http-timeout`, in both engines, and no helper thread keeps it alive.
+#[test]
+fn a_host_stop_interrupts_a_waiting_http_call_in_a_serving_run() {
+    for engine in ENGINES {
+        let (run, mut stream, dir) = slow_pool("live_http_stop", engine);
+        // The request reaches its `Http` call.
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        run.terminate();
+        let reply = dateless(&read_reply(&mut stream));
+        assert!(reply.ends_with("\r\n\r\ndone"), "{engine:?}: {reply:?}");
+        let (code, lines, stderr) = run.end();
+        let took = started.elapsed();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert_eq!(output(&lines), ["serving", "stopped"], "{engine:?}");
+        assert!(took < Duration::from_secs(10), "{engine:?}: ended after {took:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Two started tasks of a run with no `serve:` grant: the first makes an `Http` call to the
+/// backend on port `BACK`, which never answers, then prints `slow`; the second prints `fast`.
+const UNSERVED: &str = r#"module srv
+
+slow() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  let back = attempt @http.get("http://127.0.0.1:BACK/", headers: [], key_name: None)
+  @console.print("slow")
+
+fast() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("fast")
+
+pub main() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  tasks at most 2 at once
+    start slow()
+    start fast()
+"#;
+
+/// #1730, the negative: a run without a `serve:` grant keeps the interpreter's reference
+/// schedule (`spec/27 §8` rule 2): its `Http` calls stay on the run's thread, so the first task
+/// prints `slow` once its call fails at `--http-timeout`, before the second task runs.
+#[test]
+fn a_run_without_a_serve_grant_keeps_http_on_the_interpreter_thread() {
+    let back = hung_backend();
+    let grants = format!("    http \"http://127.0.0.1:{back}\" get\n");
+    let program = UNSERVED.replace("BACK", &back.to_string());
+    let dir = package_granted(
+        "live_http_unserved",
+        &grants,
+        &program,
+        Engine::Interpreter,
+        false,
+    );
+    let run = start(
+        &dir,
+        "live_http_unserved",
+        Engine::Interpreter,
+        &["--http-timeout", "1"],
+    );
+    let (code, lines, stderr) = run.end();
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(output(&lines), ["slow", "fast"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
