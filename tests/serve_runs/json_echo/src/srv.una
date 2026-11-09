@@ -1,0 +1,22 @@
+module srv
+
+import std.host (HttpServer, Reply, ServeError)
+
+--- Takes one request and answers with its body inside a JSON object: the body is `internal`,
+--- so the `Json` built from it is `internal` (ADR 0073 J5 as amended, edition 0.4), and its
+--- `to_json` text, escaped by `spec/23 §4`, is the body of an `internal` reply, with no policy.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let got = attempt @server.next()
+  let answered = when got
+    is Ok(exchange) ->
+      let echoed = Object(fields: empty_map().with(key: "echo",
+          value: Str(value: exchange.request.body)
+        ))
+      @server.reply(to: exchange.right,
+        reply: Reply(status: 200, headers: [], body: echoed.to_json())
+      )
+        if error use unit
+    is Err(failure) -> unit
+  @server.close()

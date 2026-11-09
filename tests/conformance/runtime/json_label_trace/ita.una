@@ -1,0 +1,8 @@
+ita json_label_trace
+  version 0.1.0
+  edition 0.4
+
+run
+  entry trace
+  grants
+    console

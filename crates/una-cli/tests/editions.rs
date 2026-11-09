@@ -405,6 +405,14 @@ struct Difference04 {
 /// 0119 and 0120 are no longer among them: ADR 0139 rule 6 moves them to edition `0.5`, so their
 /// packages are in `EXPECTED_DIFFERENCES_0_5`.
 const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
+    // ADR 0073 J5, Proposed amendment of 2026-11-09 (#917): a `Json` constructor accepts a
+    // labeled argument from edition 0.4 and labels its result, so the U4001 at the argument
+    // moves to where the `secret Json` meets the declared `Json` result.
+    Difference04 {
+        case: "security/json_labels_0_3",
+        added: &[("U4001", "src/json_labels_0_3.una:25:43")],
+        removed: &[("U4001", "src/json_labels_0_3.una:25:47")],
+    },
     // ADR 0123 rule 0 (`spec/31 §1`): `std.host` exports `HttpServer` from edition 0.4.
     Difference04 {
         case: "names/host_server_import_0_3",
