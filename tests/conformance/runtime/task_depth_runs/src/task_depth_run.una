@@ -1,0 +1,27 @@
+-- test: a task of a block recurses to just below the maximum call depth, each level holding several values across its call, and completes: its stack holds every level that `--max-depth` allows (spec/27 §4 rule 1)
+-- spec: spec/27 §4
+-- grant: console
+-- expect: run-output "starting"
+-- expect: run-output "9900 9900"
+module task_depth_run
+
+--- Recurses `n` levels deep, each level holding six values live across its call, and
+--- returns the number of levels.
+deep(n: Int) -> Int
+=
+  let a = n + 1
+  let b = a * 2
+  let c = b + a
+  let d = c * 3
+  let e = d + b
+  let f = e * c
+  if n == 0 then 0 else deep(n - 1) + 1 + (a + b + c + d + e + f) * 0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("starting")
+  together
+    let x = deep(9900)
+    let y = deep(9900)
+  @console.print("{x} {y}")

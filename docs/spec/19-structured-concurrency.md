@@ -111,7 +111,7 @@ These rules extend `spec/11 §5`.
 ## 8. Runtimes
 
 1. **The interpreter** runs the tasks of a block sequentially, in index order (§6 rule 6). It stays single-threaded and is the deterministic reference of `spec/11 §1`.
-2. **The native backend** runs each task on a coroutine, with a stack sized from `--max-depth` (`spec/16 §3` rule 3), run by one of `--workers` operating-system threads that it never leaves (`spec/27 §1`, ADR 0117).
+2. **The native backend** runs each task on a coroutine, with a stack sized from `--max-depth` (`spec/16 §3` rule 3) and the program's frame bound (`spec/27 §4` rule 1), run by one of `--workers` operating-system threads that it never leaves (`spec/27 §1`, ADR 0117).
    - Each task has its own heap. At the fork, the values a task captures are copied into its heap, and at the join its result is copied back into the heap of the task that runs the block. Reference counts stay non-atomic (`spec/16 §4` rule 1).
    - The grants and keys of the run are read-only, and each task's state holds them.
    - Each task records its events in its own buffer. The join appends the buffers in task order, then numbers `seq` and the installation ids (§7 rule 2).
