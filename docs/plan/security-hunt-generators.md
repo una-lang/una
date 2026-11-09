@@ -197,9 +197,11 @@ Edition 0.4. Each program is a server in the language form (`spec/31 §1` rule 6
 |---|---|---|
 | N5 | `spec/31 §5` rule 1 | the twin `echoed`; a value with CRLF, with a bare LF or CR, with NUL, another control byte or 0x7F; a name the host writes itself (`Content-Length`, `Transfer-Encoding`, `Connection`, `Date`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`, in any case); a name that is not a token (a space, a colon, a trailing space, a CRLF, non-ASCII, empty); a body on a `204` or a `304` |
 
+**Handlers that read labeled data** (N6, ADR 0123 IF2 and IF7, `spec/31 §1` rule 5): a request task reads a `secret` balance from a capability of the program, or binds a secret literal, with one varied secret literal, for the two-run oracle's server mode (`docs/plan/security-hunt-oracle.md` §11). Forms `read-dropped`, `local-dropped` and `released` (through a policy to `internal`) are accepted; `body-shown`, `status-chosen` and `header-shown` are closed calls (U4001), and `branch-reply` one (U4003, beside U4002).
+
 The `reply` events of N5 are not counted: the fallback replies under a program counter its failure raises, quiet code whose operations append no event (`spec/11 §5`, `spec/26 §6` rule 4); the wire is the judge.
 
-The run takes the first 40 seeds of each operator and then, for each form those did not reach, the first later seed that has it, so every form runs (203 programs). Measured on an Apple M1 Max with a debug test build of `una` at a load average of 7 to 46 from other work (2026-11-09): 203 programs in 10 seconds, and 750 with seed 3, 150 per operator, in 35 seconds, all clean.
+The run takes the first 40 seeds of each operator and then, for each form those did not reach, the first later seed that has it, so every form runs (243 programs). Measured on an Apple M1 Max with a debug test build of `una` at a load average of 7 to 46 from other work (2026-11-09): 203 programs of N1 to N5 in 10 seconds, and 750 with seed 3, 150 per operator, in 35 seconds, all clean; the whole run of 243 programs, N6 through the oracle (20 programs compared at 100 variants, 20 closed calls rejected), in 17 seconds, PASS.
 
 ### R. Refactors that keep every label (must-keep)
 
