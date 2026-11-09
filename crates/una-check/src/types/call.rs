@@ -2436,7 +2436,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     },
                 );
                 let hint = self.expected_args(kind, expected);
-                self.construct(
+                let label = self.construct(
                     kind,
                     Some(index),
                     &targs,
@@ -2444,9 +2444,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     args,
                     ident.span,
                     span,
+                    true,
                 );
                 let targs = self.invariant_base(kind, targs, hint.is_some());
-                return Ty::Kind(kind, targs.into());
+                return Ty::Kind(kind, targs.into()).with_label(&label);
             }
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
                 let (params, kind_name) = self.kind_params(id);
@@ -2460,9 +2461,18 @@ impl<'a> Checker<'_, 'a, '_> {
                     },
                 );
                 let hint = self.expected_args(id, expected);
-                self.construct(id, None, &targs, hint.as_deref(), args, ident.span, span);
+                let label = self.construct(
+                    id,
+                    None,
+                    &targs,
+                    hint.as_deref(),
+                    args,
+                    ident.span,
+                    span,
+                    true,
+                );
                 let targs = self.invariant_base(id, targs, hint.is_some());
-                return Ty::Kind(id, targs.into());
+                return Ty::Kind(id, targs.into()).with_label(&label);
             }
             Some(Entity::Kind(_)) => {
                 format!("`{name}` is a sum kind; construct one of its variants")
@@ -2608,6 +2618,11 @@ impl<'a> Checker<'_, 'a, '_> {
     /// a label. Missing and unknown fields are U2009, a repeated field U2006, and an unlabeled
     /// argument where labels are required U2004. `span` covers the name and
     /// the arguments, `name` only the name.
+    ///
+    /// Returns the label of the constructed value's top position: `public`, except for a
+    /// variant of the prelude kind `Json` in edition `0.4` and later when `labeled` is true,
+    /// whose arguments may carry any label and whose result carries the join of every label of
+    /// every argument (ADR 0073, Proposed amendment of 2026-11-09 to J5, #917).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn construct(
         &mut self,
@@ -2618,15 +2633,20 @@ impl<'a> Checker<'_, 'a, '_> {
         args: &[Arg],
         name: Span,
         span: Span,
-    ) {
+        labeled: bool,
+    ) -> Label {
         let Some(def) = self.env.kinds.get(kind) else {
-            return;
+            return Label::public();
         };
         let module = def.module;
+        let labeled_json = labeled
+            && self.env.edition >= Edition::V0_4
+            && module == self.env.prelude
+            && def.name == "Json";
         let (fields, constructor): (Vec<FieldDef<'a>>, &'a str) = match index {
             Some(index) => match def.variants.get(index) {
                 Some(variant) => (variant.fields.clone(), variant.name),
-                None => return,
+                None => return Label::public(),
             },
             None => (def.record.clone().unwrap_or_default(), def.name),
         };
@@ -2645,7 +2665,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.report.push(diagnostic);
             }
             self.unchecked(args);
-            return;
+            return Label::public();
         }
         let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
         let mut taken: Vec<bool> = fields.iter().map(|_| false).collect();
@@ -2819,9 +2839,20 @@ impl<'a> Checker<'_, 'a, '_> {
             .kinds
             .get(kind)
             .is_some_and(|k| !self.env.in_package(k.module));
+        let mut result_label = Label::public();
         for (arg_span, found, expected, field) in flows {
             let into = format!("field `{field}` of `{constructor}`");
-            if standard {
+            if labeled_json {
+                // ADR 0073 J5 as amended (Proposed, 2026-11-09): the argument enters with its
+                // labels removed, as a prelude function's argument does, and every label it
+                // carries, at every position that holds data (`spec/07 §7` rule 3), labels the
+                // result's top. Reading the value back is raised by that top label (rule 3),
+                // and `to_json` carries it, so nothing that entered leaves lower.
+                let resolved = self.labeled(&found);
+                result_label = result_label.join(&self.deep(&resolved));
+                let stripped = resolved.map_labels(&|_| Label::public());
+                self.flow(arg_span, &stripped, &expected, &into);
+            } else if standard {
                 let kind_name = self.env.kind_name(kind);
                 let mut advice = format!(
                     "a field of `{kind_name}`, a kind of the standard library, keeps its declared label: lower this value through a `policy`"
@@ -2854,6 +2885,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
             }
         }
+        result_label
     }
 }
 

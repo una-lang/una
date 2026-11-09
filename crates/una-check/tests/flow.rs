@@ -800,3 +800,115 @@ fn a_for_ever_within_beside_secret_tasks_names_the_tasks_beside_it() {
         "{loop_errors:?}"
     );
 }
+
+// ----- `Json` values that carry labeled data (ADR 0073 J5, Proposed amendment of 2026-11-09, #917) -----
+
+/// The diagnostics of one module `t` in a package of `edition`, at `src/t.una`, whose
+/// declarations start on line 3.
+fn in_edition(edition: &str, body: &str) -> Vec<String> {
+    let manifest =
+        format!("[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n");
+    let module = format!("module t\n\n{body}");
+    check(&[("una.toml", &manifest), ("src/t.una", &module)], false)
+}
+
+/// Functions that build `Json` values from labeled data: in edition 0.4 each constructor
+/// accepts them and labels its result with the join of every label of its arguments; reading
+/// the value back, writing it with `to_json` and passing it to a sink are raised by that label.
+const JSON_LABELS: &str = "\
+pub wrapped(token: secret Text) -> secret Json = Str(token)\n\
+\n\
+pub written(token: secret Text) -> secret Text = Str(token).to_json()\n\
+\n\
+pub inner(t: internal Text) -> internal Json = Str(value: t)\n\
+\n\
+pub nested(token: secret Text) -> secret Json = Array([Null, Str(token)])\n\
+\n\
+pub keyed(m: Map[secret Text, Json]) -> secret Json = Object(m)\n\
+\n\
+pub listed(items: List[secret Json]) -> secret Json = Array(items)\n\
+\n\
+pub empty() -> Json = Array([])\n\
+\n\
+pub null() -> Json = Null\n\
+\n\
+pub plain(n: Int, b: Bool) -> Json = Array([Number(n), Boolean(b), Str(\"x\")])\n\
+\n\
+pub leaked(token: secret Text) -> Json = Str(token)\n\
+\n\
+pub leaked_keys(m: Map[secret Text, Json]) -> Json = Object(m)\n\
+\n\
+pub leaked_items(items: List[secret Json]) -> Json = Array(items)\n\
+\n\
+pub leaked_nested(token: secret Text) -> Json = Array([Null, Str(token)])\n\
+\n\
+pub printed(token: secret Text) -> Unit\n  uses @console: Console[print]\n=\n  @console.print(Str(token).to_json())\n\
+\n\
+pub bound(token: secret Text) -> Text\n=\n  when Str(token)\n    is Str(value) -> value\n    else -> \"\"\n\
+\n\
+pub equal(token: secret Text) -> Bool = Str(token) == Null\n";
+
+#[test]
+fn json_constructors_carry_the_labels_of_their_arguments_in_edition_0_4() {
+    // Lines 3 to 19 build labeled and public values and are accepted; the labeled value then
+    // meets each lower declared type or sink where it reaches one, never at the constructor.
+    assert_eq!(
+        in_edition("0.4", JSON_LABELS),
+        [
+            "U4001 src/t.una:21:42 the result of `leaked` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
+            "U4001 src/t.una:23:54 the result of `leaked_keys` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
+            "U4001 src/t.una:25:54 the result of `leaked_items` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
+            "U4001 src/t.una:27:49 the result of `leaked_nested` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
+            "U4003 src/t.una:32:18 `@console.print` accepts `public` data, and this argument is `secret`",
+            "U4001 src/t.una:36:8 the result of `bound` is `public`, and which value it returns depends on this `secret` condition: a flow from `secret` to `public`",
+            "U4001 src/t.una:37:22 the result of `bound` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:40:41 the result of `equal` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`",
+        ]
+    );
+}
+
+#[test]
+fn json_constructors_keep_public_positions_before_edition_0_4() {
+    // ADR 0073 J5 as written: every labeled argument is U4001 at the constructor.
+    assert_eq!(
+        in_edition("0.3", JSON_LABELS),
+        [
+            "U4001 src/t.una:3:54 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:5:54 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:7:59 field `value` of `Str` is `Text`, and this value is `internal Text`: a flow from `internal` to `public`",
+            "U4001 src/t.una:9:66 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:11:62 field `fields` of `Object` is `Map[Text, Json]`, and this value is `Map[secret Text, Json]`: a flow from `secret` to `public`",
+            "U4001 src/t.una:13:61 field `items` of `Array` is `List[Json]`, and this value is `List[secret Json]`: a flow from `secret` to `public`",
+            "U4001 src/t.una:21:46 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:23:61 field `fields` of `Object` is `Map[Text, Json]`, and this value is `Map[secret Text, Json]`: a flow from `secret` to `public`",
+            "U4001 src/t.una:25:60 field `items` of `Array` is `List[Json]`, and this value is `List[secret Json]`: a flow from `secret` to `public`",
+            "U4001 src/t.una:27:66 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:32:22 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:36:12 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:40:45 field `value` of `Str` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+        ]
+    );
+}
+
+#[test]
+fn only_json_constructors_take_labeled_arguments() {
+    // A user kind keeps its fields' declared labels in edition 0.4 (`spec/07 §7` rule 2), a
+    // `Json` built under a secret condition is raised by the branch join (rule 2), not by the
+    // constructor rule.
+    assert_eq!(
+        in_edition(
+            "0.4",
+            "kind Box\n  value: Text\n\
+             \n\
+             pub boxed(token: secret Text) -> Box = Box(value: token)\n\
+             \n\
+             pub branched(c: secret Bool) -> Json = if c then Str(\"a\") else Null\n\
+             \n\
+             pub branched_ok(c: secret Bool) -> secret Json = if c then Str(\"a\") else Null\n"
+        ),
+        [
+            "U4001 src/t.una:6:51 field `value` of `Box` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
+            "U4001 src/t.una:8:43 the result of `branched` is `public`, and which value it returns depends on this `secret` condition: a flow from `secret` to `public`",
+        ]
+    );
+}
