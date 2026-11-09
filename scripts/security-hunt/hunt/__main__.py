@@ -6,6 +6,10 @@
     python3 -m hunt repro --op T4 --seed SEED --edition 0.2 --out DIR
     python3 -m hunt gate --una PATH --out DIR --tip SHA
 
+`gen --ops W` and `repro --op W1` reach family W (tasks and time, #973), which no default
+selection and no gate includes: it is meant for the oracle under the cost clock (`spec/27 §8`
+rule 6).
+
 `gen` and `repro` only write files. `reject`, `keep` and `gate` run the compiler, which is
 heavy work: only in a machine slot. `gate` is the release gate's fixed run (`hunt/gate.py`).
 """
@@ -16,7 +20,8 @@ import sys
 from collections import Counter
 
 from . import drivers, gate
-from .families import OPERATORS, family_of
+from .families import OPERATORS, TIMING_OPERATORS, family_of
+from .families.timing import EDITIONS as TIMING_EDITIONS
 from .program import derive_seed, write_manifest
 
 
@@ -24,12 +29,13 @@ def select_ops(spec):
     if not spec:
         return sorted(OPERATORS, key=lambda o: (family_of(o), int(o[len(family_of(o)):])))
     out = []
+    every = {**OPERATORS, **TIMING_OPERATORS}
     for part in spec.split(","):
         part = part.strip()
-        if part in OPERATORS:
+        if part in every:
             out.append(part)
         else:
-            fam = [o for o in OPERATORS if family_of(o) == part]
+            fam = [o for o in every if family_of(o) == part]
             if not fam:
                 raise SystemExit(f"unknown operator or family {part}")
             out += sorted(fam, key=lambda o: int(o[len(part):]))
@@ -41,8 +47,10 @@ def cmd_gen(a):
     for op in select_ops(a.ops):
         for i in range(a.count):
             seed = derive_seed(a.seed, op, i)
-            for edition in a.editions.split(","):
-                programs.append(OPERATORS[op](seed, edition))
+            # Family W has the constructs of edition 0.4 alone.
+            editions = TIMING_EDITIONS if op in TIMING_OPERATORS else a.editions.split(",")
+            for edition in editions:
+                programs.append(drivers._build(op, seed, edition))
     root = drivers.campaign_root(a.out)
     for p in programs:
         p.write(root)
@@ -54,7 +62,7 @@ def cmd_gen(a):
 
 
 def cmd_repro(a):
-    p = OPERATORS[a.op](a.seed, a.edition)
+    p = drivers._build(a.op, a.seed, a.edition)
     path = p.write(drivers.campaign_root(a.out))
     print(path)
     print(p.digest())

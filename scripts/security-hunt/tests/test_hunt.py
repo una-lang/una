@@ -2178,6 +2178,79 @@ class Sandbox(unittest.TestCase):
         self.assertFalse(os.path.exists(home))
 
 
+class FamilyW(unittest.TestCase):
+    """Family W, tasks and time over code that reads secrets (#973), for the oracle under the
+    cost clock; never part of the release gate's fixed run."""
+
+    FORMS = {
+        "W1": {"fallback-kept": [], "fallback-shown": ["U4003"], "callee-literal": ["U4003"],
+               "handler-literal": ["U4003"], "attempt-kept": [], "attempt-shown": ["U4003"],
+               "public-beside": []},
+        "W2": {"race-kept": [], "race-shown": ["U4003"], "branch-effect": ["U4002"]},
+        "W3": {"secret-job": ["U4002"], "carried": [], "bounded-carried": []},
+        "W4": {"work-inside": ["U4001"], "work-before": []},
+    }
+
+    def programs(self, n=80):
+        for op in sorted(families.TIMING_OPERATORS):
+            for i in range(n):
+                yield families.TIMING_OPERATORS[op](derive_seed(973, op, i), "0.4")
+
+    def test_family_w_is_apart_from_the_fixed_run(self):
+        self.assertEqual(sorted(families.TIMING_OPERATORS), ["W1", "W2", "W3", "W4"])
+        self.assertFalse(set(families.TIMING_OPERATORS) & set(OPERATORS))
+        self.assertFalse(any(families.family_of(op) == "W" for op in OPERATORS))
+
+    def test_every_form_with_its_expected_codes(self):
+        seen = {op: {} for op in self.FORMS}
+        for p in self.programs():
+            self.assertIn(p.variant, self.FORMS[p.op], p.name)
+            seen[p.op][p.variant] = p.expect
+            self.assertEqual(p.expect, self.FORMS[p.op][p.variant], p.name)
+        self.assertEqual(seen, self.FORMS)
+
+    def test_a_package_of_edition_0_4_with_one_varied_secret(self):
+        for p in self.programs(30):
+            self.assertEqual(p.cls, OPEN)
+            self.assertEqual(p.edition, "0.4")
+            self.assertIn("ita.una", p.files)
+            self.assertIn("ita.lock", p.files)
+            self.assertIn("edition 0.4", p.files["ita.una"])
+            self.assertNotIn("una.toml", p.files)
+            self.assertEqual(len(p.vary), 1, p.name)
+            self.assertEqual(p.vary[0]["label"], "secret")
+            self.assertEqual(p.vary[0]["type"], "Int")
+            text = p.files["src/main.una"]
+            line = text.splitlines()[p.vary[0]["line"] - 1]
+            col = p.vary[0]["col"] - 1
+            self.assertEqual(line[col:col + len(p.vary[0]["literal"])], p.vary[0]["literal"])
+            self.assertNotIn("⟦", text)
+            # The clock is never read: under the cost clock it reads the run's work.
+            self.assertNotRegex(text, r"\bClock\b")
+
+    def test_every_loop_is_bounded(self):
+        # A varied value as large as 2^53 never makes a run long: each loop counts to at most
+        # CLAMP.
+        for p in self.programs(30):
+            text = p.files["src/main.una"]
+            loops = re.findall(r"for i in 0\.\.<(\w+)", text)
+            self.assertTrue(all(x == "m" for x in loops), p.name)
+            if loops:
+                self.assertIn(f"then {families.timing.CLAMP} else n", text)
+
+    def test_only_edition_0_4(self):
+        for op, gen in families.TIMING_OPERATORS.items():
+            for ed in ("0.1", "0.2", "0.3"):
+                with self.assertRaises(ValueError):
+                    gen(derive_seed(973, op, 0), ed)
+
+    def test_rebuilt_from_a_manifest_row(self):
+        p = families.TIMING_OPERATORS["W1"](derive_seed(973, "W1", 3), "0.4")
+        row = dict(p.manifest(), digest=p.digest())
+        self.assertEqual(drivers.rebuild(row).files, p.files)
+        self.assertEqual(families.TIMING_OPERATORS["W1"](p.seed, "0.4").digest(), p.digest())
+
+
 class Messages(unittest.TestCase):
     """The observers' views keep each diagnostic's message from `una run --json` (#874): a secret
     that reaches only a message is a leak."""
