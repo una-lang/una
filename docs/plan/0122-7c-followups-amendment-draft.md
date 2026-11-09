@@ -1,6 +1,6 @@
 # ADR 0122 amendment draft: `una ita lock --check` and the root-version floor (follow-ups of amendment 7c)
 
-Status: Proposed (draft for the project's decision; it is appended to `docs/adr/0122-ita-packages-and-the-registry.md` only once accepted, with the date of its acceptance). Card #1538, findings L1 and L3 of the adversarial review of PR #1537 (card #1529). Nothing here is implemented: PR for #1538 implements L2 (the same-size checkpoint recorded as evidence, which `spec/30 §11` rule 9 already requires) and leaves L1 and L3 to this decision, since both change text of `spec/30` that states the accepted amendment of 2026-11-03.
+Status: Accepted on 2026-11-09 and appended to ADR 0122 (card #1538); implementation slices follow. Card #1538, findings L1 and L3 of the adversarial review of PR #1537 (card #1529).
 
 ## L1. `una ita lock --check` does not see a cut of the vendored root chain
 
