@@ -6,7 +6,7 @@ Status: Proposed (draft for the project's decision; it is appended to `docs/adr/
 
 **Problem.** An attacker who edits the vendored package, its provenance and the lock drops root version 2 and the `latest` block from the vendored provenance and lowers the lock's `last root 2` to `last root 1`. The lock's point names root 1, which is now the provenance's last stored version, so the witnesses that root 2 retired count as current ones. `una ita lock --check` reads the registry at the lock's point, walks the chain served up to version 2, and keeps the recorded `last root 1`, since that chain holds version 1 with its digest (`spec/30 §4`), so the regenerated lock equals the edited one and the check passes. The cut is caught only by the root-version floor that the same command stores (`registry/<id>/root-version`, `spec/30 §14`, Floors). When that store fails, a note says so and the command succeeds; on a machine that starts with an empty Itaoca, such as a CI run, the following offline `una check` then accepts the truncated chain (amendment 7c, item 5).
 
-**Why the builder did not decide it in code.** Two normative texts settle the current behavior, and both state the accepted amendment:
+**Why the change did not decide it in code.** Two normative texts settle the current behavior, and both state the accepted amendment:
 - `spec/30 §14`, Floors: "a floor that cannot be stored, or a lock that cannot be had in time, is a note that says so, and never fails a place or a command". Making a failed store an error contradicts it.
 - `spec/30 §9` rule 7, Trust on first use, and amendment 7c, item 5: "The online commands do not detect such a cut in the vendored file". Making `--check` detect it changes that sentence.
 

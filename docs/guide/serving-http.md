@@ -17,7 +17,7 @@ run
       answer within 10 seconds
 ```
 
-On the command line the same grant is `--grant serve:http://127.0.0.1:8080;256/once;body=64;answer=10`, its items written as `;` suffixes (`spec/31 §2` rule 1). The address is an IPv4 address, or an IPv6 address in brackets, and always a port; a host name is refused, since nothing resolves a grant. `0.0.0.0` and `[::]` mean every interface (`spec/31 §2` rule 1).
+On the command line the same grant is `--grant 'serve:http://127.0.0.1:8080;256/once;body=64;answer=10'`, its items written as `;` suffixes and the whole value quoted, since a shell ends a command at an unquoted `;` (`spec/31 §2` rule 1). The address is an IPv4 address, or an IPv6 address in brackets, and always a port; a host name is refused, since nothing resolves a grant. `0.0.0.0` and `[::]` mean every interface (`spec/31 §2` rule 1).
 
 Every grant has limits, whether it writes them or not. The defaults include 256 exchanges delivered and not yet answered (`/once`), 1024 requests read and waiting to be delivered (`waiting`), 1024 open connections, 64 of them from one peer at that default (`peer`), a body of at most 1024 KiB, and 30 seconds from the end of a request to the start of its reply (`answer`); the table of `spec/31 §2` rule 2 lists every item, its default and its range. When a limit is reached, the host answers for the program, with an empty body, as `spec/31 §6` rule 7 lists: `503` with `Retry-After: 1` when `waiting` is full or a request waits past `answer`, `408` for a request not read in time, `421` for a `Host` the grant does not allow.
 

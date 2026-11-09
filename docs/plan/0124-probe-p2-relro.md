@@ -69,4 +69,4 @@ A corroborating run on aarch64: a Rust program built by the container's rustc 1.
 
 ## Evidence notes
 
-The digests of the musl inputs, the Docker version and two background claims (that GNU ld ignores DT_RELR packing, and which `libc.a` members call `mprotect`) are from the probe session's terminal and are not all backed by the files copied to `ops/coordination/runs/1204-probe-p2/`; the measurements of the table above are (review of this note, L2).
+The digests of the musl inputs, the Docker version and two background claims (that GNU ld ignores DT_RELR packing, and which `libc.a` members call `mprotect`) are from the probe session's terminal and are not all backed by the files of the probe (#1204) kept outside the repository; the measurements of the table above are (review of this note, L2).
