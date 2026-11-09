@@ -1,0 +1,13 @@
+-- test: before edition 0.4, a bare `stop` or `skip` line naming a bound local is an ordinary expression, not a statement (spec/26 §3 rule 1)
+-- spec: spec/26 §3
+-- expect: ok
+module names
+
+pub larger() -> Int
+=
+  let stop = 3
+  let skip = 4
+  if stop > skip
+    stop
+  else
+    skip

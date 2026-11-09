@@ -1,0 +1,13 @@
+-- test: in edition 0.4, a bare `stop` line is the statement even where a local `stop` is bound, so outside a loop it is U2034 (spec/26 §3 rules 1 and 3)
+-- spec: spec/26 §3
+-- expect: error U2034 at src/names.una:11:5
+module names
+
+pub larger() -> Int
+=
+  let stop = 3
+  let other = 4
+  if stop > other
+    stop
+  else
+    other

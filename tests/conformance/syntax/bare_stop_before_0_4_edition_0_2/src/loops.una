@@ -1,0 +1,10 @@
+-- test: in edition 0.2, a bare `stop` line is a name that must be bound (U1001), not a statement (spec/26 §3 rule 1)
+-- spec: spec/26 §3
+-- expect: error U1001 at src/loops.una:9:5
+module loops
+
+pub drain(xs: List[Int]) -> Int
+=
+  for x in xs
+    stop
+  0
