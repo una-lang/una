@@ -1087,6 +1087,24 @@ impl Scheduler {
         )
     }
 
+    /// The usable sizes of the stacks the pool holds, one entry per size, in tests.
+    #[cfg(test)]
+    pub(crate) fn stack_sizes(&self) -> Vec<usize> {
+        lock(&self.shared.stacks).keys().copied().collect()
+    }
+
+    /// Takes `count` stacks of `bytes` from the pool at once and gives them back, as `count`
+    /// tasks live at once would, in tests.
+    #[cfg(test)]
+    pub(crate) fn churn(&self, count: usize, bytes: usize) {
+        let stacks: Vec<Stack> = (0..count)
+            .map(|_| self.shared.take(bytes).unwrap())
+            .collect();
+        for stack in stacks {
+            self.shared.give(stack);
+        }
+    }
+
     /// How many worker threads, file helpers and I/O helpers have started, in tests.
     #[cfg(test)]
     pub(crate) fn started(&self) -> (usize, usize, usize) {
