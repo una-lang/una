@@ -14,10 +14,16 @@
 //!   coroutine too, so it takes turns with its tasks; [`drive`] resumes the task at the front of
 //!   the queue until the root has ended. A run without one runs as before, on its thread's own
 //!   stack, with no switch.
+//! - **`Http` off the thread.** In a run that serves live peers and has a `tasks` statement, a
+//!   task's `Http` request runs on a helper thread while the task parks ([`Offload`], #1730);
+//!   the driver puts the task back in the queue once its request has landed. Every other run
+//!   makes its requests on the run's thread, as before.
 
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use una_core::Expr;
 use una_syntax::Span;
@@ -87,7 +93,10 @@ pub(crate) struct Run<'p, 'w> {
     panic: RefCell<Option<Box<dyn std::any::Any + Send>>>,
     /// The run's `Http` grants and the state of their limits, which every task shares (ADR
     /// 0117 rule 8, `spec/27 §9`).
-    pub(crate) http_limits: una_http::limit::Governor,
+    pub(crate) http_limits: Arc<una_http::limit::Governor>,
+    /// The `Http` requests in flight off the run's thread, in a run that serves live peers and
+    /// has a `tasks` statement; `None` in every other run (#1730).
+    pub(crate) offload: Option<Offload>,
     /// The serve engine of a run that serves, and its reply rights (ADR 0123 rules 1 to 4).
     pub(crate) serve: Option<crate::machine::serve::Serving<'w>>,
     /// The tasks waiting in `next` of `HttpServer` for the engine, by id: a task waiting there
@@ -125,7 +134,8 @@ impl<'p, 'w> Run<'p, 'w> {
             cap: crate::concurrency::task_cap(),
             serving: Cell::new(false),
             panic: RefCell::new(None),
-            http_limits: una_http::limit::Governor::new(Vec::new()),
+            http_limits: Arc::new(una_http::limit::Governor::new(Vec::new())),
+            offload: None,
             serve: None,
             next_waiters: RefCell::new(BTreeMap::new()),
             test_rights: Cell::new(0),
@@ -195,6 +205,7 @@ impl<'p, 'w> Run<'p, 'w> {
         if !self.coroutines || !self.serving.get() {
             return;
         }
+        self.land();
         let switch = {
             let mut sched = self.sched.borrow_mut();
             sched.turn = sched.turn.saturating_add(1);
@@ -229,6 +240,7 @@ impl<'p, 'w> Run<'p, 'w> {
         if !self.coroutines || !self.serving.get() {
             return false;
         }
+        self.land();
         let now = self.clock.now();
         // Once the run aborted, every waiter can end its `next`. In this one-thread interpreter
         // the abort is recorded only by a task that runs, so a waiter already resumed sees it at
@@ -257,6 +269,105 @@ impl<'p, 'w> Run<'p, 'w> {
     /// `false`, with no switch, unless [`drive`] serves the run, which only a defect reaches.
     pub(crate) fn park(&self) -> bool {
         self.serving.get() && una_sys::coroutine::suspend()
+    }
+
+    /// The run's [`Offload`] when a task's `Http` request may run off the thread now: the run
+    /// serves live peers, and [`drive`] serves its queue, so the task can park.
+    pub(crate) fn offloads(&self) -> Option<&Offload> {
+        self.offload
+            .as_ref()
+            .filter(|_| self.coroutines && self.serving.get())
+    }
+
+    /// Puts each task whose request has landed at the back of the queue, in the order they
+    /// landed. O(1) when none has; O(landed · log f) otherwise, for the f requests in flight.
+    pub(crate) fn land(&self) {
+        if let Some(offload) = &self.offload
+            && offload.landed.rung()
+        {
+            self.wake_landed(offload, offload.landed.take(false));
+        }
+    }
+
+    /// Whether a request has landed that no task has been woken for yet: a wait for the engine
+    /// ends for it, so that the task runs.
+    pub(crate) fn landed(&self) -> bool {
+        self.offload
+            .as_ref()
+            .is_some_and(|offload| offload.landed.rung())
+    }
+
+    /// Raises the abandon of each request in flight whose task a cancelled `tasks` statement
+    /// cancels, as native code does (ADR 0117 amendment on S4, point 9): the request ends
+    /// `Interrupted`. O(f · d) for f requests in flight under d statements each.
+    pub(crate) fn abandon_cancelled(&self) {
+        if let Some(offload) = &self.offload {
+            for flight in offload.flights.borrow().values() {
+                if flight.cancels.iter().any(|scope| scope.cancelled.get()) {
+                    flight.abandon.abandon();
+                }
+            }
+        }
+    }
+
+    fn wake_landed(&self, offload: &Offload, ids: Vec<usize>) {
+        let mut flights = offload.flights.borrow_mut();
+        let mut sched = self.sched.borrow_mut();
+        for id in ids {
+            flights.remove(&id);
+            sched.wake(id);
+        }
+    }
+}
+
+/// The `Http` requests of a run that run off its thread (#1730): each one's task is parked, and
+/// the helper thread that makes the request rings [`Landed`] when it returns.
+#[derive(Default)]
+pub(crate) struct Offload {
+    /// The tasks whose request has landed, rung from the helpers.
+    pub(crate) landed: Arc<Landed>,
+    /// The requests in flight, by the id of the task parked on each.
+    pub(crate) flights: RefCell<BTreeMap<usize, Flight>>,
+}
+
+/// A request in flight: the statements whose cancellation cancels its task, and its abandon.
+pub(crate) struct Flight {
+    pub(crate) cancels: Vec<Rc<TasksScope>>,
+    pub(crate) abandon: una_http::limit::Abandon,
+}
+
+/// The tasks whose request has landed, in the order they landed, which the helpers ring and the
+/// driver takes.
+#[derive(Default)]
+pub(crate) struct Landed {
+    ids: Mutex<Vec<usize>>,
+    ready: Condvar,
+    /// Whether `ids` is not empty, read without the lock at each check point.
+    rung: AtomicBool,
+}
+
+impl Landed {
+    /// Rings for task `id`, whose request has returned, and sets `done` under the same lock.
+    pub(crate) fn ring(&self, id: usize, done: &AtomicBool) {
+        let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
+        ids.push(id);
+        done.store(true, Ordering::SeqCst);
+        self.rung.store(true, Ordering::SeqCst);
+        self.ready.notify_all();
+    }
+
+    fn rung(&self) -> bool {
+        self.rung.load(Ordering::SeqCst)
+    }
+
+    /// Takes the tasks rung so far; with `wait`, first waits until one is.
+    fn take(&self, wait: bool) -> Vec<usize> {
+        let mut ids = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
+        while wait && ids.is_empty() {
+            ids = self.ready.wait(ids).unwrap_or_else(PoisonError::into_inner);
+        }
+        self.rung.store(false, Ordering::SeqCst);
+        std::mem::take(&mut *ids)
     }
 }
 
@@ -400,6 +511,7 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
     run.sched.borrow_mut().queue.push_back(0);
     run.serving.set(true);
     loop {
+        run.land();
         let next = {
             let mut sched = run.sched.borrow_mut();
             let next = sched.queue.pop_front();
@@ -410,6 +522,14 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
             next
         };
         let Some(id) = next else {
+            // Every task is parked, and some on a request in flight: the thread waits for one to
+            // land, which `--http-timeout` bounds.
+            if let Some(offload) = &run.offload
+                && !offload.flights.borrow().is_empty()
+            {
+                run.wake_landed(offload, offload.landed.take(true));
+                continue;
+            }
             break;
         };
         if let std::collections::btree_map::Entry::Vacant(slot) = table.entry(id) {

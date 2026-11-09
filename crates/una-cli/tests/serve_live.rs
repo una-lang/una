@@ -1444,7 +1444,10 @@ fn a_waiting_http_call_does_not_stall_the_delivery_of_other_requests() {
             "HTTP/1.1 200 OK\r\nContent-Length: 10\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello fast",
             "{engine:?}"
         );
-        assert!(took < Duration::from_secs(4), "{engine:?}: `fast` after {took:?}");
+        assert!(
+            took < Duration::from_secs(4),
+            "{engine:?}: `fast` after {took:?}"
+        );
         // The call fails at `--http-timeout`, the task goes on, and the run ends at the host stop.
         run.expect("backend done");
         run.terminate();
@@ -1535,7 +1538,10 @@ fn a_host_stop_interrupts_a_waiting_http_call_in_a_serving_run() {
         let took = started.elapsed();
         assert_eq!(code, Some(0), "{engine:?}: {stderr}");
         assert_eq!(output(&lines), ["serving", "stopped"], "{engine:?}");
-        assert!(took < Duration::from_secs(10), "{engine:?}: ended after {took:?}");
+        assert!(
+            took < Duration::from_secs(10),
+            "{engine:?}: ended after {took:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -1590,4 +1596,89 @@ fn a_run_without_a_serve_grant_keeps_http_on_the_interpreter_thread() {
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(output(&lines), ["slow", "fast"]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `tasks` statement that starts the task of [`SLOW_ANSWER`]'s `backend`, answers one request,
+/// then fails, which cancels the task while its `Http` call waits on the backend on port `BACK`,
+/// which never answers.
+const CANCELLING: &str = r#"module srv
+
+import std.host (HttpServer, Reply)
+
+kind Ended = Gone | Lost
+
+backend() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  let back = attempt @http.get("http://127.0.0.1:BACK/", headers: [], key_name: None)
+  @console.print("backend done")
+
+gone(n: Int) -> Unit
+  fails Ended
+=
+  if n > 0 then fail Gone else unit
+
+cancelling() -> Unit
+  uses @server: HttpServer[next, reply]
+  uses @http: Http[get]
+  uses @console: Console[print]
+  fails Ended
+=
+  tasks at most 2 at once
+    start backend()
+    let next = attempt @server.next()
+    let answered = when next
+      is Ok(exchange) ->
+        @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "done"))
+          if error use unit
+      is Err(failure) -> unit
+    gone(1)
+      if error pass
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  @console.print("serving")
+  let ended = attempt cancelling()
+  @console.print("cancelled")
+  @server.close()
+"#;
+
+/// #1730, the cancellation: a statement that fails cancels its task whose `Http` call waits off
+/// the interpreter's thread, and the call ends `Interrupted` (ADR 0117, amendment on S4, point
+/// 9), so the statement ends long before `--http-timeout`, in both engines.
+#[test]
+fn a_cancelled_task_s_waiting_http_call_ends_at_once_in_a_serving_run() {
+    for engine in ENGINES {
+        let back = hung_backend();
+        let port = free_port();
+        let grants = format!(
+            "    serve \"http://127.0.0.1:{port}\"\n    http \"http://127.0.0.1:{back}\" get\n"
+        );
+        let program = CANCELLING.replace("BACK", &back.to_string());
+        let dir = package_granted("live_http_cancel", &grants, &program, engine, false);
+        let mut run = start(&dir, "live_http_cancel", engine, &["--http-timeout", "30"]);
+        run.expect("serving");
+        // The backend task reaches its `Http` call first.
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        let mut stream = connect(port);
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let reply = dateless(&read_reply(&mut stream));
+        assert!(reply.ends_with("\r\n\r\ndone"), "{engine:?}: {reply:?}");
+        let (code, lines, stderr) = run.end();
+        let took = started.elapsed();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert_eq!(output(&lines), ["serving", "cancelled"], "{engine:?}");
+        assert!(
+            took < Duration::from_secs(10),
+            "{engine:?}: ended after {took:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

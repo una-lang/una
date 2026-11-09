@@ -290,6 +290,66 @@ fn precondition<'p>(message: &str, span: Span) -> Stop<'p> {
     })
 }
 
+/// An `Http` request as owned data, which a helper thread can take (#1730).
+struct Owned {
+    method: una_http::grant::Method,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    bearer: Option<Vec<u8>>,
+}
+
+/// Sends `owned` under the run's limits `governor`, interrupted by the host stop `stop` when
+/// given: the request is in the body of a `for ever` (ADR 0116 rule 12).
+fn send(
+    owned: &Owned,
+    governor: &una_http::limit::Governor,
+    settings: &una_http::client::Settings,
+    stop: Option<&RunStop>,
+    abandon: &una_http::limit::Abandon,
+    cover: Option<u64>,
+) -> Result<una_http::client::Response, una_http::client::Error> {
+    use una_http::client::send_governed;
+    let request = una_http::client::Request {
+        method: owned.method,
+        url: &owned.url,
+        headers: &owned.headers,
+        body: &owned.body,
+        bearer: owned.bearer.as_deref(),
+    };
+    match stop {
+        Some(stop) => send_governed(
+            &request,
+            governor,
+            settings,
+            &stop.interrupt(),
+            abandon,
+            cover,
+        ),
+        None => send_governed(
+            &request,
+            governor,
+            settings,
+            &una_http::client::Uninterrupted,
+            abandon,
+            cover,
+        ),
+    }
+}
+
+/// Rings [`crate::tasks::Landed`] for a task when dropped, at the end of its helper.
+struct Ring(
+    Arc<crate::tasks::Landed>,
+    usize,
+    Arc<std::sync::atomic::AtomicBool>,
+);
+
+impl Drop for Ring {
+    fn drop(&mut self) {
+        self.0.ring(self.1, &self.2);
+    }
+}
+
 fn fault<'p>(message: impl Into<String>) -> Stop<'p> {
     Stop::Abort(Abort::Fault {
         message: message.into(),
@@ -1026,9 +1086,14 @@ impl<'p, 'w> Machine<'p, 'w> {
         };
         let mut run = Run::new(world, clock, index.tasks);
         run.stop_after.set(limits.stop_after);
+        // A run that serves live peers makes its `Http` requests off its thread when it has a
+        // `tasks` statement (#1730); a script's engine keeps the reference schedule.
+        if limits.serve.is_some_and(|port| port.live_peers()) && index.tasks {
+            run.offload = Some(crate::tasks::Offload::default());
+        }
         run.serve = limits.serve.map(serve::Serving::new);
         // The run's limits refill on the run's clock (ADR 0116 rule 19).
-        run.http_limits = una_http::limit::Governor::with_clock(
+        run.http_limits = Arc::new(una_http::limit::Governor::with_clock(
             grants
                 .iter()
                 .filter_map(|grant| match grant {
@@ -1037,7 +1102,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 })
                 .collect(),
             Arc::new(run.clock.clone()),
-        );
+        ));
         Machine {
             index,
             grants,
@@ -2897,6 +2962,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
+            self.run.abandon_cancelled();
         }
         self.flush();
         self.wait_for(&scope, |scope| scope.running.get() == 0)?;
@@ -3727,7 +3793,7 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
     fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
-        use una_http::client::{Error, Request, send_governed};
+        use una_http::client::Error;
         use una_http::grant::Method;
         use una_http::limit::Abandon;
         let fail = |error: Error| {
@@ -3793,13 +3859,6 @@ impl<'p, 'w> Machine<'p, 'w> {
             ),
             None => None,
         };
-        let request = Request {
-            method,
-            url: &url,
-            headers: &headers,
-            body: body.as_bytes(),
-            bearer: bearer.as_deref(),
-        };
         // The deadline of a `for ever within` iteration (`spec/26 §7`): past it, the request
         // fails at once with `TimedOut`; before it, it waits no longer than the time left. In
         // the body of a `for ever`, a host stop interrupts the request too (ADR 0116 rule 12):
@@ -3836,26 +3895,30 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .now()
                 .saturating_add(u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
         });
+        let owned = Owned {
+            method,
+            url,
+            headers,
+            body: body.into_bytes(),
+            bearer,
+        };
+        // In the body of a `for ever`, a host stop interrupts the request (ADR 0116 rule 12).
+        let stop = self.in_ever.then(|| Arc::clone(&self.stop));
+        let run = Rc::clone(&self.run);
         let sent = if cut && settings.timeout.is_zero() {
             Err(Error::TimedOut)
-        } else if self.in_ever {
-            // The run's limits are shared by its tasks (ADR 0117 rule 8). The interpreter runs
-            // one task at a time, so no other request of the run is in flight while this one
-            // waits at a limit, and nothing abandons the wait but its deadline or a host stop.
-            send_governed(
-                &request,
-                &self.run.http_limits,
-                &settings,
-                &self.stop.interrupt(),
-                &Abandon::new(),
-                cover,
-            )
+        } else if let Some(offload) = run.offloads() {
+            self.http_off_thread(offload, owned, settings, cover, stop)?
         } else {
-            send_governed(
-                &request,
-                &self.run.http_limits,
+            // The run's limits are shared by its tasks (ADR 0117 rule 8). In a run that makes
+            // its requests on its thread, one task runs at a time, so no other request of the
+            // run is in flight while this one waits at a limit, and nothing abandons the wait
+            // but its deadline or a host stop.
+            send(
+                &owned,
+                &run.http_limits,
                 &settings,
-                &una_http::client::Uninterrupted,
+                stop.as_deref(),
                 &Abandon::new(),
                 cover,
             )
@@ -3900,6 +3963,77 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::text(&response.body),
             ],
         ))
+    }
+
+    /// Makes the request `owned` on a helper thread while this task parks (#1730), with the same
+    /// settings, covering deadline, host stop and limits as on the run's thread, so its outcome
+    /// is one the thread could have had. The task wakes once the helper has returned, and joins it, so no
+    /// helper outlives its task. A cancellation of the task's statement abandons the request
+    /// ([`crate::tasks::Run::abandon_cancelled`]). A helper that cannot start leaves the request
+    /// to the run's thread. O(log f) for the f requests in flight, beside the request and one
+    /// thread's start.
+    fn http_off_thread(
+        &mut self,
+        offload: &crate::tasks::Offload,
+        owned: Owned,
+        settings: una_http::client::Settings,
+        cover: Option<u64>,
+        stop: Option<Arc<RunStop>>,
+    ) -> Result<Result<una_http::client::Response, una_http::client::Error>, Stop<'p>> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use una_http::limit::Abandon;
+        let id = self.run.current();
+        let abandon = Abandon::new();
+        let done = Arc::new(AtomicBool::new(false));
+        let cancels = self.cancels.iter().skip(self.cancel_shield).cloned();
+        let flight = crate::tasks::Flight {
+            cancels: cancels.collect(),
+            abandon: abandon.clone(),
+        };
+        offload.flights.borrow_mut().insert(id, flight);
+        let owned = Arc::new(owned);
+        let helper = {
+            let (landed, done) = (Arc::clone(&offload.landed), Arc::clone(&done));
+            let (owned, stop) = (Arc::clone(&owned), stop.clone());
+            let governor = Arc::clone(&self.run.http_limits);
+            std::thread::Builder::new()
+                .name("una-http".to_owned())
+                .spawn(move || {
+                    // Rings on every way out, an unwind's included, so the task always wakes.
+                    let _ring = Ring(landed, id, done);
+                    send(
+                        &owned,
+                        &governor,
+                        &settings,
+                        stop.as_deref(),
+                        &abandon,
+                        cover,
+                    )
+                })
+        };
+        let Ok(helper) = helper else {
+            offload.flights.borrow_mut().remove(&id);
+            let limits = &self.run.http_limits;
+            let abandon = Abandon::new();
+            return Ok(send(
+                &owned,
+                limits,
+                &settings,
+                stop.as_deref(),
+                &abandon,
+                cover,
+            ));
+        };
+        // Only the request's landing wakes the task: the driver puts it back in the queue.
+        while !done.load(Ordering::SeqCst) {
+            if !self.run.park() {
+                // INVARIANT: `offloads` is `Some` only while the driver serves the queue.
+                return Err(fault("an `Http` request off the thread with no scheduler"));
+            }
+        }
+        helper
+            .join()
+            .map_err(|_| fault("the helper of an `Http` request panicked"))
     }
 
     /// A host operation, within the grants (`spec/14 §3`).

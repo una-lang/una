@@ -521,11 +521,13 @@ impl<'p> Machine<'p, '_> {
             // No other task runs while this one blocks, so an abort cannot come during the
             // wait today; the term keeps the wait correct should one ever come from elsewhere.
             let aborted = || run.aborted().is_some();
-            match serving
-                .port
-                .wait(epoch, retry, deadline, &|| stop.stopped() || aborted())
-            {
-                // The loop's head says which: a host stop or an abort of the run.
+            // A task's `Http` request that landed off the thread ends the wait too, within the
+            // engine's look of 10 ms, so that the task runs on (#1730); the next pass of the loop
+            // yields to it.
+            match serving.port.wait(epoch, retry, deadline, &|| {
+                stop.stopped() || aborted() || run.landed()
+            }) {
+                // The loop's head says which: a host stop, an abort of the run, or a landing.
                 Waited::Changed | Waited::Stopped => {}
                 Waited::TimedOut if !own_deadline(until, wake) => {
                     // Another waiter's deadline passed: it runs, and this one waits again.
