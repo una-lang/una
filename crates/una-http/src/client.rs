@@ -627,8 +627,17 @@ impl Connection {
         })?;
         match read {
             Ok(n) => Ok(n),
-            // A peer that closes without TLS's close_notify ends the stream; the parser decides
-            // whether the response was complete.
+            // A TLS peer that closes without close_notify may be an on-path attacker's FIN
+            // (#1822, RFC 8446 §6.1): the stream did not end, it was cut. Only a body delimited
+            // by the close needs another read here; a body delimited by its length or its last
+            // chunk is complete before it, since the caller stops at `parser.done()`.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::UnexpectedEof
+                    && matches!(self, Connection::Tls(_)) =>
+            {
+                Err(Error::Protocol)
+            }
+            // A plain socket ends with `Ok(0)`; it has no close_notify to miss.
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
             Err(error) => Err(io_error(&error, deadline)),
         }

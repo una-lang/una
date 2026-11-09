@@ -70,6 +70,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 3. **Responses.**
    - The client reads the status line and the headers.
    - It reads the body by `Content-Length`, by `chunked` transfer coding (trailers are read and dropped), or to the end of the connection when neither is present. A chunk size is hex digits alone, with no whitespace around them, else `Protocol`.
+   - Over `https`, the end of the connection ends a body only when the server sends TLS's `close_notify` first; a connection that closes without it is `Protocol` (#1822: a TCP close may be an on-path attacker's, RFC 8446 §6.1, RFC 9112 §9.8). A body delimited by `Content-Length` or by its last chunk is complete when it is read, so a close without `close_notify` after it changes nothing. Plain `http` has no such signal and takes the close as the end.
    - A `204` or `304` response has no body, whatever its headers say.
    - At most 10 `1xx` responses MAY precede the final one; one more, or a `101`, is `Protocol`.
    - Header names are kept as received, in order.
