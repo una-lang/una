@@ -98,6 +98,9 @@ pub struct Failure {
     pub location: Location,
     /// The index of `main`'s error kind.
     pub root: usize,
+    /// The driven module whose `init` this is, for a driven program (`spec/26 §2` rule 2):
+    /// U6001 then names `init` of that module, not `main` (#1809).
+    pub driven: Option<String>,
 }
 
 /// The types the program renders, by index.

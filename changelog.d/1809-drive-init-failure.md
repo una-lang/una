@@ -1,0 +1,1 @@
+- **A failing `init` of a driven module names `init`** (#1809, `spec/26 §2` rule 2). When `init` of a `drive` section fails, `una run` and the native executable report U6001 as `` `init` of the driven module `m` failed with `V` ``, where they said `` `main` failed with `V` `` although the package has no `main`. The position, the shown failure and the exit code 1 are unchanged.

@@ -904,8 +904,16 @@ pub(crate) fn run_command(
         }
     };
     let root_location = root_location(&package);
+    // `spec/26 §2` rule 2: a failure of `init` of a driven module ends the run as one of
+    // `main` does, and its message names `init` of that module (#1809).
+    let failed = if manifest.drive.is_some() && manifest.serve.is_none() {
+        format!("`init` of the driven module `{entry}`")
+    } else {
+        "`main`".to_owned()
+    };
     let diagnostics: Vec<Diagnostic> = completion_diagnostic(
         &run.completion,
+        &failed,
         start.span,
         &package.sources,
         &root_location,
@@ -1461,11 +1469,12 @@ fn root_location(package: &Package) -> Location {
     }
 }
 
-/// U6001 when `main` failed, U6003 when a call went too deep, U6004 for a header value with a
+/// U6001 when `failed`, `main` or `init` of a driven module, failed, U6003 when a call went too deep, U6004 for a header value with a
 /// control character, U6005 for host text that is not valid UTF-8, U6009 when the host gave no
 /// random bytes for keyed hashing, U8001 on a fault.
 fn completion_diagnostic(
     completion: &Completion,
+    failed: &str,
     main: Span,
     sources: &SourceDb,
     root: &Location,
@@ -1487,7 +1496,7 @@ fn completion_diagnostic(
             };
             Some(Diagnostic::error(
                 Code::U6001,
-                format!("`main` failed with `{shown}`"),
+                format!("{failed} failed with `{shown}`"),
                 sources.location(main),
             ))
         }
