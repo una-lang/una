@@ -1659,11 +1659,14 @@ pub main() -> Unit
   @server.close()
 "#;
 
-/// #1730, the cancellation: a statement that fails cancels its task whose `Http` call waits off
-/// the interpreter's thread, and the call ends `Interrupted` (ADR 0117, amendment on S4, point
-/// 9), so the statement ends long before `--http-timeout`, in both engines.
+/// #1730, the cancellation: a statement that fails cancels its task whose `Http` call waits on a
+/// backend that never answers. Native code interrupts the call at once (ADR 0117, amendment on
+/// S4, point 9). In the interpreter, slice 1 does not interrupt a call in flight (#1811): it runs
+/// to its own deadline, `--http-timeout 4`, holding its helper and its socket's place, and the
+/// cancelled task then stops at its next check point, its result dropped. So the statement, and
+/// the run, end by the call's deadline in both engines, and not before it in the interpreter.
 #[test]
-fn a_cancelled_task_s_waiting_http_call_ends_at_once_in_a_serving_run() {
+fn a_cancelled_task_s_waiting_http_call_ends_by_its_deadline_in_a_serving_run() {
     for engine in ENGINES {
         let back = hung_backend();
         let port = free_port();
@@ -1672,7 +1675,7 @@ fn a_cancelled_task_s_waiting_http_call_ends_at_once_in_a_serving_run() {
         );
         let program = CANCELLING.replace("BACK", &back.to_string());
         let dir = package_granted("live_http_cancel", &grants, &program, engine, false);
-        let mut run = start(&dir, "live_http_cancel", engine, &["--http-timeout", "30"]);
+        let mut run = start(&dir, "live_http_cancel", engine, &["--http-timeout", "4"]);
         run.expect("serving");
         // The backend task reaches its `Http` call first.
         std::thread::sleep(Duration::from_millis(300));
@@ -1691,6 +1694,12 @@ fn a_cancelled_task_s_waiting_http_call_ends_at_once_in_a_serving_run() {
             took < Duration::from_secs(10),
             "{engine:?}: ended after {took:?}"
         );
+        if engine == Engine::Interpreter {
+            assert!(
+                took > Duration::from_secs(2),
+                "the interpreter interrupted a call in flight: ended after {took:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -1990,12 +1999,11 @@ pub main() -> Unit
   @server.close()
 "#;
 
-/// #1730 (review M2): the `within`'s cut of a `tasks` statement abandons no request of its
-/// tasks; the started task's call off the interpreter's thread shares the deadline and ends at
-/// it with `TimedOut` (`spec/27 §2` rule 4), so the statement ends at the deadline, long before
-/// `--http-timeout`, in both engines. Which failure the call had is `internal` and redacted in
-/// the trace; the unit test `a_deadline_cut_abandons_no_request_and_another_cancellation_does`
-/// pins that the cut raises no abandon.
+/// #1730: a `within` around a `tasks` statement whose started task waits in an `Http` call. The
+/// call off the interpreter's thread took the `within`'s deadline as its own when it began, so it
+/// ends at that deadline, as the statement does, long before `--http-timeout`, in both engines.
+/// This shows when the run ends, not which failure the call had: that is `internal`, redacted in
+/// the trace, and the cut task stops at its next check point.
 #[test]
 fn a_within_cut_of_a_tasks_statement_ends_its_waiting_request_at_the_deadline() {
     for engine in ENGINES {

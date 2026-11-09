@@ -2978,12 +2978,6 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
-            // A `within`'s cut of the statement interrupts no request of its tasks: each ends
-            // at that same deadline with `TimedOut` (`spec/27 §2` rule 4).
-            if matches!(result, Err(Stop::Cut(id)) if id != CANCEL) {
-                scope.by_deadline.set(true);
-            }
-            self.run.abandon_cancelled();
         }
         self.flush();
         self.wait_for(&scope, |scope| scope.running.get() == 0)?;
@@ -3988,11 +3982,12 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// Makes the request `owned` on a helper thread while this task parks (#1730), with the same
     /// settings, covering deadline, host stop and limits as on the run's thread, so its outcome
-    /// is one the thread could have had. The task wakes once the helper has returned, and joins it, so no
-    /// helper outlives its task. A cancellation of the task's statement abandons the request
-    /// ([`crate::tasks::Run::abandon_cancelled`]). A helper that cannot start leaves the request
-    /// to the run's thread. O(log f) for the f requests in flight, beside the request and one
-    /// thread's start.
+    /// is one the thread could have had. Its socket first takes a place of `spec/27 §2` rule 3.
+    /// The task wakes once the helper has returned, and joins it, so no helper outlives its task.
+    /// A cancellation of the task does not interrupt a request in flight: it runs to its own
+    /// deadline, holding its helper and its place until it lands. A helper that cannot start
+    /// leaves the request to the run's thread. O(log f) for the f requests in flight, beside the
+    /// request and one thread's start.
     fn http_off_thread(
         &mut self,
         offload: &crate::tasks::Offload,
@@ -4018,7 +4013,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let wait = crate::tasks::PlaceWait {
             id,
             until,
-            cancels: cancels.clone(),
+            cancels,
             stop: stop.clone(),
             state: Rc::new(Cell::new(crate::tasks::Place::Waiting)),
         };
@@ -4032,13 +4027,13 @@ impl<'p, 'w> Machine<'p, 'w> {
             self.run.give_place(offload);
             return Ok(Err(una_http::client::Error::TimedOut));
         }
+        // A request in flight is not interrupted by a cancellation of its task (#1811): it runs
+        // to its own deadline, `--http-timeout` and the deadlines that covered it when it began,
+        // so a `within`'s cut of its statement still ends it `TimedOut`; the cancelled task
+        // stops at its next check point and its result is dropped.
         let abandon = Abandon::new();
         let done = Arc::new(AtomicBool::new(false));
-        let flight = crate::tasks::Flight {
-            cancels,
-            abandon: abandon.clone(),
-        };
-        offload.flights.borrow_mut().insert(id, flight);
+        offload.flights.borrow_mut().insert(id);
         let owned = Arc::new(owned);
         let helper = {
             let (landed, done) = (Arc::clone(&offload.landed), Arc::clone(&done));
