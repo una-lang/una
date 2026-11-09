@@ -300,6 +300,12 @@ pub(crate) fn build_command(
         {
             object.insert("threads".to_owned(), json!(true));
         }
+        // `spec/27 §4` rule 1 (#1152): the frame bound of the compiled code, from which the
+        // runtime sizes task stacks; without it, the runtime keeps the size `--max-depth`
+        // alone gives.
+        if let (Some(bound), Some(object)) = (described.frame_bound, meta.as_object_mut()) {
+            object.insert("frame_bound".to_owned(), json!(bound));
+        }
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(
                 "failure".to_owned(),

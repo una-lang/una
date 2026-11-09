@@ -71,6 +71,7 @@ pub fn compile_serve(
         failure: None,
         hashing: emitter.hashing,
         threads: emitter.threads,
+        frame_bound: emitter.frames.bytes(),
     });
     emitter.serve_entry(answer, on_stop, next, site, &meta)?;
     emitter

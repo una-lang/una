@@ -127,6 +127,61 @@ pub struct Described<'a> {
     /// Whether the compiled code holds a task construct or a `for ever`, so the runtime starts
     /// its workers and helper pools before `main` (ADR 0116 amendment, P8; #1145).
     pub threads: bool,
+    /// The program's frame bound in bytes (`spec/27 §4` rule 1, #1152): the most stack one
+    /// level of call depth can take, [`FrameBound::bytes`]. `None` when some function's frame
+    /// is unknown or exceeds [`MAX_FRAME_BOUND`], so the runtime keeps the size `--max-depth`
+    /// alone gives.
+    pub frame_bound: Option<u32>,
+}
+
+/// The largest frame bound an executable states (`spec/27 §4` rule 1): the 64 KiB guard
+/// region below each task stack (`una-sys`), so that no single frame can step over it.
+pub const MAX_FRAME_BOUND: u32 = 64 * 1024;
+
+/// The bytes of a call's linkage that a callee's frame layout leaves out: the return address
+/// and the saved frame pointer, the setup area of both targets' prologues.
+const CALL_LINKAGE: u32 = 16;
+
+/// The bytes added to each level for alignment (`spec/27 §4` rule 1).
+const FRAME_ALIGNMENT: u32 = 16;
+
+/// The largest frame of the functions compiled so far, or unknown (`spec/27 §4` rule 1,
+/// #1152). Every function the emitter defines counts: the program's functions, lambdas,
+/// handler operations and entry wrappers, a superset of the functions a task can run, so the
+/// bound needs no call graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FrameBound {
+    /// The largest distance from the frame pointer to the stack pointer of an active frame
+    /// (`frame_to_fp_offset` of Cranelift's frame layout), or `None` once one is unknown.
+    largest: Option<u32>,
+}
+
+impl FrameBound {
+    /// No function compiled yet.
+    fn new() -> FrameBound {
+        FrameBound { largest: Some(0) }
+    }
+
+    /// Counts a function whose frame layout gives `below_fp` bytes from its frame pointer to
+    /// its stack pointer, or `None` when the compiler states none: the bound is then unknown
+    /// for good.
+    fn count(&mut self, below_fp: Option<u32>) {
+        self.largest = match (self.largest, below_fp) {
+            (Some(largest), Some(frame)) => Some(largest.max(frame)),
+            _ => None,
+        };
+    }
+
+    /// The most stack one level of call depth takes, rounded up to 16 bytes: the largest
+    /// frame, its call's linkage and the alignment. `None` when a frame is unknown or the bound
+    /// exceeds [`MAX_FRAME_BOUND`].
+    pub(crate) fn bytes(self) -> Option<u32> {
+        let bound = self
+            .largest?
+            .checked_add(CALL_LINKAGE + FRAME_ALIGNMENT)?
+            .checked_next_multiple_of(16)?;
+        (bound <= MAX_FRAME_BOUND).then_some(bound)
+    }
 }
 
 /// The object file of the program: `main` of module `entry` and the functions it reaches,
@@ -220,6 +275,7 @@ fn compile_start(
         failure,
         hashing: emitter.hashing,
         threads: emitter.threads,
+        frame_bound: emitter.frames.bytes(),
     });
     match loop_functions {
         None => emitter.entry(main_id.id, main, &meta)?,
@@ -733,6 +789,8 @@ struct Emitter<'p> {
     hashing: bool,
     /// Whether a task construct or a `for ever` was compiled ([`Described::threads`]).
     threads: bool,
+    /// The largest frame of the functions defined so far (`spec/27 §4` rule 1, #1152).
+    frames: FrameBound,
     /// Whether an operation of `Http` was compiled: the C `main` then calls
     /// `una_rt_http_enable`, the only path to the TLS stack (ADR 0074 H7, #1148).
     http: bool,
@@ -774,6 +832,7 @@ impl<'p> Emitter<'p> {
             ops: Vec::new(),
             hashing: false,
             threads: false,
+            frames: FrameBound::new(),
             http: false,
             serve: false,
         })
@@ -1353,6 +1412,13 @@ impl<'p> Emitter<'p> {
         self.module
             .define_function(id, context)
             .map_err(|error| internal(format!("{error:?}")))?;
+        // `spec/27 §4` rule 1 (#1152): the frame the compiler laid out, read before the context
+        // is cleared; a function whose layout is not stated makes the bound unknown.
+        let below_fp = context
+            .compiled_code()
+            .and_then(|code| code.buffer.frame_layout())
+            .map(|layout| layout.frame_to_fp_offset);
+        self.frames.count(below_fp);
         self.module.clear_context(context);
         Ok(())
     }
@@ -1454,6 +1520,97 @@ mod tests {
         if cfg!(not(target_os = "linux")) {
             assert_eq!(super::code_triple(), Triple::host());
         }
+    }
+
+    /// The frame layout of a function of the host's instruction set that holds a stack slot of
+    /// `slot` bytes and calls an import with `args` words: Cranelift's distance from the frame
+    /// pointer to the stack pointer, which [`super::FrameBound`] reads (#1152).
+    fn frame_below_fp(slot: u32, args: usize) -> Option<u32> {
+        use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+        let builder =
+            ObjectBuilder::new(super::isa().unwrap(), "una", default_libcall_names()).unwrap();
+        let mut module = ObjectModule::new(builder);
+        let mut callee = module.make_signature();
+        for _ in 0..args {
+            callee.params.push(AbiParam::new(types::I64));
+        }
+        callee.returns.push(AbiParam::new(types::I64));
+        let import = module
+            .declare_function("una_rt_retain", Linkage::Import, &callee)
+            .unwrap();
+        let mut word = module.make_signature();
+        word.params.push(AbiParam::new(types::I64));
+        word.returns.push(AbiParam::new(types::I64));
+        let local = module
+            .declare_function("una_local", Linkage::Local, &word)
+            .unwrap();
+        let mut context = Context::new();
+        context.func.signature = word;
+        context.func.name = UserFuncName::user(0, local.as_u32());
+        let mut functions = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut functions);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let mut argument = builder.block_params(block)[0];
+            // The slot's address escapes to the call, so the slot stays in the frame.
+            if slot > 0 {
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    slot,
+                    3,
+                ));
+                argument = builder.ins().stack_addr(types::I64, slot, 0);
+            }
+            let callee = module.declare_func_in_func(import, builder.func);
+            let call = builder.ins().call(callee, &vec![argument; args]);
+            let value = builder.inst_results(call)[0];
+            builder.ins().return_(&[value]);
+            builder.finalize(module.target_config());
+        }
+        module.define_function(local, &mut context).unwrap();
+        context
+            .compiled_code()
+            .and_then(|code| code.buffer.frame_layout())
+            .map(|layout| layout.frame_to_fp_offset)
+    }
+
+    /// The frame bound reads a layout for every function, and the layout grows with the
+    /// function's stack slots and with the words its calls pass on the stack, so a bound over
+    /// every compiled function covers them (`spec/27 §4` rule 1, #1152).
+    #[test]
+    fn the_frame_layout_covers_stack_slots_and_outgoing_arguments() {
+        let plain = frame_below_fp(0, 1).unwrap();
+        let slotted = frame_below_fp(4096, 1).unwrap();
+        assert!(slotted >= plain + 4096, "{plain} {slotted}");
+        // Twenty words: more than either target passes in registers.
+        let spilled = frame_below_fp(0, 20).unwrap();
+        assert!(spilled >= plain + 8 * 8, "{plain} {spilled}");
+    }
+
+    /// The bound is the largest frame plus linkage and alignment, rounded up to 16 bytes; it is
+    /// unknown for good once one frame is, and over [`super::MAX_FRAME_BOUND`] it is none.
+    #[test]
+    fn the_frame_bound_is_the_largest_frame_or_none() {
+        let mut bound = super::FrameBound::new();
+        assert_eq!(bound.bytes(), Some(32));
+        bound.count(Some(100));
+        bound.count(Some(40));
+        assert_eq!(bound.bytes(), Some(144));
+        bound.count(Some(super::MAX_FRAME_BOUND - 32));
+        assert_eq!(bound.bytes(), Some(super::MAX_FRAME_BOUND));
+        bound.count(Some(super::MAX_FRAME_BOUND - 31));
+        assert_eq!(bound.bytes(), None);
+        let mut unknown = super::FrameBound::new();
+        unknown.count(Some(100));
+        unknown.count(None);
+        unknown.count(Some(10));
+        assert_eq!(unknown.bytes(), None);
+        let mut huge = super::FrameBound::new();
+        huge.count(Some(u32::MAX));
+        assert_eq!(huge.bytes(), None);
     }
 
     /// Each runtime function that the generated code imports is defined in the runtime's FFI
