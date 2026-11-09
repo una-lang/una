@@ -9,11 +9,11 @@ data at most `internal` (§10 rule 4). The closed forms, open programs with an e
 the same programs with that label missed: a correct checker rejects them, and one that accepted
 them would let the oracle see the secret.
 
-They are meant for the oracle under the cost clock (`una run --virtual-time --cost-clock`,
-`spec/27 §8` rule 6): each check point moves the virtual clock by one millisecond, so the secret's
-work decides whether a deadline passes or a token is left, and a missing timing label turns into a
-difference of values. Under the plain virtual clock no deadline would pass and these programs
-would test nothing.
+`hunt timing` runs them through the oracle under the cost clock (`una run --virtual-time
+--cost-clock`, `spec/27 §8` rule 6): each check point moves the virtual clock by one millisecond, so
+the secret's work decides whether a deadline passes or a token is left, and a missing timing
+label turns into a difference of values. Under the plain virtual clock no deadline would pass and
+these programs would test nothing.
 
 The family is not part of the release gate's fixed run (seed 767): its operators are in
 `TIMING_OPERATORS`, apart from `OPERATORS`, which the gate runs; `hunt gen --ops W` and
