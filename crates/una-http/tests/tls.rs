@@ -67,8 +67,14 @@ fn authority() -> &'static Authority {
 }
 
 /// Serves TLS with the certificate `name` (`localhost`, `other` or `self`), answering every
-/// request with `answer`; returns the port.
+/// request with `answer` and then TLS's `close_notify`; returns the port.
 fn serve(name: &str, answer: &'static str) -> u16 {
+    serve_closing(name, answer, true)
+}
+
+/// As [`serve`], but after `answer` the server sends `close_notify` only when `notify`; else it
+/// closes the TCP stream bare, as an on-path attacker's injected FIN does.
+fn serve_closing(name: &str, answer: &'static str, notify: bool) -> u16 {
     let (cert, key) = authority().servers[name].clone();
     let certs = vec![cert];
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key));
@@ -101,7 +107,9 @@ fn serve(name: &str, answer: &'static str) -> u16 {
                     }
                 }
                 let _ = tls.write_all(answer.as_bytes());
-                tls.conn.send_close_notify();
+                if notify {
+                    tls.conn.send_close_notify();
+                }
                 let _ = tls.flush();
             });
         }
@@ -248,4 +256,60 @@ fn an_interruptible_request_completes_over_non_blocking_tls() {
         una_http::client::send_interruptible(&get(&url), &[grant], &settings(), &NeverStopped)
             .unwrap();
     assert_eq!((response.status, response.body.as_str()), (200, "secure"));
+}
+
+/// Sends a GET over TLS to a server that answers `answer` and closes with or without
+/// `close_notify` (#1822).
+#[cfg(debug_assertions)]
+fn closing(answer: &'static str, notify: bool) -> Result<una_http::client::Response, Error> {
+    trust_test_roots(&authority().ca);
+    let port = serve_closing("localhost", answer, notify);
+    let url = format!("https://127.0.0.1:{port}/");
+    let grant = Grant::parse(&format!("http:https://127.0.0.1:{port}")).unwrap();
+    send(&get(&url), &[grant], &settings())
+}
+
+/// Neither `Content-Length` nor `chunked`: the body ends at the close.
+const BY_CLOSE: &str = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nsecure, but cut";
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_body_ended_by_a_bare_close_is_a_truncation_and_fails_with_protocol() {
+    // #1822 (`spec/24 §3` rule 3, RFC 8446 §6.1, RFC 9112 §9.8): a TCP close without
+    // close_notify may be an attacker's FIN, so a close-delimited body is never taken whole.
+    assert_eq!(closing(BY_CLOSE, false), Err(Error::Protocol));
+    // The same body, ended by close_notify, is complete.
+    let response = closing(BY_CLOSE, true).unwrap();
+    assert_eq!(
+        (response.status, response.body.as_str()),
+        (200, "secure, but cut")
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_delimited_body_complete_before_a_bare_close_succeeds() {
+    // The length or the last chunk ends the message; the client reads no further, so the
+    // missing close_notify after it truncates nothing.
+    let response = closing(OK, false).unwrap();
+    assert_eq!((response.status, response.body.as_str()), (200, "secure"));
+    let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nsecure\r\n0\r\n\r\n";
+    let response = closing(chunked, false).unwrap();
+    assert_eq!((response.status, response.body.as_str()), (200, "secure"));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_delimited_body_cut_short_fails_with_protocol_with_or_without_close_notify() {
+    let short = "HTTP/1.1 200 OK\r\nContent-Length: 60\r\n\r\nsecure";
+    let unfinished = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nsecure\r\n";
+    for answer in [short, unfinished] {
+        for notify in [false, true] {
+            assert_eq!(
+                closing(answer, notify),
+                Err(Error::Protocol),
+                "{answer:?} {notify}"
+            );
+        }
+    }
 }
