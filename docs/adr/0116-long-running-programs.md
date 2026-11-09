@@ -1555,3 +1555,76 @@ Examples. An example's trace keeps those events, but those of instances that qui
 Editions. As the quiet marking (see the S-41 addition), this applies in every edition: an edition `0.1` to `0.3` package checked and run by this compiler leaves out the events of operations under a raised program counter. The released lines (`v0.3.17`, `v0.1.13`) record them by occurrence, as their `spec/11 §5` says (triage of #1547); they make no claim that the trace's shape is independent of labeled data, so they are not changed. Gating the rule to edition `0.4` would keep the channel open in earlier editions on this line, where `spec/26 §6` rule 4 already states, for installations, that the trace's ids do not depend on the secret in any edition; it would also need the edition at run time in both engines.
 
 Choice and costs. The other options were rejected. Declaring the trace a reader at the highest `accepts` label of the program's capabilities would give up the `public` view that every other quiet rule protects, and the trace would have to be treated as secret wherever it goes. Numbering `seq` per label would change the format `una.run/1`. Keeping the events in a separate unnumbered section would still show their number. The cost of the rule is that code quiet only by the conservative rules, a decision on values of a type parameter, an operation body under an effect floor above `public` or a `via` body, loses its operations' events in a run's trace, though they occur whatever the secret there: the same code also runs under `secret` branches or on `secret` arguments, nothing at run time tells the cases apart, and a count of them would show how many ran under the branch. The operation that enters such code from a `public` program counter keeps its event, its arguments redacted. Hiding never adds an observation, so T6 is unaffected, and both engines hide the same events, so their traces still compare (`spec/16 §5`). A `una replay` (backlog) would have to re-run quiet code's host operations rather than substitute them. At run time a quiet operation does one O(1) check of the count of `quiet` marks without `timing` and skips the event, its arguments' rendering and its redaction; marking costs nothing beyond the closure of S-39, linear in the call edges.
+
+## Amendment (2026-11-09, Proposed): labels on `Clock` readings (#898)
+
+- Status: Proposed, for the project to accept. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ. It records the project's default for issue #898 (Context, "Clock readings are public"; Implementation plan, "with `Clock` left to #898"), which applies while the project reviews it: the implementation lands in a slice of its own as a reversible default, and a refusal removes the label of rule C1 and nothing else.
+- Issue: #898. Related: ADR 0117 IF4 and its amendment on slice S5, point 8 (the label of a request over its ancestors); `spec/14 §3`; `spec/26 §2` rule 5 and `§7` rule 5; `spec/27 §9` rule 5 and `§11`; `spec/07 §1` and `§5`.
+
+**The decision.** In edition `0.4`, a reading of `Clock.now()` carries a timing label. An unlabeled reading is a timing channel that IF5 to IF8 and ADR 0117 IF2 to IF5 leave open: a program that reads the clock, runs code whose duration depends on `secret` data, and reads it again holds the difference as a `public` `Int`, which it may print. Every other point where timing becomes a value (`TimedOut`, the winner of `first of`, `RateLimited`, `Limited`, a tick's `at` and `missed`) already carries a label that covers the timing of the code involved; a reading is one more such point, and it gets the label by the same rule as a request of a limited grant.
+
+```una
+module leak
+
+work(n: secret Int) -> secret Int = n * n
+
+pub show(n: secret Int) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let start = @clock.now()
+  let squared = work(n)
+  let stop = @clock.now()
+  @console.print("{stop - start} ms")
+```
+
+The time `work` takes may depend on `n`. Today the package is accepted and prints it; under rule C1 both readings are `secret`, since `τ⁰` of `show`'s body reads `n`, and the print is U4003.
+
+**Why the ancestors.** A reading is the start of the run plus the time the run has taken so far. In one task, the code that ran before a reading lies in the body of a node of the call graph of P1 from which the reading's node can be reached, or in what such a body calls, which is the argument of ADR 0117's amendment on S5, point 8, for the time between two requests: the entry function is such a node for every reading it reaches. The tasks that ran beside it are `τ_conc`; the requests that cancelled tasks leave running, and the serve threads of a server, are `L_res` with `L_srv`. The driver calls `init`, `step` and `on_stop` one after another with no call edge between them, so a reading in one follows the work of the earlier calls, which the ancestors do not record.
+
+### The rules
+
+C1. **The label of a reading.** In a package of edition `0.4`, the result of the operation `now` of the host capability `Clock` at a site `s` is labeled, besides the labels of its declared type `Int`, with `L_clk(s)`, the join of:
+1. `τ⁰` of the body of every node of the call graph of P1 from which the node that holds `s` can be reached, that node included: functions, the operations of handlers, which a call reaches through an operation of the handler's capability, and every lambda as one node `Λ`, reached from every body that calls a function value. This is the ancestors' term of `spec/27 §9` rule 5, over the same graph, with `τ⁰` of a body as there: its parameters' labels joined with what it reaches, items 1 to 5 and 7 of IF5 as amended on 2026-11-06;
+2. `τ_conc` at `s`: the precise one of `spec/27 §11` at a site in a function's body, and `⊤` at a site in a lambda's body or in a handler's operation, as for a request of `spec/27 §9` rule 5;
+3. `L_res` (`spec/26 §7` rule 5, item 6), with `L_srv` joined in a package that performs an operation of `HttpServer` (`spec/31 §1` rule 5, item 7);
+4. in a package whose manifest has a `[drive]` table (`spec/26 §2`), `τ⁰` of the bodies of `init`, `step` and `on_stop` of the driven module.
+
+The label applies whatever serves the operation: the host's clock, the virtual clock of `--virtual-time` (rule 19), a handler that a `with` installs, or a `given` line of a test. A handler written by the program may read the host's clock itself, and under virtual time the clock moves at the run's waits on time, whose occurrence the code before them decides.
+
+C2. **Where a reading flows.** A reading is an ordinary labeled value, and the rules of `spec/07` carry its label into what is computed from it: a sink that accepts less is U4003 (`Console.print` accepts `public`), a declared type below it is U4001, and a branch on it raises the program counter. No rule of release is added: the timing release that ADR 0117's acceptance decision 2 leaves to a record of its own, option (c), stays there. A program lowers a reading only as it lowers any labeled value, through a policy of a trusted module (`spec/07 §5`), which the build report lists.
+
+C3. **The trace.** The label of the outcome of each `Clock.now` site (S-45, `spec/11 §5`) joins `L_clk(s)`, so the event of a reading above `public` is `redacted` at that label in a run's trace, in both engines, and no text is built from its value.
+
+C4. **The report.** The report's `information.timing` list (`spec/13 §6`, rule 21) gains, in source order with its other entries, each site of `Clock.now` whose `L_clk` is above `public`, as `{"construct": "Clock.now", "function": "m.f", "label": "internal", "site": {...}}`. A site in a handler's operation names the handler, `m.h`, as its function, as a `task switch` does.
+
+C5. **Computing it.** `L_clk` depends on the whole package's call graph, and a reading's label can raise `τ⁰` of every body that computes from it (IF5 item 7), so of the readings' own ancestors. The checker computes it in the probe of `spec/27 §5` rule 8, with the labels of `within` and `first of`, repeated until no label rises, and confirms after pass 2 that no reading's label it used was too low: an internal error (U8001) otherwise, never a check that a lower label let pass. Labels only rise, so the probe ends; a round past the bound of the probe is U8001.
+
+C6. **Editions.** Editions `0.1` to `0.3` do not change, as the Target of this record says: their readings stay unlabeled, timing stays out of model (`spec/07 §1`) and is reported so, and `docs/guide/known-limits.md` keeps its entry for those editions.
+
+**Preview over-approximations.** C1 counts the whole body of every ancestor, also the code that runs after the reading; it counts `⊤` at a reading in a lambda or a handler's operation; and in a driven package it joins the three bodies of the driver at every reading, also at one in `init`. These are sound. They MAY become more precise, and they MUST NOT become stricter.
+
+### What it breaks
+
+A package of edition `0.4` that prints a reading, or a value computed from one such as an elapsed time, or stores it below its label, or branches on it before a `public` effect, while some code of its run handles data above `public`. Since the entry function is an ancestor of every reading it reaches, in a program with `main` that is the case whenever `τ⁰` of `main`'s body is above `public`: a parameter, field or binding labeled `internal` or `secret` anywhere in what it reaches, or a host operation whose answer is labeled, such as `Files.read` and `Env.get` (`internal`), `Http` and `Keys.hmac`; and in every program that performs an operation of `HttpServer`, whose `L_srv` is at least `internal`. Each is U4003, U4001 or U4002 at the flow, with its ordinary location. Packages of earlier editions, and programs whose run handles only `public` data, are not affected.
+
+### Migration for programs that only log or measure time
+
+1. **A run on `public` data** keeps working unchanged: `L_clk` is `public`, and a reading prints.
+2. **A driven program that acts on time** reads it from its tick: `at` and `missed` already carry the timing label of `step` (IF7, `spec/26 §2` rule 5), and a `step` that only prints `public` values keeps a `public` tick.
+3. **Log at the reading's label.** When `L_clk` is at most `internal`, as for a program that reads files, the environment or the network, the elapsed time goes to a sink that accepts `internal`: `Files.write` (`spec/14 §3`), such as a log file under the grant's prefix, or a request of `Http`.
+4. **Measure apart.** A measurement that must be `public` runs in a program, or a test, whose run handles only `public` inputs; or the host measures the run from outside, as `time` does, which no Una value holds.
+5. **Tests** keep working: time in a test is virtual and its readings come from `given` handlers (`spec/26 §8` rule 2); a reading is labeled there too, so an example that prints one under a run that handles labeled data meets the same rule.
+6. **A release the program owns.** A program that must print an `internal` reading declares a policy in a trusted module (`spec/07 §5`): that is its own declassification, visible in the report's Information section. This amendment adds none.
+
+### Security
+
+The rule closes the clock as a channel for the timing of the program's own code on data above `public`, for the observers of `spec/07 §1`. Timing stays out of model: the host's load, the time of a host stop and the wall clock itself are inputs, not secrets, and nothing here is a constant-time guarantee. The label is static, so the cost at run time is nil, and the trace's redaction is the one S-45 already applies.
+
+### Cost
+
+Computing `L_clk` is the ancestors' pass of `L_lim`: O(F + H + C + O + E) label joins per round of the probe for `F` functions, `H` handlers, `C` capabilities, `O` operations and `E` edges, with no search per reading, and O(1) per reading to join its label. A package with no reading of `Clock` adds nothing.
+
+### Diagnostics
+
+No code is added: a reading above a sink's label is the U4001, U4002 or U4003 of the flow. A message that names the reading and the ancestor whose body raised its label, as `spec/13` names an operation's answer, is a later slice.
