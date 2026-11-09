@@ -102,6 +102,9 @@ unwrap_used = "deny"
 # checks stay on, as at opt-level 0, so the semantics under test are those of every development build.
 [profile.dev]
 opt-level = 1
+# Line tables only: backtraces keep file and line, but the test binaries (about 200, each linked and verified by the operating
+# system on first execution) are much smaller: the first execution of a fresh build fell from 119 s to 79 s (#1838).
+debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 
