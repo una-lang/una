@@ -23,6 +23,10 @@ N1 the request line and line ends (§3 rules 1 and 2), N2 header lines, encoding
 expectations (rules 3 and 6), N3 framing, the defense against smuggling (rule 4, and rule 8's
 UTF-8 body), N4 `Host` and the target, path confusion (rule 5, §4).
 
+Replies with injected headers (N5, §5 rule 1): the handler echoes a request's decoded query value
+into a header of its reply; a header the host must refuse makes `reply` fail with `BadReply` and
+send nothing, and no byte of the injection may reach the peer.
+
 The family is not part of the release gate's fixed run (seed 767): its operators are in
 `SERVER_OPERATORS`, apart from `OPERATORS`, which the gate runs; `hunt gen --ops N` and
 `hunt repro --op N1` reach them.
@@ -440,8 +444,134 @@ N4_FORMS = ("ordinary-segments", "query", "absolute", "host-forms", "host-missin
             "host-twice", "host-malformed", "host-not-granted", "target-form", "target-chars",
             "dot-segments", "decoded-segment", "bad-percent")
 
+# N5. Replies with injected headers (`spec/31 §5` rule 1, ADR 0123 Security, "Header injection and
+# response splitting"). The handler copies the value of the request's first query parameter into
+# a header of its reply, as a server that echoes a client's value does: decoded, it can hold what
+# the request line cannot, a CR, an LF, a NUL or another control byte. The header's name is
+# `public` (`Header`, `spec/24 §1`), so a request cannot choose it without a policy: the forms on
+# names write the name in the program, as a server's own mistake. A reply whose header the host
+# must refuse fails with `BadReply`, sends nothing and keeps the reply right (§5 rule 1); the
+# handler then answers `502` with the failure's name (`fallback`), or leaves the right to the
+# host's `500` (`auto`). Nothing the injection carries may reach the wire. Twins echo a value the
+# host must send as given, once.
+INJECT = """--- What a failure of `reply` says.
+said(failure: internal ServeError) -> internal Text
+=
+  when failure
+    is BadReply -> "bad reply"
+    is NotHeld -> "not held"
+    is Interrupted -> "interrupted"
+    is TimedOut -> "timed out"
+    is Closed -> "closed"
+
+--- The value of the request's first query parameter, as a header of the reply.
+echoed(request: internal Request) -> internal List[Header]
+=
+  when request.params.at(index: 0)
+    is Some(param) -> [Header(name: NAME, value: param.value)]
+    is None -> []"""
+
+ANSWER_FALLBACK = """--- Answers with the echoed header; a reply the host refuses is answered `502` with why.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let reply = Reply(status: STATUS, headers: echoed(exchange.request), body: BODY)
+  let sent = attempt @server.reply(to: exchange.right, reply: reply)
+  when sent
+    is Ok(done) -> unit
+    is Err(failure) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 502, headers: [], body: said(failure)))
+        if error use unit"""
+
+ANSWER_AUTO = """--- Answers with the echoed header; a reply the host refuses leaves the right to the host.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let reply = Reply(status: STATUS, headers: echoed(exchange.request), body: BODY)
+  @server.reply(to: exchange.right, reply: reply)
+    if error use unit"""
+
+# A marker no reply of the server writes but by injection.
+MARK = "pwn"
+
+
+def una_text(text):
+    """`text` as a Una text literal (`spec/01`): quotes, backslashes and braces escaped, a line
+    feed and a tab by their escapes, every other control character by `\\u{...}`."""
+    out = []
+    for c in text:
+        if c in '"\\{}':
+            out.append("\\" + c)
+        elif c == "\n":
+            out.append("\\n")
+        elif c == "\t":
+            out.append("\\t")
+        elif ord(c) < 0x20 or ord(c) == 0x7F:
+            out.append(f"\\u{{{ord(c):X}}}")
+        else:
+            out.append(c)
+    return '"' + "".join(out) + '"'
+
+
+def _q(text):
+    """`text` percent-encoded for a query part: every byte outside unreserved characters."""
+    out = []
+    for b in text.encode("utf-8"):
+        c = chr(b)
+        out.append(c if (c.isascii() and c.isalnum()) or c in "-._~" else f"%{b:02X}")
+    return "".join(out)
+
+
+def _n5(rng, form):
+    name, value = "X-Echo", rng.choice(["v1", "abc", "a b", "ça"])
+    status, body = 200, '"ok"'
+    if form == "echoed":
+        name = rng.choice(["X-Echo", "x-trace-id", "Set-Cookie", "Content-Type", "Link"])
+        value = rng.choice(["v1", "a b", "a\tb", "id=1; Path=/", "ça"])
+        expect = {"status": 200, "header": [name, value]}
+    elif form == "value-crlf":
+        value = rng.choice(["a\r\nSet-Cookie: pwn=1", "a\r\n\r\nHTTP/1.1 200 OK\r\nX-Pwn: pwn",
+                            "a\r\nContent-Length: 0\r\n\r\npwn"])
+        expect = {"status": "refused"}
+    elif form == "value-lf":
+        value = rng.choice(["a\nSet-Cookie: pwn=1", "a\rSet-Cookie: pwn=1", "a\n\npwn"])
+        expect = {"status": "refused"}
+    elif form == "value-control":
+        value = "a" + rng.choice(["\x00", "\x01", "\x7f", "\x1b", "\x0b", "\x0c"]) + "pwn"
+        expect = {"status": "refused"}
+    elif form == "name-forbidden":
+        name = rng.choice(["Content-Length", "content-length", "Transfer-Encoding", "Connection",
+                           "Date", "Keep-Alive", "Proxy-Connection", "TE", "Trailer", "Upgrade",
+                           "TRANSFER-ENCODING"])
+        value = {"Content-Length": "0", "content-length": "0"}.get(name, "pwn")
+        expect = {"status": "refused"}
+    elif form == "name-not-token":
+        name = rng.choice(["X Pwn", "X:Pwn", "", "Set-Cookie ", "X-Pwn\r\nSet-Cookie",
+                           "X(Pwn)", "Xç"])
+        value = "pwn"
+        expect = {"status": "refused"}
+    elif form == "body-on-no-body":
+        status = rng.choice([204, 304])
+        body = '"pwn"'
+        name, value = "X-Echo", "v1"
+        expect = {"status": "refused"}
+    else:
+        raise ValueError(form)
+    mode = rng.choice(["fallback", "auto"])
+    answer = (ANSWER_FALLBACK if mode == "fallback" else ANSWER_AUTO)
+    answer = answer.replace("STATUS", str(status)).replace("BODY", body)
+    inject = INJECT.replace("NAME", una_text(name))
+    target = f"/r?v={_q(value)}"
+    return target, inject, answer, dict(expect, mode=mode, marker=MARK)
+
+
+N5_FORMS = ("echoed", "value-crlf", "value-lf", "value-control", "name-forbidden",
+            "name-not-token", "body-on-no-body")
+
+
 RULES = {"N1": "spec/31 §3 rules 1 and 2", "N2": "spec/31 §3 rules 3 and 6",
-         "N3": "spec/31 §3 rules 4 and 8", "N4": "spec/31 §3 rule 5, §4"}
+         "N3": "spec/31 §3 rules 4 and 8", "N4": "spec/31 §3 rule 5, §4",
+         "N5": "spec/31 §5 rule 1"}
 CASES = {"N1": (_n1, N1_FORMS), "N2": (_n2, N2_FORMS), "N3": (_n3, N3_FORMS),
          "N4": (_n4, N4_FORMS)}
 
@@ -476,4 +606,25 @@ def _request_op(op):
     return generate
 
 
-OPERATORS = {op: _request_op(op) for op in CASES}
+def n5(seed, edition):
+    """N5: a request whose first query parameter the handler copies into its reply's headers."""
+    if edition not in EDITIONS:
+        raise ValueError(f"family N runs edition {EDITION} only, not {edition}")
+    rng = rng_for(seed)
+    form = rng.choice(N5_FORMS)
+    target, inject, answer, expect = _n5(rng, form)
+    files = server_files("hunt", decls=(inject, answer),
+                         imports=("Exchange", "HttpServer", "Reply", "Request", "ServeError"))
+    data = request("GET", target, headers=_heads(rng, ("Connection", "close")))
+    files["script.jsonl"] = script([(0, "192.0.2.1", [(1, data)])])
+    note = ("a reply whose echoed header the host must refuse: BadReply, the right kept, nothing "
+            "injected on the wire" if expect["status"] == "refused" else
+            "a reply whose echoed header the host sends as given, once")
+    return Program(op="N5", rule=RULES["N5"], edition=edition, seed=seed, cls=OPEN, files=files,
+                   note=note, variant=f"{form}-{expect['mode']}", serve=dict(expect, kind="reply"))
+
+
+OPERATORS = {**{op: _request_op(op) for op in CASES}, "N5": n5}
+# The forms of every operator, as `Program.variant` names them: N5's carry the handler's mode.
+FORMS = {**{op: forms for op, (_make, forms) in CASES.items()},
+         "N5": tuple(f"{form}-{mode}" for form in N5_FORMS for mode in ("fallback", "auto"))}

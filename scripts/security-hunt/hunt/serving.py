@@ -22,9 +22,10 @@ canaries behave, and every form of every operator ran; a run of fewer than `COUN
 operator, a smoke run, is `INCOMPLETE` at best, never a PASS.
 
 A finding: what a peer received differs from the expectation (a refusal answered otherwise, a
-request behind a refusal read, a twin refused), a split request read otherwise than whole, a reply
-the program sent that a peer cannot frame, a malformed request that ended the server, or the
-engine left not at rest at the run's end. An error: a run that does not end `ok` with `stopped`,
+request behind a refusal read, a twin refused, a reply with an injected header sent or its
+injection on the wire, an echoed header not sent once as given), a split request read otherwise
+than whole, a reply the program sent that a peer cannot frame, a malformed request that ended the
+server, or the engine left not at rest at the run's end. An error: a run that does not end `ok` with `stopped`,
 two runs of one program that differ, or a `--serve-out` that is not the format of `spec/31 §8`.
 
 The canaries:
@@ -87,7 +88,7 @@ def programs(seed=SEED, count=COUNT):
     form runs whatever the count. Raises when a form has no such seed."""
     out = []
     for op in sorted(SERVER_OPERATORS):
-        forms = servers.CASES[op][1]
+        forms = servers.FORMS[op]
         progs = [SERVER_OPERATORS[op](derive_seed(seed, op, i), EDITION) for i in range(count)]
         missing = set(forms) - {p.variant for p in progs}
         for i in range(count, count + SEARCH):
@@ -238,7 +239,45 @@ def judge_request(expect, wire, reply_events):
 
 
 SEEN_BEHIND = (servers.SEEN + "/behind").encode()
-JUDGES = {"request": judge_request}
+
+
+def judge_reply(expect, wire, _reply_events):
+    """The findings of a reply program (N5) on its wire: a
+    header the host must refuse makes `reply` fail with `BadReply` and send nothing, the right
+    kept (`spec/31 §5` rule 1), so the peer receives the handler's `502` naming the failure, or
+    the host's `500` when the handler leaves the right; a header it must send goes as given,
+    once. Nothing of an injection, `expect["marker"]`, may reach the wire. The `reply` events are
+    not counted: the handler's fallback replies under a program counter its failure raises, quiet
+    code whose operations append no event (`spec/11 §5`, `spec/26 §6` rule 4)."""
+    if sorted(wire) != [1]:
+        return [f"the peers' connections are {sorted(wire)}, not 1"]
+    data = wire[1]["bytes"]
+    findings = []
+    if expect["marker"].encode() in data.lower():
+        findings.append("an injected header or body reached the wire (response splitting)")
+    try:
+        got = replies(data)
+    except WireError as e:
+        return findings + [f"connection 1: {e}"]
+    if expect["status"] == "refused":
+        want, body = (502, b"bad reply") if expect["mode"] == "fallback" else (500, b"")
+        if [(r[0], r[2]) for r in got] != [(want, body)]:
+            findings.append(f"connection 1: a reply the host must refuse ended in "
+                            f"{[(r[0], r[2][:40]) for r in got]}, not [({want}, {body!r})]")
+    else:
+        name, value = expect["header"]
+        if [(r[0], r[2]) for r in got] != [(200, b"ok")]:
+            findings.append(f"connection 1: a reply with an echoed header ended in "
+                            f"{[(r[0], r[2][:40]) for r in got]}, not [(200, b'ok')]")
+        line = f"\r\n{name}: {value}\r\n".encode()
+        if data.count(line) != 1:
+            findings.append(f"connection 1: the echoed header {name!r} is not sent once as given")
+    if "closed" not in wire[1]["ends"]:
+        findings.append("connection 1: the connection is not closed after its reply")
+    return findings
+
+
+JUDGES = {"request": judge_request, "reply": judge_reply}
 
 
 def judge(prog, wire, reply_events):
@@ -365,7 +404,7 @@ def canaries(una, root):
 
 def coverage_errors(progs, rows):
     """A form of an operator that no row ran is an error: the run did not reach it."""
-    forms = {(op, f) for op, (_make, fs) in servers.CASES.items() for f in fs}
+    forms = {(op, f) for op, fs in servers.FORMS.items() for f in fs}
     ran = {(r["op"], r["variant"]) for r in rows if not r.get("error")}
     return [f"servers: the form {f} of {op} did not run" for op, f in sorted(forms - ran)
             if any(p.op == op for p in progs)]
