@@ -1,0 +1,16 @@
+module m
+
+pub kind Pos = Int where it > 0
+
+kind Empty = | NoItems
+
+pub kept(ps: List[Pos]) -> Int
+  fails Empty
+=
+  let ys: List[Pos] = checked(ps, it.len > 0) else fail NoItems
+  ys.len
+
+pub scalar(n: Int) -> Int
+  fails Empty
+=
+  checked(n, it > 0) else fail NoItems
