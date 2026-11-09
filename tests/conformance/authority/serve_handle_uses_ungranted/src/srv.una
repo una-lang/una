@@ -1,13 +1,15 @@
 -- test: the `uses` of `handle` are checked against the grants as `main`'s are (spec/31 §7, ADR 0123 rule 16)
 -- spec: spec/31 §7
--- expect: error U3012 at src/srv.una:10:3
+-- expect: error U3012 at src/srv.una:12:3
 module srv
 
 import std.host (Reply, Request)
 
---- Answers every request with the time.
+--- Reads the time and answers every request with `ok`. The reading is not in the reply: in a
+--- `serve` package it carries `L_srv`, the top label of the preview (ADR 0116 amendment of
+--- 2026-11-09).
 pub handle(request: internal Request) -> internal Reply
   uses @clock: Clock[now]
 =
   let now = @clock.now()
-  Reply(status: 200, headers: [], body: "{now}")
+  Reply(status: 200, headers: [], body: "ok")

@@ -804,3 +804,59 @@ fn collect_ops<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
         _ => {}
     }
 }
+
+/// ADR 0116 amendment of 2026-11-09 (#898, C3): readings of `Clock` in a run that computes on
+/// an `internal` value carry `internal`, so their events are redacted at it. A binding of a
+/// literal alone computes nothing above `public`; the product is what `τ⁰` of `main` counts.
+const CLOCK_READINGS: &str = r#"module leak
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let s: internal Int = SECRET
+  let start = @clock.now()
+  let square = s * s
+  let stop = @clock.now()
+  @console.print("done")
+"#;
+
+#[test]
+fn clock_readings_are_redacted_at_their_timing_label() {
+    // Before #898 each reading's event showed its value, in clear, in a run that also computed
+    // on `internal` data. Under `--virtual-time` the values do not move, so the trace is the same
+    // for every secret in both engines; the label is static and shows in each outcome.
+    let trace = one_trace(
+        "clockread",
+        &Manifest::Ita("    clock\n"),
+        CLOCK_READINGS,
+        &[0, 1, 3],
+        &["--virtual-time"],
+    );
+    assert_eq!(
+        outcomes(&trace),
+        ["now:redacted:internal", "now:redacted:internal", "print:ok"],
+        "{trace}"
+    );
+}
+
+#[test]
+fn clock_readings_of_a_public_run_stay_in_clear() {
+    // The control: without the `internal` value, `L_clk` is `public` and the readings show.
+    let source = CLOCK_READINGS
+        .replace("  let s: internal Int = SECRET\n", "")
+        .replace("  let square = s * s\n", "");
+    let trace = one_trace(
+        "clockpub",
+        &Manifest::Ita("    clock\n"),
+        &source,
+        &[0],
+        &["--virtual-time"],
+    );
+    assert_eq!(
+        outcomes(&trace),
+        ["now:ok", "now:ok", "print:ok"],
+        "{trace}"
+    );
+    assert_eq!(trace[0]["outcome"]["value"], "0", "{trace}");
+}

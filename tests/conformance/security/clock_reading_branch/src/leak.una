@@ -1,0 +1,16 @@
+-- test: a branch on a `secret` reading of `Clock.now` raises the program counter (ADR 0116 amendment of 2026-11-09, C2): a `public` print under it is refused (U4003), so the elapsed time cannot leave one bit at a time either
+-- spec: spec/14 §3
+-- expect: error U4003 at src/leak.una:16:5
+module leak
+
+work(n: secret Int) -> secret Int = n * n
+
+pub show(n: secret Int) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let start = @clock.now()
+  let squared = work(n)
+  let stop = @clock.now()
+  if stop - start > 100
+    @console.print("slow")

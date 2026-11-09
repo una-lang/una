@@ -3624,6 +3624,141 @@ fn within_site_explained(
     )
 }
 
+/// `L_clk` of each reading of the host's `Clock` (ADR 0116 amendment of 2026-11-09, #898, C1),
+/// by its span: the rule of `L_lim` over the readings ([`super::timing::site_labels`]), the join
+/// of `τ⁰` of the bodies of every ancestor of the reading, of its `τ_conc` and of `residue`,
+/// with, in a package with a `[drive]` table, `τ⁰` of `init`, `step` and `on_stop`
+/// ([`driver_label`]), since the host calls them one after another with no call edge between
+/// them. A site checked twice keeps the join. One pass over the call graph:
+/// O(F + H + C + O + E) label joins, and O(log n) per reading.
+pub(crate) fn clock_labels(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    residue: &super::timing::Residue,
+) -> BTreeMap<Span, Label> {
+    let mut labels: BTreeMap<Span, Label> = BTreeMap::new();
+    if findings.clock_sites.is_empty() {
+        return labels;
+    }
+    let graph = super::timing::graph(env, findings);
+    let concurrency = super::timing::concurrency(env, findings, &graph);
+    let sites =
+        super::timing::site_labels(env, &graph, &concurrency, residue, &findings.clock_sites);
+    let driver = driver_label(env, &graph, settings);
+    for site in sites.sites {
+        let label = site.label.join(&driver);
+        let label = match labels.get(&site.span) {
+            Some(before) => before.join(&label),
+            None => label,
+        };
+        labels.insert(site.span, label);
+    }
+    labels
+}
+
+/// In a package with a `[drive]` table, the join of `τ⁰` of the bodies of every ancestor of
+/// `init`, `step` and `on_stop` of the driven module, the three included (ADR 0116 amendment of
+/// 2026-11-09, C1 item 4); `public` without one.
+fn driver_label(env: &Env<'_>, graph: &super::timing::Graph, settings: &Manifest) -> Label {
+    let Some(drive) = &settings.drive else {
+        return Label::public();
+    };
+    let Some(module) = (0..env.prelude).find(|m| {
+        env.modules
+            .get(*m)
+            .is_some_and(|m| m.path == drive.module.value)
+    }) else {
+        return Label::public();
+    };
+    let sites: Vec<super::timing::HttpSite> = ["init", "step", "on_stop"]
+        .into_iter()
+        .filter_map(
+            |name| match env.modules.get(module)?.lower.get(name).copied() {
+                Some(Entity::Function(f)) => Some((f, env.functions.get(f)?.result_span)),
+                _ => None,
+            },
+        )
+        .map(|(f, span)| super::timing::HttpSite {
+            span,
+            function: Some(f),
+            unplaced: false,
+            node: Some(super::timing::Caller::Function(f)),
+            construct: None,
+        })
+        .collect();
+    super::timing::ancestor_labels(
+        env,
+        graph,
+        &|_| None,
+        &super::timing::Residue::none(),
+        &sites,
+    )
+    .label
+}
+
+/// After pass 2, for each reading of the host's `Clock` (ADR 0116 amendment of 2026-11-09,
+/// #898): its `L_clk` from what pass 2 recorded is never above the label its checks read, the
+/// probe's, an internal error (U8001) otherwise, never a flow that a lower label let pass (C5);
+/// and each reading whose `L_clk` is above `public` joins the report's `timing` list (C4).
+/// Returns the report's entries, in source order.
+pub(crate) fn clock_timing(
+    env: &Env<'_>,
+    findings: &Findings,
+    settings: &Manifest,
+    residue: &super::timing::Residue,
+    report: &mut Report<'_>,
+) -> Vec<(&'static str, String, Span, Label)> {
+    let labels = clock_labels(env, findings, settings, residue);
+    let mut entries = Vec::new();
+    let mut sites: Vec<&super::timing::HttpSite> = findings.clock_sites.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.span);
+    let module = |id: usize| env.modules.get(id).map_or("", |m| m.path.as_str());
+    for site in sites {
+        let Some(label) = labels.get(&site.span) else {
+            continue;
+        };
+        let used = env
+            .clock_timing
+            .get(&site.span)
+            .cloned()
+            .unwrap_or_else(Label::public);
+        if !label.flows_to(&used) {
+            report.error(
+                Code::U8001,
+                site.span,
+                format!(
+                    "internal error: the timing label of this reading of `Clock.now` is `{label}`, above the `{used}` that the checks used (ADR 0116, amendment of 2026-11-09)"
+                ),
+            );
+        }
+        if label.is_public() {
+            continue;
+        }
+        let holder = match site.node {
+            Some(super::timing::Caller::Handler(h)) => env.handlers.get(h).map(|def| {
+                format!(
+                    "{}.{}",
+                    module(def.module),
+                    env.text(def.module, def.ast.name.name)
+                )
+            }),
+            _ => site
+                .function
+                .and_then(|id| env.functions.get(id))
+                .map(|def| format!("{}.{}", module(def.module), def.name)),
+        };
+        entries.push((
+            "Clock.now",
+            holder.unwrap_or_default(),
+            site.span,
+            label.concrete(),
+        ));
+    }
+    entries
+}
+
 /// The timing label `τ(e)` of each `within` and `first of` that `findings` recorded, by the
 /// span of its deadline or its words (ADR 0117 IF2, IF3, ADR 0116 IF5 and IF6), each joined with
 /// the residue label `L_res` (ADR 0116 P9 and C), which is returned too, for the messages of pass

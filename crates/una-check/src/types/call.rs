@@ -1852,6 +1852,23 @@ impl<'a> Checker<'_, 'a, '_> {
         } else {
             result.raise_deep(&gives)
         };
+        // ADR 0116 amendment of 2026-11-09 (#898), C1: in edition 0.4 a reading of the host's
+        // `Clock` carries `L_clk`, the timing label of the code that ran before it, which the
+        // probe of pass 2 computes over the whole package; a site absent there is `public`
+        // (the first probe), and the label is confirmed after pass 2. O(log n) per site.
+        let result = if host
+            && capability.name == "Clock"
+            && op_name == "now"
+            && self.env.edition >= Edition::V0_4
+        {
+            self.clock_site(span);
+            match self.env.clock_timing.get(&span) {
+                Some(label) if !label.is_public() => result.raise_deep(label),
+                _ => result,
+            }
+        } else {
+            result
+        };
         // ADR 0123 IF6 (#1674): the answer is data the code holds, bound or not.
         let answer = self.deep(&result);
         self.reach_label(&answer);
