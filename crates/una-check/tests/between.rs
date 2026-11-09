@@ -60,7 +60,10 @@ fn summaries(text: &str) -> Vec<(String, Between)> {
 
 /// `(reaches, pre, suf, gap, whole)` of the unit `name`, as text.
 fn of(units: &[(String, Between)], name: &str) -> (bool, String, String, String, String) {
-    let (_, b) = units.iter().find(|(n, _)| n == name).expect("the unit is in Core IR");
+    let (_, b) = units
+        .iter()
+        .find(|(n, _)| n == name)
+        .expect("the unit is in Core IR");
     (
         b.reaches,
         b.pre.to_string(),
