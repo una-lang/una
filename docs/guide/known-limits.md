@@ -17,7 +17,7 @@ These limits are those of [`spec/31`](../spec/31-http-servers.md), HTTP servers 
 
 ## Tasks and timing
 
-These limits are those of [`spec/26`](../spec/26-long-running-programs.md) and [`spec/27`](../spec/27-tasks-and-time.md).
+These limits are those of [`spec/26`](../spec/26-long-running-programs.md) and [`spec/27`](../spec/27-tasks-and-time.md). The guide [Tasks and time](tasks-and-time.md) teaches the constructs they concern.
 
 - **Only `Http` operations are interrupted.** In this edition the interruptible operations are those of `Http`: a request waits no longer than the earliest deadline that covers it and fails with `HttpError.TimedOut` (`spec/27 §5` rule 6). Other code inside `e within d` is cancelled at its next check point, after an operation in progress completes (`spec/27 §5` rule 5). What a request sent before its deadline passed stays sent, so an interrupted request is an effect in doubt (`spec/27 §5` rule 6).
 - **The residue label `L_res`.** In a program whose started tasks or races make requests, every `within` is at least `internal` (`spec/27 §5` rule 8). The failure of a `within` carries that label, and `if error pass` and `if error fail` on it are U4002 when it is above `public` (`spec/27 §5` rule 8). `L_res` also joins the label of every `first of`, every `for ever within`, every tick, the limits of grants and the statement an installation of `limiter` scopes over (`spec/26 §7` rule 5, item 6). A program pays for it only when its started tasks or its races make requests (`spec/26 §7` rule 5, item 6).
