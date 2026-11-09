@@ -1,8 +1,8 @@
 ---
 construct: "ita.lock"
 editions: ["0.4"]
-spec: ["spec/30 §4", "spec/12 §9"]
-codes: [U7009]
+spec: ["spec/30 §4", "spec/30 §9", "spec/12 §9"]
+codes: [U7009, U7010, U7013]
 ---
 
 # `ita.lock`
@@ -117,6 +117,14 @@ Plain `una ita lock --check` needs no fresh checkpoint, but it does read the loc
 $ una ita lock --check --fresh
 ```
 
+Both forms also verify the provenance of each registry package of the lock, the copy in `vendor/ita/` when the vendor directory holds the package and otherwise Itaoca's, as every offline load does. The root chain of that provenance must reach the root version the command accepted when it read the registry at the lock's point, or the floor Itaoca stores if that is higher, whether or not Itaoca could store the new floor. So a vendored provenance whose later root versions were dropped, with the lock's `last root` line lowered to match, fails the check even on a machine that starts with an empty or read-only Itaoca, such as a CI run.
+
+- A provenance whose root chain ends below that version is U7010: its root chain is older than the root version this machine has accepted.
+- A provenance whose checkpoint counts a retired witness without the proof that makes it count, or a stored floor that cannot be read, is U7013.
+- Any other provenance that does not verify is U7010. A package that neither the vendor directory nor Itaoca holds is not checked here; `una check` reports it (U7011).
+
+The repair for a chain below the accepted version is to lock again at a fresh resolution point (`una ita lock`), which writes a new provenance; a stored provenance is never rewritten, and `una ita vendor` copies Itaoca's provenance for the same point, which is the old one. This also happens after an honest root rotation, to a lock whose provenance was written before it: `--check` says so before `una check` would.
+
 ## Edge cases
 
 - **Consistency.** Every need of `ita.una` must be met by a locked package at least the version it asks for, every locked package must be reached by a need, and each package is locked once on its major line.
@@ -127,6 +135,8 @@ $ una ita lock --check --fresh
 ## Diagnostics
 
 - [U7009](../../../../crates/una-explain/explain/U7009.md): a missing, invalid or inconsistent `ita.lock`, or a ceiling wider than the one it records.
+- [U7010](../../../../crates/una-explain/explain/U7010.md): with `--check`, a registry package whose provenance does not verify, or whose root chain ends below the root version the command accepted.
+- [U7013](../../../../crates/una-explain/explain/U7013.md): with `--check`, a provenance that counts a retired witness without its proof, or a stored floor that cannot be read.
 
 ## Edition
 
@@ -135,4 +145,5 @@ Edition `0.4` and later. Editions `0.1` to `0.3` keep `verification.lock`.
 ## Normative source
 
 - `spec/30 §4`: the grammar, what reading checks, and `una ita lock`.
+- `spec/30 §9` rule 7: the provenance `--check` verifies, and trust on first use.
 - `spec/12 §9`: the solver pin.
