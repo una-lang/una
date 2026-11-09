@@ -1008,7 +1008,7 @@ impl Engine {
 /// peer, since every peer is `127.0.0.1`), for `engine`: for [`Engine::Native`] built by a
 /// `una` of the toolchain's tests, which builds a program that serves while `spec/31 §1`
 /// rule 10 stands (`UNA_TEST_BUILD_SERVER`).
-fn serve_package(name: &str, port: u16, program: &str, engine: Engine) -> PathBuf {
+fn serve_package(name: &str, port: u16, program: &str, engine: Engine) -> Package {
     serve_package_with(
         name,
         port,
@@ -1030,8 +1030,27 @@ fn serve_package_with(
     grants: &str,
     limits: &str,
     engine: Engine,
-) -> PathBuf {
+) -> Package {
     serve_package_linked(name, port, program, grants, limits, engine, false)
+}
+
+/// The directory of a temporary serve package, removed when dropped: at the end of its oracle,
+/// and also when a build or an assertion fails and unwinds, so that a failed run leaves no
+/// package behind (#1773).
+struct Package(PathBuf);
+
+impl std::ops::Deref for Package {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Package {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// As [`serve_package_with`]; with `hooked`, a native executable links the runtime built with
@@ -1045,9 +1064,10 @@ fn serve_package_linked(
     limits: &str,
     engine: Engine,
     hooked: bool,
-) -> PathBuf {
+) -> Package {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let dir = Package(dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("ita.una"),
@@ -1078,7 +1098,7 @@ fn serve_package_linked(
         .env("UNA_TEST_BUILD_SERVER", "1")
         .env("NO_COLOR", "1")
         .args([verb, "."])
-        .current_dir(&dir)
+        .current_dir(&*dir)
         .output()
         .unwrap();
     assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
@@ -1257,9 +1277,6 @@ fn serve_prefix_oracle(label: &str, early: bool, engine: Engine) {
         "{engine_name}: key 0 and key 1 differ: p = {:.3e}; the serve threads' work depends on the set-up",
         secret.p
     );
-    for dir in &dirs {
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }
 
 #[test]
@@ -1582,9 +1599,6 @@ fn serve_positive_control(
         "{engine_name}: key 0 and key 1 do not differ: p = {:.3e}; the channel that `L_srv` labels does not show on this machine, so the control proves nothing",
         channel.p
     );
-    for dir in &dirs {
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }
 
 #[test]
@@ -1662,8 +1676,8 @@ const SPREAD_THREADS: u16 = 8;
 /// The connections of one run of `serve_owner_spread`, and the most candidates it opens to
 /// find them: below the 128 of macOS's default `kern.ipc.somaxconn`, since every candidate
 /// waits unaccepted in the backlog and the 129th connect would block until the run accepts.
-/// Sequential ephemeral ports need about 57 to 64 candidates, and Linux, which takes even ports
-/// first, about 32; a host that runs out fails the run visibly, never passes it.
+/// Sequential ephemeral ports need about 57 to 64 candidates (macOS; the parity of Linux's
+/// ports is noted at [`spread_run`]); a host that runs out fails the run visibly, never passes it.
 const SPREAD_PEERS: usize = 8;
 const SPREAD_CANDIDATES: usize = 120;
 /// A diagnostic only since decision D-24 of #1660: printed beside the measured ratio, never
@@ -1773,14 +1787,20 @@ impl Drop for Reaped {
 /// operation. Once the program prints `ready`, the kept connections each send `/probe` at once
 /// and read their 8 MiB reply. Returns the time to `ready` and the time until the last reply
 /// was read, in milliseconds, and each kept connection's source port with the serve thread
-/// placement chose for it, in the order of the ports, as the run's placement probe wrote them (`place::probe`, the
-/// `test-hooks` feature; decision D-24 of #1660); then the host stop ends the run, which must
-/// end with 0. With `unkeyed` the probe places by `port mod M`, with no key: the oracle's
-/// positive control.
+/// placement chose for it, in the order of the ports, as the run's placement probe wrote them
+/// (`place::probe`, the `test-hooks` feature; decision D-24 of #1660); then the host stop ends
+/// the run, which must end with 0. With `unkeyed` the probe places by `port mod M`, with no
+/// key: the oracle's positive control.
 ///
 /// `std::net` cannot bind a source port before it connects (decision of #1660: std only, no
 /// new `unsafe` and no new crate), so the ports are found among the ephemeral ones rather than
-/// chosen: the property is the same for every run, the ports are not.
+/// chosen: the property is the same for every run, the ports are not. The kernel picks them:
+/// macOS hands out ephemeral ports in sequence, so one in 8 is a multiple of 8. Linux was not
+/// measured here: since about 4.2 its `connect()` may prefer source ports of one parity (odd,
+/// by the reading of a review of #1660, not verified). If it does, the crafted family
+/// (multiples of 8, all even) may be found late or not at all among [`SPREAD_CANDIDATES`], and
+/// the run then fails with "no 8 source ports", visibly, never passing; and the 8 ports as they
+/// come need not have 8 distinct residues mod 8 there.
 fn spread_run(
     dir: &Path,
     name: &str,
@@ -1959,6 +1979,21 @@ fn serve_owner_spread_interpreter() {
 const SPREAD_POOLED_LEAST: usize = 3;
 const SPREAD_POOLED_MOST: usize = 44;
 
+/// The order of the 6 arms of `serve_owner_spread` in each round, round `r` taking row
+/// `r mod 6`: a Williams design, row `r` being `0, 1, 5, 2, 4, 3` plus `r` mod 6, so that over
+/// 6 rounds every arm comes first once and follows every other arm exactly once within a round
+/// (#1773; a cyclic rotation made arm `k` follow arm `k - 1` in 5 of every 6 rounds). The
+/// 20 rounds take rows 0 to 5 three times and then rows 0 and 1, and the pair across the
+/// boundary of two rounds is not balanced. Fixed, not drawn, so a run's order is reproducible.
+const SPREAD_ORDER: [[usize; 6]; 6] = [
+    [0, 1, 5, 2, 4, 3],
+    [1, 2, 0, 3, 5, 4],
+    [2, 3, 1, 4, 0, 5],
+    [3, 4, 2, 5, 1, 0],
+    [4, 5, 3, 0, 2, 1],
+    [5, 0, 4, 1, 3, 2],
+];
+
 /// The oracle of `serve_owner_spread_native` and `serve_owner_spread_interpreter`.
 #[allow(clippy::print_stderr)]
 fn serve_owner_spread(engine: Engine) {
@@ -1970,7 +2005,7 @@ fn serve_owner_spread(engine: Engine) {
     // placement chose for each accepted connection, before the peer's admission
     // (`una_http::serve::place::probe`).
     //
-    // Six arms, each 20 runs, their order rotated every round:
+    // Six arms, each 20 runs, in the order of a row of [`SPREAD_ORDER`] every round:
     //
     // 1. key 0 and 2. key 1, crafted ports, 8 serve threads: a key makes set-up code before
     //    the first server operation 0 or about 300 ms long; the harness, not the program,
@@ -2052,8 +2087,12 @@ fn serve_owner_spread(engine: Engine) {
     // for the diagnostic of a fixed key.
     let mut by_port: BTreeMap<u16, Vec<usize>> = BTreeMap::new();
     for round in 0..20 {
-        for step in 0..arms.len() {
-            let sample = (step + round) % arms.len();
+        let order = SPREAD_ORDER[round % SPREAD_ORDER.len()];
+        eprintln!(
+            "{engine_name} round {round}: arms in the order {:?}",
+            order.map(|arm| arm + 1)
+        );
+        for sample in order {
             let (key, run_threads, ports, unkeyed) = arms[sample];
             let (ready, took, owners) = spread_run(
                 &dirs[key],
@@ -2172,9 +2211,6 @@ fn serve_owner_spread(engine: Engine) {
         median(&samples[4]),
         median(&samples[5])
     );
-    for dir in &dirs {
-        let _ = std::fs::remove_dir_all(dir);
-    }
     assert!(
         problems.is_empty(),
         "{engine_name}: the placement of connections over the serve threads:\n{}",
