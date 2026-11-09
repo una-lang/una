@@ -35,7 +35,8 @@ These limits are those of [`spec/26`](../spec/26-long-running-programs.md) and [
 
 ## Platforms
 
-- **Three platforms.** The installer has releases for macOS on arm64 and Linux on x86_64 and arm64; on any other platform it stops with "no Una release for" the platform (`install.sh`).
+- **macOS on arm64 only.** The installer has releases for macOS on arm64; on Linux it stops with "Linux is not available in this release yet" (the Linux build of the solver that `una` carries is not yet pinned to a reproducible digest, and `una build` does not yet link Linux executables itself); on any other platform it stops with "no Una release for" the platform (`install.sh`).
+- **0.4.0 and later.** The installer refuses a `UNA_VERSION` before 0.4.0: such a release needs a separate Z3, which the installer no longer installs (`install.sh`).
 - **`una build` and `cc`.** On macOS arm64, `una build` links with the linker built into `una` and runs no other program (ADR 0124 step 3). A `una` for any other platform links through a C compiler as `cc`, and on Linux against the system's C library ([Getting started](getting-started.md), section 6).
 - **Not as root.** The solver refuses to run as root, whose privileges no confinement removes: `una check` run as root fails with U5003, "the solver could not be confined: the solver must not run as root" (ADR 0124 rule 7). Run `una` as an ordinary user, in a container too (`docker run --user 1000:1000 ...`).
 - **Foreign code inside `una`.** The `una` binary holds code not written in Rust: the Z3 solver, a C++ library (ADR 0124), which uses the system's C++ runtime (`/usr/lib/libc++.1.dylib` on macOS), and the C and assembly of `ring`, the cryptography of the default TLS provider (ADR 0133 rule 17), which the runtime that `una build` links holds too. The [foreign code inventory](../foreign-code-inventory.md) lists each item, where it reaches and its plan.

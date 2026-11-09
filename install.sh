@@ -34,7 +34,7 @@
 #   sh install.sh [--uninstall]
 #
 # Settings, all optional:
-#   UNA_VERSION       the version to install (default: the one below)
+#   UNA_VERSION       the version to install, 0.4.0 or later (default: the one below)
 #   UNA_HOME          where to install (default: ~/.una)
 #   UNA_RELEASES      where release archives are, as <base>/v<version>/<archive>
 #                     (default: https://github.com/una-lang/una/releases/download)
@@ -46,6 +46,7 @@
 set -eu
 
 # The release this script installs by default; a test keeps it equal to the workspace version.
+# The release commit bumps it together with the README's pins.
 DEFAULT_VERSION=0.3.16
 
 say() { printf '%s\n' "una install: $*"; }
@@ -99,16 +100,28 @@ version=${UNA_VERSION:-$DEFAULT_VERSION}
 releases=${UNA_RELEASES:-https://github.com/una-lang/una/releases/download}
 records=${UNA_RECORDS:-https://raw.githubusercontent.com/una-lang/una}
 
-# The platform: the target of the archive.
+# The version: MAJOR.MINOR.PATCH, compared as numbers, never as text (0.10.0 is after 0.4.0).
+# A release before 0.4.0 needs a Z3 on PATH, which this installer no longer installs, so its
+# `una` could prove nothing: it is refused.
+case $version in
+    "" | *[!0-9.]* | .* | *. | *..*) fail "'$version' is not a version: UNA_VERSION is MAJOR.MINOR.PATCH, such as 0.4.0" ;;
+esac
+[ "$(printf '%s\n' "$version" | awk -F. '{ print NF }')" -eq 3 ] \
+    || fail "'$version' is not a version: UNA_VERSION is MAJOR.MINOR.PATCH, such as 0.4.0"
+major=${version%%.*}
+minor=${version#*.}
+minor=${minor%%.*}
+if [ "$major" -eq 0 ] && [ "$minor" -lt 4 ]; then
+    fail "this installer installs 0.4.0 and later; $version needs a separate Z3 that it no longer installs"
+fi
+
+# The platform: the target of the archive. This release ships for macOS on arm64 only.
 platform="$(uname -s) $(uname -m)"
 case $platform in
     "Darwin arm64")
         target=aarch64-apple-darwin ;;
-    "Linux x86_64")
-        target=x86_64-unknown-linux-gnu ;;
-    "Linux aarch64" | "Linux arm64")
-        target=aarch64-unknown-linux-gnu ;;
-    *) fail "no Una release for $platform; the releases are for macOS on arm64 and Linux on x86_64 and arm64" ;;
+    Linux\ *) fail "Linux is not available in this release yet: its build of the solver built into una is not yet pinned; the releases are for macOS on arm64" ;;
+    *) fail "no Una release for $platform; the releases are for macOS on arm64" ;;
 esac
 
 if command -v curl > /dev/null 2>&1; then
