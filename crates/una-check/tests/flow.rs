@@ -855,14 +855,14 @@ fn json_constructors_carry_the_labels_of_their_arguments_in_edition_0_4() {
     assert_eq!(
         in_edition("0.4", JSON_LABELS),
         [
-            "U4001 src/t.una:21:42 the result of `leaked` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
-            "U4001 src/t.una:23:54 the result of `leaked_keys` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
-            "U4001 src/t.una:25:54 the result of `leaked_items` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
-            "U4001 src/t.una:27:49 the result of `leaked_nested` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`",
-            "U4003 src/t.una:32:18 `@console.print` accepts `public` data, and this argument is `secret`",
-            "U4001 src/t.una:36:8 the result of `bound` is `public`, and which value it returns depends on this `secret` condition: a flow from `secret` to `public`",
-            "U4001 src/t.una:37:22 the result of `bound` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
-            "U4001 src/t.una:40:41 the result of `equal` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`",
+            "U4001 src/t.una:21:42 the result of `leaked` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`; the argument of `Str` made a `Json` value `secret`",
+            "U4001 src/t.una:23:54 the result of `leaked_keys` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`; the argument of `Object` made a `Json` value `secret`",
+            "U4001 src/t.una:25:54 the result of `leaked_items` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`; the argument of `Array` made a `Json` value `secret`",
+            "U4001 src/t.una:27:49 the result of `leaked_nested` is `Json`, and this value is `secret Json`: a flow from `secret` to `public`; the argument of `Str` made a `Json` value `secret`",
+            "U4003 src/t.una:32:18 `@console.print` accepts `public` data, and this argument is `secret`; the argument of `Str` made a `Json` value `secret`",
+            "U4001 src/t.una:36:8 the result of `bound` is `public`, and which value it returns depends on this `secret` condition: a flow from `secret` to `public`; the argument of `Str` made a `Json` value `secret`",
+            "U4001 src/t.una:37:22 the result of `bound` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`; the argument of `Str` made a `Json` value `secret`",
+            "U4001 src/t.una:40:41 the result of `equal` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`; the argument of `Str` made a `Json` value `secret`",
         ]
     );
 }
@@ -909,6 +909,54 @@ fn only_json_constructors_take_labeled_arguments() {
         [
             "U4001 src/t.una:6:51 field `value` of `Box` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`",
             "U4001 src/t.una:8:43 the result of `branched` is `public`, and which value it returns depends on this `secret` condition: a flow from `secret` to `public`",
+        ]
+    );
+}
+
+#[test]
+fn a_labeled_json_names_the_constructor_argument_that_labeled_it() {
+    // The U4001 at the result names the argument of `Str` as a related location; a flow of
+    // `internal` data names only a source whose label it carries, so the `secret` argument of
+    // the first function is not named in the second, and a declaration without a labeled
+    // constructor argument names none.
+    let manifest = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n";
+    let module = "module t\n\n\
+        pub leaked(token: secret Text) -> Json = Str(value: token)\n\
+        \n\
+        pub mixed(token: secret Text, t: internal Text) -> internal Json = Array(items: [Str(value: token), Str(value: t)])\n\
+        \n\
+        pub plain(t: internal Text) -> Text = t\n";
+    let (names, types) = run(&[("una.toml", manifest), ("src/t.una", module)], false);
+    assert!(names.is_empty(), "{names:?}");
+    let shown: Vec<String> = types
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let related: Vec<String> = d
+                .related
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}:{} {}",
+                        r.location.start.line, r.location.start.col, r.message
+                    )
+                })
+                .collect();
+            format!(
+                "{} {}:{} {}",
+                d.code,
+                d.primary.start.line,
+                d.primary.start.col,
+                related.join(" | ")
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "U4001 3:42 3:53 the `secret` argument of `Str`",
+            "U4001 5:68 5:93 the `secret` argument of `Str`",
+            "U4001 7:39 ",
         ]
     );
 }

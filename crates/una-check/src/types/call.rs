@@ -2849,7 +2849,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 // result's top. Reading the value back is raised by that top label (rule 3),
                 // and `to_json` carries it, so nothing that entered leaves lower.
                 let resolved = self.labeled(&found);
-                result_label = result_label.join(&self.deep(&resolved));
+                let label = self.deep(&resolved);
+                if !label.is_public() && self.pass == super::authority::Pass::Check {
+                    self.note_json_source(super::flow::JsonSource {
+                        span: arg_span,
+                        constructor: constructor.to_owned(),
+                        label: label.clone(),
+                    });
+                }
+                result_label = result_label.join(&label);
                 let stripped = resolved.map_labels(&|_| Label::public());
                 self.flow(arg_span, &stripped, &expected, &into);
             } else if standard {

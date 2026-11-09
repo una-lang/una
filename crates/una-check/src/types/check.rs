@@ -372,6 +372,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// and U4003 that such an answer causes name it (rule 7). Its length is bounded by the
     /// distinct `gives` labels of the declaration's header and rebindings, not by its body.
     pub(crate) answers: Vec<super::flow::Answer>,
+    /// In pass 2, the labeled arguments of `Json` constructors in edition 0.4 (ADR 0073 J5 as
+    /// amended, Proposed): for each distinct label, the earliest in source order, which the
+    /// U4001, U4002 and U4003 a labeled `Json` causes name (#917).
+    pub(crate) json_sources: Vec<super::flow::JsonSource>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
     /// The instantiations of type parameters, judged when the declaration ends (U3016).
@@ -596,6 +600,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             interpolations: Vec::new(),
             written_fields: Vec::new(),
             answers: Vec::new(),
+            json_sources: Vec::new(),
             probe_failed: false,
             instantiations: Vec::new(),
             escaped: Vec::new(),
