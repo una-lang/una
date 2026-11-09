@@ -415,6 +415,18 @@ impl Floor {
             Err(why) => Floor::Unreadable(why),
         }
     }
+
+    /// This floor raised to `version`, a root version the registry client accepted in this run
+    /// whether or not it was stored (ADR 0122, amendment of 2026-11-09): the larger of the two.
+    /// A floor that cannot be read stays unreadable.
+    #[must_use]
+    pub fn at_least(self, version: u64) -> Floor {
+        match self {
+            Floor::None => Floor::At(version),
+            Floor::At(stored) => Floor::At(stored.max(version)),
+            Floor::Unreadable(why) => Floor::Unreadable(why),
+        }
+    }
 }
 
 /// `signed` for a key of the owner of `name`: `ed25519:`, the owner (`itauna` for a name with

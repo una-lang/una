@@ -111,7 +111,9 @@ pub(crate) fn finish(
 pub(crate) struct LockOptions<'a> {
     /// The command, as `una.ita/1` names it.
     pub(crate) command: &'static str,
-    /// `--check`: write nothing, and report where the lock is not the one written (U7009).
+    /// `--check`: write nothing, and report where the lock is not the one written (U7009), and
+    /// each registry package whose provenance does not verify against the root version the
+    /// command accepted (U7010, U7013; ADR 0122, amendment of 2026-11-09).
     pub(crate) check: bool,
     /// `--fresh`, with `--check`: also require a checkpoint less than 24 hours old by the
     /// witnesses' time, extending the lock's point, to find an owner whose chain froze since.
@@ -1673,6 +1675,64 @@ fn resolve_and_lock(
                     )),
                 }
             }
+            // Each registry package's provenance, vendored or in Itaoca, verified as the
+            // offline load verifies it (`spec/30 §9` rule 7), against the root-version floor
+            // raised to the root version this command accepted at the lock's point, whether
+            // or not storing it as the floor succeeded (ADR 0122, amendment of 2026-11-09).
+            // A package in neither place is not checked here: that is `una check`'s U7011.
+            let mut problems: Vec<ProjectError> = Vec::new();
+            for locked in &lock.read.packages {
+                if !matches!(
+                    &locked.from,
+                    Some(ita::At {
+                        value: ita::LockOrigin::Source(_),
+                        ..
+                    })
+                ) {
+                    continue;
+                }
+                let mut refuse = |code: Code, message: String| {
+                    problems.push(ProjectError {
+                        code,
+                        range: locked.range.clone(),
+                        message,
+                    });
+                };
+                use una_project::vendor::{self, Problem as Load};
+                match vendor::present(path, options.itaoca, locked) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(Load::Refused(message) | Load::Absent(message)) => {
+                        refuse(Code::U7010, message);
+                        continue;
+                    }
+                    Err(Load::Unavailable(message)) => {
+                        refuse(Code::U7013, message);
+                        continue;
+                    }
+                }
+                let expected = match vendor::expected(&lock.read, Some(read), locked) {
+                    Ok(expected) => expected,
+                    Err(message) => {
+                        refuse(Code::U7010, message);
+                        continue;
+                    }
+                };
+                let mut floor = una_project::provenance::Floor::of(options.itaoca, &expected.root);
+                if let Some(Ok(registry)) = online
+                    .registries
+                    .get(&expected.source)
+                    .map(RefCell::try_borrow)
+                {
+                    floor = floor.at_least(crate::registry::accepted_root_version(&registry));
+                }
+                match vendor::load_at(path, options.itaoca, &expected, &floor) {
+                    Ok(_) | Err(Load::Absent(_)) => {}
+                    Err(Load::Refused(message)) => refuse(Code::U7010, message),
+                    Err(Load::Unavailable(message)) => refuse(Code::U7013, message),
+                }
+            }
+            diagnostics.extend(located(sources, *lock_id, problems));
         }
         if !lock_unchanged {
             let error = match &existing {

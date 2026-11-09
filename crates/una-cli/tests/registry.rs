@@ -1248,3 +1248,219 @@ fn a_retired_witness_counts_offline_only_with_the_proof() {
         "{found:?}"
     );
 }
+
+/// An Itaoca of its own below the test's directory, holding only the `mirrors.una` that lists
+/// `mirror`: a machine that never stored a floor, such as a CI run.
+fn empty_itaoca(dir: &Path, name: &str, mirror: &Path) -> PathBuf {
+    let itaoca = dir.parent().unwrap().join(name);
+    let _ = std::fs::remove_dir_all(&itaoca);
+    std::fs::create_dir_all(&itaoca).unwrap();
+    list_mirrors(&itaoca, &[mirror]);
+    itaoca
+}
+
+/// Sets the mode of `path`, a directory the test made.
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// The vendored provenance of `acme/ledger 0.3.1` in the package at `dir`.
+fn vendored_provenance(dir: &Path) -> PathBuf {
+    let found: Vec<PathBuf> = std::fs::read_dir(dir.join("vendor/ita/acme"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "provenance"))
+        .collect();
+    assert_eq!(found.len(), 1, "{found:?}");
+    found[0].clone()
+}
+
+/// A package locked at a point signed under root 1, after which root 2 retires two of the
+/// registry's three witnesses and a later checkpoint is signed under it; fetched and vendored
+/// then, so its provenance holds roots 1 and 2 and the latest checkpoint's proof, while the lock
+/// records `last root 1`. Returns the package, the mirror and the registry.
+fn locked_across_a_rotation(name: &str) -> (PathBuf, PathBuf, TestRegistry) {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project(name, &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    registry.rotate_witnesses(2, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = una_in(&["una", "ita", "vendor", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let first_root = una_project::tlog::root::digest(&registry.roots[0]);
+    assert!(
+        lock.contains(&format!("\n  last root 1 \"{first_root}\"\n")),
+        "{lock}"
+    );
+    let document =
+        una_project::provenance::parse(&std::fs::read(vendored_provenance(&dir)).unwrap()).unwrap();
+    assert_eq!(document.roots.len(), 2);
+    assert!(document.latest.is_some());
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    (dir, mirror, registry)
+}
+
+/// Asserts that `una ita lock --check` (with `extra` flags) refuses the package at `dir` with
+/// Itaoca at `itaoca` as a provenance whose root chain ends below root version 2.
+fn refused_below_root_2(dir: &Path, itaoca: &Path, extra: &[&str]) {
+    let mut args = vec!["una", "ita", "lock", "--check"];
+    args.extend_from_slice(extra);
+    args.push(arg(dir));
+    let (code, _, err) = una_in(&args, itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("U7010") && !err.contains("U7009"), "{err}");
+    assert!(
+        err.contains("ends at root version 1, older than root version 2")
+            && err.contains("lock again at a fresh resolution point")
+            && !err.contains("forked"),
+        "{err}"
+    );
+}
+
+/// ADR 0122, amendment of 2026-11-09 (L1): an attacker who edits the vendored package, its
+/// provenance and the lock drops root 2 and the `latest` block from the vendored provenance and
+/// lowers the lock's `last root` to 1 (here the lock, written before root 2 was served, records
+/// `last root 1` already, so lowering it changes nothing). `una ita lock --check`, with and
+/// without `--fresh`, walks the chain served to root 2 at the lock's point and refuses the
+/// provenance (U7010, "lock again"), whatever Itaoca holds: empty, read-only, or failing to
+/// store the floor. The floor store stays a note.
+#[cfg(unix)]
+#[test]
+fn lock_check_refuses_a_root_chain_cut_below_the_version_it_walked() {
+    let (dir, mirror, registry) = locked_across_a_rotation("cut-chain");
+    let path = vendored_provenance(&dir);
+    let mut document = una_project::provenance::parse(&std::fs::read(&path).unwrap()).unwrap();
+    document.roots.truncate(1);
+    document.latest = None;
+    document.format = una_project::provenance::Format::V1;
+    std::fs::write(&path, document.encode()).unwrap();
+
+    // An empty Itaoca, as a CI run starts with: the cut passes `una check` there, and
+    // `--check` refuses it, plain and `--fresh`.
+    let empty = empty_itaoca(&dir, "itaoca-empty", &mirror);
+    assert_eq!(codes(&dir, &empty), Vec::<String>::new());
+    refused_below_root_2(&dir, &empty, &[]);
+    let empty = empty_itaoca(&dir, "itaoca-empty-fresh", &mirror);
+    refused_below_root_2(&dir, &empty, &["--fresh"]);
+
+    // A read-only Itaoca: no floor is stored, and `--check` still refuses.
+    let read_only = empty_itaoca(&dir, "itaoca-read-only", &mirror);
+    set_mode(&read_only, 0o555);
+    refused_below_root_2(&dir, &read_only, &[]);
+    refused_below_root_2(&dir, &read_only, &["--fresh"]);
+    let stored = floor_dir(&read_only, &registry)
+        .join("root-version")
+        .exists();
+    set_mode(&read_only, 0o755);
+    assert!(!stored);
+
+    // Storing the floor fails (its lock cannot be opened): a note, and `--check` still refuses.
+    let failing = empty_itaoca(&dir, "itaoca-store-fails", &mirror);
+    std::fs::create_dir_all(floor_dir(&failing, &registry).join("floor.lock")).unwrap();
+    refused_below_root_2(&dir, &failing, &[]);
+    assert!(!floor_dir(&failing, &registry).join("root-version").exists());
+    // The cut still loads offline there, which is why `--check` cannot rely on the floor.
+    assert_eq!(codes(&dir, &failing), Vec::<String>::new());
+}
+
+/// The honest lock of the same history passes `una ita lock --check`, with a writable, an
+/// empty and a read-only Itaoca: its vendored chain ends exactly at root 2, the version the
+/// command walked, which is not below it.
+#[cfg(unix)]
+#[test]
+fn lock_check_passes_a_chain_ending_at_the_version_it_walked() {
+    let (dir, mirror, _) = locked_across_a_rotation("walked-chain");
+    let itaoca = dir.parent().unwrap().join("itaoca");
+    for extra in [&[][..], &["--fresh"][..]] {
+        let mut args = vec!["una", "ita", "lock", "--check"];
+        args.extend_from_slice(extra);
+        args.push(arg(&dir));
+        let (code, _, err) = una_in(&args, &itaoca);
+        assert_eq!(code, 0, "{err}");
+        let empty = empty_itaoca(&dir, "itaoca-empty", &mirror);
+        let (code, _, err) = una_in(&args, &empty);
+        assert_eq!(code, 0, "{err}");
+        set_mode(&empty, 0o555);
+        let (code, _, err) = una_in(&args, &empty);
+        set_mode(&empty, 0o755);
+        assert_eq!(code, 0, "{err}");
+    }
+    // Itaoca's copy alone, with no vendor directory, is verified too, and passes.
+    std::fs::remove_dir_all(dir.join("vendor")).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+}
+
+/// After an honest rotation, a lock whose provenance was written before it fails
+/// `una ita lock --check` with "lock again" (the fail-safe cost of the amendment of
+/// 2026-11-09), vendored and in Itaoca alike; a package that neither place holds is not checked
+/// by `--check` (that is `una check`'s U7011).
+#[test]
+fn lock_check_says_lock_again_after_a_rotation_and_skips_an_absent_package() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("rotation-after-lock", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    // Fetched before the rotation is served: its provenance's chain ends at root 1.
+    let stored = empty_itaoca(&dir, "itaoca-before", &mirror);
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &stored);
+    assert_eq!(code, 0, "{err}");
+    registry.rotate_witnesses(2, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    registry.write(&mirror);
+    // In neither place: `--check` passes, and `una check` says U7011.
+    let empty = empty_itaoca(&dir, "itaoca-absent", &mirror);
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &empty);
+    assert_eq!(code, 0, "{err}");
+    assert!(codes(&dir, &empty).contains(&"U7011".to_owned()));
+    // In Itaoca: refused once `--check` walks root 2.
+    refused_below_root_2(&dir, &stored, &[]);
+    // Vendored from it (before the floor of root 2 is stored there): refused the same way,
+    // with an empty Itaoca.
+    std::fs::remove_file(floor_dir(&stored, &registry).join("root-version")).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "vendor", arg(&dir)], &stored);
+    assert_eq!(code, 0, "{err}");
+    let empty = empty_itaoca(&dir, "itaoca-vendored", &mirror);
+    refused_below_root_2(&dir, &empty, &[]);
+}
+
+/// `una ita lock --check` reports the offline load's other results: a vendored provenance whose
+/// point carries a retired witness's cosignature without the proof (its `latest` block
+/// dropped, its chain kept) is unavailable (U7013), and so is a stored root-version floor that
+/// exists and cannot be read.
+#[test]
+fn lock_check_reports_an_unavailable_provenance_as_the_offline_load_does() {
+    let (dir, _, registry) = locked_across_a_rotation("check-unavailable");
+    let itaoca = dir.parent().unwrap().join("itaoca");
+    let path = vendored_provenance(&dir);
+    let honest = std::fs::read(&path).unwrap();
+    let mut document = una_project::provenance::parse(&honest).unwrap();
+    document.latest = None;
+    document.format = una_project::provenance::Format::V1;
+    std::fs::write(&path, document.encode()).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("U7013") && !err.contains("U7010") && err.contains("retired"),
+        "{err}"
+    );
+    std::fs::write(&path, &honest).unwrap();
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    std::fs::remove_file(&floor).unwrap();
+    std::fs::create_dir(&floor).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("U7013") && !err.contains("U7010") && err.contains("cannot be read"),
+        "{err}"
+    );
+}

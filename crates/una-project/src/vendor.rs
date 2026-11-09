@@ -255,6 +255,15 @@ pub fn vendored(
 /// which is not the absence of rule 17 (U7011). The provenance is verified against the
 /// root-version floor Itaoca stores for the registry ([`Floor::of`]).
 pub fn stored(itaoca: &Itaoca, expected: &Expected) -> Result<Option<Loaded>, Problem> {
+    stored_at(itaoca, expected, &Floor::of(Some(itaoca), &expected.root))
+}
+
+/// [`stored`], with the provenance verified against the root-version floor `floor`.
+pub fn stored_at(
+    itaoca: &Itaoca,
+    expected: &Expected,
+    floor: &Floor,
+) -> Result<Option<Loaded>, Problem> {
     if !itaoca
         .contains(&expected.digest)
         .map_err(Problem::Refused)?
@@ -276,12 +285,7 @@ pub fn stored(itaoca: &Itaoca, expected: &Expected) -> Result<Option<Loaded>, Pr
             expected.name, expected.version, expected.checkpoint_size
         )));
     };
-    check(
-        &files,
-        &bytes,
-        expected,
-        &Floor::of(Some(itaoca), &expected.root),
-    )?;
+    check(&files, &bytes, expected, floor)?;
     Ok(Some(Loaded {
         place: Place::Itaoca,
         tree: files,
@@ -294,12 +298,23 @@ pub fn stored(itaoca: &Itaoca, expected: &Expected) -> Result<Option<Loaded>, Pr
 /// tried in its place. Both are verified against the root-version floor Itaoca stores for the
 /// registry, read at this load; with no Itaoca there is none (trust on first use).
 pub fn load(root: &Path, itaoca: Option<&Itaoca>, expected: &Expected) -> Result<Loaded, Problem> {
-    let floor = Floor::of(itaoca, &expected.root);
-    if let Some(loaded) = vendored(root, expected, &floor)? {
+    load_at(root, itaoca, expected, &Floor::of(itaoca, &expected.root))
+}
+
+/// [`load`], with both places verified against the root-version floor `floor`: the one
+/// Itaoca stores, or one that `una ita lock --check` raised to the root version it accepted
+/// ([`Floor::at_least`]).
+pub fn load_at(
+    root: &Path,
+    itaoca: Option<&Itaoca>,
+    expected: &Expected,
+    floor: &Floor,
+) -> Result<Loaded, Problem> {
+    if let Some(loaded) = vendored(root, expected, floor)? {
         return Ok(loaded);
     }
     if let Some(itaoca) = itaoca
-        && let Some(loaded) = stored(itaoca, expected)?
+        && let Some(loaded) = stored_at(itaoca, expected, floor)?
     {
         return Ok(loaded);
     }
