@@ -689,3 +689,24 @@ project never relies on the residual:
   becomes this count plus 5%: 1,768, enforced by `crates/una-sys/tests/solver_size.rs` so it
   cannot drift; a later change that needs more raises the cap with a dated amendment stating the
   new count. ADR 0058's note of 2026-11-01 records the same.
+
+## Amendment (2026-11-09, Proposed): the handshake's window (rule 4)
+
+- Status: Proposed, for the project to accept. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ. The implementation applies it now, as a reversible default (#1791): a refusal returns the window to 2 seconds and nothing else.
+- Issue: #1791.
+
+**Why.** Rule 4 has the parent wait 2 seconds of wall clock for the child's handshake, counted inside the wall-clock guard, and makes a later one U5003. The window is a liveness bound: it ends a child that is not this `una` or does not start, and it is not part of the proof condition, which rule 8 states on its own. On a loaded machine (a full test run, a load average of tens) a child's start-up stretched past 2 seconds: five tests of the verifier failed together with "no handshake within 2 seconds" in one run, and a processor-time scaling test, whose measured check starts a solver child per query, had to run alone (#1776). Rule 30's target, a handshake within 5 ms as the median of 50 runs, shows how far 2 seconds already was from the normal case; the misses were the machine, not the child.
+
+**The change.** In rule 4, "within 2 seconds counted inside the wall-clock guard" reads "within 10 seconds counted inside the wall-clock guard". The conformance item "one that writes none within 2 seconds" reads "within 10 seconds", and the message of a late handshake ends with "no handshake within 10 seconds".
+
+**What does not change.**
+
+- A handshake that is late, missing, too long or different is still U5003, "the solver child is not this `una`", an error and never a proof; the child is ended. Solver `unknown` stays an error.
+- The 256 bytes, the protocol, the proof condition of rule 8 and the wall-clock guard (default 60 s, `--solver-wallclock`) are unchanged. The window stays inside the guard: the deadline is checked first, so with a guard shorter than 10 seconds a child that has written nothing by the guard ends as `unknown` with reason `wallclock`, as one did before with a guard shorter than 2 seconds; neither is a proof.
+- Rule 30's start-up target (5 ms) is unchanged.
+
+**Security.** The handshake detects an accidental replacement of `una` during a run; rule 4 already says it is no defense against a malicious one. A longer window lets a stalled child hold its admission seat (rule 6) for at most 8 more seconds before U5003, bounded by the guard as before; it gives a child no new input, output or authority.
+
+**Cost.** O(1) per query: the same polling loop, with a larger bound. A run with no stalled child takes the same time.
+
+**Note for `spec/12 §5` rule 6.** Its sentence "the parent reads at most 256 bytes for it within 2 seconds of the guard" reads "within 10 seconds of the guard" once this amendment is accepted; until then the spec carries a Proposed note at that rule.

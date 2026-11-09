@@ -13,6 +13,7 @@ mod stand_in;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -543,6 +544,126 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
         document["diagnostics"][0]["code"], "U8001",
         "earlier runs: {late:?}"
     );
+}
+
+/// A stand-in solver child named `name` under the test's temporary directory whose shell
+/// script is `body`, run with the expected handshake as `$1` (ADR 0124; the test hooks).
+#[cfg(unix)]
+fn stand_in_solver(name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(&bin).unwrap();
+    let solver = bin.join("z3");
+    // Written under another name and renamed into place, so that no process can execute the
+    // file while it is still open for writing ("text file busy", #286).
+    let staged = bin.join("z3.staged");
+    std::fs::write(&staged, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, &solver).unwrap();
+    solver
+}
+
+/// `una --json check` of `root` with the stand-in solver `solver` and an empty cache.
+#[cfg(unix)]
+fn check_with(root: &Path, solver: &Path) -> Output {
+    let _ = std::fs::remove_dir_all(root.join(".una"));
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .env("UNA_SOLVER_STAND_IN", solver)
+        .args(["--json", "check", root.to_str().unwrap()])
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_handshake_after_two_seconds_and_inside_ten_still_proves() {
+    // ADR 0124 rule 4, Proposed amendment of 2026-11-09 (#1791): the window is ten seconds of
+    // the wall-clock guard (60 s by default), so a child that writes its handshake four seconds
+    // after its start, past the two seconds of the accepted rule, is still this `una`, and its
+    // `unsat` with a normal exit is a proof (rule 8).
+    let root = package(
+        "late-handshake-inside",
+        &[(
+            "src/app.una",
+            "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
+        )],
+    );
+    let solver = stand_in_solver(
+        "handshake-after-four-seconds",
+        "sleep 4\necho \"$1\"\ncat > /dev/null\necho unsat\n",
+    );
+    // A run whose stand-in started too late even for ten seconds is run again (#1573).
+    let started = Instant::now();
+    let (output, late) = stand_in::check_with_stand_in(|| check_with(&root, &solver));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{} (earlier runs: {late:?})",
+        stdout(&output)
+    );
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        document["diagnostics"].as_array().map(Vec::len),
+        Some(0),
+        "{document} (earlier runs: {late:?})"
+    );
+    // The handshake really came after the old window.
+    assert!(started.elapsed() >= Duration::from_secs(4));
+    // And the child's answer decided: the same late child answering `sat` refutes, with a
+    // diagnostic that is not the late handshake's U5003.
+    let refuting = stand_in_solver(
+        "handshake-after-four-seconds-sat",
+        "sleep 4\necho \"$1\"\ncat > /dev/null\necho sat\n",
+    );
+    let (output, late) = stand_in::check_with_stand_in(|| check_with(&root, &refuting));
+    assert_ne!(output.status.code(), Some(0), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert!(
+        !diagnostics.is_empty()
+            && diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != "U5003"),
+        "{diagnostics:?} (earlier runs: {late:?})"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_handshake_missing_after_ten_seconds_is_u5003_and_never_a_proof() {
+    // ADR 0124 rule 4, Proposed amendment of 2026-11-09 (#1791): a child that writes no
+    // handshake within the ten seconds is U5003, "the solver child is not this `una`", and is
+    // ended; no obligation is proven and the check fails. The stand-in replaces itself by a
+    // `sleep` that outlives the window, so the parent ends it, not its exit.
+    let root = package(
+        "late-handshake-outside",
+        &[(
+            "src/app.una",
+            "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
+        )],
+    );
+    let solver = stand_in_solver("handshake-never", "exec sleep 40\n");
+    let started = Instant::now();
+    let output = check_with(&root, &solver);
+    let elapsed = started.elapsed();
+    assert_ne!(output.status.code(), Some(0), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().all(stand_in::late_handshake) && !diagnostics.is_empty(),
+        "{diagnostics:?}"
+    );
+    let message = diagnostics[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("the solver child is not this `una`") && message.ends_with(stand_in::LATE),
+        "{message}"
+    );
+    // The parent waited the whole window, and ended the child well before the guard of 60 s
+    // or the child's own 40 s.
+    assert!(elapsed >= Duration::from_secs(10), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(40), "{elapsed:?}");
 }
 
 #[test]
