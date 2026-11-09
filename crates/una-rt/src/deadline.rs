@@ -18,14 +18,15 @@
 //! task that goes on. Interruptible operations inside `e` wait no longer than the earliest
 //! deadline that covers them. Arming and ending are O(1) (`timer`).
 //!
-//! **Under virtual time** no timer runs: the clock moves only by the run's own waits, a wait for
-//! a refill at a limit among them (`spec/27 §10`), and a wait of any task moves it for every
-//! task. So every check point of a worker, which under virtual time takes the counting path
-//! (`runtime::Hot::attention`), compares the clock with the earliest deadline that covers its
-//! task and whose entry is not set yet, own or inherited ([`virtual_check`]), and sets the entry
-//! of each one the clock has reached, as the timer would: `e` is cut at that check point, as the
-//! interpreter cuts it at its own (`spec/27 §5` rule 5, §8 rule 3, #1823). O(1) per check point
-//! while no deadline has passed; O(frames) once at the check point that finds one passed.
+//! **Under virtual time** no timer runs: the clock moves only by the run's own waits, a wait for a
+//! refill at a limit among them (`spec/27 §10`), and a wait of any task moves it for every task. So
+//! every check point of a thread under virtual time, a worker's or `una-main`'s
+//! (`runtime::Hot::attention`), the check point that resumes after a yield (`sched::yield_due`) and
+//! the start of each task of a block (`tasks`), compares the clock with the earliest deadline that
+//! covers its task and whose entry is not set yet, own or inherited ([`virtual_check`]), and sets
+//! the entry of each one the clock has reached, as the timer would: `e` is cut at that check point,
+//! as the interpreter cuts it at its own (`spec/27 §5` rule 5, §8 rule 3, #1823). O(1) per check
+//! point while no deadline has passed; O(frames) once at the check point that finds one passed.
 //!
 //! **Nanoseconds** (ADR 0116 amendment of 2026-10-25, P13, #1151). Every deadline here is a
 //! moment in nanoseconds of the run's clock (`Clock::now_nanos`), armed on a reading in
@@ -280,17 +281,18 @@ pub(crate) fn adopt(inherited: Inherited) {
             due: None,
             next: 0,
         };
-        local.due = pending(local);
+        // `ats` is filled only under virtual time, so the real clock reads no clock here.
+        if !local.inherited_ats.is_empty() {
+            local.due = pending(local);
+        }
     });
 }
 
 /// Under virtual time, the earliest deadline of the task's frames and inherited entries whose
-/// entry is not set yet: the next one [`virtual_check`] waits for. `None` on the real clock,
-/// where `inherited_ats` is empty and the frames are left to the timer. O(frames).
+/// entry is not set yet: the next one [`virtual_check`] waits for. Called only under virtual
+/// time (the callers branch on the clock, a non-empty `inherited_ats` or a `due` already set,
+/// which only virtual time gives): on the real clock the timer sets the entries. O(frames).
 fn pending(local: &Local) -> Option<u128> {
-    if !crate::runtime::clock().is_virtual() {
-        return None;
-    }
     let unset = |flag: &Arc<AtomicUsize>| flag.load(Ordering::SeqCst) != 0;
     local
         .withins
@@ -320,9 +322,10 @@ pub(crate) fn virtual_check() {
     }
     LOCAL.with(|cell| {
         // No check point runs while the deadlines are borrowed: they are borrowed only inside
-        // this module, which runs no compiled code meanwhile.
+        // this module, which runs no compiled code meanwhile. Were one to, it fails closed, as
+        // `swap_slots` does, rather than miss a cut.
         let Ok(mut local) = cell.try_borrow_mut() else {
-            return;
+            std::process::abort();
         };
         let Some(due) = local.due else {
             return;
@@ -631,7 +634,11 @@ pub fn within_end(id: i64, stopped: i64) -> i64 {
         for inner in ended {
             end_frame(&inner);
         }
-        local.due = pending(local);
+        // Ending frames only removes deadlines: with none due, none is due after. `due` is set
+        // only under virtual time, so the real clock reads no clock here.
+        if local.due.is_some() {
+            local.due = pending(local);
+        }
         frame
     });
     let Some(frame) = frame else {
