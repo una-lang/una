@@ -127,6 +127,19 @@ fn walk(
     }
 }
 
+/// A labeled argument of a `Json` constructor in edition 0.4 (ADR 0073 J5 as amended,
+/// Proposed): the U4001, U4002 and U4003 that a labeled `Json` causes name it, as a related
+/// location, beside the labeled answer of [`Answer`] (#917).
+#[derive(Clone, Debug)]
+pub(crate) struct JsonSource {
+    /// The argument.
+    pub(crate) span: Span,
+    /// The constructor, as `Str`.
+    pub(crate) constructor: String,
+    /// The join of every label the argument holds.
+    pub(crate) label: Label,
+}
+
 /// The answer of an operation that its binding labels (ADR 0094 rule 2), where it is called.
 #[derive(Clone, Debug)]
 pub(crate) struct Answer {
@@ -290,6 +303,65 @@ impl Checker<'_, '_, '_> {
             .min_by_key(|answer| (answer.span.start, answer.span.end))
     }
 
+    /// Records a labeled argument of a `Json` constructor: the earliest in source order of each
+    /// distinct label is kept, unless it holds the known one, as [`Self::note_answer`] keeps answers, so the list is bounded by
+    /// the distinct labels of the declaration, and naming one stays linear in the reports.
+    pub(crate) fn note_json_source(&mut self, source: JsonSource) {
+        let key = |s: &JsonSource| (s.span.start, s.span.end);
+        match self
+            .json_sources
+            .iter_mut()
+            .find(|known| known.label == source.label)
+        {
+            // An argument that holds the known one, as the list given to `Array` holds the
+            // `Str` in it, says less: the innermost source is kept.
+            Some(known)
+                if key(&source) < key(known)
+                    && !(source.span.start <= known.span.start
+                        && known.span.end <= source.span.end) =>
+            {
+                *known = source;
+            }
+            Some(_) => {}
+            None => self.json_sources.push(source),
+        }
+    }
+
+    /// Names in `diagnostic`, a U4001, U4002 or U4003 of a flow from `found` to `allowed`, the
+    /// first labeled argument of a `Json` constructor in this declaration whose label `found`
+    /// carries and `allowed` does not (ADR 0073 J5 as amended, Proposed, #917): the message says
+    /// that this argument labeled a `Json` value, and the argument is a related location. The
+    /// clause states what the argument did, not that this value holds it, since labels do not
+    /// record their sources; the label filter keeps it to a source that explains the label.
+    fn name_json_source(
+        &self,
+        diagnostic: &mut una_diag::Diagnostic,
+        found: &Label,
+        allowed: &Label,
+    ) {
+        let top = self.top();
+        let Some(source) = self
+            .json_sources
+            .iter()
+            .filter(|s| below(&s.label, found, &top) && !below(&s.label, allowed, &top))
+            .min_by_key(|s| (s.span.start, s.span.end))
+        else {
+            return;
+        };
+        let at = self.report.location(source.span);
+        if at == diagnostic.primary || diagnostic.related.iter().any(|r| r.location == at) {
+            return;
+        }
+        let (constructor, label) = (&source.constructor, &source.label);
+        diagnostic.message.push_str(&format!(
+            "; the argument of `{constructor}` made a `Json` value `{label}`"
+        ));
+        diagnostic.related.push(self.report.related(
+            source.span,
+            format!("the `{label}` argument of `{constructor}`"),
+        ));
+    }
+
     /// Records a labeled answer (ADR 0094 rule 7): the earliest in source order of each
     /// distinct label is kept, since [`Self::answer_in`] chooses by label and then by source
     /// order, so the choice is the same as over every answer.
@@ -319,6 +391,7 @@ impl Checker<'_, '_, '_> {
         found: &Label,
         allowed: &Label,
     ) {
+        self.name_json_source(diagnostic, found, allowed);
         let Some(answer) = self.answer_in(found, allowed) else {
             return;
         };
