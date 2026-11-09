@@ -205,7 +205,9 @@ pub(crate) fn classify(object: &str, section: &InSection<'_>) -> Result<Class> {
     let kind = section.kind();
     let class = match (section.segment.as_str(), section.name.as_str(), kind) {
         ("__LD", "__compact_unwind", flags::S_REGULAR) => Class::CompactUnwind,
-        ("__TEXT", "__eh_frame", flags::S_COALESCED) => Class::EhFrame,
+        // `ld -r`, which Apple's `strip -S` runs on an object (scripts/release.sh strips the
+        // runtime so), writes the section as S_REGULAR; ld64 knows it by its name (#1833).
+        ("__TEXT", "__eh_frame", flags::S_COALESCED | flags::S_REGULAR) => Class::EhFrame,
         ("__TEXT", "__text", flags::S_REGULAR) => Class::Out(Out::Text),
         ("__TEXT", "__const", flags::S_REGULAR) => Class::Out(Out::TextConst),
         ("__TEXT", "__cstring", flags::S_CSTRING_LITERALS) => Class::Out(Out::Cstring),

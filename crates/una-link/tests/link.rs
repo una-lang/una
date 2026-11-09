@@ -841,3 +841,104 @@ fn two_relocations_at_one_place_are_u8001() {
         problem.message
     );
 }
+
+/// A program whose `main` returns 7, with an `__eh_frame` as `ld -r` writes it (Apple's
+/// `strip -S` runs it on each object of the release runtime, #1833): S_REGULAR, the FDE's CIE
+/// pointer a SUBTRACTOR/UNSIGNED pair of two local symbols of the section, whose places hold
+/// only the addends. `cie_target` is the symbol the CIE pointer's UNSIGNED names.
+fn with_ld_r_eh_frame(cie_target: u32) -> Object {
+    let mut eh = Vec::new();
+    // The CIE at 0: version 1, "zR", code and data alignment, x30, the FDE encoding
+    // DW_EH_PE_pcrel | absptr, then DW_CFA_def_cfa sp, 0.
+    eh.extend_from_slice(&16u32.to_le_bytes());
+    eh.extend_from_slice(&0u32.to_le_bytes());
+    eh.extend_from_slice(&[1, b'z', b'R', 0, 1, 0x78, 30, 1, 0x10, 0x0c, 0x1f, 0x00]);
+    // The FDE at 0x14: CIE pointer (addend 4), pc_begin (addend -8), pc_range 8, no augmentation
+    // data, padding.
+    eh.extend_from_slice(&24u32.to_le_bytes());
+    eh.extend_from_slice(&4u32.to_le_bytes());
+    eh.extend_from_slice(&(-8i64).to_le_bytes());
+    eh.extend_from_slice(&8u64.to_le_bytes());
+    eh.extend_from_slice(&[0, 0, 0, 0]);
+    let mut section = data("__TEXT", "__eh_frame", 0, &eh);
+    let pair = |address, symbol, kind, length| Reloc {
+        address,
+        symbolnum: symbol,
+        pcrel: false,
+        length,
+        external: true,
+        kind,
+    };
+    section.relocs = vec![
+        pair(0x18, 1, SUBTRACTOR, 2),
+        pair(0x18, cie_target, UNSIGNED, 2),
+        pair(0x1c, 2, SUBTRACTOR, 3),
+        pair(0x1c, 0, UNSIGNED, 3),
+    ];
+    Object {
+        sections: vec![text(&[mov_w0(7), RET]), section],
+        symbols: vec![
+            global("_main", 1, 0),
+            local("EH_Frame1", 2, 0),
+            local("func.eh", 2, 0x14),
+        ],
+    }
+}
+
+/// The address, file offset and size of the output section `name`.
+fn output_section(bytes: &[u8], name: &str) -> (u64, usize, usize) {
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let quad = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let mut at = 32;
+    for _ in 0..word(16) {
+        if word(at) == 0x19 {
+            for index in 0..word(at + 64) as usize {
+                let section = at + 72 + 80 * index;
+                if bytes[section..section + 16].starts_with(name.as_bytes()) {
+                    return (
+                        quad(section + 32),
+                        word(section + 48) as usize,
+                        quad(section + 40) as usize,
+                    );
+                }
+            }
+        }
+        at += word(at + 4) as usize;
+    }
+    panic!("no section {name}");
+}
+
+#[test]
+fn an_eh_frame_as_ld_r_writes_it_links_with_its_cie_and_function() {
+    let bytes = link(&with_ld_r_eh_frame(2).bytes(), &runtime(), &options("t")).unwrap();
+    let (text_addr, _, _) = output_section(&bytes, "__text");
+    let (eh_addr, eh_at, eh_size) = output_section(&bytes, "__eh_frame");
+    assert_eq!(eh_size, 0x30);
+    let eh = &bytes[eh_at..eh_at + eh_size];
+    // The CIE pointer leads back to the CIE at 0, and pc_begin, place-relative, to `_main`.
+    assert_eq!(u32::from_le_bytes(eh[0x18..0x1c].try_into().unwrap()), 0x18);
+    let pc_begin = i64::from_le_bytes(eh[0x1c..0x24].try_into().unwrap());
+    assert_eq!(
+        (eh_addr + 0x1c).wrapping_add_signed(pc_begin),
+        text_addr,
+        "pc_begin"
+    );
+    assert_eq!(&eh[..0x14], &with_ld_r_eh_frame(2).sections[1].data[..0x14]);
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let path = running::write("eh-frame-ld-r", &bytes);
+        let status = std::process::Command::new(&path).status().unwrap();
+        assert_eq!(status.code(), Some(7));
+    }
+}
+
+#[test]
+fn a_cie_pointer_pair_that_names_a_symbol_outside_the_section_is_u8001() {
+    let problem = failure(&with_ld_r_eh_frame(0), &runtime());
+    assert_eq!(problem.code, Code::U8001);
+    assert!(
+        problem.message.contains("CIE pointer") && problem.message.contains("__eh_frame"),
+        "{}",
+        problem.message
+    );
+}

@@ -633,8 +633,18 @@ fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resu
                 live: false,
             });
         } else {
-            let cie_at = (at + 4)
-                .checked_sub(id)
+            // The CIE pointer: the distance back from its field to the CIE, encoded, or, as
+            // `ld -r` writes it, a pair of two symbols of this section (#1833).
+            let field = at + 4;
+            let distance = match relocs.iter().find(|r| r.offset == field) {
+                Some(reloc) => cie_distance(graph, object, index, reloc)
+                    .map_err(|what| bad(format!("{what} at {field:#x}")))?,
+                None => i128::from(id),
+            };
+            let cie_at = i128::from(field)
+                .checked_sub(distance)
+                .and_then(|v| u64::try_from(v).ok())
+                .filter(|v| *v < at)
                 .ok_or_else(|| bad(format!("an FDE at {at:#x} points before the section")))?;
             let (cie, fde_encoding, lsda_encoding, z) = *cies
                 .get(&cie_at)
@@ -660,7 +670,12 @@ fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resu
                     }
                 }
             }
-            check_fields(&relocs, &fields)
+            let others: Vec<Reloc> = relocs
+                .iter()
+                .filter(|r| r.offset != field)
+                .cloned()
+                .collect();
+            check_fields(&others, &fields)
                 .map_err(|what| bad(format!("{what} in the FDE at {at:#x}")))?;
             let function =
                 function.ok_or_else(|| bad(format!("an FDE at {at:#x} names no function")))?;
@@ -683,6 +698,43 @@ fn read_eh_frame<'a>(graph: &mut Graph<'a>, object: usize, index: usize) -> Resu
         at = end;
     }
     Ok(())
+}
+
+/// The value of an FDE's CIE pointer that `reloc` encodes: an `ARM64_RELOC_UNSIGNED` of 4 bytes
+/// paired with an `ARM64_RELOC_SUBTRACTOR`, both naming local symbols of this `__eh_frame`, so
+/// the value is fixed by the input's own addresses: target - subtracted + the place's content.
+/// The linker writes the pointer anew for the CIE it finds (`unwind::write_eh_frame`).
+fn cie_distance(
+    graph: &Graph<'_>,
+    object: usize,
+    index: usize,
+    reloc: &Reloc,
+) -> std::result::Result<i128, String> {
+    let input = graph.object(object).map_err(|_| "no object".to_owned())?;
+    let local = |referent: Option<Referent>| match referent {
+        Some(Referent::Symbol(symbol)) => input
+            .symbols
+            .get(usize::try_from(symbol).unwrap_or(usize::MAX))
+            .filter(|s| {
+                s.in_section() && !s.external() && usize::from(s.n_sect) == index.saturating_add(1)
+            })
+            .map(|s| s.n_value),
+        _ => None,
+    };
+    let pair = (local(Some(reloc.referent)), local(reloc.minus));
+    let (Some(target), Some(minus)) = pair else {
+        return Err(format!(
+            "a CIE pointer {} that is not a pair of local symbols of the section",
+            input::reloc_name(reloc.kind)
+        ));
+    };
+    if reloc.kind != input::UNSIGNED || reloc.width != 4 || reloc.pcrel || reloc.addend != 0 {
+        return Err("a CIE pointer relocation that is not a 4-byte pair".to_owned());
+    }
+    let content = graph
+        .content_addend(object, index, reloc)
+        .map_err(|_| "a CIE pointer outside its section".to_owned())?;
+    Ok(i128::from(target) - i128::from(minus) + i128::from(content))
 }
 
 /// Every relocation of a record must be at one of its pointer fields.

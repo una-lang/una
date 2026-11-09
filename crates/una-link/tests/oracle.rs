@@ -3,7 +3,9 @@
 //! personality routine, a thread-local variable read on another thread, and output through the
 //! standard library. The program is compiled by `rustc` into a static library, a tool of the
 //! test, not of `una`; both linkers link it, and both executables must give the same output and
-//! exit status.
+//! exit status. The release build is also linked after `xcrun strip -S`, the way
+//! scripts/release.sh strips the runtime that `una` embeds: Apple's strip rewrites each object
+//! through `ld -r`, which writes `__eh_frame` as S_REGULAR with explicit CIE pointers (#1833).
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #![allow(
     clippy::unwrap_used,
@@ -51,11 +53,17 @@ fn a_rust_program_that_unwinds_runs_alike_with_both_linkers() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("program.rs"), PROGRAM).unwrap();
-    for (name, flags) in [
-        ("debug", &["-C", "opt-level=0"][..]),
+    for (name, flags, stripped) in [
+        ("debug", &["-C", "opt-level=0"][..], false),
         (
             "release",
             &["-C", "opt-level=3", "-C", "codegen-units=4"][..],
+            false,
+        ),
+        (
+            "release-stripped",
+            &["-C", "opt-level=3", "-C", "codegen-units=4"][..],
+            true,
         ),
     ] {
         let archive = dir.join(format!("lib{name}.a"));
@@ -79,6 +87,19 @@ fn a_rust_program_that_unwinds_runs_alike_with_both_linkers() {
             "{}",
             String::from_utf8_lossy(&built.stderr)
         );
+        if stripped {
+            let strip = Command::new("xcrun")
+                .args(["strip", "-S"])
+                .arg(&archive)
+                .env("ZERO_AR_DATE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                strip.status.success(),
+                "{}",
+                String::from_utf8_lossy(&strip.stderr)
+            );
+        }
         let runtime = std::fs::read(&archive).unwrap();
         // The program's object only asks for `_main`, which the archive defines.
         let program = common::Object {
