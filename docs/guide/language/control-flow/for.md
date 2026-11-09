@@ -45,7 +45,7 @@ if_stmt         = "if" line_expr NEWLINE INDENT block DEDENT ;      (* no else: 
 - **Over a range:** `for i in a..<b` excludes `b`, and `for i in a..b` includes it. The bounds are integers of one type, `Int` or a fixed-width type, and `i` takes that type.
 - **The body** is a block. An `if` without `else` is a statement there.
 
-There is no `while` or `loop`, and no `break` or `continue`.
+There is no `while` or `loop`, and no `break` or `continue`. In edition `0.4`, `stop` and `skip` end a loop or an iteration early, and `for until` and `for ever` loop until a condition holds or until the program is stopped: see [Loops that run until stopped](for-ever.md).
 
 ## Examples
 

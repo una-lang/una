@@ -216,6 +216,7 @@ Every command takes `--json` and prints exactly one JSON document, with a `schem
 | [Una for agents](docs/guide/una-for-agents.md) | A compact reference for agents writing Una; every code block is checked by the tests |
 | [Known limits](docs/guide/known-limits.md) | What this release does not do, or does only with limits, in edition 0.4, each item with its rule |
 | [Serving HTTP](docs/guide/serving-http.md) | Grants, the `serve` section and the language form, stopping, tests and the report of a server, in edition 0.4 |
+| [Loops that run until stopped](docs/guide/language/control-flow/for-ever.md) | `for ever`, `for until`, `stop` and `skip`, `diverges`, `on stop` and the host stops (signals, `--deadline`, `--stop-grace`, `--stop-after-iterations`, `--virtual-time`), in edition 0.4 |
 | [Specification](docs/spec/) | The normative definition of the language |
 | [Charter](docs/00-charter.md) | What Una is for, what it proves and what it assumes |
 | [Design decisions](docs/adr/) | Why each key decision was made |
