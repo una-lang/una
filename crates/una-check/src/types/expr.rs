@@ -2404,6 +2404,9 @@ impl<'a> Checker<'_, 'a, '_> {
                     &variant.args,
                     variant.name.span,
                     variant.span,
+                    // A failure is not a value that carries a top label: its fields keep
+                    // their declared labels, even for `Json` (ADR 0073 J5).
+                    false,
                 );
             }
             None => {
