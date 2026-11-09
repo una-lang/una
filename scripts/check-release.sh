@@ -311,9 +311,10 @@ if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
 fi
-# The packed una serves (spec/31 §1 rule 10): examples/health, on a free port, names the address
-# on stderr, answers `GET /health` with 200 and ends with 0 at SIGTERM; its start and its stop
-# are each bounded, and an EXIT trap kills it if the check ends first.
+# The packed una serves (spec/31 §1 rule 10), and so does the executable it builds:
+# examples/health, on a free port, names the address on stderr, answers `GET /health` with 200
+# and ends with 0 at SIGTERM, under `una run .` and as the executable of `una build`; its start
+# and its stop are each bounded, and an EXIT trap kills it if the check ends first.
 if ! command -v curl >/dev/null 2>&1; then
     echo "error: the serve check of examples/health needs curl, which is not on PATH" >&2
     exit 1
@@ -331,47 +332,55 @@ while curl -s -m 1 -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null || [ "$?" 
     port=$((20000 + ($port + 1) % 20000))
 done
 sed "s|127.0.0.1:8080|127.0.0.1:$port|" examples/health/ita.una > "$dir/ita.una"
-(cd "$dir" && exec "$una" run .) > "$tmp/serve.out" 2> "$tmp/serve.err" &
-serve_pid=$!
-ticks=0
-until grep -q "^serving on 127.0.0.1:$port (granted by the package)$" "$tmp/serve.err"; do
-    if [ "$ticks" -ge 300 ] || ! kill -0 "$serve_pid" 2>/dev/null; then
-        echo "error: the packed una did not serve examples/health within 60 s:" >&2
-        cat "$tmp/serve.err" >&2
+limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
+# serve_health WHAT COMMAND...: COMMAND, run in $dir, serves examples/health as above.
+serve_health() {
+    what=$1
+    shift
+    (cd "$dir" && exec "$@") > "$tmp/serve.out" 2> "$tmp/serve.err" &
+    serve_pid=$!
+    ticks=0
+    until grep -q "^serving on 127.0.0.1:$port (granted by the package)$" "$tmp/serve.err"; do
+        if [ "$ticks" -ge 300 ] || ! kill -0 "$serve_pid" 2>/dev/null; then
+            echo "error: $what did not serve examples/health within 60 s:" >&2
+            cat "$tmp/serve.err" >&2
+            exit 1
+        fi
+        sleep 0.2
+        ticks=$((ticks + 1))
+    done
+    answer=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" || true)
+    kill -TERM "$serve_pid"
+    ticks=0
+    while kill -0 "$serve_pid" 2>/dev/null; do
+        if [ "$ticks" -ge 50 ]; then
+            echo "error: $what still served examples/health 10 s after SIGTERM" >&2
+            exit 1
+        fi
+        sleep 0.2
+        ticks=$((ticks + 1))
+    done
+    code=0
+    wait "$serve_pid" || code=$?
+    serve_pid=
+    if [ "$answer" != 200 ] || [ "$code" != 0 ]; then
+        echo "error: $what answered \"$answer\" for /health of examples/health and exited $code" >&2
         exit 1
     fi
-    sleep 0.2
-    ticks=$((ticks + 1))
-done
-answer=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/health" || true)
-kill -TERM "$serve_pid"
-ticks=0
-while kill -0 "$serve_pid" 2>/dev/null; do
-    if [ "$ticks" -ge 50 ]; then
-        echo "error: the packed una still served examples/health 10 s after SIGTERM" >&2
-        exit 1
-    fi
-    sleep 0.2
-    ticks=$((ticks + 1))
-done
-code=0
-wait "$serve_pid" || code=$?
-serve_pid=
-if [ "$answer" != 200 ] || [ "$code" != 0 ]; then
-    echo "error: the packed una answered \"$answer\" for /health of examples/health and exited $code" >&2
-    exit 1
-fi
+}
+serve_health "una run of the packed una" "$una" run .
+serve_health "the executable the packed una built" ./native-exe
 # Every example, built natively with the runtime built into the packed una, prints what `una run` prints and exits
 # with its status (spec/16 §5); each runs in its own directory, where its grants resolve. A package
-# with a `serve` section serves until it is stopped, and `una build` of one is still refused: it is
-# checked above instead.
+# with a `serve` section serves until it is stopped: it is built, and served above.
 for example in examples/*/; do
     example=${example%/}
-    if grep -qx serve "$example/ita.una" 2>/dev/null; then
-        continue
-    fi
     dir="$tmp/native-$(basename "$example")"
     cp -R "$example" "$dir"
+    if grep -qx serve "$example/ita.una" 2>/dev/null; then
+        limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
+        continue
+    fi
     expected=$(shown "$dir" 300 "$una" run .) || true
     timed_out
     limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }

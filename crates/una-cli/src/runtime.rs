@@ -548,9 +548,8 @@ pub(crate) fn run_command(
     };
     // Whether the program serves: its entry functions use the host's `HttpServer`, or it has a
     // `serve` section, whose driver does, so its serve threads start before `main` (S4
-    // amendment B.2, P8). `una run` runs it (`spec/31 §1` rule 10); `una build` still refuses
-    // it outside the toolchain's own tests.
-    let serves = serving || server_pending(&analysis, &entry, started).is_some();
+    // amendment B.2, P8). `una run` runs it, as `una build` builds it (`spec/31 §1` rule 10).
+    let serves = serving || uses_http_server(&analysis, &entry, started);
     let keys = match load_keys(&grants) {
         Ok(keys) => keys,
         Err(message) => {
@@ -1084,23 +1083,17 @@ pub(crate) fn entry_main<'a>(
     .then_some(main)
 }
 
-/// The usage error of a build whose entry functions use the host's `HttpServer` (`spec/31 §1`
-/// rule 10): `una run` runs such a program, and `una build` of one still fails closed before
-/// anything is made, outside the toolchain's own test builds. `None` when it serves nothing;
-/// `una run` uses it to tell whether its program serves.
-pub(crate) fn server_pending(analysis: &Analysis, module: &str, names: &[&str]) -> Option<String> {
-    let header = analysis.headers.iter().find(|header| {
+/// Whether one of the functions `names` of `module` that start the run uses the host's
+/// `HttpServer`, so the run serves (`spec/31 §1` rule 10).
+fn uses_http_server(analysis: &Analysis, module: &str, names: &[&str]) -> bool {
+    analysis.headers.iter().any(|header| {
         header.module == module
             && names.contains(&header.name.as_str())
             && header
                 .uses
                 .iter()
                 .any(|need| need.host && need.capability == "HttpServer")
-    })?;
-    Some(format!(
-        "`{}.{}` uses `HttpServer`: `una run` serves it, but `una build` does not build a program that serves in this release yet: it lands with a later slice of ADR 0123 (`spec/31 §1` rule 10)",
-        header.module, header.name
-    ))
+    })
 }
 
 /// The message of U6007, which says why the hard stop came (ADR 0116 rule 16): the same in
@@ -1296,15 +1289,6 @@ pub(crate) fn served_module(
         }
     }
     Ok(())
-}
-
-/// The usage error of a build of a package with a `serve` section: `una run` runs the driver of
-/// ADR 0123 rule 16, and `una build` still fails closed before anything is made, outside the
-/// toolchain's own test builds (`spec/31 §1` rule 10, §7 rule 5), as [`server_pending`] does.
-pub(crate) fn serve_pending(module: &str) -> String {
-    format!(
-        "the `serve` section's module `{module}` is checked, and `una run` runs the host's driver that calls its `handle` for each request, but `una build` does not build the driver in this release yet: it lands with a later slice of ADR 0123 (`spec/31 §7`)"
-    )
 }
 
 /// Whether `ty` is the kind `name` of `std.host`, labeled exactly `label`, with no refinement:
