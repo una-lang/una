@@ -22,6 +22,19 @@ A run, or a native build, in which the solver did not decide an obligation (U500
 wallclock` among them) or was missing (U5003) is an error too, never a program set aside: the
 runs do the full check with the pinned solver (#813), whose answers are deterministic under its
 rlimit (`spec/12 §10`).
+
+**The cost clock** (#973, ADR 0117 S8). With `cost=True`, every run is `una run --virtual-time
+--cost-clock` (`spec/27 §8` rule 6): each check point moves the virtual clock by one millisecond, so
+a deadline passes, or a token is left at a limit, by how much work the run did. A secret that
+decides that work, and a timing label that misses it, then make two variants' values differ, which
+the comparison sees. In that mode:
+- the trace's events with no operation whose outcome is `timeout` or `cancelled` are not
+  compared, though the liveness view at the literal's own level keeps them: whether a `within`
+  timed out, and which tasks its cut or a race cancelled, are the timing information the trace
+  records by design (`spec/27 §5` rule 7, `spec/26 §7` rule 4);
+- a program that names `Clock` is set aside: under the cost clock `Clock.now` reads the run's work,
+  timing outside the model (`spec/07 §1`);
+- nothing runs natively: executables have no cost clock.
 """
 
 import json
@@ -41,6 +54,12 @@ SOLVER_CODES = {"U5002", "U5003"}
 VALUES_PER_POSITION = 5
 # The limits of one run (docs/plan/security-hunt-oracle.md §6).
 RUN_LIMITS = ["--max-depth", "2000", "--max-memory", "256"]
+# The clock of the cost-clock mode (`spec/27 §8` rule 6).
+COST_CLOCK = ["--virtual-time", "--cost-clock"]
+# The outcomes of events with no operation that the cost-clock mode leaves out of every view.
+TIMING_OUTCOMES = ("timeout", "cancelled")
+# A program that names it is set aside in the cost-clock mode.
+CLOCK_WORD = re.compile(r"\bClock\b")
 LARGE_INT = 9007199254740993
 LONG_TEXT = "x" * 300
 NON_ASCII = "ação ☃"
@@ -192,7 +211,7 @@ def above(level, observer):
     return level not in LEVELS or LEVELS.index(level) > LEVELS.index(observer)
 
 
-def project(doc, observer, table, keep_outcome=False):
+def project(doc, observer, table, keep_outcome=False, cost=False):
     """What an observer at `observer` sees of one run (docs/release-gates.md, the `hunt` gate):
     - `status`, every `output` line in order (`Console.print` accepts `public`), and `failure`
       (its variant and its `public` fields);
@@ -207,11 +226,15 @@ def project(doc, observer, table, keep_outcome=False):
     `violations` lists the visible events whose sink arguments the run redacted at a level above
     the observer: the run itself says the argument is above what the operation accepts, so the
     checks let a labeled value reach the sink, a finding whatever the other variants do.
-    `keep_outcome` keeps outcomes too, for the liveness view at the literal's own level.
+    `keep_outcome` keeps outcomes too, for the liveness view at the literal's own level. `cost`,
+    the cost-clock mode, leaves out the events with no operation whose outcome is in
+    `TIMING_OUTCOMES`.
     Raises `UnknownOperation` for an event of an operation `table` does not have."""
     trace, violations = [], []
     for ev in doc.get("trace", []):
         if "capability" not in ev and "op" not in ev:
+            if cost and (ev.get("outcome") or {}).get("kind") in TIMING_OUTCOMES:
+                continue
             trace.append({k: v for k, v in ev.items() if k != "seq"})
             continue
         key = (ev.get("capability"), ev.get("op"))
@@ -240,7 +263,7 @@ def project(doc, observer, table, keep_outcome=False):
     }
 
 
-def observe(run, observers, table, live_level):
+def observe(run, observers, table, live_level, cost=False):
     """One run's end: (`complete`, {"views": {observer: view}, "live": view at `live_level`}),
     (`abort`, codes), (`rejected`, codes), or (`error`, why)."""
     if run.timed_out:
@@ -268,7 +291,10 @@ def observe(run, observers, table, live_level):
     if (status == "ok" and run.code == 0) or (status == "failed" and run.code == 1
                                               and doc.get("failure")):
         try:
-            return ("complete", {"views": {o: project(doc, o, table) for o in observers},
+            return ("complete", {"views": {o: project(doc, o, table, cost=cost)
+                                           for o in observers},
+                                 # The liveness view keeps the timing events: that a deadline
+                                 # passed for some secrets is what makes the variation live.
                                  "live": project(doc, live_level, table, keep_outcome=True)})
         except UnknownOperation as e:
             return ("error", str(e))
@@ -381,23 +407,28 @@ def raw(run):
     return (run.timed_out, run.code, doc)
 
 
-def run_twice(una, files, name, root, timeout, observers, table, live_level):
+def run_twice(una, files, name, root, timeout, observers, table, live_level, cost=False):
     """Runs the variant twice, each run in a fresh directory of its own (its package, home and
-    temporary files), and returns its end; an error when the two runs' documents differ."""
-    return run_twice_kept(una, files, name, root, timeout, observers, table, live_level)[0]
+    temporary files), and returns its end; an error when the two runs' documents differ. `cost`
+    runs both under the cost clock."""
+    return run_twice_kept(una, files, name, root, timeout, observers, table, live_level, None,
+                          cost)[0]
 
 
 def run_twice_kept(una, files, name, root, timeout, observers, table, live_level,
-                   doc_plant=None):
+                   doc_plant=None, cost=False):
     """`run_twice`, and the first of the two runs, for the native comparison. `doc_plant`, for the
-    gate's canary only, rewrites the run's document, given the variant's files."""
+    gate's canary only, rewrites the run's document, given the variant's files. `cost` runs both
+    under the cost clock (`COST_CLOCK`)."""
+    clock = COST_CLOCK if cost else []
     runs = []
     for k in range(2):
         rundir = sandbox.fresh_dir(root, f"{name}-r{k}-")
         p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
                     variant=name)
         pkg = p.write(rundir)
-        runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS, *native.SOLVER_FLAGS],
+        runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS, *clock,
+                                 *native.SOLVER_FLAGS],
                                 cwd=pkg, writable=rundir, timeout=timeout,
                                 env_extra=native.RUN_ENV))
     if raw(runs[0]) != raw(runs[1]):
@@ -411,7 +442,7 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
     if doc_plant is not None and not run.timed_out:
         run = sandbox.Run(run.code, json.dumps(doc_plant(json.loads(run.stdout), files)),
                           run.stderr, run.timed_out, run.seconds)
-    return observe(run, observers, table, live_level), runs[0]
+    return observe(run, observers, table, live_level, cost), runs[0]
 
 
 def native_check(result, una, files, name, root, timeout, end, run, native_files=None):
@@ -499,7 +530,8 @@ def native_pass(prog, una, root, timeout, result):
         native_check(result, una, files, name, root, timeout, end, run)
 
 
-def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None, doc_plant=None):
+def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None, doc_plant=None,
+           cost=False):
     """Runs the oracle on every manifest row with varied literals. `rebuild` turns a row into its
     program (`drivers.rebuild`); `plant`, for the gate's canaries only, rewrites the table of
     `accepts`; `native_plant`, for the native canary only, puts the program in the native sample and
@@ -508,7 +540,10 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
 
     A program's result counts `compared`, its complete-against-complete comparisons, and says
     whether it is `live`: whether two of its complete ends differ at the literal's own level, where
-    every event below it is visible with its outcome."""
+    every event below it is visible with its outcome.
+
+    `cost` is the cost-clock mode (the module's docstring): every run under the cost clock, a
+    program that names `Clock` set aside, and no native sample."""
     tally = Counter()
     for row in rows:
         if not row.get("vary"):
@@ -520,13 +555,17 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
                   "class": prog.cls, "observers": observers, "variants": [], "finding": False,
                   "error": None, "termination": [], "violations": [], "compared": 0,
                   "live": False,
-                  "native": {"sampled": native_plant is not None or native.sampled(prog.name),
+                  "native": {"sampled": not cost and (native_plant is not None
+                                                      or native.sampled(prog.name)),
                              "stratum": False, "compared": 0, "divergences": [], "skipped": [],
                              "not_compiled": None}}
         if not observers:
             result["set_aside"] = "no observer below the varied literal"
         elif releases_to_public(prog.files):
             result["set_aside"] = "a policy releases to public"
+        elif cost and any(isinstance(t, str) and CLOCK_WORD.search(t)
+                          for t in prog.files.values()):
+            result["set_aside"] = "it reads the clock, which the cost clock moves with its work"
         if result.get("set_aside"):
             # A program whose policy releases to public still runs natively when sampled: a
             # declassification is where redaction could differ between the engines.
@@ -556,7 +595,7 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if core is None:
             # A program the checks reject has no complete export: the base run says so.
             base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers,
-                             {k: {v} for k, v in HOST_ACCEPTS.items()}, live_level)
+                             {k: {v} for k, v in HOST_ACCEPTS.items()}, live_level, cost)
             if base[0] == "rejected" and not set(base[1]) & set(prog.expect):
                 # Only a closed call or a must-reject program is set aside as rejected, and only
                 # with one of its expected codes: another rejection tests nothing of its rule.
@@ -575,7 +614,7 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if plant is not None:
             table = plant(table)
         base, base_run = run_twice_kept(una, prog.files, prog.name + "-base", root, timeout,
-                                        observers, table, live_level, doc_plant)
+                                        observers, table, live_level, doc_plant, cost)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
@@ -591,7 +630,7 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
                 files = substitute(prog.files, pos, text)
                 end, end_run = run_twice_kept(una, files, f"{prog.name}-v{i}-{j}", root, timeout,
-                                              observers, table, live_level, doc_plant)
+                                              observers, table, live_level, doc_plant, cost)
                 native_check(result, una, files, f"{prog.name}-v{i}-{j}", root, timeout, end,
                              end_run, native_plant(files) if native_plant else None)
                 if end[0] == "rejected":

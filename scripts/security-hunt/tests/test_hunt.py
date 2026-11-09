@@ -15,13 +15,14 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hunt import drivers, families, gate, landlock, native, oracle, sandbox  # noqa: E402
+from hunt import costclock, drivers, families, gate, landlock, native, oracle, sandbox  # noqa: E402
 from hunt.families import (OPERATORS, SAMPLE_COUNT, editions_for, editions_of,  # noqa: E402
                            sample_forms)
 from hunt.program import (CLASSES, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed,  # noqa: E402
                           rng_for)
 from hunt.refactor import _blocks, r6_rename, r9_reorder  # noqa: E402
 from hunt.sandbox import Run  # noqa: E402
+from hunt.una import Varied  # noqa: E402
 
 def every_program(n=40):
     for op in sorted(OPERATORS):
@@ -2249,6 +2250,112 @@ class FamilyW(unittest.TestCase):
         row = dict(p.manifest(), digest=p.digest())
         self.assertEqual(drivers.rebuild(row).files, p.files)
         self.assertEqual(families.TIMING_OPERATORS["W1"](p.seed, "0.4").digest(), p.digest())
+
+
+class CostClock(unittest.TestCase):
+    """The oracle's cost-clock mode and the timing run (#973, `spec/27 §8` rule 6)."""
+
+    TABLE = {k: {v} for k, v in oracle.HOST_ACCEPTS.items()}
+    PRINT = {"seq": 0, "capability": "Console", "op": "print", "instance": "host",
+             "args": {"line": '"done"'}, "outcome": {"kind": "ok", "value": "unit"}}
+
+    def view(self, trace, cost):
+        doc = json.loads(run_doc("ok", ["done"], trace=trace))
+        return oracle.project(doc, "public", self.TABLE, cost=cost)
+
+    def test_the_cost_mode_leaves_out_timeouts_and_cancellations(self):
+        timeout = {"seq": 1, "outcome": {"kind": "timeout"}}
+        cancelled = {"seq": 1, "task": "f1.2", "outcome": {"kind": "cancelled"}}
+        aborted = {"seq": 1, "task": "s1.1", "outcome": {"kind": "aborted"}}
+        for ev in (timeout, cancelled):
+            # Whether a deadline passed is the timing the trace records by design.
+            self.assertEqual(self.view([self.PRINT, ev], True), self.view([self.PRINT], True))
+            # Outside the mode, every event with no operation is compared, as before.
+            self.assertNotEqual(self.view([self.PRINT, ev], False), self.view([self.PRINT], False))
+        # Only those two outcomes: any other event with no operation is still compared.
+        self.assertNotEqual(self.view([self.PRINT, aborted], True), self.view([self.PRINT], True))
+
+    def test_the_cost_mode_runs_every_variant_under_the_cost_clock(self):
+        doc = run_doc("ok", ["done"], trace=[])
+        argvs = []
+        saved = oracle.sandbox.run, oracle.sandbox.fresh_dir
+
+        def run(argv, cwd, writable, timeout, env_extra=None):
+            argvs.append(argv)
+            return Run(0, doc, "", False, 0.1)
+        oracle.sandbox.run = run
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                oracle.sandbox.fresh_dir = lambda root, prefix: tempfile.mkdtemp(dir=tmp)
+                for cost in (True, False):
+                    end = oracle.run_twice("una", {"una.toml": "x\n"}, "p", tmp, 1, ["public"],
+                                           self.TABLE, "secret", cost)
+                    self.assertEqual(end[0], "complete")
+        finally:
+            oracle.sandbox.run, oracle.sandbox.fresh_dir = saved
+        self.assertEqual(len(argvs), 4)
+        for argv in argvs[:2]:
+            i = argv.index("--virtual-time")
+            self.assertEqual(argv[i:i + 2], oracle.COST_CLOCK)
+        for argv in argvs[2:]:
+            self.assertNotIn("--cost-clock", argv)
+            self.assertNotIn("--virtual-time", argv)
+
+    def test_a_program_that_reads_the_clock_is_set_aside_and_nothing_runs_natively(self):
+        v = Varied()
+        lit = v.lit("Int", "secret", "3")
+        text = ("module main\n\npub main() -> Unit\n  uses @clock: Clock[now]\n=\n"
+                f"  let s: secret Int = {lit}\n  let t = @clock.now()\n")
+        files, vary = v.place({"src/main.una": text})
+        prog = Program(op="W1", rule="", edition="0.4", seed=1, cls=OPEN, files=files, vary=vary)
+        buf = io.StringIO()
+        oracle.oracle([dict(prog.manifest(), digest=prog.digest())], "una", "/nonexistent", 1,
+                      buf, lambda row: prog, cost=True)
+        row = json.loads(buf.getvalue())
+        self.assertIn("clock", row["set_aside"])
+        self.assertFalse(row["native"]["sampled"])
+
+    def test_the_timing_run_is_family_w_alone_on_its_own_seed(self):
+        progs = costclock.programs()
+        self.assertEqual(len(progs), 4 * costclock.COUNT)
+        self.assertEqual({p.op for p in progs}, {"W1", "W2", "W3", "W4"})
+        self.assertEqual(len({p.name for p in progs}), len(progs))
+        self.assertEqual(costclock.SEED, 973)
+        self.assertNotEqual(costclock.SEED, gate.SEED)
+        # Every form of the family, accepted and closed, is in the run.
+        forms = {(p.op, p.variant) for p in progs}
+        self.assertEqual(forms, {(op, f) for op, fs in FamilyW.FORMS.items() for f in fs})
+        self.assertEqual([p.name for p in costclock.programs()], [p.name for p in progs])
+        self.assertFalse(any(families.family_of(p.op) == "W" for p in gate.programs()))
+
+    def test_the_canary_varies_a_loop_inside_a_within(self):
+        prog = costclock.canary_cost()
+        self.assertEqual(len(prog.vary), 1)
+        self.assertEqual(prog.vary[0]["label"], "secret")
+        text = prog.files["src/main.una"]
+        self.assertIn("within 50 * millisecond", text)
+        self.assertIn("let n: Int = 30", text)
+        # Some value the oracle draws runs past the deadline, and some does not.
+        drawn = [int(x) for x in oracle.values("Int", "30", prog.files)]
+        self.assertTrue(any(x > 60 for x in drawn) and any(0 <= x < 20 for x in drawn), drawn)
+
+    def test_the_canaries_fail_closed(self):
+        leak = {"error": None, "finding": True, "compared": 3}
+        clean = {"error": None, "finding": False, "compared": 3}
+        self.assertEqual(costclock.canary_errors(leak, clean), [])
+        self.assertEqual(len(costclock.canary_errors(clean, clean)), 1)
+        self.assertEqual(len(costclock.canary_errors(leak, leak)), 1)
+        self.assertEqual(len(costclock.canary_errors(dict(leak, compared=0), clean)), 1)
+        self.assertEqual(len(costclock.canary_errors(leak, dict(clean, error="x"))), 1)
+
+    def test_an_operator_that_compared_nothing_fails(self):
+        progs = costclock.programs(count=8)
+        rows = [{"op": op, "compared": 1, "live": op in ("W1", "W2")}
+                for op in ("W1", "W2", "W3", "W4")]
+        self.assertEqual(costclock.coverage_errors(progs, rows), [])
+        self.assertEqual(len(costclock.coverage_errors(progs, rows[2:])), 4)
+        self.assertEqual(len(costclock.coverage_errors(progs, [dict(r, live=False) for r in rows])),
+                         2)
 
 
 class Messages(unittest.TestCase):

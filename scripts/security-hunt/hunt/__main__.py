@@ -5,13 +5,15 @@
     python3 -m hunt keep --manifest DIR/manifest.jsonl --una PATH --root DIR
     python3 -m hunt repro --op T4 --seed SEED --edition 0.2 --out DIR
     python3 -m hunt gate --una PATH --out DIR --tip SHA
+    python3 -B -m hunt timing --una PATH --out DIR [--seed 973] [--count 40] [--z3 PATH]
 
 `gen --ops W` and `repro --op W1` reach family W (tasks and time, #973), which no default
-selection and no gate includes: it is meant for the oracle under the cost clock (`spec/27 §8`
-rule 6).
+selection and no gate includes: `timing` runs it, through must-reject and the oracle under the
+cost clock (`spec/27 §8` rule 6, `hunt/costclock.py`).
 
-`gen` and `repro` only write files. `reject`, `keep` and `gate` run the compiler, which is
-heavy work: only in a machine slot. `gate` is the release gate's fixed run (`hunt/gate.py`).
+`gen` and `repro` only write files. `reject`, `keep`, `gate` and `timing` run the compiler,
+which is heavy work: only in a machine slot. `gate` is the release gate's fixed run
+(`hunt/gate.py`).
 """
 
 import argparse
@@ -19,7 +21,7 @@ import os
 import sys
 from collections import Counter
 
-from . import drivers, gate
+from . import costclock, drivers, gate
 from .families import OPERATORS, TIMING_OPERATORS, family_of
 from .families.timing import EDITIONS as TIMING_EDITIONS
 from .program import derive_seed, write_manifest
@@ -122,10 +124,20 @@ def main(argv=None):
     gt.add_argument("--core-check", required=True,
                     help="the una-core-check executable (formal/.lake/build/bin)")
     gt.add_argument("--z3", required=True, help="the pinned solver, for the residual rows")
+    tm = sub.add_parser("timing")
+    tm.add_argument("--una", required=True)
+    tm.add_argument("--out", required=True)
+    tm.add_argument("--seed", type=int, default=costclock.SEED)
+    tm.add_argument("--count", type=int, default=costclock.COUNT,
+                    help="programs per operator of family W")
+    tm.add_argument("--z3", help="the pinned solver: its directory goes first on the runs' PATH")
     a = ap.parse_args(argv)
     if a.cmd == "gate":
         return gate.run(os.path.realpath(a.una), a.out, a.tip, os.path.realpath(a.core_check),
                         os.path.realpath(a.z3))
+    if a.cmd == "timing":
+        return costclock.run(os.path.realpath(a.una), a.out, a.seed, a.count,
+                             os.path.realpath(a.z3) if a.z3 else None)
     if a.cmd == "gen":
         cmd_gen(a)
     elif a.cmd == "repro":

@@ -2,7 +2,7 @@
 
 - Issue: #513, part (e) of `docs/plan/security-hunt.md`
 - Date: 2026-10-10
-- Status: specification (L3); the part the `hunt` release gate runs is `scripts/security-hunt/hunt/oracle.py` (#767): V-secret, the interpreter, the `public` and `internal` observers. The rest is #782
+- Status: specification (L3); the part the `hunt` release gate runs is `scripts/security-hunt/hunt/oracle.py` (#767): V-secret, the interpreter, the `public` and `internal` observers. The rest is #782. The cost-clock mode for tasks and time is §10 (#973)
 
 ## 1. What it checks
 
@@ -103,4 +103,16 @@ The machine work is per program and variation: one check, then for each variant 
 - It finds only what its inputs exercise. Its strength depends on the generators of part (a) and on the values of §2.
 - The final-tree view of `Files.write` does not see the order of writes (§3).
 - Nondeterministic programs are set aside, not tested.
-- A difference that is outside the model by `spec/07 §1` is never a finding, even when it is real: timing, termination, resources, aborts and the order of effects across tasks.
+- A difference that is outside the model by `spec/07 §1` is never a finding, even when it is real: timing, termination, resources, aborts and the order of effects across tasks. Deadlines, races and limits are in the model through their timing labels: the cost clock of §10 tests them.
+
+## 10. The cost clock (#973)
+
+ADR 0117 (implementation plan step 7, S8) adds a mode of the oracle for the constructs of time: `within`, `first of`, `tasks` and the limits of `std.limit`. On the real clock their outcomes depend on how long work takes, which the oracle cannot vary reproducibly; on the plain virtual clock work takes no time, so no deadline passes and a timing label is never put to the test.
+
+- **The clock.** Every run of the mode is `una run --virtual-time --cost-clock` (`spec/27 §8` rule 6): each check point of the interpreter, each call, operation and loop iteration, moves the virtual clock by one millisecond. A deadline then passes, and a token is left at a limit, by how much work the run did. When a secret decides that work, the timing label `τ` of the construct (`spec/27 §5` rule 8, §6 rule 8, §10 rule 4) must carry it; a checker that missed it would accept a program whose public values differ between two secrets, and the comparison of §4 sees the difference.
+- **What is not compared.** The trace's events with no operation whose outcome is `timeout` or `cancelled`: whether a `within` timed out and which tasks its cut or a race cancelled are the timing information the trace records by design (`spec/27 §5` rule 7, `spec/26 §7` rule 4). Every other part of §3 is compared, outputs, failures and the events of operations included.
+- **Set aside.** A program that names `Clock`: under the cost clock `Clock.now` reads the run's work, timing outside the model (`spec/07 §1`).
+- **Interpreter only.** Executables have no cost clock, so the mode has no native sample.
+- **Its programs.** Family W (`hunt/families/timing.py`), edition `0.4`: W1 `within`, W2 `first of`, W3 `tasks` and `start`, W4 `std.limit`, each with one varied secret literal. Accepted forms keep every timing outcome at the secret's label; closed calls are the same programs with that label missed, which a correct checker rejects (an acceptance is a finding of must-reject). Every loop on the secret is clamped, so no varied value makes a run long.
+- **The run.** `python3 -B -m hunt timing --una PATH --out DIR` (`hunt/costclock.py`): seed 973, 40 programs per operator, through must-reject and the oracle in this mode, with two canaries: a program whose `within` runs a loop on a public literal that its manifest marks as secret must be a leak under the cost clock and clean on the plain virtual clock, so a cost clock that does not move fails the run. It fails closed, as the gate does, and every operator with an accepted form must compare at least one program. It is not the release gate's fixed run, and leaves it unchanged: family W is kept apart from the operators that run (`TIMING_OPERATORS`).
+- **Limits.** Under virtual time a `first of` runs its branches in index order, each to its end (`spec/27 §6` rule 4), so the cost clock does not choose its winner: W2 tests a race through the `within` around it, and through the timing floor of its branches. The task switch after 1024 check points (`spec/27 §8` rule 2) counts check points, not the clock, and is the same in both modes.
