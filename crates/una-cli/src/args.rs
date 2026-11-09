@@ -229,8 +229,9 @@ pub(crate) enum Command {
         #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
         solver_memory: u64,
 
-        /// Request a host stop once this many iterations of `for ever` loops, the host's loop
-        /// included, have started (ADR 0116)
+        /// A budget of this many iterations for each `for ever` loop, the driver's loop included:
+        /// each loop instance ends at the start of its iteration N + 1; no host stop request
+        /// (ADR 0116)
         #[arg(long, value_name = "N", value_parser = iterations)]
         stop_after_iterations: Option<u64>,
 
