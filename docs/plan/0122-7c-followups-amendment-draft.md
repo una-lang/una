@@ -1,6 +1,6 @@
 # ADR 0122 amendment draft: `una ita lock --check` and the root-version floor (follow-ups of amendment 7c)
 
-Status: Accepted on 2026-11-09 and appended to ADR 0122 (card #1538); implementation slices follow. Card #1538, findings L1 and L3 of the adversarial review of PR #1537 (card #1529).
+Status: Accepted on 2026-11-09 and appended to ADR 0122 (card #1538); fully implemented (L1 and L3, slices 1 to 5). Card #1538, findings L1 and L3 of the adversarial review of PR #1537 (card #1529).
 
 ## L1. `una ita lock --check` does not see a cut of the vendored root chain
 
