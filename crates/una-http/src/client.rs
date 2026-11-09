@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::grant::{Grant, Method, Url, allowed};
 use crate::limit::{Abandon, Governor};
 use crate::parse::{self, Limits, Parser};
+pub use crate::resolve::Hold;
 
 /// Why a request got no response it may return (`spec/24 §1` rule 3), as `HttpError` names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -494,9 +495,10 @@ fn reach(
     deadline: Instant,
     stopped: &dyn Fn() -> bool,
     abandon: &Abandon,
+    hold: Option<Hold>,
 ) -> Result<TcpStream, Error> {
     let name = host.trim_start_matches('[').trim_end_matches(']');
-    crate::resolve::reach(name, port, deadline, stopped, abandon)
+    crate::resolve::reach(name, port, deadline, stopped, abandon, hold)
 }
 
 /// A connection, over TCP or TLS.
@@ -784,11 +786,27 @@ pub fn open(
     stopped: &dyn Fn() -> bool,
     abandon: &Abandon,
 ) -> Result<TcpStream, Error> {
+    open_holding(host, port, deadline, stopped, abandon, None)
+}
+
+/// [`open`], for a request whose place among the sockets of the process is `hold`
+/// (`spec/27 §2` rule 3, #1824): the connection job on the connect pool keeps it while it runs,
+/// so a request that gives up while its connection is in progress, by its deadline or its
+/// abandon, leaves its place held until the pool's thread has closed the socket it was making.
+/// `hold` is dropped once nothing of the request holds a socket on the pools.
+pub fn open_holding(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    stopped: &dyn Fn() -> bool,
+    abandon: &Abandon,
+    hold: Option<Hold>,
+) -> Result<TcpStream, Error> {
     if stopped() {
         return Err(Error::Interrupted);
     }
     left(deadline)?;
-    reach(host, port, deadline, stopped, abandon)
+    reach(host, port, deadline, stopped, abandon, hold)
 }
 
 /// Connects to the URL's origin within the deadline, with TLS for `https`. From the connection

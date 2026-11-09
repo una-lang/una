@@ -777,12 +777,13 @@ impl Interrupt for Parked<'_> {
             return Err(Error::TimedOut);
         }
         let result: Arc<Mutex<Option<Opened>>> = Arc::new(Mutex::new(None));
-        let (slot, entries, stop, host, abandon) = (
+        let (slot, entries, stop, host, abandon, held) = (
             Arc::clone(&result),
             self.entries.to_vec(),
             self.stop,
             host.to_owned(),
             abandon.clone(),
+            Arc::clone(&place),
         );
         let job = move |done: crate::interrupt::Wake| {
             let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -791,8 +792,19 @@ impl Interrupt for Parked<'_> {
                 let stopped = || {
                     crate::interrupt::interrupting(&entries) || stop.is_some_and(RunStop::stopped)
                 };
+                // The connect pool's job keeps a handle of the place while it runs, so a
+                // request that gives up while connecting, as a loser of a race does, gives its
+                // place back only once the pool's thread has closed its socket (#1824).
+                let hold: una_http::client::Hold = Box::new(held);
                 (
-                    una_http::client::open(&host, port, deadline, &stopped, &abandon),
+                    una_http::client::open_holding(
+                        &host,
+                        port,
+                        deadline,
+                        &stopped,
+                        &abandon,
+                        Some(hold),
+                    ),
                     place,
                 )
             }));

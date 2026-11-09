@@ -1524,12 +1524,7 @@ fn server_process(helper: &str, fds: usize) -> (std::process::Child, u16) {
         .arg("-c")
         .arg(format!("ulimit -n {fds} && exec \"$0\" \"$@\""))
         .arg(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            helper,
-            "--ignored",
-            "--nocapture",
-        ])
+        .args(["--exact", helper, "--ignored", "--nocapture"])
         .env(SILENT_PORT_FILE, &file)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
