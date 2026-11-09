@@ -57,25 +57,11 @@ pub(crate) struct Gate {
     hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-/// The places for request sockets out of a soft limit of `soft` descriptors: all but a reserve
-/// of a quarter of them, and at least 64, and at least 1 place. A limit that cannot be read
-/// counts as 256, the smallest common default. In a run that serves, `reserved` is what the
-/// serve grants and the runtime hold (`una_http::serve::reserved_descriptors`), and the places
-/// are the soft limit less that: the descriptor target of `spec/31 §2` rule 7 keeps at least 256
-/// of them, so a server whose connections are all open still leaves its program's requests a
-/// socket each.
+/// The places for request sockets out of a soft limit of `soft` descriptors, with `reserved`
+/// held by the server and the runtime: [`una_http::serve::request_places`], the rule the
+/// interpreter shares.
 pub(crate) fn cap_for(soft: Option<u64>, reserved: u64) -> usize {
-    if reserved > 0 {
-        // The limit is clamped after the server's share is taken, not before: a server of a
-        // million connections still leaves its program's requests the rest.
-        let places = soft
-            .unwrap_or(256)
-            .saturating_sub(reserved)
-            .clamp(1, 1 << 20);
-        return usize::try_from(places).unwrap_or(1 << 20);
-    }
-    let soft = usize::try_from(soft.unwrap_or(256).min(1 << 20)).unwrap_or(256);
-    soft.saturating_sub((soft / 4).max(64)).max(1)
+    una_http::serve::request_places(soft, reserved)
 }
 
 /// The gate of the process, sized once from the limit of open descriptors. The limit is read

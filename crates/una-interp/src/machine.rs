@@ -916,6 +916,10 @@ pub struct Limits<'a> {
     /// `HttpServer` meet it. `None` in a run that serves nothing, where such an operation is a
     /// fault, since `una run` refuses the program.
     pub serve: Option<&'a dyn una_http::serve::program::Port>,
+    /// The places for the sockets of the `Http` requests that a run serving live peers makes
+    /// off its thread (`spec/27 §2` rule 3); `None` takes them from the soft limit of open
+    /// descriptors, as native code does. The toolchain's tests set fewer.
+    pub http_places: Option<usize>,
 }
 
 impl Limits<'_> {
@@ -932,6 +936,7 @@ impl Limits<'_> {
             stop: None,
             kernels: &una_core::dense::variants::Kernels::BASELINE,
             serve: None,
+            http_places: None,
         }
     }
 }
@@ -1088,8 +1093,19 @@ impl<'p, 'w> Machine<'p, 'w> {
         run.stop_after.set(limits.stop_after);
         // A run that serves live peers makes its `Http` requests off its thread when it has a
         // `tasks` statement (#1730); a script's engine keeps the reference schedule.
-        if limits.serve.is_some_and(|port| port.live_peers()) && index.tasks {
-            run.offload = Some(crate::tasks::Offload::default());
+        // Its requests' sockets take the places of `spec/27 §2` rule 3, counted as native code
+        // counts them.
+        if limits.serve.is_some_and(|port| port.live_peers())
+            && index.tasks
+            && !run.clock.is_virtual()
+        {
+            let places = limits.http_places.unwrap_or_else(|| {
+                una_http::serve::request_places(
+                    una_sys::io::descriptor_limit(),
+                    una_http::serve::reserved_descriptors(),
+                )
+            });
+            run.offload = Some(crate::tasks::Offload::new(places));
         }
         run.serve = limits.serve.map(serve::Serving::new);
         // The run's limits refill on the run's clock (ADR 0116 rule 19).
@@ -2962,6 +2978,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
+            // A `within`'s cut of the statement interrupts no request of its tasks: each ends
+            // at that same deadline with `TimedOut` (`spec/27 §2` rule 4).
+            if matches!(result, Err(Stop::Cut(id)) if id != CANCEL) {
+                scope.by_deadline.set(true);
+            }
             self.run.abandon_cancelled();
         }
         self.flush();
@@ -3983,11 +4004,38 @@ impl<'p, 'w> Machine<'p, 'w> {
         use std::sync::atomic::{AtomicBool, Ordering};
         use una_http::limit::Abandon;
         let id = self.run.current();
+        let cancels: Vec<_> = self
+            .cancels
+            .iter()
+            .skip(self.cancel_shield)
+            .cloned()
+            .collect();
+        // The request's socket takes a place first. Its wait for one is covered by the
+        // request's own deadline, and a request whose wait that deadline, a cancellation or a
+        // host stop ends is never sent (`spec/27 §2` rule 3, §9 rule 4).
+        let mut settings = settings;
+        let until = std::time::Instant::now() + settings.timeout;
+        let wait = crate::tasks::PlaceWait {
+            id,
+            until,
+            cancels: cancels.clone(),
+            stop: stop.clone(),
+            state: Rc::new(Cell::new(crate::tasks::Place::Waiting)),
+        };
+        match self.run.take_place(offload, wait) {
+            crate::tasks::Place::Granted => {}
+            crate::tasks::Place::TimedOut => return Ok(Err(una_http::client::Error::TimedOut)),
+            _ => return Ok(Err(una_http::client::Error::Interrupted)),
+        }
+        settings.timeout = until.saturating_duration_since(std::time::Instant::now());
+        if settings.timeout.is_zero() {
+            self.run.give_place(offload);
+            return Ok(Err(una_http::client::Error::TimedOut));
+        }
         let abandon = Abandon::new();
         let done = Arc::new(AtomicBool::new(false));
-        let cancels = self.cancels.iter().skip(self.cancel_shield).cloned();
         let flight = crate::tasks::Flight {
-            cancels: cancels.collect(),
+            cancels,
             abandon: abandon.clone(),
         };
         offload.flights.borrow_mut().insert(id, flight);
@@ -4015,22 +4063,22 @@ impl<'p, 'w> Machine<'p, 'w> {
             offload.flights.borrow_mut().remove(&id);
             let limits = &self.run.http_limits;
             let abandon = Abandon::new();
-            return Ok(send(
-                &owned,
-                limits,
-                &settings,
-                stop.as_deref(),
-                &abandon,
-                cover,
-            ));
+            let sent = send(&owned, limits, &settings, stop.as_deref(), &abandon, cover);
+            self.run.give_place(offload);
+            return Ok(sent);
         };
-        // Only the request's landing wakes the task: the driver puts it back in the queue.
+        // Only the request's landing wakes the task: the driver puts it back in the queue and
+        // removes its flight. A helper that returned before the task looked, as at a refused
+        // connection, rang with no park after it: the task takes its own ring back (`settle`),
+        // so no later wake of the driver reaches it out of turn. No check point runs between
+        // the helper's start and this look, so nothing else takes the ring first.
         while !done.load(Ordering::SeqCst) {
             if !self.run.park() {
                 // INVARIANT: `offloads` is `Some` only while the driver serves the queue.
                 return Err(fault("an `Http` request off the thread with no scheduler"));
             }
         }
+        self.run.settle(offload, id);
         helper
             .join()
             .map_err(|_| fault("the helper of an `Http` request panicked"))
@@ -5423,6 +5471,7 @@ mod tests {
             stop: None,
             kernels: &una_core::dense::variants::Kernels::BASELINE,
             serve: None,
+            http_places: None,
         };
         let mut machine = Machine::new(&index, &mut world, &[], &keys, limits, Clock::real());
         held.store(
