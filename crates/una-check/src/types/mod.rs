@@ -935,6 +935,8 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     ));
     // `spec/07 §5` rule 7: the timing sites a `via` function reaches (#1673).
     authority::via_timing(&env, &findings, &mut report);
+    // ADR 0116 amendment of 2026-11-09 (#898, C7): the readings of `Clock` a `via` reaches.
+    authority::via_clock_timing(&env, &findings, &mut report);
     // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
     server::start_rights(&env, &findings, &mut report);
     // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684);

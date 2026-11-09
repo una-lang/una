@@ -1,0 +1,17 @@
+-- test: the control of `clock_reading_via_sequential` (ADR 0116 amendment of 2026-11-09, C7): a run on `public` data, with a policy whose `from` is `public`, gives the reading inside the `via` function a `public` `L_clk`, so the policy that reads the clock is accepted; a `via` whose own parameter is labeled raises `L_clk` too, by C1 item 1, and is refused
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (stamp_of)
+
+work(n: Int) -> Int = n * n
+
+pub show(n: Int) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let start = stamp_of(0)
+  let squared = work(n)
+  let stop = stamp_of(0)
+  @console.print("{stop - start} ms")

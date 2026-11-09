@@ -1,0 +1,8 @@
+-- test: in edition 0.4 a handler of `Clock` cannot forward the host's clock (ADR 0116 amendment of 2026-11-09, What it breaks): the reading in its operation is `⊤`, the preview's `τ_conc` outside a function's body (C1 item 2), and the declared result of `Clock.now` is `public`, so the answer is U4001
+-- spec: spec/14 §3
+-- expect: error U4001 at src/relay.una:8:14
+module relay
+
+handler relay() for Clock
+  uses @clock: Clock[now]
+  op now() = @clock.now()

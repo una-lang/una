@@ -1,0 +1,16 @@
+trusted module release
+
+pub policy stamp_of
+  from Int
+  to Int
+  via stamp_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function, which a call of `stamp_of` runs: it reads the clock, whose label no check
+--- sees inside it (`spec/07 §5` rule 3).
+stamp_it(t: Int) -> Int
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  now

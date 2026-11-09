@@ -1,0 +1,18 @@
+-- test: migration item 6 of the ADR 0116 amendment of 2026-11-09: a program that must print a `secret` elapsed time releases the reading itself through a policy, `elapsed_of(stop - start)`, whose call the report lists; the `via` function reads no clock, so C7 does not apply, and the program is accepted
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (elapsed_of)
+
+work(n: secret Int) -> secret Int = n * n
+
+pub show(n: secret Int) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let start = @clock.now()
+  let squared = work(n)
+  let stop = @clock.now()
+  let released = elapsed_of(stop - start)
+  @console.print("{released} ms")

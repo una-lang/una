@@ -4038,6 +4038,79 @@ pub(crate) fn via_timing(env: &Env<'_>, findings: &Findings, report: &mut Report
     }
 }
 
+/// `spec/07 §5` rule 7 for readings of `Clock` (ADR 0116 amendment of 2026-11-09, #898, C7): a
+/// reading in a `via` body, or in code it reaches along the graph of ADR 0116 P1, would reach
+/// the policy's result with no label checked (rule 3). Unlike a `within`, almost none of its
+/// label `L_clk` is the `via`'s own data: it is the timing of the reading's ancestors, the
+/// callers of the policy included. So each such reading whose `L_clk`, as pass 2 used it, is
+/// above `public` is U4001 at the reading. A policy that releases a reading the program holds,
+/// `p(reading)`, is unaffected: its release is visible at the call. O(F + H + C + O + E) for
+/// the reach of the `via` functions, and O(S log S) for the `S` readings; no work in a package
+/// without a `via` function or without a reading.
+pub(crate) fn via_clock_timing(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
+    if env.vias.is_empty() || findings.clock_sites.is_empty() {
+        return;
+    }
+    let reach = super::timing::via_reach(env, findings);
+    let mut sites: Vec<&super::timing::HttpSite> = findings.clock_sites.iter().collect();
+    sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
+    sites.dedup_by_key(|site| site.span);
+    for site in sites {
+        let seed = super::timing::TimingSeed {
+            node: site.node,
+            home: site
+                .function
+                .map(super::timing::Caller::Function)
+                .or(site.node),
+            construct: site.construct,
+            ..super::timing::TimingSeed::default()
+        };
+        let Some((via, _)) = reach.via_of(&seed) else {
+            continue;
+        };
+        let label = env
+            .clock_timing
+            .get(&site.span)
+            .cloned()
+            .unwrap_or_else(Label::public);
+        if label.is_public() {
+            continue;
+        }
+        let via_name = env
+            .functions
+            .get(via)
+            .map(|def| {
+                let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+                format!("{module}.{}", def.name)
+            })
+            .unwrap_or_default();
+        let policy = env.vias.get(&via).copied();
+        let policy_name = policy
+            .and_then(|id| env.functions.get(id))
+            .map_or_else(String::new, |def| def.name.to_owned());
+        let mut diagnostic = report.make(
+            Code::U4001,
+            site.span,
+            format!(
+                "this reading of `Clock.now` is timed by `{label}` data, the work that runs before it, and it can reach the result of the `via` function `{via_name}`; no label is checked there, so the policy `{policy_name}` would release that timing (`spec/07 §5` rule 7)"
+            ),
+        );
+        if let Some(FnAst::Policy(decl)) = policy
+            .and_then(|id| env.functions.get(id))
+            .map(|def| def.ast)
+        {
+            diagnostic.related.push(report.related(
+                decl.via.span,
+                format!("the policy `{policy_name}` runs `{via_name}`"),
+            ));
+        }
+        diagnostic.repairs.push(Report::advice(format!(
+            "read the clock outside `{via_name}` and the code it calls, and release the reading itself through a policy, `{policy_name}(reading)`, where the release is visible at the call"
+        )));
+        report.push(diagnostic);
+    }
+}
+
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the
 /// first use beyond the budget is reported, with the later ones related (`spec/06 §6`).
 pub(crate) fn budget(
