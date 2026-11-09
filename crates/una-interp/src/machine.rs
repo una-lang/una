@@ -2978,6 +2978,10 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
+            // An abort ends the run: its requests in flight end at once, unseen.
+            if matches!(result, Err(Stop::Abort(_))) {
+                self.run.abandon_all();
+            }
         }
         self.flush();
         self.wait_for(&scope, |scope| scope.running.get() == 0)?;
@@ -3998,6 +4002,11 @@ impl<'p, 'w> Machine<'p, 'w> {
     ) -> Result<Result<una_http::client::Response, una_http::client::Error>, Stop<'p>> {
         use std::sync::atomic::{AtomicBool, Ordering};
         use una_http::limit::Abandon;
+        // A header value with a control character aborts the run at the operation, before any
+        // wait, as on the run's thread and in native code (`spec/24 §1`, U6004).
+        if una_http::client::bad_header_value(&owned.headers) {
+            return Ok(Err(una_http::client::Error::HeaderValue));
+        }
         let id = self.run.current();
         let cancels: Vec<_> = self
             .cancels
@@ -4013,6 +4022,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         let wait = crate::tasks::PlaceWait {
             id,
             until,
+            cover,
             cancels,
             stop: stop.clone(),
             state: Rc::new(Cell::new(crate::tasks::Place::Waiting)),
@@ -4030,10 +4040,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         // A request in flight is not interrupted by a cancellation of its task (#1811): it runs
         // to its own deadline, `--http-timeout` and the deadlines that covered it when it began,
         // so a `within`'s cut of its statement still ends it `TimedOut`; the cancelled task
-        // stops at its next check point and its result is dropped.
+        // stops at its next check point and its result is dropped. Only an abort of the run,
+        // whose end no task sees past, raises its abandon (`Run::abandon_all`).
         let abandon = Abandon::new();
         let done = Arc::new(AtomicBool::new(false));
-        offload.flights.borrow_mut().insert(id);
+        offload.flights.borrow_mut().insert(id, abandon.clone());
         let owned = Arc::new(owned);
         let helper = {
             let (landed, done) = (Arc::clone(&offload.landed), Arc::clone(&done));

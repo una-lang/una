@@ -272,6 +272,17 @@ pub fn send_interruptible(
     )
 }
 
+/// Whether a header value of `headers` holds a control character, which is no failure of the
+/// request but an abort of the run with U6004 at the operation, before anything is sent
+/// (`spec/24 §1`, [`Error::HeaderValue`]). A caller that waits before it sends, as the
+/// interpreter does for a socket's place (#1730), checks it first, so that the abort depends on
+/// the header values alone. O(bytes of the values).
+pub fn bad_header_value(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .any(|(_, value)| value.as_bytes().iter().any(control))
+}
+
 /// [`send_covered`] with a covering deadline on the run's clock only, `cover`, in milliseconds:
 /// the exchange's deadline is its time-out from the moment it starts.
 pub fn send_governed(
@@ -348,11 +359,7 @@ pub fn send_covered(
         .millis_after(deadline.saturating_duration_since(started))
         .min(cover.at.unwrap_or(u64::MAX));
     // First, so that the abort it leads to depends on the header values alone.
-    if request
-        .headers
-        .iter()
-        .any(|(_, value)| value.as_bytes().iter().any(control))
-    {
+    if bad_header_value(request.headers) {
         return Err(Error::HeaderValue);
     }
     if interrupt.stopped() || abandon.abandoned() {

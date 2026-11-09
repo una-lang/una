@@ -2096,3 +2096,90 @@ fn the_scripted_engine_keeps_http_on_the_interpreter_thread() {
     assert_eq!(stdout.lines().collect::<Vec<_>>(), ["slow", "fast"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Beside the serving loop of [`ANSWER`], `slow` makes an `Http` call to the backend on port
+/// `HUNG`, which never answers, and `bad` one to port `QUICK` whose header value comes from the
+/// environment.
+const BAD_HEADER: &str = r#"module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+slow() -> Unit
+  uses @http: Http[get]
+=
+  let back = attempt @http.get("http://127.0.0.1:HUNG/", headers: [], key_name: None)
+  unit
+
+bad() -> Unit
+  uses @http: Http[get]
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let value = @env.get("UNA_TEST_HEADER")
+    if none use "fine"
+  let headers = [Header(name: "X-A", value: value)]
+  let r = attempt @http.get("http://127.0.0.1:QUICK/", headers: headers, key_name: None)
+  @console.print("after")
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "fast"))
+    if error use unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @http: Http[get]
+  uses @env: Env[get]
+  uses @console: Console[print]
+  diverges
+=
+  @console.print("serving")
+  tasks at most 1000 at once
+    start slow()
+    start bad()
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")
+"#;
+
+/// #1730 (review M3 of #1812): a header value with a control character aborts the run with
+/// U6004 at the operation, before any wait for a socket's place: with the one place held by a
+/// call that waits until `--http-timeout`, the run still aborts at once, as native code does
+/// and as the run's thread did (`spec/24 §1`).
+#[test]
+fn a_bad_header_value_aborts_before_any_wait_for_a_place() {
+    let (hung, quick, port) = (hung_backend(), backend(), free_port());
+    let grants = format!(
+        "    env\n    serve \"http://127.0.0.1:{port}\"\n    http \"http://127.0.0.1:{hung}\" get\n    http \"http://127.0.0.1:{quick}\" get\n"
+    );
+    let program = BAD_HEADER
+        .replace("HUNG", &hung.to_string())
+        .replace("QUICK", &quick.to_string());
+    let engine = Engine::Interpreter;
+    let dir = package_granted("live_http_bad_header", &grants, &program, engine, false);
+    let started = Instant::now();
+    let run = start_with(
+        &dir,
+        "live_http_bad_header",
+        engine,
+        &["--http-timeout", "20"],
+        &[
+            ("UNA_TEST_HTTP_PLACES", "1"),
+            ("UNA_TEST_HEADER", "a\r\nInjected: 1"),
+        ],
+    );
+    let (code, lines, stderr) = run.end();
+    let took = started.elapsed();
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("[U6004]"), "{stderr}");
+    assert_eq!(output(&lines), ["serving"]);
+    assert!(took < Duration::from_secs(10), "aborted after {took:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
