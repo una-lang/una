@@ -491,6 +491,29 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[],
         removed: &[("U0101", "src/before.una:11:3")],
     },
+    // ADR 0116 rule 5 (spec/26 §3 rule 1, #1807): `stop` and `skip` are statements from
+    // edition 0.4 and names before it.
+    Difference04 {
+        case: "syntax/bare_stop_skip_before_0_4",
+        added: &[("U2040", "src/loops.una:11:5")],
+        removed: &[
+            ("U1001", "src/loops.una:10:5"),
+            ("U1001", "src/loops.una:12:7"),
+        ],
+    },
+    Difference04 {
+        case: "syntax/stop_skip_bound_before_0_4",
+        added: &[
+            ("U2034", "src/names.una:11:5"),
+            ("U2034", "src/names.una:13:5"),
+        ],
+        removed: &[],
+    },
+    Difference04 {
+        case: "syntax/stop_when_before_0_4",
+        added: &[],
+        removed: &[("U0101", "src/loops.una:9:10")],
+    },
     // ADR 0117 rules 1 and 2: `tasks` and `start` are statements from edition 0.4.
     Difference04 {
         case: "syntax/tasks_before_0_4",
