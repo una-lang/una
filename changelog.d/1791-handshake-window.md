@@ -1,0 +1,1 @@
+- **The solver child's handshake window is 10 seconds** (#1791, ADR 0124 rule 4, Proposed amendment of 2026-11-09, `spec/12 §5` rule 6). A loaded machine missed the 2 seconds; a late or missing handshake is still U5003, never a proof, and the window stays inside the wall-clock guard. The processor-time scaling test of `systems` overflow obligations no longer runs alone.
