@@ -1,0 +1,19 @@
+-- test: a failure of `init` of the driven module ends the run with U6001 at the name of `init`, before any step, and the message names `init` of the driven module, not `main` (spec/26 §2 rule 2, issue #1809)
+-- spec: spec/26 §2
+-- expect: error U6001 at src/metronome.una:10:5
+module metronome
+
+import std.drive (Tick)
+
+pub kind Fault = | Stuck
+
+pub init() -> Int
+  fails Fault
+=
+  fail Stuck
+
+pub step(edit beats: Int, input: Tick) -> Unit
+=
+  beats = beats + 1
+
+pub on_stop(beats: Int) -> Unit = unit
