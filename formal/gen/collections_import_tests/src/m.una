@@ -1,0 +1,83 @@
+module m
+
+import std.collections (BitSet, HashMap, HashSet, PriorityQueue, Queue, Set, Stack, empty_bit_set,
+  empty_hash_map, empty_hash_set, empty_queue, empty_set, empty_stack, lowest_first, to_set
+)
+
+--- The control: no collection, so the model reads it.
+pub plain(x: Int) -> Int = x + 1
+
+--- A `Stack` (IF1).
+pub stack_depth(pages: List[Text]) -> Int
+=
+  let edit seen: Stack[Text] = empty_stack()
+  for page in pages
+    edit seen.push(item: page)
+  seen.len
+
+--- A `Queue` (IF1).
+pub queue_front(names: List[Text]) -> Option[Text]
+=
+  let edit line: Queue[Text] = empty_queue()
+  for name in names
+    edit line.push(item: name)
+  edit line.pop()
+
+--- A `Set` (IF2), whose items are its shape.
+pub set_has(xs: List[Int], x: Int) -> Bool
+=
+  let edit s: Set[Int] = empty_set()
+  for y in xs
+    edit s.add(item: y)
+  s.has(item: x)
+
+--- A `HashMap` (IF3).
+pub hash_map_get(k: Text) -> Option[Int]
+=
+  let m: HashMap[Text, Int] = empty_hash_map()
+  m.with(key: k, value: 1).get(key: k)
+
+--- A `HashSet` (IF2).
+pub hash_set_len(xs: List[Text]) -> Int
+=
+  let edit s: HashSet[Text] = empty_hash_set()
+  for x in xs
+    edit s.add(item: x)
+  s.len
+
+--- A `PriorityQueue` (IF4), whose priorities are its shape.
+pub priority_first(x: Text, p: Int) -> Option[Text]
+=
+  let edit q: PriorityQueue[Text, Int] = lowest_first()
+  edit q.push(item: x, priority: p)
+  edit q.pop()
+
+--- A `BitSet` (IF2), whose size is its shape.
+pub bit_set_has(i: Int) -> Bool
+=
+  let b: BitSet = empty_bit_set(size: 64)
+  b.has(item: i)
+
+--- A collection as a parameter only.
+pub set_param(s: Set[Int]) -> Int = 0
+
+--- A collection only in a temporary of a conversion.
+pub converted(xs: List[Int]) -> Int = xs.to_set().len
+
+--- A record with a collection field, and a function that reads only its other field.
+pub kind Ward
+  name: Text
+  patients: HashSet[Text]
+
+pub ward_name(w: Ward) -> Text = w.name
+
+--- A function without a collection that calls one with a collection.
+pub caller() -> Int = stack_depth(["a", "b"])
+
+--- A generic function, and an instance of it at a collection type.
+pub size_of[T](x: T) -> Int = 0
+
+pub generic_at() -> Int
+=
+  let s: Set[Int] = empty_set()
+  size_of(s)

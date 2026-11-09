@@ -169,6 +169,14 @@ def isNull (j : J) : Bool :=
   | .null => true
   | _ => false
 
+/-- The module of ADR 0119's collections (`spec/28 §2`), as `una_core::ir::COLLECTIONS_MODULE`. -/
+def collectionsModule : String := "std.collections"
+
+/-- The kinds of Core's `Prim` that are methods of a collection of ADR 0119 (`spec/13 §8`):
+`Stack` and `Queue` (`seq`), `Set`, `HashMap`, `HashSet`, `PriorityQueue` (`priority`) and
+`BitSet`. F1 does not model them (#983), so the importer refuses each by name. -/
+def collectionPrims : List String := ["seq", "set", "hash_map", "hash_set", "priority", "bit_set"]
+
 /-- `module.name`. -/
 def path (j : J) : M String := do
   pure s!"{← str (← field j "module")}.{← str (← field j "name")}"
@@ -337,6 +345,12 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       pure (.var a (l.dropPlain a))
     | "named" =>
       let q ← path b
+      -- ADR 0119 (#983): a type of `std.collections` is a value whose operations carry the labels
+      -- of IF1 to IF8, and the shape labels of IF2 and IF4, which F1 does not model yet. Its
+      -- declaration is not re-checked, never accepted, whatever its type arguments; a user kind
+      -- of the same name in another module is the document's own and read as before.
+      if (← str (← field b "module")) == collectionsModule then
+        throw s!"F1 restriction (the collection `{q}`, ADR 0119)" -- restriction-check: importer refusal
       -- A kind is a record or a failure's code, never both (#509); a document where one name is
       -- both is not one F1 reads.
       if c.records.contains q && c.codes.contains q then
@@ -527,7 +541,11 @@ mutual
       | "eq", [a, b] => pure (.eq a b)
       | "concat", _ => pure (.prim .concat args)
       | "to_text", [a] => pure (.toText a)
-      | k, _ => throw s!"the primitive `{k}`"
+      -- ADR 0119 (#983): the methods of the collections, refused by name, as their types are.
+      | k, _ =>
+        if collectionPrims.contains k then
+          throw s!"F1 restriction (the collection operation `{k}`, ADR 0119)" -- restriction-check: importer refusal
+        else throw s!"the primitive `{k}`"
     | "call" =>
       if (j.getObjVal? "predicate").toBool then throw "a call that names a predicate too"
       let f ← path (← field j "function")
@@ -566,6 +584,9 @@ mutual
           for m in ms do
             if !c.bound.contains m then throw s!"a call of `{f}`, whose handler of `{m}` no `with` scope installs here"
           pure (.call f targs (args ++ ms.map fun m => .var (markerName m)))
+        else if (← str (← field (← field j "function") "module")) == collectionsModule then
+          -- ADR 0119 (#983): a function of `std.collections` (`empty_set`, `to_queue`, ...).
+          throw s!"F1 restriction (the collection function `{f}`, ADR 0119)" -- restriction-check: importer refusal
         else throw s!"a call of `{f}`"
     | "apply" => pure (.apply (← atom (← field j "callee")) (← atoms (← field j "args")))
     | "op" =>

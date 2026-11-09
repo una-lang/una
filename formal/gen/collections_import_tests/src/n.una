@@ -1,0 +1,7 @@
+module n
+
+--- A user kind named as a collection, in a module that does not import `std.collections`.
+pub kind Queue
+  head: Int
+
+pub head_of(q: Queue) -> Int = q.head
