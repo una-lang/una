@@ -71,7 +71,7 @@ A program that runs until it is told to stop, such as a game loop, a server or a
    skip_stmt = "skip" NEWLINE ;
    ```
 
-   - `stop` and `skip` are words, not keywords: they start these statements only at the start of a statement line, alone or before `when`, and they stay identifiers elsewhere. Before edition `0.4` they are identifiers, so these statements do not parse (U0101).
+   - `stop` and `skip` are words, not keywords: they start these statements only at the start of a statement line, alone or before `when`, and they stay identifiers elsewhere. Before edition `0.4` they are identifiers, so these statements do not exist there: a bare `stop` or `skip` line is a name, an expression like any other (U1001 unless a binding of that name is in scope), and a `when` after the word does not parse (U0101). (Note of 2026-11-09, #1807: this sentence said U0101 for the bare line too; a bare line is a name, as the keyword tables of `spec/01 §5`, where neither word is reserved before edition `0.4`, make it.)
    - `skip` takes no `when` (U0101): an `if` around `skip` says the same.
    - A block that ends in `stop` or `skip` has `unit` as its value.
    - A statement after an unconditional `stop` or `skip` in the same block never runs, and is U2040 at the first such statement, whose repair removes them (ADR 0116, amendment of 2026-10-19). Statements after `stop when c`, and after the block that holds the exit, stay legal.
