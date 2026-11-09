@@ -4552,6 +4552,52 @@ fn under_virtual_time_both_engines_read_the_same_clock_and_never_wait() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A driven module whose `init` fails before any step.
+const STUCK: &str = "module counter
+
+import std.drive (Tick)
+
+pub kind Fault = | Stuck
+
+pub init() -> Int
+  fails Fault
+=
+  fail Stuck
+
+pub step(edit count: Int, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  count = count + 1
+  @console.print(\"step {count}\")
+";
+
+#[test]
+fn a_failing_init_of_a_driven_module_is_named_in_both_engines() {
+    // `spec/26 §2` rule 2, #1809: the failure of `init` is U6001 at the name of `init`, exit
+    // code 1, before any step; the message names `init` of the driven module, not `main`.
+    runtime();
+    let dir = ita_package("counter", DRIVE, &[("src/counter.una", STUCK)]);
+    let message = "[U6001] Error: `init` of the driven module `counter` failed with `Stuck`\n";
+    let run = una(&dir, &["run"]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    assert!(run.stdout.is_empty(), "{run:?}");
+    let run_stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run_stderr.starts_with(message), "{run_stderr}");
+    assert!(!run_stderr.contains("`main`"), "{run_stderr}");
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/counter"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(1), "{native:?}");
+    assert!(native.stdout.is_empty(), "{native:?}");
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert!(stderr.starts_with(message), "{stderr}");
+    assert!(stderr.contains("at src/counter.una:7:5"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_driven_module_without_its_shapes_or_a_bad_stop_count_is_a_usage_error() {
     // ADR 0116 rules 2 and 19: a usage error, exit code 2, in `una run` and `una build`, and

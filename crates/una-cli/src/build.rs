@@ -303,7 +303,15 @@ pub(crate) fn build_command(
         if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
             object.insert(
                 "failure".to_owned(),
-                json!({ "location": main_location, "root": root }),
+                match manifest.drive.as_ref() {
+                    // `spec/26 §2` rule 2: U6001 names `init` of the driven module (#1809).
+                    Some(drive) => json!({
+                        "location": main_location,
+                        "root": root,
+                        "driven": drive.module.value,
+                    }),
+                    None => json!({ "location": main_location, "root": root }),
+                },
             );
         }
         if let (Some(drive), Some(object)) = (&drive, meta.as_object_mut()) {

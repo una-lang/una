@@ -598,6 +598,10 @@ impl Meta {
             Some(failure) => Some(Failure {
                 location: location(failure.get("location")?)?,
                 root: crate::render::index(failure, "root")?,
+                driven: match failure.get("driven") {
+                    Some(module) => Some(module.as_str()?.to_owned()),
+                    None => None,
+                },
             }),
             None => None,
         };
@@ -3462,8 +3466,9 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
     std::process::exit(code);
 }
 
-/// Reports that `main` failed with `failure`, which the caller owns and the report releases:
-/// U6001 with the failure's `public` fields (`spec/04 §8`), after the output so far.
+/// Reports that `main`, or `init` of a driven module, failed with `failure`, which the caller
+/// owns and the report releases: U6001 with the failure's `public` fields (`spec/04 §8`), after
+/// the output so far.
 pub fn main_failed(failure: i64) {
     // The word of a stopped task (`una_codegen` `STOPPED`) is no failure: `main`'s thread ends
     // the run at an abort, and every cut is caught by its own `within`, so `main` never returns
@@ -3499,7 +3504,11 @@ pub fn main_failed(failure: i64) {
         Some(Diagnostic::error(
             Code::U6001,
             format!(
-                "`main` failed with `{}`",
+                "{} failed with `{}`",
+                described.driven.as_ref().map_or_else(
+                    || "`main`".to_owned(),
+                    |module| format!("`init` of the driven module `{module}`")
+                ),
                 state
                     .types
                     .shown(described.root, failure)
