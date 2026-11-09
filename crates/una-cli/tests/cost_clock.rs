@@ -137,13 +137,13 @@ fn work_past_the_deadline_times_out() {
 }
 
 #[test]
-fn plain_virtual_time_does_not_move_with_work() {
+fn without_the_cost_clock_work_takes_no_time() {
     assert_eq!(run(100, &["--virtual-time"]), (100, 0));
     assert_eq!(run(3, &["--virtual-time"]), (3, 0));
 }
 
 #[test]
-fn the_cost_clock_needs_virtual_time() {
+fn the_cost_clock_alone_is_a_usage_error() {
     let dir = package(3);
     let out = una(&dir, &["run", "--cost-clock", "."]);
     let _ = std::fs::remove_dir_all(&dir);
