@@ -2304,6 +2304,17 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             let _ = writeln!(stderr, "error: {message}");
             return USAGE;
         }
+        // One line per address it serves, before `main`, as `una run` writes (`spec/31 §6` rule
+        // 14): the grants before `meta.grants.len()` are the executable's own.
+        for (index, grant) in grants.iter().enumerate() {
+            if let Grant::Serve { grant, .. } = grant {
+                let _ = writeln!(
+                    stderr,
+                    "{}",
+                    una_http::serve::serving_notice(grant, index < meta.grants.len())
+                );
+            }
+        }
         None
     } else {
         Some(listeners)
@@ -2742,7 +2753,7 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
         .collect()
 }
 
-/// The `serve:` grants of the run, before `main` (`spec/31 §2` rule 7), as `una run` prepares
+/// The `serve:` grants of the run, before `main` (`spec/31 §6` rule 14), as `una run` prepares
 /// them: the descriptor limit, the TLS files checked on their open descriptors, and one
 /// listener per grant, held until the run ends.
 fn serve(

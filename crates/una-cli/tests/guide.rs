@@ -1039,8 +1039,9 @@ fn every_example_has_a_readme_whose_commands_run() {
                     (name, edition, manifest.contains("\nserve\n"))
                 }
             };
-        // A package with a `serve` section does not run until `spec/31 §1` rule 10 lifts; its
-        // README shows no `una run`, and `serve_live.rs` runs it in the test build.
+        // A package with a `serve` section serves under `una run` until it is stopped
+        // (`spec/31 §1` rule 10), so its README shows no output of `una run`, and
+        // `serve_live.rs` runs it in both engines.
         assert_eq!(
             runs.len(),
             usize::from(!serves),

@@ -401,8 +401,9 @@ impl<'p> Machine<'p, '_> {
     /// An operation of `HttpServer` on the host's instance.
     pub(super) fn server(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
         if self.run.serve.is_none() {
-            // `una run` refuses a program that serves until its engine is wired (`spec/31 §1`
-            // rule 10), so only a defect reaches here.
+            // A run whose entry functions use `HttpServer` starts its engine before `main`
+            // (`spec/31 §6` rule 14), and the checker requires a `serve:` grant for them
+            // (U3012), so only a defect reaches here; it fails closed.
             return Err(fault(format!(
                 "`HttpServer.{op}` in a run that serves nothing"
             )));

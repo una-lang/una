@@ -278,8 +278,7 @@ fn limits<'a>(
             .map_or(options.max_depth, |settings| settings.task_depth),
         stop,
         kernels: &una_core::dense::variants::Kernels::BASELINE,
-        // No run reaches the engine yet: a program that serves is refused before it starts
-        // (`spec/31 §1` rule 10).
+        // A run that serves sets its engine after this, over its listeners or its script.
         serve: None,
     }
 }
@@ -411,6 +410,8 @@ pub(crate) fn run_command(
             grants.push(grant);
         }
     }
+    // The grants before this index are the package's (`run grants`), the others the flags'.
+    let package_grants = grants.len();
     for spec in options.grants {
         let Some(grant) = Grant::parse(spec, Path::new("")) else {
             writeln!(stderr, "error: {}", una_interp::invalid_grant(spec))?;
@@ -471,8 +472,8 @@ pub(crate) fn run_command(
     // The module the host drives (ADR 0116 rule 3), whose `init` starts the run; or the entry,
     // `[run] entry` or the module of a single file, whose `main` runs.
     // The host-driven form of a server (ADR 0123 rule 16): the module's shapes, then a `serve:`
-    // grant, each a usage error; then the driver, whose operations of `HttpServer` run only in
-    // the toolchain's own test builds (`spec/31 §1` rule 10), fails closed in every other run.
+    // grant, each a usage error; then the driver runs, as a program that serves in the language
+    // form below (`spec/31 §1` rule 10, §7 rule 5).
     if let Some(serve) = &manifest.serve {
         let module = serve.module.value.as_str();
         if let Err(message) = served_module(&analysis, &package.sources, module) {
@@ -484,17 +485,6 @@ pub(crate) fn run_command(
             .any(|spec| spec.starts_with(una_core::http::serve::PREFIX))
         {
             writeln!(stderr, "error: {}", una_interp::unserved_section(module))?;
-            return Ok(ExitStatus::Usage);
-        }
-        // The test builds run the driver when `UNA_TEST_RUN_SERVER` is 1, as a program that
-        // serves in the language form below.
-        #[cfg(feature = "test-hooks")]
-        let runs =
-            crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() == Some("1");
-        #[cfg(not(feature = "test-hooks"))]
-        let runs = false;
-        if !runs {
-            writeln!(stderr, "error: {}", serve_pending(module))?;
             return Ok(ExitStatus::Usage);
         }
         // `within` is U4003 under the preview's `L_srv` (`spec/31 §7` rule 3 item 7), so a
@@ -558,20 +548,9 @@ pub(crate) fn run_command(
     };
     // Whether the program serves: its entry functions use the host's `HttpServer`, or it has a
     // `serve` section, whose driver does, so its serve threads start before `main` (S4
-    // amendment B.2, P8).
-    let pending = server_pending(&analysis, &entry, started);
-    let serves = pending.is_some() || serving;
-    // The toolchain's own test builds run a program that serves when `UNA_TEST_RUN_SERVER` is
-    // 1, for the live runs of `tests/serve_live.rs` and the timing oracles of `L_srv`; every
-    // other run keeps the usage error of `spec/31 §1` rule 10.
-    #[cfg(feature = "test-hooks")]
-    let pending = pending.filter(|_| {
-        crate::variable(options.environment, "UNA_TEST_RUN_SERVER").as_deref() != Some("1")
-    });
-    if let Some(message) = pending {
-        writeln!(stderr, "error: {message}")?;
-        return Ok(ExitStatus::Usage);
-    }
+    // amendment B.2, P8). `una run` runs it (`spec/31 §1` rule 10); `una build` still refuses
+    // it outside the toolchain's own tests.
+    let serves = serving || server_pending(&analysis, &entry, started).is_some();
     let keys = match load_keys(&grants) {
         Ok(keys) => keys,
         Err(message) => {
@@ -586,6 +565,18 @@ pub(crate) fn run_command(
     let served_grants: Vec<una_core::http::serve::ServeGrant> = serve_inputs(&grants)
         .iter()
         .map(|input| input.grant.clone())
+        .collect();
+    // The line of each address a run that serves names on stderr (`spec/31 §6` rule 14).
+    let notices: Vec<String> = grants
+        .iter()
+        .enumerate()
+        .filter_map(|(index, grant)| match grant {
+            Grant::Serve { grant, .. } => Some(una_http::serve::serving_notice(
+                grant,
+                index < package_grants,
+            )),
+            _ => None,
+        })
         .collect();
     let script = match options.serve_script {
         Some(script) => {
@@ -640,7 +631,7 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Errors);
         }
     }
-    // The `serve:` grants, before `main` (`spec/31 §2` rule 7): the descriptor limit, the TLS
+    // The `serve:` grants, before `main` (`spec/31 §6` rule 14): the descriptor limit, the TLS
     // files checked on their open descriptors, and the listeners, held until the run ends.
     // Nothing accepts on them until the serve threads of ADR 0123 step 4 take them over.
     // A `--serve-threads` out of range is refused below; here it only sizes the descriptors.
@@ -704,7 +695,13 @@ pub(crate) fn run_command(
             }
         }
         match una_http::serve::live::Live::start(listeners, &served_grants, serve_threads) {
-            Ok(live) => Some(std::sync::Arc::new(live)),
+            Ok(live) => {
+                // One line per address it serves, before the program runs (`spec/31 §6` rule 14).
+                for notice in &notices {
+                    writeln!(stderr, "{notice}")?;
+                }
+                Some(std::sync::Arc::new(live))
+            }
             Err(message) => {
                 writeln!(stderr, "error: {message}")?;
                 return Ok(ExitStatus::Usage);
@@ -1087,10 +1084,10 @@ pub(crate) fn entry_main<'a>(
     .then_some(main)
 }
 
-/// The usage error of a run whose entry functions use the host's `HttpServer` (`spec/31 §1`):
-/// the capability is checked from ADR 0123's first slice of it, and its operations run in
-/// neither engine until the slice that lands them, so such a run fails closed before anything
-/// starts, in `una run` and `una build` alike. `None` when the run serves nothing.
+/// The usage error of a build whose entry functions use the host's `HttpServer` (`spec/31 §1`
+/// rule 10): `una run` runs such a program, and `una build` of one still fails closed before
+/// anything is made, outside the toolchain's own test builds. `None` when it serves nothing;
+/// `una run` uses it to tell whether its program serves.
 pub(crate) fn server_pending(analysis: &Analysis, module: &str, names: &[&str]) -> Option<String> {
     let header = analysis.headers.iter().find(|header| {
         header.module == module
@@ -1101,7 +1098,7 @@ pub(crate) fn server_pending(analysis: &Analysis, module: &str, names: &[&str]) 
                 .any(|need| need.host && need.capability == "HttpServer")
     })?;
     Some(format!(
-        "`{}.{}` uses `HttpServer`, whose operations do not run in this release yet: the checks of a server are in place, and its runtime lands with a later slice of ADR 0123 (`spec/31 §1`)",
+        "`{}.{}` uses `HttpServer`: `una run` serves it, but `una build` does not build a program that serves in this release yet: it lands with a later slice of ADR 0123 (`spec/31 §1` rule 10)",
         header.module, header.name
     ))
 }
@@ -1301,13 +1298,12 @@ pub(crate) fn served_module(
     Ok(())
 }
 
-/// The usage error of a run or a build of a package with a `serve` section: the driver of ADR
-/// 0123 rule 16 runs the operations of `HttpServer`, which run only in the toolchain's own test
-/// builds (`spec/31 §1` rule 10), in both engines.
-/// Fails closed before anything starts, as [`server_pending`] does.
+/// The usage error of a build of a package with a `serve` section: `una run` runs the driver of
+/// ADR 0123 rule 16, and `una build` still fails closed before anything is made, outside the
+/// toolchain's own test builds (`spec/31 §1` rule 10, §7 rule 5), as [`server_pending`] does.
 pub(crate) fn serve_pending(module: &str) -> String {
     format!(
-        "the `serve` section's module `{module}` is checked, but the host's driver that calls its `handle` for each request does not run in this release yet: it lands with a later slice of ADR 0123 (`spec/31 §7`)"
+        "the `serve` section's module `{module}` is checked, and `una run` runs the host's driver that calls its `handle` for each request, but `una build` does not build the driver in this release yet: it lands with a later slice of ADR 0123 (`spec/31 §7`)"
     )
 }
 
@@ -1932,8 +1928,8 @@ impl<'a> ExampleDoc<'a> {
 
 /// The scripted engine behind `--serve-script` (ADR 0123 rule 21, `spec/31 §8` rule 6): the
 /// connections of a checked script in place of listeners, and `--serve-out`. It runs only in
-/// the toolchain's own test builds, when `UNA_TEST_RUN_SERVER` is 1 as for the other runs that
-/// serve there (`spec/31 §1` rule 10); every other run reports the script as not run yet.
+/// the toolchain's own test builds, when `UNA_TEST_RUN_SERVER` is 1 (`spec/31 §8` rule 6); every
+/// other run reports the script as not run yet, while `una run` serves live peers (§1 rule 10).
 ///
 /// It belongs to the run of `una run`, beside the live serve engine this file starts, and opens
 /// no connection: the script stands for the peers.

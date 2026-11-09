@@ -53,22 +53,40 @@ fn copy(source: &Path, scratch: &Path) -> PathBuf {
 /// (`tests/native/rejected.txt`, #1045): a rejected case drops out of the comparison, so one
 /// that is not listed is a failure, and so is a listed one that runs. The list must be exact.
 fn rejected() -> BTreeMap<String, String> {
-    let list = root().join("tests/native/rejected.txt");
-    std::fs::read_to_string(list)
+    reasons("tests/native/rejected.txt")
+}
+
+/// The runnable programs that serve, by repository path with a reason
+/// (`tests/native/served.txt`, `spec/31 §1` rule 10): `una run` of one answers requests until a
+/// host stop and never runs to completion, so neither differential runs it, and
+/// `tests/serve_live.rs` runs it in both engines instead. The list must be exact: every program
+/// with a `serve` section is listed ([`the_native_lists_name_runnable_programs_only`]).
+fn served() -> BTreeMap<String, String> {
+    reasons("tests/native/served.txt")
+}
+
+/// The entries of the list at `list`, relative to the repository root: a path, a colon and a
+/// reason per line, `#` lines and empty lines skipped.
+fn reasons(list: &str) -> BTreeMap<String, String> {
+    std::fs::read_to_string(root().join(list))
         .unwrap_or_default()
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| {
             let parts = line.split_once(':');
-            assert!(
-                parts.is_some(),
-                "tests/native/rejected.txt: `{line}` has no `: reason`"
-            );
+            assert!(parts.is_some(), "{list}: `{line}` has no `: reason`");
             let (name, reason) = parts.unwrap();
             (name.trim().to_owned(), reason.trim().to_owned())
         })
         .collect()
+}
+
+/// Whether the program at `name`, relative to the repository root, is a package whose
+/// `ita.una` has a `serve` section (`spec/31 §7`).
+fn has_serve_section(name: &str) -> bool {
+    std::fs::read_to_string(root().join(name).join("ita.una"))
+        .is_ok_and(|manifest| manifest.contains("\nserve\n"))
 }
 
 /// The programs listed as not compiled yet, by repository path.
@@ -121,6 +139,14 @@ fn program_copy(name: &str, dir: &Path) -> (PathBuf, String) {
 /// One runnable program runs natively as in the interpreter: `test` is its generated test's
 /// name, `name` its path relative to the repository root, and `grants` the grants it runs with.
 fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) {
+    // A program that serves runs until a host stop: `serve_live.rs` runs it in both engines.
+    if served().contains_key(name) {
+        assert!(
+            has_serve_section(name),
+            "{name}: listed in tests/native/served.txt, but it has no `serve` section"
+        );
+        return;
+    }
     runtime();
     let listed = unsupported();
     let rejected_list = rejected();
@@ -278,6 +304,11 @@ fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) 
 /// guarded before #1652 ([`the_linkers_compare_more_than_a_hundred_programs`]).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn runs_alike_linked_by_una_link_and_by_cc(test: &str, name: &str, grants: &[&str]) {
+    // A program that serves runs until a host stop, and `una build` of one is still a usage
+    // error (`spec/31 §1` rule 10): `serve_live.rs` runs it.
+    if served().contains_key(name) {
+        return;
+    }
     runtime();
     let scratch = scratch("linkers", test);
     // A copied single file keeps edition 0.1 whatever lies above the temporary directory
@@ -416,9 +447,10 @@ fn the_generated_programs_are_the_runnable_programs_on_disk() {
     pretty_assertions::assert_eq!(generated(), on_disk);
 }
 
-/// Every program that `tests/native/unsupported.txt` or `tests/native/rejected.txt` lists is a
-/// runnable program; whether each listed one is still not compiled or still rejected is its own
-/// test's.
+/// Every program that `tests/native/unsupported.txt`, `tests/native/rejected.txt` or
+/// `tests/native/served.txt` lists is a runnable program, and `served.txt` lists exactly the
+/// programs with a `serve` section; whether each listed one is still not compiled or still
+/// rejected is its own test's.
 #[test]
 fn the_native_lists_name_runnable_programs_only() {
     let names: BTreeSet<String> = generated()
@@ -440,6 +472,28 @@ fn the_native_lists_name_runnable_programs_only() {
             ));
         }
     }
+    // The programs that serve are exactly those with a `serve` section: one not listed would
+    // run until the test's own timeout.
+    let served = served();
+    for name in served.keys() {
+        if !names.contains(name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/served.txt, but not a runnable program"
+            ));
+        }
+        if rejected().contains_key(name) || unsupported().contains(name) {
+            failures.push(format!(
+                "{name}: listed in tests/native/served.txt and in another native list"
+            ));
+        }
+    }
+    for name in names.iter().filter(|name| has_serve_section(name)) {
+        if !served.contains_key(name) {
+            failures.push(format!(
+                "{name}: it has a `serve` section, so `una run` serves it until stopped, and tests/native/served.txt does not list it"
+            ));
+        }
+    }
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
@@ -450,9 +504,14 @@ fn the_native_lists_name_runnable_programs_only() {
 fn the_linkers_compare_more_than_a_hundred_programs() {
     let listed = unsupported();
     let rejected = rejected();
+    let served = served();
     let compared = generated()
         .into_iter()
-        .filter(|program| !listed.contains(&program.path) && !rejected.contains_key(&program.path))
+        .filter(|program| {
+            !listed.contains(&program.path)
+                && !rejected.contains_key(&program.path)
+                && !served.contains_key(&program.path)
+        })
         .count();
     assert!(compared > 100, "only {compared} programs are compared");
 }

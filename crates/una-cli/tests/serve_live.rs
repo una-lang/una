@@ -5,10 +5,10 @@
 //! stop answers every reply right still held with `503` and `Retry-After: 1`, appending no
 //! `unanswered` event, in the interpreter as in native code.
 //!
-//! `una run` and `una build` of a program that serves are still a usage error (`spec/31 §1`
-//! rule 10); the test build of `una` runs and builds one when `UNA_TEST_RUN_SERVER` or
-//! `UNA_TEST_BUILD_SERVER` is 1, and the executable links the plain runtime, whose live engine
-//! these runs exercise. Each run is bounded, and a run that hangs fails its test.
+//! `una run` runs a program that serves; `una build` of one is still a usage error (`spec/31 §1`
+//! rule 10), and the test build of `una` builds one when `UNA_TEST_BUILD_SERVER` is 1. Both the
+//! interpreter of the plain `una run` and the executable link the plain runtime, whose live
+//! engine these runs exercise. Each run is bounded, and a run that hangs fails its test.
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -209,7 +209,7 @@ fn start(dir: &Path, name: &str, engine: Engine, args: &[&str]) -> Running {
             let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
             command
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-                .env("UNA_TEST_RUN_SERVER", "1")
+                .env_remove("UNA_TEST_RUN_SERVER")
                 .args(["run", "."]);
             command
         }
@@ -906,12 +906,11 @@ fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
 fn refused_before_serving(name: &str, program: &str, at: &str) {
     let port = free_port();
     let dir = package(name, port, program, Engine::Interpreter);
-    for (verb, flag) in [
-        ("run", "UNA_TEST_RUN_SERVER"),
-        ("build", "UNA_TEST_BUILD_SERVER"),
-    ] {
+    // `una run` serves without a test flag (`spec/31 §1` rule 10); `una build` needs one.
+    for (verb, flag) in [("run", "UNA_TEST_NONE"), ("build", "UNA_TEST_BUILD_SERVER")] {
         let out = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_TEST_RUN_SERVER")
             .env(flag, "1")
             .env("NO_COLOR", "1")
             .args([verb, "."])

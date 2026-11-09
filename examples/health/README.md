@@ -31,7 +31,7 @@ test health "a request of another method is not found" ... ok
 3 tests: 3 passed, 0 failed
 ```
 
-The server does not run in this release yet: `una run` and `una build` of a package with a `serve` section are a usage error until the operations of `HttpServer` run (`spec/31 §1` rule 10). The toolchain's own tests run it, over loopback, in both engines.
+`una run .` serves: it listens on `127.0.0.1:8080`, answers each request with the reply of `handle`, and ends with exit code 0 when it is stopped (Ctrl-C or SIGTERM), after the requests in flight are answered (`spec/31 §1` rule 10). `una build` of a package that serves is still a usage error in this release. The toolchain's own tests run it over loopback in both engines.
 
 ## How it works
 

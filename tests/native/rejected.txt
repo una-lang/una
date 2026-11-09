@@ -62,7 +62,6 @@ docs/reviews/v0.2-review/native/adversarial/host: no run document: directory `.`
 docs/reviews/v0.2-review/native/adversarial/integers: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
 docs/reviews/v0.2-review/native/adversarial/memory: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
 docs/reviews/v0.2-review/native/adversarial/tasks: no run document: directory `.` is not a package: it has no `ita.una` or `una.toml`
-examples/health: the `serve` section's driver does not run in this release yet (`spec/31 §1` rule 10); `serve_live.rs` runs it in both engines
 tests/conformance/authority/module_capability_shadows_host.una: U3012 `main` uses `@clock: Clock`, which is not a host capability, so no grant can provide it
 tests/conformance/runtime/startup_grants.una: U3012 `main` uses `now` of `Clock`, which neither `[run] grants` nor a `--grant` flag grants
 tests/conformance/security/print_secret_field: U4003 `@console.print` accepts `public` data, and this argument is `secret`

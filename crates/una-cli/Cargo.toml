@@ -65,6 +65,9 @@ una-test-cases.workspace = true
 # `tests/serve_runs.rs` feed in place of live peers. A dev-dependency never reaches a shipped
 # `una`.
 una-http = { workspace = true, features = ["test-hooks"] }
+# A certificate and key made at test time, for the run that serves an `https` grant and fails
+# closed (`spec/31 §6` rule 10). A dev-dependency never reaches a shipped `una`.
+rcgen.workspace = true
 # The label counters of ADR 0077, for the scaling test of label inference
 # (`tests/gives_scaling.rs`). The counts never reach any output.
 una-core = { workspace = true, features = ["counters"] }
