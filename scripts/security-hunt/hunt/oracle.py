@@ -35,9 +35,21 @@ the comparison sees. In that mode:
 - a program that names `Clock` is set aside: under the cost clock `Clock.now` reads the run's work,
   timing outside the model (`spec/07 §1`);
 - nothing runs natively: executables have no cost clock.
+
+**Servers** (#1011, ADR 0123 S9). With `serve=True`, every run serves the program's script of
+connections (`script.jsonl`, `spec/31 §8` rule 6): `una run --virtual-time --serve-script
+script.jsonl --serve-out ...` with `UNA_TEST_RUN_SERVER=1`, which only a test build of `una`
+serves, and which binds no listener. What the peers received, the lines of `--serve-out`, joins the
+run's document as `serve_out`: `reply` accepts `internal` (ADR 0123 IF2), so an observer at
+`internal` sees the wire, every byte and its instant, and one at `public` does not. The operations
+of `HttpServer` join the table of `accepts` (`SERVER_ACCEPTS`). A program whose policy releases to
+`internal` is compared at `public` only: what it shows its peers is what the policy released.
+Nothing runs natively: the native scripted engine is a runtime test hook. Without `serve`, nothing
+changes: a run document has no `serve_out`, so no view has a wire.
 """
 
 import json
+import os
 import re
 from collections import Counter
 
@@ -56,6 +68,16 @@ VALUES_PER_POSITION = 5
 RUN_LIMITS = ["--max-depth", "2000", "--max-memory", "256"]
 # The clock of the cost-clock mode (`spec/27 §8` rule 6).
 COST_CLOCK = ["--virtual-time", "--cost-clock"]
+# The flags of the server mode: the script of connections in the program's own directory, and
+# `--serve-out`, whose path the run adds (`spec/31 §8` rule 6).
+SERVE_SCRIPT = "script.jsonl"
+SERVE_ENV = {"UNA_TEST_RUN_SERVER": "1"}
+# The `accepts` of the operations of `HttpServer` (`spec/31 §1` rule 2), in the server mode only.
+SERVER_ACCEPTS = {
+    ("HttpServer", "next"): "internal",
+    ("HttpServer", "reply"): "internal",
+    ("HttpServer", "close"): "public",
+}
 # The outcomes of events with no operation that the cost-clock mode leaves out of every view.
 TIMING_OUTCOMES = ("timeout", "cancelled")
 # A program that names it is set aside in the cost-clock mode.
@@ -134,6 +156,17 @@ def releases_to_public(files):
         for to in POLICY_TO.findall(text):
             if not to.strip().startswith(LEVELS_ABOVE_PUBLIC):
                 return True
+    return False
+
+
+def releases_to(files, level):
+    """Whether a policy of the program releases to `level` exactly: its `to` starts with it."""
+    for text in _sources(files):
+        if not re.search(r"^(pub )?policy ", text, re.M):
+            continue
+        if any(to.strip().split("[", 1)[0].split(" ", 1)[0] == level
+               for to in POLICY_TO.findall(text)):
+            return True
     return False
 
 
@@ -252,7 +285,7 @@ def project(doc, observer, table, keep_outcome=False, cost=False):
                     violations.append(f"{key[0]}.{key[1]}({name}) is <redacted:{lvl}> at a sink "
                                       f"{observer} sees")
         trace.append(view)
-    return {
+    view = {
         "status": doc.get("status"),
         "output": doc.get("output"),
         "failure": doc.get("failure"),
@@ -261,6 +294,10 @@ def project(doc, observer, table, keep_outcome=False, cost=False):
         "trace": trace,
         "violations": violations,
     }
+    # The server mode: the peers' wire, which `reply` sends at `internal` (ADR 0123 IF2).
+    if "serve_out" in doc and not above("internal", observer):
+        view["wire"] = doc["serve_out"]
+    return view
 
 
 def observe(run, observers, table, live_level, cost=False):
@@ -407,19 +444,43 @@ def raw(run):
     return (run.timed_out, run.code, doc)
 
 
-def run_twice(una, files, name, root, timeout, observers, table, live_level, cost=False):
+def run_twice(una, files, name, root, timeout, observers, table, live_level, cost=False,
+              serve=False):
     """Runs the variant twice, each run in a fresh directory of its own (its package, home and
     temporary files), and returns its end; an error when the two runs' documents differ. `cost`
-    runs both under the cost clock."""
+    runs both under the cost clock, `serve` over the program's script of connections."""
     return run_twice_kept(una, files, name, root, timeout, observers, table, live_level, None,
-                          cost)[0]
+                          cost, serve)[0]
+
+
+def with_serve_out(run, out):
+    """`run` with the lines of `--serve-out`, the file at `out`, in its document as `serve_out`:
+    a list of the lines' objects, or the text of a file that is not JSON lines, or None when the
+    run wrote none. A run whose output is not a document is left as it is."""
+    try:
+        doc = json.loads(run.stdout)
+    except ValueError:
+        return run
+    if not isinstance(doc, dict):
+        return run
+    wire = None
+    if os.path.isfile(out) and not os.path.islink(out):
+        with open(out, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        try:
+            wire = [json.loads(line) for line in text.splitlines()]
+        except ValueError:
+            wire = text
+    doc["serve_out"] = wire
+    return sandbox.Run(run.code, json.dumps(doc), run.stderr, run.timed_out, run.seconds)
 
 
 def run_twice_kept(una, files, name, root, timeout, observers, table, live_level,
-                   doc_plant=None, cost=False):
+                   doc_plant=None, cost=False, serve=False):
     """`run_twice`, and the first of the two runs, for the native comparison. `doc_plant`, for the
     gate's canary only, rewrites the run's document, given the variant's files. `cost` runs both
-    under the cost clock (`COST_CLOCK`)."""
+    under the cost clock (`COST_CLOCK`); `serve` over the script of connections, with what the
+    peers received in the document (`with_serve_out`)."""
     clock = COST_CLOCK if cost else []
     runs = []
     for k in range(2):
@@ -427,6 +488,15 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
         p = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=files,
                     variant=name)
         pkg = p.write(rundir)
+        if serve:
+            out = os.path.join(rundir, "serve-out.jsonl")
+            r = sandbox.run([una, "--json", "run", ".", *RUN_LIMITS, *clock, "--virtual-time",
+                             "--serve-script", SERVE_SCRIPT, "--serve-out", out,
+                             *native.SOLVER_FLAGS],
+                            cwd=pkg, writable=rundir, timeout=timeout,
+                            env_extra={**native.RUN_ENV, **SERVE_ENV})
+            runs.append(with_serve_out(r, out))
+            continue
         runs.append(sandbox.run([una, "--json", "run", ".", *RUN_LIMITS, *clock,
                                  *native.SOLVER_FLAGS],
                                 cwd=pkg, writable=rundir, timeout=timeout,
@@ -531,7 +601,7 @@ def native_pass(prog, una, root, timeout, result):
 
 
 def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None, doc_plant=None,
-           cost=False):
+           cost=False, serve=False):
     """Runs the oracle on every manifest row with varied literals. `rebuild` turns a row into its
     program (`drivers.rebuild`); `plant`, for the gate's canaries only, rewrites the table of
     `accepts`; `native_plant`, for the native canary only, puts the program in the native sample and
@@ -543,20 +613,27 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
     every event below it is visible with its outcome.
 
     `cost` is the cost-clock mode (the module's docstring): every run under the cost clock, a
-    program that names `Clock` set aside, and no native sample."""
+    program that names `Clock` set aside, and no native sample. `serve` is the server mode: every
+    run over the program's script of connections, the wire in the `internal` view, the operations
+    of `HttpServer` in the table, a program whose policy releases to `internal` compared at
+    `public` only, and no native sample."""
     tally = Counter()
     for row in rows:
         if not row.get("vary"):
             continue
         prog = rebuild(row)
         observers = observers_for(prog.vary)
+        if serve and releases_to(prog.files, "internal"):
+            # What the peers see is what the policy released: only `public` stays to compare.
+            observers = [o for o in observers if o == "public"]
         live_level = literal_level(prog.vary)
         result = {"name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
                   "class": prog.cls, "observers": observers, "variants": [], "finding": False,
                   "error": None, "termination": [], "violations": [], "compared": 0,
                   "live": False,
-                  "native": {"sampled": not cost and (native_plant is not None
-                                                      or native.sampled(prog.name)),
+                  "native": {"sampled": not cost and not serve
+                                        and (native_plant is not None
+                                             or native.sampled(prog.name)),
                              "stratum": False, "compared": 0, "divergences": [], "skipped": [],
                              "not_compiled": None}}
         if not observers:
@@ -595,7 +672,8 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if core is None:
             # A program the checks reject has no complete export: the base run says so.
             base = run_twice(una, prog.files, prog.name + "-base", root, timeout, observers,
-                             {k: {v} for k, v in HOST_ACCEPTS.items()}, live_level, cost)
+                             {k: {v} for k, v in HOST_ACCEPTS.items()}, live_level, cost,
+                             serve)
             if base[0] == "rejected" and not set(base[1]) & set(prog.expect):
                 # Only a closed call or a must-reject program is set aside as rejected, and only
                 # with one of its expected codes: another rejection tests nothing of its rule.
@@ -611,10 +689,13 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             out.write(json.dumps(result, sort_keys=True) + "\n")
             continue
         table = accepts_table(core)
+        if serve:
+            for key, lvl in SERVER_ACCEPTS.items():
+                table.setdefault(key, set()).add(lvl)
         if plant is not None:
             table = plant(table)
         base, base_run = run_twice_kept(una, prog.files, prog.name + "-base", root, timeout,
-                                        observers, table, live_level, doc_plant, cost)
+                                        observers, table, live_level, doc_plant, cost, serve)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
@@ -630,7 +711,8 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
             for j, text in enumerate(values(pos["type"], pos["literal"], prog.files)):
                 files = substitute(prog.files, pos, text)
                 end, end_run = run_twice_kept(una, files, f"{prog.name}-v{i}-{j}", root, timeout,
-                                              observers, table, live_level, doc_plant, cost)
+                                              observers, table, live_level, doc_plant, cost,
+                                              serve)
                 native_check(result, una, files, f"{prog.name}-v{i}-{j}", root, timeout, end,
                              end_run, native_plant(files) if native_plant else None)
                 if end[0] == "rejected":

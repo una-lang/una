@@ -13,7 +13,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hunt import drivers, families, gate, serving  # noqa: E402
+from hunt import drivers, families, gate, oracle, serving  # noqa: E402
 from hunt.families import OPERATORS, SERVER_OPERATORS, servers  # noqa: E402
 from hunt.program import OPEN, derive_seed  # noqa: E402
 from hunt.sandbox import Run  # noqa: E402
@@ -44,7 +44,7 @@ CONTROL = reply(200, b"seen /control", close=True)
 
 class FamilyN(unittest.TestCase):
     def test_family_n_is_apart_from_the_fixed_run(self):
-        self.assertEqual(sorted(SERVER_OPERATORS), ["N1", "N2", "N3", "N4", "N5"])
+        self.assertEqual(sorted(SERVER_OPERATORS), ["N1", "N2", "N3", "N4", "N5", "N6"])
         self.assertFalse(set(SERVER_OPERATORS) & set(OPERATORS))
         self.assertFalse(set(SERVER_OPERATORS) & set(families.TIMING_OPERATORS))
         self.assertFalse(any(families.family_of(op) == "N" for op in OPERATORS))
@@ -76,7 +76,7 @@ class FamilyN(unittest.TestCase):
 
     def test_a_server_package_and_its_script(self):
         for p in serving.programs(count=3):
-            if p.op == "N5":
+            if p.op in ("N5", "N6"):
                 continue
             self.assertEqual(p.cls, OPEN)
             self.assertIn("edition 0.4", p.files["ita.una"])
@@ -198,6 +198,111 @@ class FamilyN5(unittest.TestCase):
         self.assertEqual(self.judge(expect, good), [])
         self.assertTrue(self.judge(expect, good.replace(b"X-Echo: a b", b"X-Echo: ab")))
         self.assertTrue(self.judge(expect, good, ends=()))
+
+
+class FamilyN6(unittest.TestCase):
+    """N6, handlers that read labeled data, for the oracle's server mode."""
+
+    def programs(self, count=5):
+        return [p for p in serving.programs(count=count) if p.op == "N6"]
+
+    def test_every_form_with_its_expected_code(self):
+        seen = {}
+        for p in self.programs():
+            seen[p.variant] = p.expect
+            self.assertEqual(p.expect, [servers.N6_CLOSED[p.variant]]
+                             if p.variant in servers.N6_CLOSED else [], p.name)
+        self.assertEqual(set(seen), set(servers.N6_FORMS))
+
+    def test_one_varied_secret_and_the_oracle_route(self):
+        for p in self.programs():
+            self.assertEqual(p.serve, {"kind": "oracle"})
+            self.assertFalse(serving.judged(p.manifest()))
+            self.assertEqual(len(p.vary), 1, p.name)
+            self.assertEqual((p.vary[0]["type"], p.vary[0]["label"]), ("Int", "secret"))
+            text = p.files[p.vary[0]["file"]]
+            line = text.splitlines()[p.vary[0]["line"] - 1]
+            col = p.vary[0]["col"] - 1
+            self.assertEqual(line[col:col + len(p.vary[0]["literal"])], p.vary[0]["literal"])
+            self.assertNotIn("⟦", text)
+            self.assertNotIn("SECRET", text)
+            self.assertNotIn("LOCAL", text)
+            self.assertIn("script.jsonl", p.files)
+
+    def test_a_released_form_is_compared_at_public_only(self):
+        released = [p for p in self.programs() if p.variant == "released"]
+        self.assertTrue(released)
+        for p in released:
+            self.assertTrue(oracle.releases_to(p.files, "internal"))
+            self.assertFalse(oracle.releases_to_public(p.files))
+            self.assertIn("trusted\n  release", p.files["ita.una"])
+        others = [p for p in self.programs() if p.variant != "released"]
+        self.assertFalse(any(oracle.releases_to(p.files, "internal") for p in others))
+
+
+class OracleServeMode(unittest.TestCase):
+    """The oracle's server mode: the wire in the `internal` view, nothing else changed."""
+
+    TABLE = {**{k: {v} for k, v in oracle.HOST_ACCEPTS.items()},
+             **{k: {v} for k, v in oracle.SERVER_ACCEPTS.items()}}
+
+    def doc(self, wire=None):
+        d = {"schema": "una.run/1", "status": "ok", "output": ["stopped"], "failure": None,
+             "diagnostics": [], "trace": []}
+        if wire is not None:
+            d["serve_out"] = wire
+        return d
+
+    def test_internal_sees_the_wire_and_public_does_not(self):
+        a = self.doc([{"at": 1, "bytes": "QQ==", "connection": 1}])
+        b = self.doc([{"at": 1, "bytes": "Qg==", "connection": 1}])
+        self.assertEqual(oracle.project(a, "public", self.TABLE),
+                         oracle.project(b, "public", self.TABLE))
+        self.assertNotEqual(oracle.project(a, "internal", self.TABLE),
+                            oracle.project(b, "internal", self.TABLE))
+
+    def test_without_the_mode_no_view_has_a_wire(self):
+        for observer in ("public", "internal"):
+            self.assertNotIn("wire", oracle.project(self.doc(), observer, self.TABLE))
+
+    def test_the_server_operations_are_not_in_the_host_table(self):
+        # The fixed run's table is unchanged: the server's operations join it in the mode alone.
+        self.assertFalse(set(oracle.SERVER_ACCEPTS) & set(oracle.HOST_ACCEPTS))
+        self.assertEqual(oracle.SERVER_ACCEPTS[("HttpServer", "close")], "public")
+
+    def test_the_mode_runs_the_script_and_reads_the_wire(self):
+        argvs = []
+        saved = oracle.sandbox.run, oracle.sandbox.fresh_dir
+
+        def run(argv, cwd, writable, timeout, env_extra=None):
+            argvs.append((argv, env_extra))
+            if "--serve-out" in argv:
+                with open(argv[argv.index("--serve-out") + 1], "w", encoding="utf-8") as f:
+                    f.write('{"at":1,"bytes":"QQ==","connection":1}\n')
+            return Run(0, json.dumps(self.doc()), "", False, 0.1)
+        oracle.sandbox.run = run
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                oracle.sandbox.fresh_dir = lambda root, prefix: tempfile.mkdtemp(dir=tmp)
+                end = oracle.run_twice("una", {"ita.una": "x\n"}, "p", tmp, 1,
+                                       ["public", "internal"], self.TABLE, "secret", serve=True)
+                plain = oracle.run_twice("una", {"ita.una": "x\n"}, "p", tmp, 1,
+                                         ["public", "internal"], self.TABLE, "secret")
+        finally:
+            oracle.sandbox.run, oracle.sandbox.fresh_dir = saved
+        self.assertEqual(end[0], "complete")
+        self.assertEqual(end[1]["views"]["internal"]["wire"],
+                         [{"at": 1, "bytes": "QQ==", "connection": 1}])
+        self.assertNotIn("wire", end[1]["views"]["public"])
+        self.assertNotIn("wire", plain[1]["views"]["internal"])
+        served = [a for a, env in argvs if "--serve-script" in a]
+        self.assertEqual(len(served), 2)
+        for a, env in argvs:
+            if "--serve-script" in a:
+                self.assertIn("--virtual-time", a)
+                self.assertEqual(env.get("UNA_TEST_RUN_SERVER"), "1")
+            else:
+                self.assertNotIn("UNA_TEST_RUN_SERVER", env or {})
 
 
 class Judge(unittest.TestCase):

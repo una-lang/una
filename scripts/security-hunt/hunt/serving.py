@@ -21,6 +21,12 @@ run"). It fails closed: `summary.json` says PASS only when there is no finding a
 canaries behave, and every form of every operator ran; a run of fewer than `COUNT` seeds per
 operator, a smoke run, is `INCOMPLETE` at best, never a PASS.
 
+Handlers that read labeled data (N6) go through must-reject, where a closed call that the checks
+accept is a finding, and through the two-run oracle's server mode (`oracle.py`, `serve=True`):
+each varied secret literal replaced by other values, every variant run twice over its script, and
+what an observer below the secret sees must not change, the `internal` observer seeing every byte
+the peers received (`docs/plan/security-hunt-oracle.md` §11).
+
 A finding: what a peer received differs from the expectation (a refusal answered otherwise, a
 request behind a refusal read, a twin refused, a reply with an injected header sent or its
 injection on the wire, an echoed header not sent once as given), a split request read otherwise
@@ -31,12 +37,16 @@ two runs of one program that differ, or a `--serve-out` that is not the format o
 The canaries:
 - `canary-answered`: a well-formed request, judged by its own expectation, must be clean;
 - `canary-planted`: the same run judged against a refusal it did not get must be a finding, so a
-  judge that passes everything fails the run.
+  judge that passes everything fails the run;
+- `canary-wire`: an accepted server whose reply carries a `public` literal that its manifest marks
+  as secret: the oracle must call it a leak at `internal` and only there, so the wire is compared
+  and no other view shows it.
 """
 
 import atexit
 import base64
 import binascii
+import io
 import json
 import os
 import random
@@ -49,6 +59,7 @@ from .families import SERVER_OPERATORS
 from .families import servers
 from .gate import _sharded
 from .program import OPEN, Program, derive_seed, write_manifest
+from .una import Varied
 
 SEED = 1011
 # Programs per operator, before the seeds that reach its remaining forms (`programs`).
@@ -57,6 +68,7 @@ COUNT = 40
 SEARCH = 1000
 EDITION = servers.EDITION
 RUN_TIMEOUT = 30
+CHECK_TIMEOUT = 60
 WORKERS = 4
 SCRIPT = "script.jsonl"
 # The usage error of a `una` whose scripted engine does not serve (`spec/31 §8` rule 6).
@@ -362,6 +374,11 @@ def serve_program(prog, una, root, timeout=RUN_TIMEOUT):
     return row
 
 
+def judged(row):
+    """Whether a manifest row is judged on its wire (N1 to N5), not by the oracle (N6)."""
+    return (row.get("serve") or {}).get("kind") != "oracle"
+
+
 def serve_rows(rows, una, root, out, timeout=RUN_TIMEOUT):
     """`serve_program` over manifest rows, each rebuilt from its seed; one JSON line per row."""
     tally = Counter()
@@ -384,6 +401,38 @@ def canary_program():
                    serve={"kind": "request", **servers.answered("/canary")})
 
 
+def canary_wire():
+    """The oracle's canary: a server whose reply carries a public literal that the manifest marks
+    as secret, so the oracle varies it and the peer's bytes change with it."""
+    v = Varied()
+    lit = v.lit("Int", "secret", "30")
+    answer = ("answer(exchange: internal Exchange) -> Unit\n  uses @server: HttpServer[reply]\n"
+              f"=\n  let n: Int = {lit}\n"
+              '  let reply = Reply(status: 200, headers: [], body: "n {n}")\n'
+              "  @server.reply(to: exchange.right, reply: reply)\n    if error use unit")
+    files = servers.server_files("canary", decls=(answer,))
+    files, vary = v.place(files)
+    files[SCRIPT] = servers.script([(0, "192.0.2.1", [(1, servers.CONTROL)])])
+    return Program(op="canary-wire", rule="the server run's own canary", edition=EDITION, seed=0,
+                   cls=OPEN, files=files, vary=vary, serve={"kind": "oracle"})
+
+
+def oracle_canary(una, root):
+    """The wire canary's row and its errors."""
+    prog = canary_wire()
+    buf = io.StringIO()
+    oracle.oracle([dict(prog.manifest(), digest=prog.digest())], una, root, RUN_TIMEOUT, buf,
+                  lambda row: prog, serve=True)
+    row = json.loads(buf.getvalue())
+    leaks = {o for e in row.get("variants", []) for o in e.get("observers", [])}
+    errors = []
+    if row.get("error") or not row.get("finding") or leaks != {"internal"}:
+        errors.append("canary-wire: the oracle does not see a varied value on the wire at "
+                      f"internal alone (error {row.get('error')!r}, finding {row.get('finding')}, "
+                      f"observers {sorted(leaks)})")
+    return row, errors
+
+
 def canaries(una, root):
     """The canaries' rows and the errors they give: `canary-answered` must be clean, and the same
     wire judged against a refusal (`canary-planted`) must be a finding."""
@@ -403,9 +452,10 @@ def canaries(una, root):
 
 
 def coverage_errors(progs, rows):
-    """A form of an operator that no row ran is an error: the run did not reach it."""
-    forms = {(op, f) for op, fs in servers.FORMS.items() for f in fs}
-    ran = {(r["op"], r["variant"]) for r in rows if not r.get("error")}
+    """A form of an operator judged on its wire that no row ran is an error: the run did not reach
+    it. N6's forms are the oracle's (`run`)."""
+    forms = {(op, f) for op, fs in servers.FORMS.items() for f in fs if op != "N6"}
+    ran = {(r["op"], r.get("variant")) for r in rows if not r.get("error")}
     return [f"servers: the form {f} of {op} did not run" for op, f in sorted(forms - ran)
             if any(p.op == op for p in progs)]
 
@@ -439,16 +489,44 @@ def run(una, out_dir, seed=SEED, count=COUNT, z3=None):
         path = os.path.join(work, f"part{k}")
         os.makedirs(path, exist_ok=True)
         return path
-    tally, serve_out = _sharded(lambda part, buf, k: serve_rows(part, una, shard(k), buf), rows,
-                                WORKERS)
+    wire_rows = [r for r in rows if judged(r)]
+    labeled = [r for r in rows if not judged(r)]
+    tally, serve_out = _sharded(lambda part, buf, k: serve_rows(part, una, shard(k), buf),
+                                wire_rows, WORKERS)
+    reject_tally, reject_rows = _sharded(
+        lambda part, buf, k: drivers.must_reject(part, una, shard(k), CHECK_TIMEOUT, buf), labeled,
+        WORKERS)
+    oracle_tally, oracle_rows = _sharded(
+        lambda part, buf, k: oracle.oracle(part, una, shard(k), RUN_TIMEOUT, buf,
+                                           drivers.rebuild, serve=True), labeled, WORKERS)
+    wire_row, wire_errors = oracle_canary(una, os.path.join(work, "canary-wire"))
+    errors.extend(wire_errors)
+    canary_rows.append(wire_row)
     findings = []
+    for r in reject_rows:
+        if r["verdict"] not in ("accepted", "rejected"):
+            errors.append(f"reject {r['name']}: {r['verdict']} {r.get('detail', '')[:200]}")
+        if r.get("finding"):
+            findings.append(f"reject {r['name']}: a closed call, which a correct checker "
+                            "rejects, is accepted")
+    for r in oracle_rows:
+        if r.get("error"):
+            errors.append(f"oracle {r['name']}: {r['error'][:300]}")
+        if r.get("finding"):
+            findings.append(f"oracle {r['name']}: what an observer below the secret sees differs")
+    # A result names its program `<op>-<edition>-<seed>-<form>` (`Program.name`).
+    accepted_forms = {r["name"].split("-", 3)[3] for r in oracle_rows if r.get("compared", 0) > 0}
+    for form in servers.N6_FORMS:
+        if form not in servers.N6_CLOSED and labeled and form not in accepted_forms:
+            errors.append(f"oracle: the accepted form {form} of N6 compared no program")
     for r in serve_out:
         if r.get("error"):
             errors.append(f"serve {r['name']}: {r['error'][:300]}")
         for f in r.get("findings", []):
             findings.append(f"serve {r['name']}: {f}")
     errors.extend(coverage_errors(progs, serve_out))
-    for name, lines in (("serve.jsonl", serve_out), ("canaries.jsonl", canary_rows)):
+    for name, lines in (("serve.jsonl", serve_out), ("reject.jsonl", reject_rows),
+                        ("oracle.jsonl", oracle_rows), ("canaries.jsonl", canary_rows)):
         with open(os.path.join(root, name), "w", encoding="utf-8") as f:
             for line in lines:
                 f.write(json.dumps(line, sort_keys=True) + "\n")
@@ -461,6 +539,9 @@ def run(una, out_dir, seed=SEED, count=COUNT, z3=None):
         "programs": len(progs),
         "operators": dict(sorted(Counter(p.op for p in progs).items())),
         "serve": dict(sorted(tally.items())),
+        "reject": {"/".join(map(str, k)): n for k, n in sorted(reject_tally.items())},
+        "oracle": dict(sorted(oracle_tally.items())),
+        "compared": sum(r.get("compared", 0) for r in oracle_rows),
         "findings": findings,
         "errors": errors,
         "seconds": round(time.monotonic() - started, 1),

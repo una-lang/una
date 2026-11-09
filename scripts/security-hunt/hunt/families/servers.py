@@ -38,7 +38,7 @@ import json
 from ..itaty import lock_text
 from ..packages import package_files
 from ..program import OPEN, Program, rng_for
-from ..una import header, join_decls
+from ..una import Varied, header, join_decls
 
 MOD = "srv"
 EDITION = "0.4"
@@ -569,6 +569,141 @@ N5_FORMS = ("echoed", "value-crlf", "value-lf", "value-control", "name-forbidden
             "name-not-token", "body-on-no-body")
 
 
+# N6. Handlers that read labeled data, for the two-run oracle over servers (ADR 0123 IF2, IF7,
+# `spec/31 §1` rule 5, `docs/plan/security-hunt-oracle.md` §11). A request task reads a `secret`
+# balance from a capability of the program, `Vault`, whose handler `sealed` returns one varied
+# secret literal, or binds a secret literal itself. Accepted forms keep the reply at `internal`:
+# the balance read and dropped, a local secret computed on and dropped, or the balance released
+# through a policy to `internal` (compared at `public` only, as the policy explains what the
+# peer sees). Closed calls miss the label (U4001 for a secret field of `Reply` or `Header`,
+# U4003 for a reply under a secret program counter): a correct checker rejects them, and one that
+# accepted them would show the secret on the wire, which the oracle's `internal` view holds.
+VAULT = """pub capability Vault
+  op balance(of: Text) -> secret Int
+    accepts internal
+
+handler sealed() for Vault
+  op balance(of) = SECRET"""
+
+RELEASE = """--- Releases a balance to the peer that asked for it.
+trusted module release
+
+pub policy shown
+  from secret Int
+  to internal Text
+  via written
+  purpose "answer an account holder with their balance"
+  owner hunt
+
+written(cents: secret Int) -> secret Text = "{cents}"
+"""
+
+N6_FORMS = ("read-dropped", "local-dropped", "released", "body-shown", "status-chosen",
+            "header-shown", "branch-reply")
+# The closed forms and the code a correct checker rejects each with.
+N6_CLOSED = {"body-shown": "U4001", "status-chosen": "U4001", "header-shown": "U4001",
+             "branch-reply": "U4003"}
+
+N6_MAIN = """--- The language form, with the vault installed around it.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  serve_all() with @vault = sealed()
+  @console.print("stopped")
+
+serve_all() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @vault: Vault[balance]
+  diverges
+=
+  tasks at most 100 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()"""
+
+
+def _n6_answer(form, threshold):
+    """The request task of `form`: its body after reading the balance."""
+    head = ("answer(exchange: internal Exchange) -> Unit\n  uses @server: HttpServer[reply]\n"
+            "  uses @vault: Vault[balance]\n=\n"
+            "  let cents = @vault.balance(of: exchange.request.target)\n")
+    send = ("  let reply = {reply}\n"
+            "  @server.reply(to: exchange.right, reply: reply)\n    if error use unit")
+    ok = 'Reply(status: 200, headers: [], body: "seen {exchange.request.target}")'
+    if form == "read-dropped":
+        return head + send.format(reply=ok)
+    if form == "local-dropped":
+        return (head.replace("  let cents = @vault.balance(of: exchange.request.target)\n",
+                             "  let s: secret Int = LOCAL\n  let k = s * 2 + 1\n")
+                + send.format(reply=ok))
+    if form == "released":
+        return head + send.format(reply="Reply(status: 200, headers: [], body: shown(cents))")
+    if form == "body-shown":
+        return head + send.format(reply='Reply(status: 200, headers: [], body: "{cents}")')
+    if form == "status-chosen":
+        return (head + f"  let status = if cents > {threshold} then 200 else 404\n"
+                + send.format(reply='Reply(status: status, headers: [], body: "seen")'))
+    if form == "header-shown":
+        return (head + '  let headers = [Header(name: "x-balance", value: "{cents}")]\n'
+                + send.format(reply='Reply(status: 200, headers: headers, body: "seen")'))
+    if form == "branch-reply":
+        return (head + f'  let reply = Reply(status: 200, headers: [], body: "seen")\n'
+                f"  if cents > {threshold}\n"
+                "    @server.reply(to: exchange.right, reply: reply)\n      if error use unit\n"
+                "  else\n    unit")
+    raise ValueError(form)
+
+
+def n6(seed, edition):
+    """N6: a request task that reads a secret, for the oracle over servers."""
+    if edition not in EDITIONS:
+        raise ValueError(f"family N runs edition {EDITION} only, not {edition}")
+    rng = rng_for(seed)
+    form = rng.choice(N6_FORMS)
+    threshold = rng.choice([10, 100, 1000])
+    v = Varied()
+    secret = v.lit("Int", "secret", str(rng.choice([7, 150, 4200])))
+    answer = _n6_answer(form, threshold)
+    vault = VAULT
+    if form == "local-dropped":
+        answer = answer.replace("LOCAL", secret)
+        vault = vault.replace("SECRET", "0")
+    else:
+        vault = vault.replace("SECRET", secret)
+    imports = [("std.host", ["Exchange", "HttpServer", "Reply"])]
+    if form == "released":
+        imports.insert(0, ("release", ["shown"]))
+    text = join_decls(header(MOD, imports=imports), vault, answer, N6_MAIN)
+    modules = {MOD: text}
+    sections = {"entry": MOD, "grants": ["console", GRANT]}
+    if form == "released":
+        modules["release"] = RELEASE
+        sections["trusted"] = ["release"]
+    files = package_files("hunt", EDITION, modules, **sections)
+    files["ita.lock"] = lock_text()
+    files, vary = v.place(files)
+    paths = rng.sample(["/a", "/b", "/accounts/1", "/x?y=1"], 2)
+    files["script.jsonl"] = script([
+        (0, "192.0.2.1", [(1, request("GET", paths[0], headers=_heads(rng)))]),
+        (10, "192.0.2.2", [(11, request("GET", paths[1],
+                                        headers=_heads(rng, ("Connection", "close"))))])])
+    expect = [N6_CLOSED[form]] if form in N6_CLOSED else []
+    note = (f"a closed call: a correct checker rejects it ({expect[0]}); one that accepted it "
+            "would show the secret on the wire" if expect else
+            "expected accepted; what a peer receives must not depend on the secret, but for what "
+            "a policy releases")
+    return Program(op="N6", rule="spec/31 §1 rule 5, ADR 0123 IF2", edition=edition, seed=seed,
+                   cls=OPEN, files=files, expect=expect, note=note, variant=form, vary=vary,
+                   serve={"kind": "oracle"})
+
+
 RULES = {"N1": "spec/31 §3 rules 1 and 2", "N2": "spec/31 §3 rules 3 and 6",
          "N3": "spec/31 §3 rules 4 and 8", "N4": "spec/31 §3 rule 5, §4",
          "N5": "spec/31 §5 rule 1"}
@@ -624,7 +759,8 @@ def n5(seed, edition):
                    note=note, variant=f"{form}-{expect['mode']}", serve=dict(expect, kind="reply"))
 
 
-OPERATORS = {**{op: _request_op(op) for op in CASES}, "N5": n5}
+OPERATORS = {**{op: _request_op(op) for op in CASES}, "N5": n5, "N6": n6}
 # The forms of every operator, as `Program.variant` names them: N5's carry the handler's mode.
 FORMS = {**{op: forms for op, (_make, forms) in CASES.items()},
-         "N5": tuple(f"{form}-{mode}" for form in N5_FORMS for mode in ("fallback", "auto"))}
+         "N5": tuple(f"{form}-{mode}" for form in N5_FORMS for mode in ("fallback", "auto")),
+         "N6": N6_FORMS}
