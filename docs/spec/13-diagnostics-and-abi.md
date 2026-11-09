@@ -451,7 +451,11 @@ A TOML syntax error, a missing required key, and a value of the wrong type or ou
 
 `verification.lock` is a TOML document with exactly the keys of `spec/12 §9`: `encoding_version = "una-smt-1"`, `solver = "z3"`, `solver_version` a non-empty string, `logic = "QF_UFLIA"`, `step_budget` an integer of at least 1, and `random_seed` an integer of at least 0. A missing file, a TOML syntax error, a missing or unknown key and a wrong value are U7004; a solver of another version is U5003. A single file uses the default lock, which holds the values of the repository's `verification.lock`.
 
-Project errors do not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
+Project errors do not stop checking: the modules are still checked, with the settings that `una.toml` gives (#930):
+
+- A `una.toml` that is not a TOML document, a TOML syntax error, gives the default settings, in edition `"0.1"` whatever edition it names.
+- Otherwise each table and each key is read on its own. An unknown table, an unknown key, and a value of the wrong type or outside its range, such as an edition that is not one of those above (`"0.4"` and `"0.5"` are read, as above), are U7002 and are not read: that key keeps its default. Every other key is read as written, so a `una.toml` with an unknown key keeps its edition, its labels, its trusted modules, its budget and its `[run]` settings. In an array, each element that is U7002 is left out and the others are read.
+- A setting that is not read is never silently in effect or silently gone: it is always U7002, an error, so the command fails (exit code 1) whatever the modules give.
 
 (v0.4, ADR 0122.) **Edition `0.4` and later.** A package of edition `0.4` describes itself in `ita.una` and is pinned by `ita.lock`, in Una's own lexical syntax, by the closed grammars of `spec/30`; a directory with `ita.una` is a package with that file in place of `una.toml`, and one with both is U7008. Every error that this section makes U7002 for a key of `una.toml` is U7008 at the corresponding line of `ita.una`; every error of `ita.lock` is U7009 where `verification.lock` has U7004. `una fmt ita.una` formats the file, `una fmt` of the package leaves it alone, and `una fix` never edits `ita.una`, `ita.lock` or `itaty.una`.
 

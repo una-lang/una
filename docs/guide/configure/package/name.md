@@ -68,7 +68,7 @@ pub price(cents: Int) -> Int = cents
 Further rules:
 
 - **A package is a directory** with `una.toml` and `src/`. A single file has the default settings and no `una.toml`.
-- **Checking goes on.** A project error does not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
+- **Checking goes on.** A project error does not stop checking: the modules are still checked. A `una.toml` with a TOML syntax error gives the default settings, and so edition `0.1`. Otherwise only the broken parts are left out: an unknown key, or a value of the wrong type, is U7002 and keeps its default, and every other key is read, so a `una.toml` with an unknown key keeps its edition.
 
 ## Diagnostics
 
