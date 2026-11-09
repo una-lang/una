@@ -187,28 +187,9 @@ impl<'p, 'w> Run<'p, 'w> {
 
     /// Records the abort that ends the run, when none is recorded yet.
     pub(crate) fn abort_run(&self, abort: Abort) {
-        let first = {
-            let mut slot = self.abort.borrow_mut();
-            let first = slot.is_none();
-            if first {
-                *slot = Some(abort);
-            }
-            first
-        };
-        if first {
-            self.abandon_all();
-        }
-    }
-
-    /// Abandons every request in flight off the run's thread, once the run has aborted: no
-    /// task sees its result, since the run ends with the first abort, so the abandon changes no
-    /// outcome; it only lets the run end without waiting for the requests' deadlines (#1730).
-    /// Not a cancellation's interruption, which is #1811's. O(f).
-    pub(crate) fn abandon_all(&self) {
-        if let Some(offload) = &self.offload {
-            for abandon in offload.flights.borrow().values() {
-                abandon.abandon();
-            }
+        let mut slot = self.abort.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(abort);
         }
     }
 
@@ -299,157 +280,56 @@ impl<'p, 'w> Run<'p, 'w> {
     }
 
     /// Puts each task whose request has landed at the back of the queue, in the order they
-    /// landed, and each task whose wait for a socket's place has ended (its deadline, a
-    /// cancellation, a host stop). O(1) when none has landed and no task waits for a place;
-    /// otherwise O(landed · log f) for the f requests in flight, and O(w) for the w waits for a
-    /// place still pending: a wait leaves the line when it ends, so w is at most one per live
-    /// task.
+    /// landed. O(1) when none has; O(landed · log f) otherwise, for the f requests in flight.
     pub(crate) fn land(&self) {
-        let Some(offload) = &self.offload else {
-            return;
-        };
-        if offload.landed.rung() {
-            self.wake_landed(offload, offload.landed.take(None));
-        }
-        if !offload.line.borrow().is_empty() {
-            self.expire(offload);
+        if let Some(offload) = &self.offload
+            && offload.landed.rung()
+        {
+            self.wake_landed(offload, offload.landed.take(false));
         }
     }
 
-    /// Whether a task must run that no task has been woken for yet: a request has landed, or a
-    /// wait for a place has ended. A wait for the engine ends for it, so that the task runs.
+    /// Whether a request has landed that no task has been woken for yet: a wait for the engine
+    /// ends for it, so that the task runs.
     pub(crate) fn landed(&self) -> bool {
-        self.offload.as_ref().is_some_and(|offload| {
-            offload.landed.rung()
-                || offload
-                    .line
-                    .borrow()
-                    .iter()
-                    .any(|wait| self.place_ended(wait).is_some())
-        })
+        self.offload
+            .as_ref()
+            .is_some_and(|offload| offload.landed.rung())
     }
 
-    /// A place for the socket of task `id`'s request (`spec/27 §2` rule 3): at once when one is
-    /// free and no task waits for one; otherwise the task parks in the line, first come, first
-    /// served, until a request that lands gives it one, or its wait ends: its deadline
-    /// `wait.until` ([`Place::TimedOut`]), a cancellation of its task or, in the body of a
-    /// `for ever`, a host stop ([`Place::Interrupted`]). A place granted is checked again when the
-    /// task runs, so a task cancelled or stopped between the grant and its turn gives the place
-    /// back and sends nothing. The deadline is looked at first, so a `within`'s cut, which comes
-    /// only once its deadline has passed, ends the wait `TimedOut` whichever task saw the deadline
-    /// first (`spec/27 §2` rule 4). O(1) beside the wait.
-    pub(crate) fn take_place(&self, offload: &Offload, wait: PlaceWait) -> Place {
-        let wait = Rc::new(wait);
-        if offload.free.get() > 0 && offload.line.borrow().is_empty() {
-            offload.free.set(offload.free.get() - 1);
-        } else {
-            offload.line.borrow_mut().push_back(Rc::clone(&wait));
-            loop {
-                match wait.state.get() {
-                    Place::Waiting => {
-                        if !self.park() {
-                            // Only a defect reaches here: the caller checked `offloads`.
-                            wait.state.set(Place::Interrupted);
-                            offload.line.borrow_mut().retain(|w| !Rc::ptr_eq(w, &wait));
-                        }
-                    }
-                    Place::Granted => break,
-                    place => return place,
-                }
-            }
+    /// Takes a place for a request's socket (`spec/27 §2` rule 3) when one is free: `false`,
+    /// with nothing taken, when every place is held, and the request then runs on the run's
+    /// thread. O(1).
+    pub(crate) fn take_place(&self, offload: &Offload) -> bool {
+        let free = offload.free.get();
+        if free == 0 {
+            return false;
         }
-        match self.place_ended(&wait) {
-            Some(place) => {
-                self.give_place(offload);
-                place
-            }
-            None => Place::Granted,
-        }
+        offload.free.set(free - 1);
+        true
     }
 
-    /// Gives back a place: the first task in the line, which still waits, gets it and is ready.
-    /// O(1): every wait in the line is pending.
+    /// Gives back a place. O(1).
     pub(crate) fn give_place(&self, offload: &Offload) {
-        let next = {
-            let mut line = offload.line.borrow_mut();
-            loop {
-                match line.pop_front() {
-                    Some(wait) if wait.state.get() == Place::Waiting => {
-                        wait.state.set(Place::Granted);
-                        break Some(wait.id);
-                    }
-                    Some(_) => {}
-                    None => break None,
-                }
-            }
-        };
-        match next {
-            Some(id) => self.sched.borrow_mut().wake(id),
-            None => offload.free.set(offload.free.get() + 1),
-        }
+        offload.free.set(offload.free.get() + 1);
     }
 
     /// The request of task `id` returned without the driver having woken the task for it: the
     /// task did not park after its helper rang, as when the helper returned at once. Its ring is
-    /// taken back and its place given back, so no later wake reaches the task (#1730).
+    /// taken back and its place given back, so no later wake reaches the task.
     pub(crate) fn settle(&self, offload: &Offload, id: usize) {
         let flight = offload.flights.borrow_mut().remove(&id);
-        if flight.is_some() {
+        if flight {
             offload.landed.forget(id);
             self.give_place(offload);
         }
-    }
-
-    /// Wakes each waiter for a place whose wait has ended, its deadline, a cancellation of its
-    /// task or a host stop, and takes it out of the line, so the line holds only the waits still
-    /// pending. O(w) for the w waits pending.
-    fn expire(&self, offload: &Offload) {
-        let mut woken = Vec::new();
-        offload
-            .line
-            .borrow_mut()
-            .retain(|wait| match (wait.state.get(), self.place_ended(wait)) {
-                (Place::Waiting, Some(place)) => {
-                    wait.state.set(place);
-                    woken.push(wait.id);
-                    false
-                }
-                (Place::Waiting, None) => true,
-                _ => false,
-            });
-        let mut sched = self.sched.borrow_mut();
-        for id in woken {
-            sched.wake(id);
-        }
-    }
-
-    /// How the wait `wait` has ended, if it has: its deadline first, on the run's clock for a
-    /// covering deadline, then a cancellation of its task or a host stop.
-    fn place_ended(&self, wait: &PlaceWait) -> Option<Place> {
-        let covered = wait.cover.is_some_and(|at| self.clock.now() >= at);
-        wait.ended(covered)
-    }
-
-    /// The earliest deadline of a task waiting for a place, and whether one of them watches a
-    /// host stop: what the driver's wait for a landing may not outlast.
-    fn line_until(&self, offload: &Offload) -> Option<std::time::Instant> {
-        let line = offload.line.borrow();
-        let waiting = line.iter();
-        let until = waiting.clone().map(|wait| wait.until).min()?;
-        // A host stop is read at least every 100 ms, as a request's own wait reads it.
-        let slice = std::time::Instant::now() + std::time::Duration::from_millis(100);
-        Some(if waiting.into_iter().any(|wait| wait.stop.is_some()) {
-            until.min(slice)
-        } else {
-            until
-        })
     }
 
     /// Wakes each task whose request has landed in `ids`, once, and gives its place back.
     fn wake_landed(&self, offload: &Offload, ids: Vec<usize>) {
         for id in ids {
             let flight = offload.flights.borrow_mut().remove(&id);
-            if flight.is_some() {
+            if flight {
                 self.sched.borrow_mut().wake(id);
                 self.give_place(offload);
             }
@@ -461,17 +341,15 @@ impl<'p, 'w> Run<'p, 'w> {
 /// the helper thread that makes the request rings [`Landed`] when it returns. Each request holds
 /// a place for its socket from before its helper starts until it has landed, out of the places
 /// of `spec/27 §2` rule 3, which native code counts with the same rule
-/// ([`una_http::serve::request_places`]).
+/// ([`una_http::serve::request_places`]); a request that finds no place free runs on the run's
+/// thread instead.
 pub(crate) struct Offload {
     /// The tasks whose request has landed, rung from the helpers.
     pub(crate) landed: Arc<Landed>,
     /// The requests in flight, by the id of the task parked on each.
-    /// The requests in flight, by the id of the task parked on each, with the abandon that only
-    /// an abort of the run raises ([`Run::abandon_all`]).
-    pub(crate) flights: RefCell<BTreeMap<usize, una_http::limit::Abandon>>,
-    /// The places free, and the tasks waiting for one, first come, first served.
+    pub(crate) flights: RefCell<BTreeSet<usize>>,
+    /// The places free.
     free: Cell<usize>,
-    line: RefCell<VecDeque<Rc<PlaceWait>>>,
 }
 
 impl Offload {
@@ -479,53 +357,8 @@ impl Offload {
     pub(crate) fn new(places: usize) -> Offload {
         Offload {
             landed: Arc::default(),
-            flights: RefCell::new(BTreeMap::new()),
+            flights: RefCell::new(BTreeSet::new()),
             free: Cell::new(places.max(1)),
-            line: RefCell::new(VecDeque::new()),
-        }
-    }
-}
-
-/// How a task's wait for a place has ended, or that it still waits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Place {
-    Waiting,
-    Granted,
-    /// Its deadline passed: the request fails with `TimedOut`, never sent.
-    TimedOut,
-    /// A cancellation of its task, or a host stop in the body of a `for ever`, before its
-    /// deadline: `Interrupted`, never sent.
-    Interrupted,
-}
-
-/// A task waiting for a place for its request's socket.
-pub(crate) struct PlaceWait {
-    pub(crate) id: usize,
-    /// The request's deadline: `--http-timeout` and the deadlines that cover it.
-    pub(crate) until: std::time::Instant,
-    /// The covering deadline on the run's clock, in its milliseconds, if any: the very instant
-    /// a `within`'s cut is seen at, so a cut never finds the wait still before its deadline
-    /// (`spec/27 §2` rule 4).
-    pub(crate) cover: Option<u64>,
-    /// The `tasks` statements whose cancellation ends the wait.
-    pub(crate) cancels: Vec<Rc<TasksScope>>,
-    /// The host stop that ends the wait, in the body of a `for ever` (ADR 0116 rule 12).
-    pub(crate) stop: Option<Arc<crate::stopping::RunStop>>,
-    pub(crate) state: Rc<Cell<Place>>,
-}
-
-impl PlaceWait {
-    /// How the wait has ended, if it has, `covered` when the run's clock has reached its
-    /// covering deadline: its deadline first, then a cancellation of its task or a host stop.
-    fn ended(&self, covered: bool) -> Option<Place> {
-        if covered || self.until <= std::time::Instant::now() {
-            Some(Place::TimedOut)
-        } else if self.stop.as_ref().is_some_and(|stop| stop.stopped())
-            || self.cancels.iter().any(|scope| scope.cancelled.get())
-        {
-            Some(Place::Interrupted)
-        } else {
-            None
         }
     }
 }
@@ -565,26 +398,11 @@ impl Landed {
         self.rung.store(!ids.is_empty(), Ordering::SeqCst);
     }
 
-    /// Takes the tasks rung so far; with `wait`, first waits until one is, or until the instant
-    /// it names passes, `None` inside it meaning no time limit.
-    fn take(&self, wait: Option<Option<std::time::Instant>>) -> Vec<usize> {
+    /// Takes the tasks rung so far; with `wait`, first waits until one is.
+    fn take(&self, wait: bool) -> Vec<usize> {
         let mut ids = self.lock();
-        if let Some(until) = wait {
-            while ids.is_empty() {
-                match until {
-                    None => ids = self.ready.wait(ids).unwrap_or_else(PoisonError::into_inner),
-                    Some(until) => {
-                        let left = until.saturating_duration_since(std::time::Instant::now());
-                        if left.is_zero() {
-                            break;
-                        }
-                        ids = match self.ready.wait_timeout(ids, left) {
-                            Ok((ids, _)) => ids,
-                            Err(poisoned) => poisoned.into_inner().0,
-                        };
-                    }
-                }
-            }
+        while wait && ids.is_empty() {
+            ids = self.ready.wait(ids).unwrap_or_else(PoisonError::into_inner);
         }
         self.rung.store(false, Ordering::SeqCst);
         std::mem::take(&mut *ids)
@@ -747,9 +565,7 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
             if let Some(offload) = &run.offload
                 && !offload.flights.borrow().is_empty()
             {
-                let until = run.line_until(offload);
-                run.wake_landed(offload, offload.landed.take(Some(until)));
-                run.expire(offload);
+                run.wake_landed(offload, offload.landed.take(true));
                 continue;
             }
             break;
@@ -821,8 +637,6 @@ fn clear(run: &Run<'_, '_>) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
     /// A span for the `start`s of the tests.
@@ -1041,22 +855,28 @@ mod tests {
     }
 
     #[test]
+    fn a_request_takes_a_place_only_while_one_is_free() {
+        // `spec/27 §2` rule 3: with two places, two requests take one each and a third finds
+        // none, so it runs on the run's thread; a place given back is taken again.
+        let mut world = crate::host::NoWorld;
+        let run = offloading(&mut world, 2);
+        let Some(offload) = &run.offload else { return };
+        assert!(run.take_place(offload) && run.take_place(offload));
+        assert!(!run.take_place(offload));
+        run.give_place(offload);
+        assert!(run.take_place(offload));
+        assert!(!run.take_place(offload));
+    }
+
+    #[test]
     fn a_ring_its_task_saw_itself_reaches_no_later_wake() {
-        // L0 of the review of #1810: a helper that returned before its task parked rang with no
-        // park after it; `settle` takes the ring back and gives the place back, so a later
-        // `land` wakes nothing.
+        // A helper that returned before its task parked rang with no park after it; `settle`
+        // takes the ring back and gives the place back, so a later `land` wakes nothing.
         let mut world = crate::host::NoWorld;
         let run = offloading(&mut world, 1);
         let Some(offload) = &run.offload else { return };
-        let scope = Rc::new(TasksScope::new(vec!["s1".to_owned()], 2));
-        assert_eq!(
-            run.take_place(offload, wait(0, &scope, Duration::from_secs(5))),
-            Place::Granted
-        );
-        offload
-            .flights
-            .borrow_mut()
-            .insert(0, una_http::limit::Abandon::new());
+        assert!(run.take_place(offload));
+        offload.flights.borrow_mut().insert(0);
         let done = AtomicBool::new(false);
         offload.landed.ring(0, &done);
         run.settle(offload, 0);
@@ -1064,196 +884,5 @@ mod tests {
         assert_eq!(offload.free.get(), 1);
         run.land();
         assert!(run.sched.borrow().queue.is_empty());
-    }
-
-    /// A wait for a place of task `id` under `scope`, with `left` before its deadline.
-    fn wait(id: usize, scope: &Rc<TasksScope>, left: Duration) -> PlaceWait {
-        PlaceWait {
-            id,
-            until: std::time::Instant::now() + left,
-            cover: None,
-            cancels: vec![Rc::clone(scope)],
-            stop: None,
-            state: Rc::new(Cell::new(Place::Waiting)),
-        }
-    }
-
-    #[test]
-    fn places_go_first_come_first_served_and_a_wait_ends_by_cancellation_or_deadline() {
-        // `spec/27 §2` rule 3: with one place, held by the root, three tasks wait in turn. The
-        // second one's deadline passes, a cancellation of the first one's statement ends its
-        // wait `Interrupted`, and the place the root gives back goes to the third, the first
-        // that still waits.
-        let log: RefCell<Vec<(usize, Place)>> = RefCell::new(Vec::new());
-        let mut world = crate::host::NoWorld;
-        let run = Rc::new(offloading(&mut world, 1));
-        let cancelled = Rc::new(TasksScope::new(vec!["s1".to_owned()], 4));
-        let other = Rc::new(TasksScope::new(vec!["s2".to_owned()], 4));
-        rooted(&run, || {
-            let Some(offload) = &run.offload else { return };
-            let root = wait(0, &other, Duration::from_secs(60));
-            assert_eq!(run.take_place(offload, root), Place::Granted);
-            for (scope, left) in [
-                (&cancelled, Duration::from_secs(60)),
-                (&other, Duration::ZERO),
-                (&other, Duration::from_secs(60)),
-            ] {
-                let (task, log, scope) = (Rc::clone(&run), &log, Rc::clone(scope));
-                let id = run.sched.borrow().upcoming();
-                run.sched.borrow_mut().start(
-                    Box::new(move || {
-                        if let Some(offload) = &task.offload {
-                            let place = task.take_place(offload, wait(id, &scope, left));
-                            log.borrow_mut().push((id, place));
-                        }
-                    }),
-                    64 * 1024,
-                    span(),
-                );
-            }
-            // The three tasks join the line, the second one past its deadline already: the
-            // driver's next look wakes it, before the root runs again.
-            assert!(run.yield_turn());
-            cancelled.cancelled.set(true);
-            // The next look of the run sees the cancellation.
-            run.land();
-            run.give_place(offload);
-            assert!(run.yield_turn());
-        });
-        assert_eq!(
-            log.borrow().as_slice(),
-            [
-                (2, Place::TimedOut),
-                (1, Place::Interrupted),
-                (3, Place::Granted)
-            ]
-        );
-    }
-
-    #[test]
-    fn a_task_cancelled_after_its_grant_gives_the_place_back_and_sends_nothing() {
-        // M-A of round 2 of the review of #1810: a task granted a place and cancelled before its
-        // turn gives the place back and ends `Interrupted`, and the next waiter gets the place.
-        let log: RefCell<Vec<(usize, Place)>> = RefCell::new(Vec::new());
-        let mut world = crate::host::NoWorld;
-        let run = Rc::new(offloading(&mut world, 1));
-        let cancelled = Rc::new(TasksScope::new(vec!["s1".to_owned()], 4));
-        let other = Rc::new(TasksScope::new(vec!["s2".to_owned()], 4));
-        rooted(&run, || {
-            let Some(offload) = &run.offload else { return };
-            let root = wait(0, &other, Duration::from_secs(60));
-            assert_eq!(run.take_place(offload, root), Place::Granted);
-            for scope in [&cancelled, &other] {
-                let (task, log, scope) = (Rc::clone(&run), &log, Rc::clone(scope));
-                let id = run.sched.borrow().upcoming();
-                run.sched.borrow_mut().start(
-                    Box::new(move || {
-                        if let Some(offload) = &task.offload {
-                            let place =
-                                task.take_place(offload, wait(id, &scope, Duration::from_secs(60)));
-                            log.borrow_mut().push((id, place));
-                            if place == Place::Granted {
-                                task.give_place(offload);
-                            }
-                        }
-                    }),
-                    64 * 1024,
-                    span(),
-                );
-            }
-            assert!(run.yield_turn());
-            // The first waiter is granted the place, then cancelled before it runs.
-            run.give_place(offload);
-            cancelled.cancelled.set(true);
-            assert!(run.yield_turn());
-        });
-        assert_eq!(
-            log.borrow().as_slice(),
-            [(1, Place::Interrupted), (2, Place::Granted)]
-        );
-        // Every place is back: none leaked by the cancelled grant.
-        assert!(
-            run.offload
-                .as_ref()
-                .is_some_and(|offload| offload.free.get() == 1)
-        );
-    }
-
-    #[test]
-    fn a_cut_seen_at_its_deadline_ends_a_wait_for_a_place_timed_out() {
-        // M1 of the review of #1812: a `within`'s cut is seen once the run's clock reaches the
-        // deadline, in whole milliseconds, which can be before the instant `until` built from
-        // the time left. The wait carries the deadline on the run's clock and looks at it
-        // first, so a cancellation seen at that very millisecond ends it `TimedOut`.
-        let log: RefCell<Vec<Place>> = RefCell::new(Vec::new());
-        let mut world = crate::host::NoWorld;
-        let run = Rc::new(offloading(&mut world, 1));
-        let cut = Rc::new(TasksScope::new(vec!["s1".to_owned()], 4));
-        rooted(&run, || {
-            let Some(offload) = &run.offload else { return };
-            let root = wait(0, &cut, Duration::from_secs(60));
-            assert_eq!(run.take_place(offload, root), Place::Granted);
-            let (task, log, scope) = (Rc::clone(&run), &log, Rc::clone(&cut));
-            let id = run.sched.borrow().upcoming();
-            run.sched.borrow_mut().start(
-                Box::new(move || {
-                    if let Some(offload) = &task.offload {
-                        let mut wait = wait(id, &scope, Duration::from_secs(60));
-                        wait.cover = Some(task.clock.now());
-                        log.borrow_mut().push(task.take_place(offload, wait));
-                    }
-                }),
-                64 * 1024,
-                span(),
-            );
-            assert!(run.yield_turn());
-            cut.cancelled.set(true);
-            run.land();
-            assert!(run.yield_turn());
-            run.give_place(offload);
-        });
-        assert_eq!(log.borrow().as_slice(), [Place::TimedOut]);
-    }
-
-    #[test]
-    fn waits_for_a_place_leave_the_line_when_they_end() {
-        // M2 of the review of #1812: while the one place is held, 200 waits begin and end by
-        // their deadlines; each leaves the line as it ends, so the line holds only the waits
-        // still pending, here none, and every check point's look stays O(pending).
-        let ended: Cell<usize> = Cell::new(0);
-        let mut world = crate::host::NoWorld;
-        let run = Rc::new(offloading(&mut world, 1));
-        let scope = Rc::new(TasksScope::new(vec!["s1".to_owned()], 256));
-        rooted(&run, || {
-            let Some(offload) = &run.offload else { return };
-            let root = wait(0, &scope, Duration::from_secs(60));
-            assert_eq!(run.take_place(offload, root), Place::Granted);
-            for _ in 0..200 {
-                let (task, ended, scope) = (Rc::clone(&run), &ended, Rc::clone(&scope));
-                let id = run.sched.borrow().upcoming();
-                run.sched.borrow_mut().start(
-                    Box::new(move || {
-                        if let Some(offload) = &task.offload {
-                            let place = task.take_place(offload, wait(id, &scope, Duration::ZERO));
-                            assert_eq!(place, Place::TimedOut);
-                            ended.set(ended.get() + 1);
-                        }
-                    }),
-                    64 * 1024,
-                    span(),
-                );
-            }
-            while ended.get() < 200 {
-                assert!(run.yield_turn());
-            }
-            assert!(offload.line.borrow().is_empty());
-            run.give_place(offload);
-        });
-        assert_eq!(ended.get(), 200);
-        assert!(
-            run.offload
-                .as_ref()
-                .is_some_and(|offload| offload.free.get() == 1)
-        );
     }
 }

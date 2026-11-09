@@ -1880,20 +1880,22 @@ fn places_reply(name: &str, env: &[(&str, &str)]) -> (String, Duration) {
     (reply, took)
 }
 
-/// #1730 (review M1): the sockets of the requests a serving run makes off the interpreter's
-/// thread take the places of `spec/27 §2` rule 3, which native code counts with the same rule
+/// #1730: the requests a serving run makes off the interpreter's thread take the places of
+/// `spec/27 §2` rule 3, which native code counts with the same rule
 /// (`una_http::serve::request_places`). With one place (a test hook of the toolchain's builds),
-/// held by a call that waits until `--http-timeout`, a request's call waits for it, parked,
-/// first come, first served, and is made once the place is given back, within its own deadline;
-/// with the places the descriptor limit gives, it is made at once.
+/// held by a call that waits until `--http-timeout`, a request's call finds none free and runs
+/// on the run's thread, as before #1730, and is answered correctly; with the places the
+/// descriptor limit gives, it runs off the thread. Waiting for a place is #1813.
 #[test]
-fn a_request_past_the_socket_places_waits_for_one_in_a_serving_run() {
-    let (reply, took) = places_reply("live_http_places", &[("UNA_TEST_HTTP_PLACES", "1")]);
-    assert!(reply.ends_with("\r\n\r\nbackend 200"), "{reply:?}");
-    assert!(took > Duration::from_millis(1000), "after {took:?}");
-    let (reply, took) = places_reply("live_http_places_free", &[]);
-    assert!(reply.ends_with("\r\n\r\nbackend 200"), "{reply:?}");
-    assert!(took < Duration::from_millis(1000), "after {took:?}");
+fn a_request_past_the_socket_places_runs_on_the_interpreter_thread() {
+    for (name, env) in [
+        ("live_http_places", &[("UNA_TEST_HTTP_PLACES", "1")][..]),
+        ("live_http_places_free", &[][..]),
+    ] {
+        let (reply, took) = places_reply(name, env);
+        assert!(reply.ends_with("\r\n\r\nbackend 200"), "{name}: {reply:?}");
+        assert!(took < Duration::from_secs(2), "{name}: after {took:?}");
+    }
 }
 
 /// A task beside the serving loop of [`ANSWER`] that makes 20 `Http` calls in a row to port
@@ -2149,12 +2151,13 @@ pub main() -> Unit
   @console.print("stopped")
 "#;
 
-/// #1730 (review M3 of #1812): a header value with a control character aborts the run with
-/// U6004 at the operation, before any wait for a socket's place: with the one place held by a
-/// call that waits until `--http-timeout`, the run still aborts at once, as native code does
-/// and as the run's thread did (`spec/24 §1`).
+/// #1730: a header value with a control character aborts the run with U6004 at the operation
+/// (`spec/24 §1`): such a request takes no place, and the check of the run's thread aborts it,
+/// here while the one place is held by a call that waits on a backend that never answers. The
+/// abort does not interrupt that call (#1811): the run ends once it has failed at
+/// `--http-timeout 4`.
 #[test]
-fn a_bad_header_value_aborts_before_any_wait_for_a_place() {
+fn a_bad_header_value_aborts_the_run_with_u6004_in_a_serving_run() {
     let (hung, quick, port) = (hung_backend(), backend(), free_port());
     let grants = format!(
         "    env\n    serve \"http://127.0.0.1:{port}\"\n    http \"http://127.0.0.1:{hung}\" get\n    http \"http://127.0.0.1:{quick}\" get\n"
@@ -2169,7 +2172,7 @@ fn a_bad_header_value_aborts_before_any_wait_for_a_place() {
         &dir,
         "live_http_bad_header",
         engine,
-        &["--http-timeout", "20"],
+        &["--http-timeout", "4"],
         &[
             ("UNA_TEST_HTTP_PLACES", "1"),
             ("UNA_TEST_HEADER", "a\r\nInjected: 1"),
@@ -2180,6 +2183,6 @@ fn a_bad_header_value_aborts_before_any_wait_for_a_place() {
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains("[U6004]"), "{stderr}");
     assert_eq!(output(&lines), ["serving"]);
-    assert!(took < Duration::from_secs(10), "aborted after {took:?}");
+    assert!(took < Duration::from_secs(15), "ended after {took:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
