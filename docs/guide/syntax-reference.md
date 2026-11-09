@@ -1031,6 +1031,7 @@ pub count_large(xs: List[Int], limit: Int) -> Int
 - **Verification.** The refinements of the bindings the loop updates are its invariant: the body is checked once, for any iteration, with those bindings fresh at their declared types, and no fact about their values survives the loop. Inside a range loop, `a <= i < b` (or `<= b`) holds. There is no `invariant` clause.
 - **Failures** inside the body end the loop and the function; the bindings it updated keep their values from before the loop (§5.6).
 - **Labels.** A loop over a list runs under the top label of the list, and a range loop under the labels of its bounds. In such a body, `fail` and calls that can fail are U4002 when that label is not `public`.
+- **Edition `0.4`** adds `stop` and `skip`, which end a loop or an iteration early, `for until c decreases m`, which runs until `c` holds, and `for ever` with `on stop` in a function that says `diverges`, which runs until it is stopped (`spec/26 §3` to `§6`). See [Loops that run until stopped](language/control-flow/for-ever.md).
 
 ### 5.6 Mutable value semantics (edition `0.2`)
 
