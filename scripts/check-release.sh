@@ -372,7 +372,9 @@ serve_health "una run of the packed una" "$una" run .
 serve_health "the executable the packed una built" ./native-exe
 # Every example, built natively with the runtime built into the packed una, prints what `una run` prints and exits
 # with its status (spec/16 §5); each runs in its own directory, where its grants resolve. A package
-# with a `serve` section serves until it is stopped: it is built, and served above.
+# with a `serve` section serves until it is stopped: it is built, and served above. A package with
+# a `drive` section is driven by the host until it is stopped (spec/26 §2): it runs, under `una run`
+# and as the executable, with `--stop-after-iterations 5`, as the tests run it (#1835).
 for example in examples/*/; do
     example=${example%/}
     dir="$tmp/native-$(basename "$example")"
@@ -381,10 +383,15 @@ for example in examples/*/; do
         limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
         continue
     fi
-    expected=$(shown "$dir" 300 "$una" run .) || true
+    if grep -qx drive "$example/ita.una" 2>/dev/null; then
+        set -- --stop-after-iterations 5
+    else
+        set --
+    fi
+    expected=$(shown "$dir" 300 "$una" run . "$@") || true
     timed_out
     limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
-    native=$(shown "$dir" 120 ./native-exe) || true
+    native=$(shown "$dir" 120 ./native-exe "$@") || true
     timed_out
     if [ "$native" != "$expected" ]; then
         echo "error: the natively built $example printed \"$native\"; una run printed \"$expected\"" >&2
