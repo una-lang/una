@@ -18,6 +18,16 @@
 //! task that goes on. Interruptible operations inside `e` wait no longer than the earliest
 //! deadline that covers them. Arming and ending are O(1) (`timer`).
 //!
+//! **Under virtual time** no timer runs: the clock moves only by the run's own waits, a wait for a
+//! refill at a limit among them (`spec/27 §10`), and a wait of any task moves it for every task. So
+//! every check point of a thread under virtual time, a worker's or `una-main`'s
+//! (`runtime::Hot::attention`), the check point that resumes after a yield (`sched::yield_due`) and
+//! the start of each task of a block (`tasks`), compares the clock with the earliest deadline that
+//! covers its task and whose entry is not set yet, own or inherited ([`virtual_check`]), and sets
+//! the entry of each one the clock has reached, as the timer would: `e` is cut at that check point,
+//! as the interpreter cuts it at its own (`spec/27 §5` rule 5, §8 rule 3, #1823). O(1) per check
+//! point while no deadline has passed; O(frames) once at the check point that finds one passed.
+//!
 //! **Nanoseconds** (ADR 0116 amendment of 2026-10-25, P13, #1151). Every deadline here is a
 //! moment in nanoseconds of the run's clock (`Clock::now_nanos`), armed on a reading in
 //! nanoseconds and compared with one: a `within d` or an iteration of `for ever within d` lasts
@@ -90,6 +100,10 @@ pub(crate) struct Inherited {
     within: Option<u128>,
     /// The cancellation entries of those `within`s, to tell a cut from another cancellation.
     flags: Vec<Arc<AtomicUsize>>,
+    /// Under virtual time, the deadline of each entry of `flags`, at the same position, which
+    /// [`virtual_check`] compares with the clock; empty on the real clock, whose timer thread
+    /// sets the entries.
+    ats: Vec<Option<u128>>,
 }
 
 /// A `within` in progress on the task (ADR 0117 rule 5).
@@ -120,6 +134,11 @@ struct Local {
     inherited: Option<u128>,
     /// Their cancellation entries.
     inherited_flags: Vec<Arc<AtomicUsize>>,
+    /// Under virtual time, their deadlines, as `Inherited::ats`; empty on the real clock.
+    inherited_ats: Vec<Option<u128>>,
+    /// Under virtual time, the earliest deadline of the frames and of the inherited entries not
+    /// set yet ([`pending`]); `None` on the real clock and when none passes.
+    due: Option<u128>,
     /// The id of the next frame.
     next: i64,
 }
@@ -213,6 +232,16 @@ pub(crate) fn current() -> Inherited {
     }
     LOCAL.with(|cell| {
         let local = cell.borrow();
+        let ats = if crate::runtime::clock().is_virtual() {
+            local
+                .withins
+                .iter()
+                .map(|frame| frame.at)
+                .chain(local.inherited_ats.iter().copied())
+                .collect()
+        } else {
+            Vec::new()
+        };
         Inherited {
             ever: local.ever.clone(),
             within: earliest(&local),
@@ -222,6 +251,7 @@ pub(crate) fn current() -> Inherited {
                 .map(|frame| Arc::clone(&frame.flag))
                 .chain(local.inherited_flags.iter().cloned())
                 .collect(),
+            ats,
         }
     })
 }
@@ -247,8 +277,76 @@ pub(crate) fn adopt(inherited: Inherited) {
             withins: Vec::new(),
             inherited: inherited.within,
             inherited_flags: inherited.flags,
+            inherited_ats: inherited.ats,
+            due: None,
             next: 0,
         };
+        // `ats` is filled only under virtual time, so the real clock reads no clock here.
+        if !local.inherited_ats.is_empty() {
+            local.due = pending(local);
+        }
+    });
+}
+
+/// Under virtual time, the earliest deadline of the task's frames and inherited entries whose
+/// entry is not set yet: the next one [`virtual_check`] waits for. Called only under virtual
+/// time (the callers branch on the clock, a non-empty `inherited_ats` or a `due` already set,
+/// which only virtual time gives): on the real clock the timer sets the entries. O(frames).
+fn pending(local: &Local) -> Option<u128> {
+    let unset = |flag: &Arc<AtomicUsize>| flag.load(Ordering::SeqCst) != 0;
+    local
+        .withins
+        .iter()
+        .filter(|frame| unset(&frame.flag))
+        .filter_map(|frame| frame.at)
+        .chain(
+            local
+                .inherited_ats
+                .iter()
+                .zip(&local.inherited_flags)
+                .filter(|(_, flag)| unset(flag))
+                .filter_map(|(at, _)| *at),
+        )
+        .min()
+}
+
+/// A check point under virtual time (`runtime::Hot::attention`, on its counting path): once the
+/// clock has reached the earliest deadline not set yet that covers the task, own or inherited,
+/// sets the cancellation entry of every one the clock has reached, as the timer does on the real
+/// clock, so this check point stops the task and its `within` reports (`spec/27 §5` rule 5, §8
+/// rule 3, #1823). One clock reading and one comparison while none has passed, O(1); O(frames)
+/// at the check point that finds one passed, which then waits for the next.
+pub(crate) fn virtual_check() {
+    if !USED.with(Cell::get) {
+        return;
+    }
+    LOCAL.with(|cell| {
+        // No check point runs while the deadlines are borrowed: they are borrowed only inside
+        // this module, which runs no compiled code meanwhile. Were one to, it fails closed, as
+        // `swap_slots` does, rather than miss a cut.
+        let Ok(mut local) = cell.try_borrow_mut() else {
+            std::process::abort();
+        };
+        let Some(due) = local.due else {
+            return;
+        };
+        let now = crate::runtime::clock().now_nanos();
+        if now < due {
+            return;
+        }
+        let reached = |at: &Option<u128>| at.is_some_and(|at| at <= now);
+        for frame in local.withins.iter().filter(|frame| reached(&frame.at)) {
+            frame.flag.store(0, Ordering::SeqCst);
+        }
+        for (_, flag) in local
+            .inherited_ats
+            .iter()
+            .zip(&local.inherited_flags)
+            .filter(|(at, _)| reached(at))
+        {
+            flag.store(0, Ordering::SeqCst);
+        }
+        local.due = pending(&local);
     });
 }
 
@@ -281,12 +379,14 @@ pub(crate) fn cut() -> bool {
 
 impl Inherited {
     /// The bytes it owns beyond itself, for the reservation of a task's start (ADR 0113 rule
-    /// 2): the entries of the `within`s that cover the task, and the path of the task that runs
+    /// 2): the entries of the `within`s that cover the task, with their deadlines under virtual
+    /// time, and the path of the task that runs
     /// a `for ever within`.
     pub(crate) fn owned_bytes(&self) -> usize {
         self.flags
             .len()
             .saturating_mul(size_of::<Arc<AtomicUsize>>())
+            .saturating_add(self.ats.len().saturating_mul(size_of::<Option<u128>>()))
             .saturating_add(self.ever.as_ref().map_or(0, |ever| ever.owner.len()))
     }
 }
@@ -464,8 +564,9 @@ pub fn within_enter(word: i64) -> i64 {
     let at = deadline_after(now, millis(word));
     let flag = Arc::new(AtomicUsize::new(1));
     // A deadline that has passed already is cut at the first check point, and one beyond the
-    // clock never is. Under virtual time only the run's own waits move the clock, which no
-    // check point inside `e` does, so the deadline is read when `e` returns. On the real clock
+    // clock never is. Under virtual time only the run's own waits move the clock, a wait at a
+    // limit inside `e` among them, and no timer is armed: each check point reads the clock
+    // instead ([`virtual_check`]), and `within_end` once more when `e` returns. On the real clock
     // the run's timer thread already runs (P8): arming starts no thread. With no timers to arm
     // on, the deadline counts as passed at once.
     let timer = match at {
@@ -501,6 +602,9 @@ pub fn within_enter(word: i64) -> i64 {
             ever,
             entry,
         });
+        if clock.is_virtual() {
+            local.due = pending(local);
+        }
         id
     })
 }
@@ -529,6 +633,11 @@ pub fn within_end(id: i64, stopped: i64) -> i64 {
         let frame = ended.drain(..1).next();
         for inner in ended {
             end_frame(&inner);
+        }
+        // Ending frames only removes deadlines: with none due, none is due after. `due` is set
+        // only under virtual time, so the real clock reads no clock here.
+        if local.due.is_some() {
+            local.due = pending(local);
         }
         frame
     });
@@ -618,6 +727,7 @@ mod tests {
                 ever: Some(deadline(50)),
                 within: Some(70),
                 flags: Vec::new(),
+                ats: Vec::new(),
             });
             let mut a = Slots::default();
             // A parks: the worker's own (empty) state comes back, and A's is kept.

@@ -608,6 +608,13 @@ fn run(tasks: Tasks, shape: Shape, site: usize, invoke: Invoke) -> (i64, i64) {
     let counters = Counters::new();
     let mut first = 0;
     while first < total {
+        // Under virtual time the start of each task is a check point of the clock for the
+        // `within`s that cover the block, as in the interpreter (`spec/27 §5` rule 7, #1823):
+        // a wait of an earlier task that moved the clock past a deadline cuts the tasks after
+        // it, with no check point of its own after the wait. O(1) while none has passed.
+        if sequential {
+            crate::deadline::virtual_check();
+        }
         // The block's own task was cancelled between two batches: the next one never forks,
         // and the block stops as a cancelled task.
         if template.cancelled() {
@@ -1506,6 +1513,11 @@ fn task(
     // which on one worker then runs to its end before it (#1188).
     if go && !parked && race.is_some() {
         sched::yield_now();
+    }
+    // Under virtual time the task's start is a check point of the clock for the `within`s it
+    // inherits, as in the interpreter (`spec/27 §5` rule 7, #1823). O(1) while none has passed.
+    if sched::counting() {
+        crate::deadline::virtual_check();
     }
     let cancelled = count.load(Ordering::SeqCst) <= index || template.cancelled();
     if !go || cancelled {

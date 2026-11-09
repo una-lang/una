@@ -821,7 +821,15 @@ pub(crate) fn yield_due() -> bool {
         return false;
     };
     worker.push_at(Job::Resume(id), false);
-    una_sys::coroutine::suspend()
+    let suspended = una_sys::coroutine::suspend();
+    // Under virtual time the tasks that ran meanwhile may have moved the clock past a deadline
+    // of this task: the check point that yielded reads it again on resuming, before it reads
+    // the cancellation entries, as the interpreter switches first and then compares (`spec/27
+    // §5` rule 5, §8 rule 3, #1823). O(1) while none has passed; never on the real clock.
+    if counting() {
+        crate::deadline::virtual_check();
+    }
+    suspended
 }
 
 /// A task on the run's workers, as the waits of `next` of `HttpServer` name it (ADR 0123 rule

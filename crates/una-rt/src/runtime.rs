@@ -1711,6 +1711,11 @@ struct Hot {
     /// Whether every check point of the thread counts toward its task's turn: on a worker,
     /// under virtual time (ADR 0117 rule 12). Not swapped: it is the worker's.
     counting: Cell<bool>,
+    /// Whether the run's clock is virtual: then every check point of the thread, on a worker or
+    /// not, reads it for the deadlines of its task's `within`s, which no timer sets
+    /// (`deadline::virtual_check`, #1823). Set wherever `counting` is, from the same clock, so
+    /// `counting` implies it. Not swapped: the clock is the run's.
+    virtual_clock: Cell<bool>,
 }
 
 impl Hot {
@@ -1729,6 +1734,7 @@ impl Hot {
             word: Cell::new(None),
             seen: Cell::new(u64::MAX),
             counting: Cell::new(false),
+            virtual_clock: Cell::new(false),
         }
     }
 
@@ -1740,8 +1746,16 @@ impl Hot {
     /// slice while another task waits. Either way the turn's end takes the slow path, which
     /// gives the worker to the next task (ADR 0117 rules 2 and 12).
     fn attention(&self) -> bool {
-        if self.counting.get() {
-            return hard_stop().is_some() | crate::sched::turn_due();
+        // One load on the real clock, as before: `counting` implies `virtual_clock`.
+        if self.virtual_clock.get() {
+            // Under virtual time no timer sets a `within`'s entry: the check point reads the
+            // clock, which a wait of any task may have moved past a deadline, and sets the
+            // entries of those it reached, which the cancellation check that follows reads, so
+            // `e` is cut here, as in the interpreter (#1823). O(1) while none has passed.
+            crate::deadline::virtual_check();
+            if self.counting.get() {
+                return hard_stop().is_some() | crate::sched::turn_due();
+            }
         }
         match self
             .word
@@ -1903,6 +1917,7 @@ fn install(state: State, depth: usize) {
         } else {
             seen
         });
+        hot.virtual_clock.set(clock().is_virtual());
         hot.active.set(true);
     });
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
@@ -1940,6 +1955,7 @@ pub(crate) fn attention_word() -> una_sys::attention::Word {
         let word = hot.word.get().unwrap_or_else(una_sys::attention::register);
         hot.word.set(Some(word));
         hot.counting.set(crate::sched::counting());
+        hot.virtual_clock.set(clock().is_virtual());
         word
     })
 }

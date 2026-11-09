@@ -181,3 +181,374 @@ pub main() -> Unit = unit
     let tested = una(&dir, &["--json", "test", "."]);
     assert_eq!(tested.status.code(), Some(0), "{tested:?}");
 }
+
+/// Six ways a wait at a limit inside `e within d` moves the virtual clock past the deadline,
+/// each followed by more of `e`: a call, a loop, a `together` block, the wait in a task of a
+/// block with a sibling after it, a task with no check point after its wait beside one with none
+/// at all, and a handler's code that waits while it serves an operation. Every call to `grab` is
+/// a check point, and each takes a token.
+const CUT: &str = r#"module cut
+
+import release (shown)
+import std.limit (Limit, limiter)
+import std.time (millisecond, minute)
+
+--- Takes a token, in a call of its own: the call is a check point of both engines.
+grab() -> Int
+  uses @gate: Limit[acquire]
+=
+  let got = attempt @gate.acquire()
+  1
+
+--- Takes the only token, then waits a minute for a refill, which the deadline cuts: the wait
+--- moves the virtual clock to the deadline and fails `RateLimited`, which `attempt` catches.
+spent() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let second = attempt @gate.acquire()
+  unit
+
+--- A call after the wait: the deadline has passed, so it never runs.
+called() -> Int
+  uses @gate: Limit[acquire]
+=
+  spent()
+  grab()
+
+--- A loop after the wait: no iteration runs.
+looped() -> Int
+  uses @gate: Limit[acquire]
+=
+  spent()
+  let edit total = 0
+  for i in 1..3
+    let one = grab()
+    total = total + one
+  total
+
+--- A block after the wait: its tasks are cut, each with its `cancelled` event.
+joined() -> Int
+  uses @gate: Limit[acquire]
+=
+  spent()
+  together
+    let a = grab()
+    let b = grab()
+  a + b
+
+--- The wait in a task of a block: the deadline of the `within` above it cuts the task's call.
+inside() -> Int
+  uses @gate: Limit[acquire]
+=
+  together
+    let a = called()
+    let b = grab()
+  a + b
+
+--- A task that waits and returns with no check point after the wait, beside one with none at
+--- all: the start of the second task is the check point that cuts it.
+lone() -> Int
+  uses @gate: Limit[acquire]
+=
+  together
+    let a = spent_one()
+    let b = 2
+  a + b
+
+--- The wait, then the value, with no check point after the wait.
+spent_one() -> Int
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let second = attempt @gate.acquire()
+  1
+
+--- Work that a handler serves.
+pub capability Work
+  op run() -> internal Int
+    accepts internal
+
+--- A handler whose code waits past the deadline, then calls `grab`: an operation in progress
+--- completes, so its call is not cut, and its third `acquire` happens.
+pub handler patient() for Work
+  uses @gate: Limit[acquire]
+  op run() =
+    spent()
+    grab()
+
+--- The operation, then a call after it: the call is cut.
+shielded() -> Int
+  uses @gate: Limit[acquire]
+  uses @work: Work[run]
+=
+  let done = @work.run()
+  grab()
+
+--- The shielded case, bounded by a deadline of 50 ms: 0 once it is cut.
+guarded() -> internal Int
+  uses @gate: Limit[acquire]
+  uses @work: Work[run]
+=
+  let got = shielded() within 50 * millisecond
+    if error use 0
+  got
+
+--- The shielded case with its handler.
+served() -> internal Int
+  uses @gate: Limit[acquire]
+=
+  let got = guarded() with @work = patient()
+  got
+
+--- Case `n` bounded by a deadline of 50 ms: 0 once it is cut.
+bounded(n: Int) -> internal Int
+  uses @gate: Limit[acquire]
+=
+  if n == 1
+    let got = called() within 50 * millisecond
+      if error use 0
+    got
+  else if n == 2
+    let got = looped() within 50 * millisecond
+      if error use 0
+    got
+  else if n == 3
+    let got = joined() within 50 * millisecond
+      if error use 0
+    got
+  else if n == 4
+    let got = inside() within 50 * millisecond
+      if error use 0
+    got
+  else if n == 5
+    let got = lone() within 50 * millisecond
+      if error use 0
+    got
+  else
+    let got = served()
+    got
+
+pub main() -> Unit
+  uses @clock: Clock[now]
+  uses @console: Console[print]
+=
+  for n in 1..6
+    let got = bounded(n) with @gate = limiter(at_most: 1, per: minute, waiting: 4)
+    let now = @clock.now()
+    @console.print(shown("{n}: {got} at {now}"))
+"#;
+
+/// The trusted module that releases the `internal` counts of [`CUT`] and [`SWITCHED`].
+const RELEASE: &str = r#"--- Releases what a program decided from whether `acquire` failed, `internal` as `Limited` is.
+trusted module release
+
+pub policy shown
+  from internal Text
+  to Text
+  via same
+  purpose "show in a test whether a limiter served its calls"
+  owner tests
+
+same(text: internal Text) -> Text = text
+"#;
+
+/// A package `name` of the program `program` and [`RELEASE`], granted `console` and `clock`.
+fn released(name: &str, program: &str) -> PathBuf {
+    let dir = package(name, program);
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\ntrusted\n  release\n\nrun\n  entry {name}\n  grants\n    console\n    clock\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/release.una"), RELEASE).unwrap();
+    dir
+}
+
+/// The interpreter's run of `dir` under `--virtual-time`, then the executable's with
+/// `--workers 1` and `4`: the same output, the interpreter's, and the same whole trace. Returns
+/// the interpreter's document.
+fn both_engines(dir: &std::path::Path, name: &str) -> serde_json::Value {
+    let interpreted = una_direct(dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    let built = una(dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    for workers in ["1", "4"] {
+        let trace_file = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(dir.join(format!("target/una/{name}")))
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace_file)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        let printed: Vec<&str> = std::str::from_utf8(&native.stdout)
+            .unwrap()
+            .lines()
+            .collect();
+        assert_eq!(
+            serde_json::json!(printed),
+            document["output"],
+            "--workers {workers}"
+        );
+        let native_trace: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+        assert_eq!(document["trace"], native_trace, "--workers {workers}");
+    }
+    document
+}
+
+/// How many events of `document`'s trace have the outcome `kind`.
+fn outcomes(document: &serde_json::Value, kind: &str) -> usize {
+    document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["outcome"]["kind"] == kind)
+        .count()
+}
+
+#[test]
+fn a_wait_at_a_limit_past_the_deadline_cuts_the_within_in_both_engines() {
+    // `spec/27 §5` rules 5 and 7, §8 rule 3, #1823: under `--virtual-time` the wait for a
+    // refill moves the clock to the covering deadline (§10), and the interpreter cuts `e` at its
+    // next check point, the start of a task of a block included, so nothing after it runs.
+    // Native code once noticed the passed deadline only when `e` returned, so it performed the
+    // `acquire`s after the wait, and the tasks of a block after it, before its `timeout` event.
+    // Both engines MUST give the same output and trace.
+    let dir = released("cut", CUT);
+    let document = both_engines(&dir, "cut");
+    let expected = [
+        "1: 0 at 50",
+        "2: 0 at 100",
+        "3: 0 at 150",
+        "4: 0 at 200",
+        "5: 0 at 250",
+        "6: 0 at 300",
+    ];
+    assert_eq!(
+        document["output"],
+        serde_json::json!(expected),
+        "{document}"
+    );
+    // The two `acquire`s of each wait, and nothing after it: no third `acquire`, no task of a
+    // block after the wait, no sibling of the task that waited. The handler's own `acquire`s
+    // are events of quiet code, so case 6 shows only its `run`, and no `grab` after it.
+    let trace = document["trace"].as_array().unwrap();
+    for instance in 1..=6 {
+        let acquires = trace
+            .iter()
+            .filter(|event| event["instance"] == format!("with:limiter#{instance}"))
+            .count();
+        assert_eq!(
+            acquires,
+            if instance <= 5 { 2 } else { 0 },
+            "limiter #{instance}: {document}"
+        );
+    }
+    assert_eq!(outcomes(&document, "timeout"), 6, "{document}");
+    // `Limited` is `internal`, so each `e` here has the timing `internal`, and its code is quiet
+    // by that timing floor: it keeps its operations' events but appends no `cancelled` event of
+    // its own (`spec/27 §5` rule 7). The cut tasks of cases 3, 4 and 5 therefore leave none,
+    // in both engines.
+    assert_eq!(outcomes(&document, "cancelled"), 0, "{document}");
+}
+
+/// A root task inside `e within d` and a started task that waits at a limit while the root is
+/// switched out: the wait moves the virtual clock past the deadline, and the root's check point
+/// that resumes is cut. `PADS` shifts which check point of an iteration, the loop's, the call's
+/// or the operation's, is the one where the root's first turn ends.
+const SWITCHED: &str = r#"module switched
+
+import release (shown)
+import std.limit (Limit, limiter)
+import std.time (millisecond, minute)
+
+--- A started task: takes the only token of `@gate`, then waits a minute for a refill, which
+--- moves the virtual clock past the root's deadline while the root is switched out.
+waiter() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let second = attempt @gate.acquire()
+  unit
+
+--- One call: a check point.
+step(i: Int) -> Int = i
+
+--- An operation of a limiter that never waits.
+grab() -> Int
+  uses @free: Limit[acquire]
+=
+  let got = attempt @free.acquire()
+  1
+
+--- Check points, each iteration a call and an operation, past the root's first turn.
+counter() -> Int
+  uses @free: Limit[acquire]
+=
+  let edit total = 0
+{PADS}  for i in 1..700
+    let one = grab()
+    total = total + one
+  total
+
+bounded() -> internal Int
+  uses @free: Limit[acquire]
+=
+  let got = counter() within 50 * millisecond
+    if error use 0
+  got
+
+run() -> internal Int
+  uses @gate: Limit[acquire]
+  uses @free: Limit[acquire]
+=
+  let edit got: internal Int = 0
+  tasks
+    start waiter()
+    got = bounded()
+  got
+
+--- The run with its free limiter.
+freed() -> internal Int
+  uses @gate: Limit[acquire]
+=
+  let got = run() with @free = limiter(at_most: 5000, per: minute, waiting: 4)
+  got
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let got = freed() with @gate = limiter(at_most: 1, per: minute, waiting: 4)
+  @console.print(shown("got {got}"))
+"#;
+
+#[test]
+fn a_root_switched_out_inside_a_within_is_cut_when_it_resumes_past_the_deadline() {
+    // `spec/27 §5` rule 5, §8 rules 2 and 3, #1823: the interpreter switches at a check point
+    // first, then compares the clock with the deadline, so a started task's wait during the
+    // switch cuts the root at that check point. Native code once compared before the switch
+    // only, and ran the operation it resumed at. Each padding puts the switch on another check
+    // point of an iteration, so one of them puts it on the operation's.
+    for pads in 0..3 {
+        let lines: String = (0..pads)
+            .map(|i| format!("  let pad{i} = step({i})\n"))
+            .collect();
+        let name = format!("switched{pads}");
+        let program = SWITCHED
+            .replace("module switched", &format!("module {name}"))
+            .replace("{PADS}", &lines);
+        let dir = released(&name, &program);
+        let document = both_engines(&dir, &name);
+        assert_eq!(
+            document["output"],
+            serde_json::json!(["got 0"]),
+            "{document}"
+        );
+        assert_eq!(outcomes(&document, "timeout"), 1, "{document}");
+    }
+}
