@@ -46,6 +46,9 @@
 //!   the pools' sizes. A connection job looks at its request only between two addresses, so an
 //!   attempt in progress runs until it connects or the request's deadline passes. A step that
 //!   panics ends as a failure at once: its thread is kept, and its requests get `Unreachable`.
+//!   A connection job given its request's place among the sockets (`spec/27 §2` rule 3, #1824)
+//!   keeps it until it has closed what it reached, so its residue never holds a socket outside
+//!   the cap.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
@@ -344,13 +347,24 @@ fn wait<T>(
 /// `abandon` wakes the wait, `Interrupted`, with no polling. On either, the job is marked given
 /// up: queued, it never runs; running, it ends alone and its answer is dropped. A step that
 /// panics fails the request at once with `Unreachable`. Amortized O(1) besides the wait.
+///
+/// `hold`, when given, is what the request keeps while the step may hold a resource of it, its
+/// place among the sockets of the process (`spec/27 §2` rule 3, #1824): the job takes it when
+/// it starts and drops it only after the step's answer, and with it any connection the request
+/// no longer waits for, is dropped; a job that its request gave up before it started never runs,
+/// and the request drops the hold itself. So a place is never given back while a socket of its
+/// request is still open on the pool. One more lock, uncontended but for that race, O(1).
 fn hand_off<T: Send + 'static>(
     pool: &Pool,
     deadline: Instant,
     abandon: &Abandon,
+    hold: Option<Hold>,
     step: impl FnOnce(&AtomicBool) -> T + Send + 'static,
 ) -> Result<T, Error> {
     let left = time_left(deadline, abandon)?;
+    // The hold, until the job takes it or its request gives up before the job started.
+    let held = hold.map(|hold| Arc::new(Mutex::new(Some(hold))));
+    let taken = held.clone();
     let (reply, answers) = mpsc::channel::<Answer<T>>();
     let waker = reply.clone();
     abandon.on_abandon(Box::new(move || {
@@ -359,11 +373,23 @@ fn hand_off<T: Send + 'static>(
     let gave_up = Arc::new(AtomicBool::new(false));
     let job = Job {
         run: Box::new(move |gave_up: &AtomicBool| {
+            // A hold its request took back means the request gave up before the job started:
+            // the step does not run.
+            let hold = match &taken {
+                Some(taken) => match take(taken) {
+                    Some(hold) => Some(hold),
+                    None => return,
+                },
+                None => None,
+            };
             let mut failing = Failing { reply: Some(reply) };
             let answer = step(gave_up);
             if let Some(reply) = failing.reply.take() {
+                // An answer its request no longer waits for is dropped here, before the hold.
                 let _ = reply.send(Answer::Done(answer));
             }
+            drop(failing);
+            drop(hold);
         }),
         gave_up: Arc::clone(&gave_up),
         name: None,
@@ -373,8 +399,22 @@ fn hand_off<T: Send + 'static>(
     let answer = wait(&answers, left, abandon);
     if answer.is_err() {
         gave_up.store(true, Ordering::SeqCst);
+        // A job that has not started holds nothing of the request: its hold is dropped now. A
+        // job that started keeps it until its step's answer is dropped.
+        if let Some(held) = &held {
+            drop(take(held));
+        }
     }
     answer
+}
+
+/// What a request keeps while a pool job of it may hold its socket: its place among the
+/// sockets of the process (`spec/27 §2` rule 3), given back when dropped.
+pub type Hold = Box<dyn Send>;
+
+/// Takes the hold out of `held`, if it is still there.
+fn take(held: &Mutex<Option<Hold>>) -> Option<Hold> {
+    held.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
 
 /// Ends a name's shared lookup when its job ends, normally or by a panic: removes it from the
@@ -626,13 +666,15 @@ fn pools() -> Option<&'static Pools> {
 /// name looked up on the lookup pool, unless it is an address literal, one lookup per name for
 /// the requests that wait for it together (#1265), then the connection made on the connect
 /// pool. The request waits for each until the deadline, `TimedOut`, or until `abandon` wakes it,
-/// `Interrupted`, with no polling; a stop is seen once a wait ends.
+/// `Interrupted`, with no polling; a stop is seen once a wait ends. `hold`, the request's place
+/// among the sockets, is kept by the connection job while it runs ([`hand_off`]).
 pub(crate) fn reach(
     host: &str,
     port: u16,
     deadline: Instant,
     stopped: &dyn Fn() -> bool,
     abandon: &Abandon,
+    hold: Option<Hold>,
 ) -> Result<TcpStream, Error> {
     if stopped() {
         return Err(Error::Interrupted);
@@ -653,7 +695,7 @@ pub(crate) fn reach(
             }
         }
     };
-    let stream = hand_off(&pools.connects, deadline, abandon, move |gave_up| {
+    let stream = hand_off(&pools.connects, deadline, abandon, hold, move |gave_up| {
         connect_any(addrs, deadline, gave_up)
     })??;
     if stopped() || abandon.abandoned() {
@@ -974,7 +1016,7 @@ mod tests {
         let holder = {
             let pool = Arc::clone(&pool);
             std::thread::spawn(move || {
-                hand_off(&pool, after(30_000), &Abandon::new(), |_| {
+                hand_off(&pool, after(30_000), &Abandon::new(), None, |_| {
                     DROP_RUNS.fetch_add(1, Ordering::SeqCst);
                     DROP_GATE.pass();
                 })
@@ -987,7 +1029,7 @@ mod tests {
             .map(|abandon| {
                 let (pool, abandon) = (Arc::clone(&pool), abandon.clone());
                 std::thread::spawn(move || {
-                    hand_off(&pool, after(30_000), &abandon, |_| {
+                    hand_off(&pool, after(30_000), &abandon, None, |_| {
                         DROP_RUNS.fetch_add(1, Ordering::SeqCst);
                     })
                 })
@@ -1003,7 +1045,7 @@ mod tests {
         DROP_GATE.open();
         assert_eq!(holder.join().unwrap(), Ok(()));
         for i in 0..3 {
-            let step = hand_off(&pool, after(5_000), &Abandon::new(), move |_| i);
+            let step = hand_off(&pool, after(5_000), &Abandon::new(), None, move |_| i);
             assert_eq!(step, Ok(i));
         }
         until(|| lock(&pool).line.jobs.is_empty());
@@ -1015,15 +1057,108 @@ mod tests {
         // Review L1 of #1574: before, the abandon's wake kept the channel open, and the request
         // failed only at its deadline, with `TimedOut`.
         let pool = make(1, "test-connect-panic");
-        let boom: Result<(), Error> = hand_off(&pool, after(30_000), &Abandon::new(), |_| {
+        let boom: Result<(), Error> = hand_off(&pool, after(30_000), &Abandon::new(), None, |_| {
             panic!("a connect step that panics")
         });
         assert_eq!(boom, Err(Error::Unreachable));
         assert_eq!(
-            hand_off(&pool, after(30_000), &Abandon::new(), |_| 1),
+            hand_off(&pool, after(30_000), &Abandon::new(), None, |_| 1),
             Ok(1)
         );
         assert_eq!(pool.threads.load(Ordering::SeqCst), 1);
+    }
+
+    /// A hold that counts itself while it lives, as a place among the sockets does.
+    struct Counted(Arc<AtomicUsize>);
+
+    impl Counted {
+        fn hold(count: &Arc<AtomicUsize>) -> Option<Hold> {
+            count.fetch_add(1, Ordering::SeqCst);
+            Some(Box::new(Counted(Arc::clone(count))))
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// What a step drops after its hold would be, if the order were wrong: it records whether
+    /// the hold still lived when the step's answer was dropped.
+    struct Answered(Arc<AtomicUsize>, Arc<AtomicBool>);
+
+    impl Drop for Answered {
+        fn drop(&mut self) {
+            self.1
+                .store(self.0.load(Ordering::SeqCst) == 1, Ordering::SeqCst);
+        }
+    }
+
+    static HOLD_GATE: Gate = Gate::new();
+    static HOLD_STARTED: AtomicBool = AtomicBool::new(false);
+    static HOLD_QUEUED_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn a_running_step_keeps_its_requests_hold_until_its_answer_is_dropped() {
+        // #1824, `spec/27 §2` rule 3: a request abandoned while its connection step runs gets
+        // `Interrupted` at once, but its place stays held until the step has returned and its
+        // answer, the socket it made, is dropped. A request that gives up while its step is
+        // still queued drops the hold itself, at once, and the step never runs.
+        let pool = make(1, "test-connect-hold");
+        let count = Arc::new(AtomicUsize::new(0));
+        let answered_held = Arc::new(AtomicBool::new(false));
+        let abandon = Abandon::new();
+        let running = {
+            let (pool, abandon, count) = (Arc::clone(&pool), abandon.clone(), Arc::clone(&count));
+            let flag = Arc::clone(&answered_held);
+            std::thread::spawn(move || {
+                let hold = Counted::hold(&count);
+                hand_off(&pool, after(30_000), &abandon, hold, move |_| {
+                    HOLD_STARTED.store(true, Ordering::SeqCst);
+                    HOLD_GATE.pass();
+                    Answered(count, flag)
+                })
+                .map(drop)
+            })
+        };
+        until(|| HOLD_STARTED.load(Ordering::SeqCst));
+        // A second request queued behind the running step, which gives up by its deadline.
+        let queued_count = Arc::new(AtomicUsize::new(0));
+        let queued = hand_off(
+            &pool,
+            after(50),
+            &Abandon::new(),
+            Counted::hold(&queued_count),
+            |_| {
+                HOLD_QUEUED_RUNS.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(queued, Err(Error::TimedOut));
+        assert_eq!(
+            queued_count.load(Ordering::SeqCst),
+            0,
+            "a queued step kept its hold"
+        );
+        abandon.abandon();
+        assert_eq!(running.join().unwrap(), Err(Error::Interrupted));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "the hold was dropped while the step still ran"
+        );
+        HOLD_GATE.open();
+        until(|| count.load(Ordering::SeqCst) == 0);
+        assert!(
+            answered_held.load(Ordering::SeqCst),
+            "the hold was dropped before the step's answer"
+        );
+        // The queued step never runs, and the pool serves on.
+        assert_eq!(
+            hand_off(&pool, after(5_000), &Abandon::new(), None, |_| 1),
+            Ok(1)
+        );
+        assert_eq!(HOLD_QUEUED_RUNS.load(Ordering::SeqCst), 0);
     }
 
     /// Panics for `boom.test`.

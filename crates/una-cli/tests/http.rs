@@ -1511,18 +1511,20 @@ fn silent_server_helper() {
 // only when it never started.
 #[allow(clippy::zombie_processes)]
 fn silent_server_process(fds: usize) -> (std::process::Child, u16) {
-    let file = std::env::temp_dir().join(format!("una-silent-port-{}", std::process::id()));
+    server_process("silent_server_helper", fds)
+}
+
+/// The helper test `helper`, a server in a process of its own whose limit of open descriptors
+/// is `fds`, and the port it listens on, which it writes to the port file it is given.
+#[allow(clippy::zombie_processes)]
+fn server_process(helper: &str, fds: usize) -> (std::process::Child, u16) {
+    let file = std::env::temp_dir().join(format!("una-{helper}-port-{}", std::process::id()));
     let _ = std::fs::remove_file(&file);
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(format!("ulimit -n {fds} && exec \"$0\" \"$@\""))
         .arg(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "silent_server_helper",
-            "--ignored",
-            "--nocapture",
-        ])
+        .args(["--exact", helper, "--ignored", "--nocapture"])
         .env(SILENT_PORT_FILE, &file)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1544,7 +1546,7 @@ fn silent_server_process(fds: usize) -> (std::process::Child, u16) {
         }
         assert!(
             !late,
-            "the silent server did not start (is `ulimit -n {fds}` allowed?)"
+            "the server {helper} did not start (is `ulimit -n {fds}` allowed?)"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1778,6 +1780,147 @@ pub main() -> Unit
     assert_eq!(
         std::fs::read_to_string(dir.join("data/copy.txt")).unwrap(),
         "noted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "a helper process of the cancelled-connection test: it serves only when it is started"]
+fn unreachable_server_helper() {
+    // Started by `server_process` with its descriptors raised: a listener that never accepts,
+    // whose backlog this process fills with its own connections, so the system drops every
+    // later SYN and a connection to it never completes until its time-out, as a host that
+    // drops SYNs does, with no external network. Run alone, it returns at once.
+    // The test process reads the port file its parent named; no library code reads it.
+    #[allow(clippy::disallowed_methods)]
+    let Some(file) = std::env::var_os(SILENT_PORT_FILE) else {
+        return;
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut held = Vec::new();
+    // The backlog is full once a connection does not complete: at most the listener's backlog
+    // and its slack, bounded here.
+    for _ in 0..8_192 {
+        match TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
+            Ok(stream) => held.push(stream),
+            Err(_) => break,
+        }
+    }
+    std::fs::write(&file, address.port().to_string()).unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+/// A helper server process, killed and waited for when dropped, a failed assertion included.
+struct Killed(std::process::Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn cancelled_requests_still_connecting_keep_their_socket_places_so_files_never_fail() {
+    // `spec/27 §2` rule 3 (#1824): a request holds one place among the sockets from its first
+    // connection to its end, so requests never take the descriptors a `Files` operation of
+    // another task needs. Each of 150 races of `first of` is lost by a request that connects to
+    // a server that never completes the handshake, and it is cancelled while its connection is
+    // in progress on the connect pool, whose thread keeps the socket until the request's
+    // deadline. Then 300 started tasks park on a server that never answers, and a task beside
+    // them writes, reads and writes a file. Under `ulimit -n 256`, 192 places: had the losers
+    // given their places back while their sockets stayed open, up to 150 sockets more than the cap
+    // would be open with the parked ones, and the files would fail with `EMFILE`.
+    let (unreachable, dropped) = server_process("unreachable_server_helper", 16_384);
+    let unreachable = Killed(unreachable);
+    let (silent, port) = silent_server_process(4_096);
+    let silent = Killed(silent);
+    let program = format!(
+        r#"module hedged
+
+hedge() -> Int
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{dropped}/a", headers: [], key_name: None)
+  1
+
+probe() -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("http://127.0.0.1:{port}/a", headers: [], key_name: None)
+  unit
+
+settle(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  2
+
+note() -> Unit
+  uses @files: Files[read, write]
+=
+  let waited = settle(300000)
+  let written = attempt @files.write("note.txt", content: "noted")
+  let read = attempt @files.read("note.txt")
+  let copied = when read
+    is Ok(text) -> attempt @files.write("copy.txt", content: text)
+    is Err(failure) -> attempt @files.write("copy.txt", content: "unread")
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+  uses @http: Http[get]
+=
+  for i in 1..150
+    let got = first of
+      hedge()
+      settle(40000)
+    unit
+  tasks at most 2000 at once
+    for i in 1..300
+      start probe()
+    start note()
+  @console.print("done")
+"#
+    );
+    let dir = std::env::temp_dir().join(format!("una-http-hedged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita hedged\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry hedged\n  grants\n    console\n    files \"data/\" read, write\n    http \"http://127.0.0.1:{dropped}\" get\n    http \"http://127.0.0.1:{port}\" get\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/for_ever_on_stop/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/hedged.una"), program).unwrap();
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = run_with_descriptors(
+        &dir.join("target/una/hedged"),
+        &dir,
+        256,
+        &["--http-timeout", "12", "--io-threads", "160"],
+    );
+    drop((unreachable, silent));
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    // A `Files` operation that failed with `EMFILE` leaves no copy, or the word "unread".
+    assert_eq!(
+        std::fs::read_to_string(dir.join("data/copy.txt")).unwrap_or_default(),
+        "noted",
+        "a file operation failed beside the requests"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
