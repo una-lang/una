@@ -582,9 +582,9 @@ fn an_executable_that_serves_nothing_carries_no_serve_engine() {
             "{needle} found in a program that serves nothing"
         );
     }
-    // The positive control: a program that serves, built by the test build of `una` while
-    // `spec/31 §1` rule 10 stands, links every one of them, so the names above still name the
-    // engine's code and the check above checks something.
+    // The positive control: a program that serves, built by `una build` (`spec/31 §1` rule 10),
+    // links every one of them, so the names above still name the engine's code and the check
+    // above checks something.
     let serving = std::env::temp_dir().join(format!("una-http-serving-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&serving);
     std::fs::create_dir_all(serving.join("src")).unwrap();
@@ -599,7 +599,6 @@ fn an_executable_that_serves_nothing_carries_no_serve_engine() {
     runtime();
     let built = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env("UNA_TEST_BUILD_SERVER", "1")
         .env("NO_COLOR", "1")
         .args(["build", "."])
         .current_dir(&serving)

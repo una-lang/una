@@ -1004,9 +1004,8 @@ impl Engine {
 
 /// A package of edition `0.4` named `name` whose entry module is `program`, granted `console`
 /// and `serve` on `port` with room for the early peers of [`serve_prefix_run`] (no share per
-/// peer, since every peer is `127.0.0.1`), for `engine`: for [`Engine::Native`] built by a
-/// `una` of the toolchain's tests, which builds a program that serves while `una build` of one
-/// is refused (`spec/31 §1` rule 10, `UNA_TEST_BUILD_SERVER`).
+/// peer, since every peer is `127.0.0.1`), for `engine`: for [`Engine::Native`] built by `una
+/// build` with no test flag, as a shipped `una` builds it (`spec/31 §1` rule 10).
 fn serve_package(name: &str, port: u16, program: &str, engine: Engine) -> Package {
     serve_package_with(
         name,
@@ -1094,7 +1093,6 @@ fn serve_package_linked(
     }
     let built = command
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env("UNA_TEST_BUILD_SERVER", "1")
         .env("NO_COLOR", "1")
         .args([verb, "."])
         .current_dir(&*dir)

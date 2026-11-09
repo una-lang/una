@@ -304,8 +304,8 @@ fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) 
 /// guarded before #1652 ([`the_linkers_compare_more_than_a_hundred_programs`]).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn runs_alike_linked_by_una_link_and_by_cc(test: &str, name: &str, grants: &[&str]) {
-    // A program that serves runs until a host stop, and `una build` of one is still a usage
-    // error (`spec/31 §1` rule 10): `serve_live.rs` runs it.
+    // A program that serves runs until a host stop, in both engines (`spec/31 §1` rule 10):
+    // `serve_live.rs` runs it.
     if served().contains_key(name) {
         return;
     }
