@@ -648,6 +648,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     let mut collected = authority::Collected::default();
     let mut edges = Vec::new();
     let withins;
+    let clocks;
     {
         let mut scratch = Report::new(package.sources);
         let mut findings = Findings::default();
@@ -671,6 +672,8 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 .map(|(caller, callee, _)| (*caller, *callee)),
         );
         withins = !findings.withins.is_empty();
+        // ADR 0116 amendment of 2026-11-09 (#898): edition 0.4 records its readings of `Clock`.
+        clocks = !findings.clock_sites.is_empty();
         env.opaque_plain = opaque_plain(&env, &findings.edges);
     }
     if package.settings.edition >= Edition::V0_2 {
@@ -755,7 +758,10 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // Labels only rise, and each round that goes on raises one by at least one atom, so a round
     // past that bound is an internal error, never a silent stop with a label too low. Both are
     // confirmed after pass 2 (`authority::within_timing`, `file_state`).
-    if withins || env.files_written {
+    // - the amendment of ADR 0116 of 2026-11-09 (#898, C5): the label `L_clk` of each reading
+    //   of `Clock` needs the call graph too, and a labeled reading raises `τ⁰` of the bodies
+    //   that compute from it, so of other readings and of `within`s.
+    if withins || clocks || env.files_written {
         let atoms = 4 + env.categories.len() + 1;
         let mut rounds = 0usize;
         loop {
@@ -781,6 +787,25 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             } else {
                 (std::collections::BTreeMap::new(), timing::Residue::none())
             };
+            // The readings' labels, joined with what earlier rounds found, as for `within`.
+            let clock_labels: std::collections::BTreeMap<Span, label::Label> = if clocks {
+                let residue = if withins {
+                    residue.clone()
+                } else {
+                    timing::residue_of(&env, &probe)
+                };
+                authority::clock_labels(&env, &probe, package.settings, &residue)
+                    .into_iter()
+                    .map(|(key, label)| match env.clock_timing.get(&key) {
+                        Some(before) => (key, before.join(&label)),
+                        None => (key, label),
+                    })
+                    .collect()
+            } else {
+                std::collections::BTreeMap::new()
+            };
+            let clocks_stable = clock_labels == env.clock_timing;
+            env.clock_timing = clock_labels;
             // ADR 0116 P9: what the messages of pass 2 name when `L_res` raises a label.
             env.residue = residue;
             let state = if env.files_written {
@@ -798,20 +823,25 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     None => (key, label),
                 })
                 .collect();
-            let stable = joined == env.within_timing && state == env.file_state;
+            let stable = joined == env.within_timing && state == env.file_state && clocks_stable;
             env.within_timing = joined;
             env.file_state = state;
             // Without a `within`, one probe gives the file-state label's least fixpoint, as
             // before (ADR 0085): what the label raises in pass 2 is below it.
-            if stable || !withins {
+            if stable || !(withins || clocks) {
                 break;
             }
-            if rounds > (env.within_timing.len() + 1) * atoms + 2 {
-                if let Some(site) = probe.withins.first() {
+            if rounds > (env.within_timing.len() + env.clock_timing.len() + 1) * atoms + 2 {
+                if let Some(span) = probe
+                    .withins
+                    .first()
+                    .map(|site| site.span)
+                    .or_else(|| probe.clock_sites.first().map(|site| site.span))
+                {
                     report.error(
                         Code::U8001,
-                        site.span,
-                        "internal error: the timing labels of `within` and `first of` and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0085)".to_owned(),
+                        span,
+                        "internal error: the timing labels of `within`, `first of` and `Clock` readings and the file-state label did not reach a fixpoint (ADR 0117 IF2, IF3, ADR 0116, ADR 0085)".to_owned(),
                     );
                 }
                 break;
@@ -889,6 +919,14 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
     authority::limiter_timing(&env, &findings, &residue, &mut report);
     let mut timing_sites = authority::deadline_timing(&env, &findings, &residue, &mut report);
+    // ADR 0116 amendment of 2026-11-09 (#898, C4, C5): the readings of `Clock`.
+    timing_sites.extend(authority::clock_timing(
+        &env,
+        &findings,
+        package.settings,
+        &residue,
+        &mut report,
+    ));
     timing_sites.extend(authority::within_timing(
         &env,
         &findings,
@@ -897,6 +935,8 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     ));
     // `spec/07 §5` rule 7: the timing sites a `via` function reaches (#1673).
     authority::via_timing(&env, &findings, &mut report);
+    // ADR 0116 amendment of 2026-11-09 (#898, C7): the readings of `Clock` a `via` reaches.
+    authority::via_clock_timing(&env, &findings, &mut report);
     // ADR 0123 IF6: the auto-answers of the reply rights each `start` moves.
     server::start_rights(&env, &findings, &mut report);
     // `spec/27 §8` rule 5: the check points that move the schedule of started tasks (#1684);
@@ -1233,6 +1273,9 @@ pub(crate) struct Findings {
     pub(crate) withins: Vec<within::WithinSite>,
     /// The operations of the host's `Http` checked, for `L_lim` (ADR 0117 IF4).
     pub(crate) http_sites: Vec<timing::HttpSite>,
+    /// The readings of the host's `Clock` checked, in edition 0.4, for `L_clk` (ADR 0116
+    /// amendment of 2026-11-09, #898, C1).
+    pub(crate) clock_sites: Vec<timing::HttpSite>,
     /// The operations of the host's `HttpServer` checked, the hand-off sites of `L_srv` (ADR
     /// 0123, S4 amendment IF-S1).
     pub(crate) server_sites: Vec<timing::HttpSite>,

@@ -452,26 +452,28 @@ pub main() -> Unit
 fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
     // ADR 0116 rule 19: a wait for a refill is a wait on time. Two per second, five requests:
     // the clock reads 0, 0, 500, 1000 and 1500 after them in both engines, with the same trace,
-    // and the run takes no wall time to wait.
+    // and the run takes no wall time to wait. The readings follow requests whose answers are
+    // `internal`, so they are `internal` (ADR 0116 amendment of 2026-11-09, #898): the program
+    // writes them to a file, which a run on `internal` data may do, and prints `done`.
     let server = Server::start();
     let port = server.port;
     let mut body = String::new();
     for k in 1..=5 {
         body.push_str(&format!(
-            "  let r{k} = attempt @http.get(\"http://127.0.0.1:{port}/{k}\", headers: [], key_name: None)\n  let t{k} = @clock.now()\n  @console.print(\"{{t{k}}}\")\n"
+            "  let r{k} = attempt @http.get(\"http://127.0.0.1:{port}/{k}\", headers: [], key_name: None)\n  let t{k} = @clock.now()\n"
         ));
     }
     let program = format!(
-        "module refills\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @http: Http[get]\n=\n{body}"
+        "module refills\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @files: Files[write]\n  uses @http: Http[get]\n  fails FileError\n=\n{body}  @files.write(\"v.txt\", content: \"{{t1}} {{t2}} {{t3}} {{t4}} {{t5}}\")\n    if error pass\n  @console.print(\"done\")\n"
     );
     let dir = package(
         "refills",
         &format!(
-            "    console\n    clock\n    http \"http://127.0.0.1:{port}\" get\n      at most 2 per second\n"
+            "    console\n    clock\n{OUT}    http \"http://127.0.0.1:{port}\" get\n      at most 2 per second\n"
         ),
         &program,
     );
-    let readings = ["0", "0", "500", "1000", "1500"];
+    let readings = "0 0 500 1000 1500";
     // The run checks the package first: its time is what the run may take beyond the check.
     let started = Instant::now();
     let checked = una(&dir, &["check", "."]);
@@ -484,9 +486,11 @@ fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
     let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
     assert_eq!(
         document["output"],
-        serde_json::json!(readings),
+        serde_json::json!(["done"]),
         "{document}"
     );
+    assert_eq!(written(&dir), readings);
+    let _ = std::fs::remove_file(dir.join("out/v.txt"));
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
@@ -506,10 +510,8 @@ fn under_virtual_time_refills_move_the_clock_alike_in_both_engines() {
         .unwrap();
     let native_time = native_started.elapsed();
     assert_eq!(native.status.code(), Some(0), "{native:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&native.stdout),
-        format!("{}\n", readings.join("\n"))
-    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "done\n");
+    assert_eq!(written(&dir), readings);
     let native_trace: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
     assert_eq!(document["trace"], native_trace);
@@ -701,8 +703,14 @@ fn a_limited_grant_flag_needs_edition_0_4() {
 
 /// Runs the package interpreted and natively with `flags`, both expected to exit with 0, and
 /// returns each engine's printed lines; under the virtual clock, the two traces must be equal
-/// too (on the real clock, `Clock.now` reads differ).
-fn lines_in_both(dir: &Path, name: &str, flags: &[&str]) -> [Vec<String>; 2] {
+/// too (on the real clock, `Clock.now` reads differ). `between` runs after the interpreter, before
+/// the build, to collect what it wrote.
+fn lines_in_both(
+    dir: &Path,
+    name: &str,
+    flags: &[&str],
+    between: impl FnOnce(),
+) -> [Vec<String>; 2] {
     let mut args = vec!["--json", "run", "."];
     args.extend(flags);
     let interpreted = una(dir, &args);
@@ -714,6 +722,7 @@ fn lines_in_both(dir: &Path, name: &str, flags: &[&str]) -> [Vec<String>; 2] {
         .iter()
         .map(|line| line.as_str().unwrap().to_owned())
         .collect();
+    between();
     let built = una(dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
@@ -741,32 +750,51 @@ fn lines_in_both(dir: &Path, name: &str, flags: &[&str]) -> [Vec<String>; 2] {
 fn five_requests_of_a_tasks_statement_share_a_bucket_alike_in_both_engines() {
     // #1154: two per second, five started tasks, each reading the clock after its request.
     // Under `--virtual-time` the readings are 0, 0, 500, 1000 and 1500 in both engines, with
-    // the same trace: the bucket serves the tasks in the order they reached it.
+    // the same trace: the bucket serves the tasks in the order they reached it. Each reading
+    // follows a request whose answer is `internal`, so it is `internal` (ADR 0116 amendment of
+    // 2026-11-09, #898): each task writes it to its own file, and the run prints `done`.
     let server = Server::start();
     let port = server.port;
     let mut starts = String::new();
     for k in 1..=5 {
         starts.push_str(&format!(
-            "    start fetch(\"http://127.0.0.1:{port}/{k}\")\n"
+            "    start fetch(\"http://127.0.0.1:{port}/{k}\", path: \"t{k}.txt\")\n"
         ));
     }
     let program = format!(
-        "module inflight\n\nfetch(url: Text) -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @http: Http[get]\n=\n  let reply = attempt @http.get(url, headers: [], key_name: None)\n  let t = @clock.now()\n  @console.print(\"{{t}}\")\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @http: Http[get]\n=\n  tasks\n{starts}  unit\n"
+        "module inflight\n\nfetch(url: Text, path: Text) -> Unit\n  uses @clock: Clock[now]\n  uses @files: Files[write]\n  uses @http: Http[get]\n=\n  let reply = attempt @http.get(url, headers: [], key_name: None)\n  let t = @clock.now()\n  let written = attempt @files.write(path, content: \"{{t}}\")\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @clock: Clock[now]\n  uses @files: Files[write]\n  uses @http: Http[get]\n=\n  tasks\n{starts}  @console.print(\"done\")\n"
     );
     let dir = package(
         "inflight",
         &format!(
-            "    console\n    clock\n    http \"http://127.0.0.1:{port}\" get\n      at most 2 per second\n"
+            "    console\n    clock\n{OUT}    http \"http://127.0.0.1:{port}\" get\n      at most 2 per second\n"
         ),
         &program,
     );
     let checked = una(&dir, &["check", "."]);
     assert_eq!(checked.status.code(), Some(0), "{checked:?}");
-    let [interpreted, native] = lines_in_both(&dir, "inflight", &["--virtual-time"]);
-    assert_eq!(interpreted, native);
-    let mut readings: Vec<u64> = interpreted.iter().map(|t| t.parse().unwrap()).collect();
-    readings.sort_unstable();
-    assert_eq!(readings, [0, 0, 500, 1000, 1500]);
+    // The readings the tasks wrote, by task, and the files removed for the next engine.
+    let readings = |dir: &Path| -> Vec<String> {
+        (1..=5)
+            .map(|k| {
+                let path = dir.join(format!("out/t{k}.txt"));
+                let found = std::fs::read_to_string(&path).unwrap_or_default();
+                let _ = std::fs::remove_file(&path);
+                found
+            })
+            .collect()
+    };
+    let mut written = Vec::new();
+    let [interpreted, native] = lines_in_both(&dir, "inflight", &["--virtual-time"], || {
+        written.push(readings(&dir));
+    });
+    written.push(readings(&dir));
+    assert_eq!(interpreted, ["done"]);
+    assert_eq!(native, ["done"]);
+    assert_eq!(written[0], written[1]);
+    let mut sorted: Vec<u64> = written[0].iter().map(|t| t.parse().unwrap()).collect();
+    sorted.sort_unstable();
+    assert_eq!(sorted, [0, 0, 500, 1000, 1500]);
     assert_eq!(server.take(), 10);
     let _ = std::fs::remove_dir_all(&dir);
 }

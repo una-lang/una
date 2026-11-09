@@ -1,0 +1,6 @@
+ita clock_reading_via_release
+  version 0.1.0
+  edition 0.4
+
+trusted
+  release

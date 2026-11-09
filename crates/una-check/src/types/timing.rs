@@ -688,6 +688,20 @@ impl Checker<'_, '_, '_> {
         self.findings.http_sites.push(site);
     }
 
+    /// Records a reading of the host's `Clock` at `span`, for `L_clk` (ADR 0116 amendment of
+    /// 2026-11-09, #898, C1). Recorded in every pass, so that pass 1 tells whether the probe of
+    /// pass 2 must compute the readings' labels; only pass 2's sites are labeled.
+    pub(crate) fn clock_site(&mut self, span: una_syntax::Span) {
+        let site = HttpSite {
+            span,
+            function: self.current,
+            unplaced: self.unplaced(),
+            node: self.caller(),
+            construct: self.parts.last().copied(),
+        };
+        self.findings.clock_sites.push(site);
+    }
+
     /// Marks the innermost site as placed: an example's `do` line is the root of its run, which
     /// a test runs alone, so nothing runs beside it, as nothing runs beside `main` (ADR 0116
     /// IF6); the code of a task or a lambda inside it stays unplaced by its own sites.
@@ -2602,6 +2616,20 @@ pub(crate) fn limit_labels(
     concurrency: &Concurrency,
     residue: &Residue,
 ) -> LimitLabels {
+    site_labels(env, graph, concurrency, residue, &findings.http_sites)
+}
+
+/// The rule of [`limit_labels`] over `sites`: the join of `τ⁰` of the bodies of every ancestor of
+/// each site, of its precise `τ_conc` in a function's body (`⊤` elsewhere), and of `residue`.
+/// Shared by `L_lim` and by `L_clk`, the label of a reading of `Clock` (ADR 0116 amendment of
+/// 2026-11-09, #898, C1), whose code that ran before it lies in the same ancestors.
+pub(crate) fn site_labels(
+    env: &Env<'_>,
+    graph: &Graph,
+    concurrency: &Concurrency,
+    residue: &Residue,
+    sites: &[HttpSite],
+) -> LimitLabels {
     let top = Label::top(&env.categories);
     // The precise `τ_conc` of each request (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`,
     // issue #1154), at most the ancestors' `τ⁰` there (see above). Any other site keeps `⊤`,
@@ -2614,7 +2642,7 @@ pub(crate) fn limit_labels(
         }),
         _ => Some(top.clone()),
     };
-    ancestor_labels(env, graph, &beside, residue, &findings.http_sites)
+    ancestor_labels(env, graph, &beside, residue, sites)
 }
 
 /// The preview's `τ_conc` of a site of `L_srv` (ADR 0123, S4 amendment IF-S1), which keeps it

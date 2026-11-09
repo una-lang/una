@@ -1,0 +1,21 @@
+-- test: in a driven package, a reading of `Clock.now` in `step` follows the work of `init`, which the host calls first with no call edge to `step` (ADR 0116 amendment of 2026-11-09, C1 item 4): `init` computes on a `secret` value, so the reading is `secret` and its print is U4003, though `step` itself computes nothing else above `public` (its `input` is `secret`, since the reading raises its timing label, IF7)
+-- spec: spec/14 §3
+-- expect: error U4003 at src/counter.una:20:18
+module counter
+
+import std.drive (Tick)
+
+key() -> secret Int = 7
+
+pub init() -> Int
+=
+  let k = key()
+  0
+
+pub step(edit count: Int, input: secret Tick) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  @console.print("{now}")
+  count = count + 1

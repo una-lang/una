@@ -1,6 +1,7 @@
 //! `std.limit` in both engines (ADR 0117 rule 9, `spec/27 §10`): the same program, interpreted
 //! and native, under `--virtual-time`, where a wait for a refill moves the clock and takes no
-//! wall time, so both engines print the same `Clock.now` readings and agree on the trace. The
+//! wall time, so both engines write the same `Clock.now` readings, `internal` since they follow the
+//! limiter's waits (#898), and agree on the trace. The
 //! program would wait 15 s on the real clock; each engine must finish well under that.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -55,23 +56,24 @@ const PACED: &str = r#"module paced
 import std.limit (Limit, limiter)
 import std.time (second)
 
---- Takes a token and prints when the call returned, on the run's clock. Whether it failed is
+--- Takes a token and writes when the call returned, on the run's clock. Whether it failed is
 --- `internal`, as `Limited` is (S-46), so it is not printed: a call that failed would return at
 --- once, and the readings show that each waited for its token.
 tick(n: Int) -> Unit
   uses @gate: Limit[acquire]
   uses @clock: Clock[now]
-  uses @console: Console[print]
+  uses @files: Files[write]
 =
   let got = attempt @gate.acquire()
   let now = @clock.now()
-  @console.print("{n} at {now}")
+  let written = attempt @files.write("data/t{n}", content: "{n} at {now}")
+  unit
 
 --- Five calls at two per ten seconds: at 0, 0, 5, 10 and 15 seconds of the run's clock.
 run() -> Unit
   uses @gate: Limit[acquire]
   uses @clock: Clock[now]
-  uses @console: Console[print]
+  uses @files: Files[write]
 =
   for n in 1..5
     tick(n)
@@ -79,22 +81,35 @@ run() -> Unit
 pub main() -> Unit
   uses @clock: Clock[now]
   uses @console: Console[print]
+  uses @files: Files[write]
 =
   run() with @gate = limiter(at_most: 2, per: 10 * second, waiting: 8)
   @console.print("done")
 "#;
 
+/// The readings `PACED` wrote under `data/`, in order, and a fresh empty directory for the next
+/// engine. They follow the waits at the limiter, whose outcome is `internal`, so each reading is
+/// `internal` (ADR 0116 amendment of 2026-11-09, #898) and goes to a file, not to the console.
+fn readings(dir: &std::path::Path) -> Vec<String> {
+    let found = (1..=5)
+        .map(|n| std::fs::read_to_string(dir.join(format!("data/data/t{n}"))).unwrap())
+        .collect();
+    std::fs::remove_dir_all(dir.join("data")).unwrap();
+    std::fs::create_dir_all(dir.join("data/data")).unwrap();
+    found
+}
+
 #[test]
 fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
     let dir = package("paced", PACED);
-    let expected = [
-        "1 at 0",
-        "2 at 0",
-        "3 at 5000",
-        "4 at 10000",
-        "5 at 15000",
-        "done",
-    ];
+    let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!("{manifest}    files \"data/\" write\n"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("data/data")).unwrap();
+    let expected = ["1 at 0", "2 at 0", "3 at 5000", "4 at 10000", "5 at 15000"];
 
     let started = Instant::now();
     let interpreted = una_direct(&dir, &["--json", "run", ".", "--virtual-time"]);
@@ -103,9 +118,10 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
     let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
     assert_eq!(
         document["output"],
-        serde_json::json!(expected),
+        serde_json::json!(["done"]),
         "{document}"
     );
+    assert_eq!(readings(&dir), expected);
     assert!(
         interpreted_time < Duration::from_secs(5),
         "the interpreter waited on the wall clock: {interpreted_time:?}"
@@ -127,7 +143,8 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
         .unwrap()
         .lines()
         .collect();
-    assert_eq!(printed, expected);
+    assert_eq!(printed, ["done"]);
+    assert_eq!(readings(&dir), expected);
     assert!(
         native_time < Duration::from_secs(5),
         "the executable waited on the wall clock: {native_time:?}"

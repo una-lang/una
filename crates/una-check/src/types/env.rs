@@ -407,6 +407,10 @@ pub(crate) struct Env<'a> {
     /// probe of pass 2 found, read by the checks of pass 2; a site absent here is `public` (the
     /// first probe).
     pub(crate) within_timing: BTreeMap<Span, Label>,
+    /// `L_clk` of each reading of the host's `Clock`, by its span (ADR 0116 amendment of
+    /// 2026-11-09, #898, C1): what the probe of pass 2 found, read by the checks of pass 2; a
+    /// site absent here is `public` (the first probe).
+    pub(crate) clock_timing: BTreeMap<Span, Label>,
     /// The residue label `L_res` (ADR 0116 P9) that the probe of pass 2 found, already joined
     /// into [`Self::within_timing`], with its sources, which the messages of pass 2 name.
     pub(crate) residue: super::timing::Residue,
@@ -612,6 +616,7 @@ impl<'a> Env<'a> {
             files_written: false,
             file_state: Label::public(),
             within_timing: BTreeMap::new(),
+            clock_timing: BTreeMap::new(),
             residue: super::timing::Residue::none(),
             file_writes: Vec::new(),
             file_calls: Vec::new(),

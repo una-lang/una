@@ -413,6 +413,13 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
         added: &[("U4001", "src/json_labels_0_3.una:25:43")],
         removed: &[("U4001", "src/json_labels_0_3.una:25:47")],
     },
+    // ADR 0116 amendment of 2026-11-09 (#898, C1, C6): a reading of `Clock.now` carries its
+    // timing label from edition 0.4, so the elapsed time of work on a `secret` prints no more.
+    Difference04 {
+        case: "security/clock_reading_edition_0_3",
+        added: &[("U4003", "src/leak.una:15:18")],
+        removed: &[],
+    },
     // ADR 0123 rule 0 (`spec/31 §1`): `std.host` exports `HttpServer` from edition 0.4.
     Difference04 {
         case: "names/host_server_import_0_3",

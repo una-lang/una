@@ -1,0 +1,24 @@
+-- test: a reading of `Clock.now` inside a handler's operation is labeled `⊤`, the preview's `τ_conc` of a site outside a function's body (ADR 0116 amendment of 2026-11-09, C1 item 2): a handler cannot launder the host's clock into an operation of its own whose answer is `public` (U4001 at the answer)
+-- spec: spec/14 §3
+-- expect: error U4001 at src/leak.una:13:5
+module leak
+
+capability Stopwatch
+  op lap() -> Int
+
+handler watch() for Stopwatch
+  uses @clock: Clock[now]
+  op lap() =
+    let now = @clock.now()
+    now
+
+work(n: secret Int) -> secret Int = n * n
+
+pub show(n: secret Int) -> Unit
+  uses @console: Console[print]
+  uses @watch: Stopwatch[lap]
+=
+  let start = @watch.lap()
+  let squared = work(n)
+  let stop = @watch.lap()
+  @console.print("{stop - start} ms")
