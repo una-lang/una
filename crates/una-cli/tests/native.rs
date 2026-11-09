@@ -2976,6 +2976,40 @@ fn a_task_counts_its_depth_from_its_block() {
 }
 
 #[test]
+fn a_task_stack_holds_every_level_its_depth_allows() {
+    // `spec/27 §4` rule 1 (#1152): a task's stack is `16 MiB + d × F` for the program's frame
+    // bound `F`, so a task can run to `--max-depth` and stops there with the depth diagnostic.
+    // At a depth of a million, `d × F` dominates the size, and a bound short by a tenth of the
+    // real frames would stop the task early, the stack's own check (rule 2) firing before the
+    // depth's. Each level runs two frames: `walk` and a lambda that calls it, through a
+    // function value, each holding values live across its call. Native only: the interpreter's
+    // stack is capped at 1 GiB, below what a million of its levels take.
+    let program = "module deep\n\nwalk(n: Int) -> Int\n=\n  let a = n + 1\n  let b = a * 2\n  let c = b + a\n  let d = c * 3\n  let next = fn(x: Int) -> walk(x) + (a + b + c + d) * 0\n  if n == 0 then 0 else next(n - 1) + 1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = walk(499990)\n    let b = walk(3)\n  @console.print(\"done {a} {b}\")\n";
+    let dir = tasks_package("deep", "deep", program);
+    let exe = dir.join("target/una/deep");
+    let run = |depth: &str| {
+        Command::new(&exe)
+            .args(["--max-depth", depth])
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    // 499,990 levels of two calls, and the few of `main` and the block, stay below a million.
+    let reached = run("1000000");
+    assert_eq!(reached.status.code(), Some(0), "{reached:?}");
+    assert_eq!(String::from_utf8_lossy(&reached.stdout), "done 499990 3\n");
+    // Below what the task needs, it stops with U6003 at the call, never past its stack.
+    let past = run("999000");
+    assert_eq!(past.status.code(), Some(1), "{past:?}");
+    let stderr = String::from_utf8_lossy(&past.stderr);
+    assert!(
+        stderr.starts_with("[U6003] Error: this call exceeds the maximum call depth of 999000\n"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_tasks_of_a_run_share_its_memory_budget() {
     // `spec/19 §8` rule 3: `--max-memory` bounds the heaps of all tasks together, and the call
     // of a task that finds the run over its budget is U6003.

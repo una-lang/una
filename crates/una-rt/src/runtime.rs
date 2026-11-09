@@ -512,6 +512,38 @@ pub struct Meta {
     /// Whether the program is of edition 0.4, whose self-test adds the binary32 probes (ADR
     /// 0120 rule 5).
     pub float32_probes: bool,
+    /// The program's frame bound in bytes (`spec/27 §4` rule 1, #1152): the most stack one
+    /// level of call depth takes in its compiled code, from which task stacks are sized
+    /// ([`task_stack_bytes`]). `None` when the description gives none: the size is then the one
+    /// `--max-depth` alone gives.
+    pub frame_bound: Option<usize>,
+}
+
+/// The largest frame bound a description may give (`spec/27 §4` rule 1): the guard region
+/// below each task stack, so that no frame steps over it.
+const MAX_FRAME_BOUND: usize = 64 * 1024;
+
+/// The bytes of a task stack beyond its levels of depth (`spec/27 §4` rule 1): the
+/// [`STACK_RESERVE`] kept free below the budget for the runtime's work after the last check, a
+/// signal handler's frame and the frames at the task's base.
+const TASK_STACK_BASE: usize = 16 * 1024 * 1024;
+
+/// The usable bytes of the stack of a task that may still use `depth` levels of call depth, in
+/// a program whose frame bound is `frame_bound` (`spec/27 §4` rule 1, ADR 0117 amendment of
+/// 2026-11-09, #1152): `16 MiB + depth × frame_bound`, and never more than the size
+/// `--max-depth` alone gives, [`una_interp::stack_bytes`], which a program without a bound
+/// keeps. Both inputs are public, fixed before `main` and the same for every input, so the
+/// size never depends on `secret` data and every pooled stack has one size (#1145). A bound
+/// that were too small stops a task with U6003 at a call ([`enter`]), never past its stack.
+pub(crate) fn task_stack_bytes(depth: usize, frame_bound: Option<usize>) -> usize {
+    let alone = una_interp::stack_bytes(depth).unwrap_or(STACK_RESERVE * 2);
+    match frame_bound {
+        Some(frame) => depth
+            .saturating_mul(frame)
+            .saturating_add(TASK_STACK_BASE)
+            .min(alone),
+        None => alone,
+    }
 }
 
 /// The largest declared memory budget, in MiB, while edition `0.3` is a preview: the default
@@ -678,7 +710,19 @@ impl Meta {
             ),
             None => None,
         };
+        // A frame bound that no code generator writes, 0, not a multiple of 16 or over the guard
+        // region, is no description at all, so the executable refuses to start rather than size
+        // its stacks from it (`spec/27 §4` rule 1).
+        let frame_bound = match value.get("frame_bound") {
+            Some(bound) => Some(
+                usize::try_from(bound.as_u64()?)
+                    .ok()
+                    .filter(|bytes| (16..=MAX_FRAME_BOUND).contains(bytes) && bytes % 16 == 0)?,
+            ),
+            None => None,
+        };
         Some(Meta {
+            frame_bound,
             stops,
             tasks,
             elision,
@@ -943,6 +987,8 @@ pub(crate) struct State {
     pub(crate) failed_write: Option<io::Error>,
     /// The maximum call depth. The current depth is `Hot::depth`, its one copy (ADR 0102).
     max_depth: usize,
+    /// The program's frame bound, which sizes its tasks' stacks ([`task_stack_bytes`]).
+    frame_bound: Option<usize>,
     sites: Arc<Vec<Location>>,
     failure: Option<Arc<Failure>>,
     /// The grants of the run, and the keys of its `keys:` grants, which every task reads.
@@ -1032,6 +1078,7 @@ pub(crate) struct TaskTemplate {
     tracing: bool,
     depth: usize,
     max_depth: usize,
+    frame_bound: Option<usize>,
     sites: Arc<Vec<Location>>,
     failure: Option<Arc<Failure>>,
     grants: Arc<Vec<Grant>>,
@@ -1136,6 +1183,7 @@ impl State {
             tracing: self.trace.is_some(),
             depth,
             max_depth: self.max_depth,
+            frame_bound: self.frame_bound,
             sites: Arc::clone(&self.sites),
             failure: self.failure.clone(),
             grants: Arc::clone(&self.grants),
@@ -1149,7 +1197,7 @@ impl State {
             path: self.path.clone(),
             cancel: self.cancel.clone(),
             shielded: self.shielded,
-            stack: una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2),
+            stack: task_stack_bytes(left, self.frame_bound),
             location: site_location(self, site),
             deadline: crate::deadline::current(),
             race: None,
@@ -1175,7 +1223,7 @@ impl State {
             .saturating_sub(template.depth)
             .min(template.concurrency.task_depth);
         template.max_depth = template.depth.saturating_add(left);
-        template.stack = una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2);
+        template.stack = task_stack_bytes(left, template.frame_bound);
         template
     }
 
@@ -1191,7 +1239,7 @@ impl State {
             .saturating_sub(template.depth)
             .min(template.concurrency.task_depth);
         template.max_depth = template.depth.saturating_add(left);
-        template.stack = una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2);
+        template.stack = task_stack_bytes(left, template.frame_bound);
         template
     }
 
@@ -2367,6 +2415,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         shared,
         failed_write: None,
         max_depth: options.max_depth,
+        frame_bound: meta.frame_bound,
         sites: Arc::new(meta.sites),
         failure: meta.failure.map(Arc::new),
         // The run's limits refill on the run's clock, set just before (ADR 0116 rule 19).
@@ -2477,7 +2526,10 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     // A `tasks` statement is such a construct; its root runs on this scheduler too, below.
     if threads || meta.tasks {
         let sched = crate::sched::Scheduler::new(state.concurrency);
-        if sched.start_all(stack).is_err() {
+        // `spec/27 §4` rule 1 (#1152): the pool's stacks have the size a task at the top asks
+        // for, from the program's frame bound and `--max-depth`, both public.
+        let pooled = task_stack_bytes(state.max_depth, state.frame_bound);
+        if sched.start_all(pooled).is_err() {
             let written = writeln!(
                 stderr,
                 "[{}] Error: the threads and stacks of this run's tasks could not be made",
@@ -3196,6 +3248,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         shared: Arc::clone(&template.shared),
         failed_write: None,
         max_depth: template.max_depth,
+        frame_bound: template.frame_bound,
         sites: Arc::clone(&template.sites),
         failure: template.failure.clone(),
         grants: Arc::clone(&template.grants),
@@ -3286,6 +3339,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         shared: crate::started::RunShared::new(),
         failed_write: None,
         max_depth: options.max_depth,
+        frame_bound: None,
         sites: Arc::new(vec![Location {
             file,
             start: at,
@@ -3769,6 +3823,95 @@ mod tests {
             *seen.lock().unwrap(),
             [Some(Some(((3, 2, 5), (64, 0)))), Some(None)]
         );
+    }
+
+    #[test]
+    fn a_task_stack_is_sized_from_the_frame_bound_and_never_larger() {
+        // `spec/27 §4` rule 1 (#1152): `16 MiB + d × F`, at most the size `--max-depth` alone
+        // gives, which a program without a bound keeps.
+        let alone = una_interp::stack_bytes(10_000).unwrap();
+        assert_eq!(task_stack_bytes(10_000, None), alone);
+        assert_eq!(
+            task_stack_bytes(10_000, Some(128)),
+            16 * 1024 * 1024 + 10_000 * 128
+        );
+        assert_eq!(task_stack_bytes(10_000, Some(MAX_FRAME_BOUND)), alone);
+        for depth in [0, 1, 50, 10_000, 1_000_000, usize::MAX] {
+            for bound in [None, Some(16), Some(128), Some(4096), Some(MAX_FRAME_BOUND)] {
+                let size = task_stack_bytes(depth, bound);
+                assert!(size <= task_stack_bytes(depth, None), "{depth} {bound:?}");
+                assert!(size >= TASK_STACK_BASE.min(task_stack_bytes(depth, None)));
+                if depth < usize::MAX {
+                    assert!(
+                        size <= task_stack_bytes(depth + 1, bound),
+                        "{depth} {bound:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_description_gives_a_frame_bound_a_code_generator_could_write_or_none() {
+        // `spec/27 §4` rule 1: a positive multiple of 16 up to the 64 KiB guard, or absent; any
+        // other value is no description, so no stack is sized from it.
+        let meta = |bound: &str| Meta::parse(&format!(r#"{{"grants":[],"uses":[]{bound}}}"#));
+        assert_eq!(meta("").unwrap().frame_bound, None);
+        assert_eq!(
+            meta(r#","frame_bound":128"#).unwrap().frame_bound,
+            Some(128)
+        );
+        assert_eq!(
+            meta(r#","frame_bound":65536"#).unwrap().frame_bound,
+            Some(MAX_FRAME_BOUND)
+        );
+        for bad in ["0", "8", "120", "65552", "-16", "1.5", "\"128\"", "null"] {
+            assert!(meta(&format!(r#","frame_bound":{bad}"#)).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "switches coroutines in assembly, which Miri cannot")]
+    fn the_pooled_stack_size_is_the_same_whatever_main_does() {
+        // #1152, the invariant of #1145: the pool's stacks are mapped before `main` at one size,
+        // from the frame bound and `--max-depth`, both public. Two runs whose `main` differs
+        // only in a value standing for `secret` input, which decides how many tasks live at
+        // once, see the same size before and after, and so does every task's template.
+        let args = strings(&["--workers", "2", "--max-depth", "10000"]);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for secret in [0usize, 3, 100] {
+            let record = Arc::clone(&seen);
+            let status = start(
+                &args,
+                r#"{"grants":[],"uses":[],"threads":true,"frame_bound":128}"#,
+                move || {
+                    let observed = with_state(|state| {
+                        let sched = state.sched.clone()?;
+                        let before = sched.stack_sizes();
+                        let template = state.for_tasks(0).stack;
+                        sched.churn(secret, template);
+                        Some((before, sched.stack_sizes(), template))
+                    });
+                    record.lock().unwrap().push(observed);
+                    0
+                },
+            );
+            assert_eq!(status, 0);
+        }
+        let size = 16 * 1024 * 1024 + 10_000 * 128;
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        for observed in seen.iter() {
+            let (before, after, template) = observed.clone().unwrap().unwrap();
+            // Usable sizes are rounded up to whole pages.
+            assert_eq!(before.len(), 1, "{before:?}");
+            assert!(
+                before[0] >= size && before[0] < size + 64 * 1024,
+                "{before:?}"
+            );
+            assert_eq!(after, before);
+            assert!(template <= before[0]);
+        }
     }
 
     #[test]
