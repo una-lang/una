@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -43,7 +44,7 @@ CONTROL = reply(200, b"seen /control", close=True)
 
 class FamilyN(unittest.TestCase):
     def test_family_n_is_apart_from_the_fixed_run(self):
-        self.assertEqual(sorted(SERVER_OPERATORS), ["N1", "N2", "N3", "N4"])
+        self.assertEqual(sorted(SERVER_OPERATORS), ["N1", "N2", "N3", "N4", "N5"])
         self.assertFalse(set(SERVER_OPERATORS) & set(OPERATORS))
         self.assertFalse(set(SERVER_OPERATORS) & set(families.TIMING_OPERATORS))
         self.assertFalse(any(families.family_of(op) == "N" for op in OPERATORS))
@@ -56,7 +57,7 @@ class FamilyN(unittest.TestCase):
         self.assertNotIn("N1", {p.op for p in gate.programs()[:200]})
 
     def test_every_form_runs_at_any_count(self):
-        forms = {(op, f) for op, (_m, fs) in servers.CASES.items() for f in fs}
+        forms = {(op, f) for op, fs in servers.FORMS.items() for f in fs}
         for count in (1, 5, serving.COUNT):
             progs = serving.programs(count=count)
             self.assertEqual({(p.op, p.variant) for p in progs}, forms, count)
@@ -75,6 +76,8 @@ class FamilyN(unittest.TestCase):
 
     def test_a_server_package_and_its_script(self):
         for p in serving.programs(count=3):
+            if p.op == "N5":
+                continue
             self.assertEqual(p.cls, OPEN)
             self.assertIn("edition 0.4", p.files["ita.una"])
             self.assertIn(servers.GRANT, p.files["ita.una"])
@@ -127,6 +130,74 @@ class FamilyN(unittest.TestCase):
         # `HTTP/1.0` closes the connection after its reply: the request behind it is never read.
         self.assertEqual(len(first("N1", "http10").serve["answers"]), 1)
         self.assertEqual(len(first("N1", "plain").serve["answers"]), 2)
+
+
+class FamilyN5(unittest.TestCase):
+    """N5, replies with injected headers (`spec/31 §5` rule 1)."""
+
+    def programs(self, count=3):
+        return [p for p in serving.programs(count=count) if p.op == "N5"]
+
+    def test_every_form_in_both_modes(self):
+        self.assertEqual({p.variant for p in self.programs()}, set(servers.FORMS["N5"]))
+        self.assertEqual(len(servers.FORMS["N5"]), 2 * len(servers.N5_FORMS))
+
+    def test_one_connection_and_a_value_the_request_line_can_carry(self):
+        for p in self.programs():
+            self.assertEqual(p.serve["kind"], "reply")
+            lines = [json.loads(x) for x in p.files["script.jsonl"].splitlines()]
+            self.assertEqual({x["connection"] for x in lines}, {1})
+            data = base64.b64decode(lines[1]["bytes"])
+            line = data.split(b"\r\n", 1)[0]
+            # The request itself is well-formed: every byte of its target is printable ASCII.
+            self.assertTrue(all(0x21 <= b <= 0x7E for b in line.split(b" ")[1]), p.name)
+            self.assertIn(b"\r\nConnection: close\r\n", data)
+            text = p.files["src/srv.una"]
+            self.assertNotIn("NAME", text)
+            self.assertNotIn("STATUS", text)
+            # A refused value carries the marker, so an injection that reaches the wire shows.
+            if p.serve["status"] == "refused" and p.variant.startswith("value-"):
+                target = line.split(b" ")[1].decode("ascii")
+                self.assertIn(servers.MARK, urllib.parse.unquote(target), p.name)
+
+    def test_una_text_writes_every_control_by_an_escape(self):
+        lit = servers.una_text('a"b\\c{d}\n\t\r\x00\x7fç')
+        self.assertEqual(lit, '"a\\"b\\\\c\\{d\\}\\n\\t\\u{D}\\u{0}\\u{7F}ç"')
+        self.assertFalse(any(ord(c) < 0x20 or ord(c) == 0x7F for c in lit))
+
+    def test_query_encoding_is_ascii(self):
+        self.assertEqual(servers._q("ç a\r\n"), "%C3%A7%20a%0D%0A")
+        self.assertEqual(servers._q("A-z._~9"), "A-z._~9")
+
+    def judge(self, expect, data, ends=("closed",)):
+        text = wire_text({1: (data, set(ends))})
+        return serving.judge_reply(dict(expect, marker=servers.MARK),
+                                   serving.read_wire(text), 0)
+
+    def test_a_refused_reply_with_a_fallback_or_the_host_answer(self):
+        fallback = {"status": "refused", "mode": "fallback"}
+        auto = {"status": "refused", "mode": "auto"}
+        self.assertEqual(self.judge(fallback, reply(502, b"bad reply", close=True)), [])
+        self.assertEqual(self.judge(auto, reply(500, close=True)), [])
+        self.assertTrue(self.judge(fallback, reply(500, close=True)))
+        self.assertTrue(self.judge(auto, reply(200, b"ok", close=True)))
+
+    def test_an_injection_on_the_wire_is_a_finding(self):
+        expect = {"status": "refused", "mode": "auto"}
+        split = (b"HTTP/1.1 200 OK\r\n" + DATE + b"X-Echo: a\r\nSet-Cookie: pwn=1\r\n"
+                 b"Content-Length: 2\r\n\r\nok")
+        found = self.judge(expect, split)
+        self.assertTrue(any("injected" in f for f in found), found)
+        found = self.judge(expect, reply(500, close=True) + reply(200, b"PWN"))
+        self.assertTrue(any("injected" in f for f in found), found)
+
+    def test_an_echoed_header_sent_once_as_given(self):
+        expect = {"status": 200, "mode": "fallback", "header": ["X-Echo", "a b"]}
+        good = (b"HTTP/1.1 200 OK\r\n" + DATE + b"Content-Length: 2\r\nX-Echo: a b\r\n"
+                b"Connection: close\r\n\r\nok")
+        self.assertEqual(self.judge(expect, good), [])
+        self.assertTrue(self.judge(expect, good.replace(b"X-Echo: a b", b"X-Echo: ab")))
+        self.assertTrue(self.judge(expect, good, ends=()))
 
 
 class Judge(unittest.TestCase):
