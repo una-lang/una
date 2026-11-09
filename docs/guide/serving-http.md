@@ -94,7 +94,7 @@ pub main() -> Unit
 
 ## Running a server
 
-`una run` serves a package with a `serve` section, and a program of the language form, in the interpreter over live listeners, after every check of the program and of its grants (`spec/31 §1` rule 10, `§7` rule 5). From `examples/health`:
+`una run` serves a package with a `serve` section, and a program of the language form, in the interpreter over live listeners, and so does the executable that `una build` makes of it (below), after every check of the program and of its grants (`spec/31 §1` rule 10, `§7` rule 5). From `examples/health`:
 
 ```sh
 una run .
@@ -112,7 +112,7 @@ A grant given with `--grant` is written `` serving on 127.0.0.1:8080 (granted by
 
 Only a run that can take a host stop, one with a `serve` section, a driver, or a `main` that says `diverges`, installs the handlers of SIGINT and SIGTERM. A server of the language form whose `main` does not say `diverges` keeps their default actions: SIGTERM ends its process at once, with no drain, and a shell reports exit code 143 (`spec/31 §6` rule 14).
 
-**Building.** `una build` of a program that serves is a usage error, exit code 2, before anything is made, in this release: "`una run` serves it, but `una build` does not build a program that serves in this release yet" for the language form (`spec/31 §1` rule 10), and, for a package with a `serve` section, a usage error that says it does not build the driver in this release yet (`spec/31 §7` rule 5).
+**Building.** `una build` builds a program that serves, a package with a `serve` section or a program of the language form, into a native executable, with no test flag (`spec/31 §1` rule 10, `§7` rule 5). The executable checks its grants, those of `run grants` and of its own `--grant` flags, before `main`, writes the same `serving on ...` line for each address, serves as `una run` does, and drains at SIGINT or SIGTERM as above. `una build` of a package with a `serve` section needs no `serve:` grant, since the executable's may come from its flags; an executable started without one is a usage error, exit code 2 (`spec/31 §7` rule 1).
 
 ## Testing a server
 

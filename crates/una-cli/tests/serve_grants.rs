@@ -349,30 +349,63 @@ fn executables_check_serve_grants_as_una_run_does() {
 /// A server of the language form (`spec/31 §1` rule 6), whose `main` uses `HttpServer`.
 const SERVER: &str = "module main\n\nimport std.host (Exchange, HttpServer, Reply)\n\nanswer(exchange: internal Exchange) -> Unit\n  uses @server: HttpServer[reply]\n=\n  @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: \"\"))\n    if error use unit\n\npub main() -> Unit\n  uses @server: HttpServer[next, reply, close]\n  diverges\n=\n  tasks\n    for ever\n      let next = attempt @server.next()\n      when next\n        is Ok(exchange) ->\n          start answer(exchange)\n        is Err(failure) -> unit\n    on stop\n      @server.close()\n";
 
-#[test]
-fn una_run_serves_a_program_whose_main_uses_http_server_and_una_build_fails_closed() {
-    // `spec/31 §1` rule 10: `una run` of a program that serves runs it, without any test flag:
-    // a request gets the program's `204`, and a host stop ends the run with exit code 0.
-    // `una build` of it is still a usage error before anything is made.
+/// A run under test that is killed when it is dropped, so a test that fails never leaves it
+/// serving.
+struct Served(Option<std::process::Child>);
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Served {
+    fn child(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().unwrap()
+    }
+
+    /// SIGTERM, then its exit status within 30 s; past that the test fails and the run is
+    /// killed.
+    fn terminate(&mut self) -> std::process::ExitStatus {
+        let killed = Command::new("kill")
+            .args(["-TERM", &self.child().id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.child().try_wait().unwrap() {
+                self.0 = None;
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the run did not end within 30 s of SIGTERM"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+/// One `GET /` to `command`, a run that serves on `port`, then SIGTERM: the reply and the run.
+fn serve_once(mut command: Command, port: u16) -> (String, std::process::Output) {
     use std::io::{Read as _, Write as _};
-    let port = free_port();
-    let dir = package(
-        "serving",
-        &format!("    serve \"http://127.0.0.1:{port}\"\n"),
-    );
-    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
-    let checked = una(&dir, &["check"]);
-    assert!(checked.status.success(), "{}", stderr(&checked));
-    let mut served = Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env("NO_COLOR", "1")
-        .env_remove("UNA_TEST_RUN_SERVER")
-        .arg("run")
-        .current_dir(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut served = Served(Some(
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let mut pipe = served.child().stderr.take().unwrap();
+    let errors = std::thread::spawn(move || {
+        let mut errors = Vec::new();
+        let _ = pipe.read_to_end(&mut errors);
+        errors
+    });
     let started = std::time::Instant::now();
     let mut stream = loop {
         if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
@@ -382,7 +415,10 @@ fn una_run_serves_a_program_whose_main_uses_http_server_and_una_build_fails_clos
             started.elapsed() < std::time::Duration::from_secs(60),
             "the run never listened"
         );
-        assert!(served.try_wait().unwrap().is_none(), "the run ended");
+        assert!(
+            served.child().try_wait().unwrap().is_none(),
+            "the run ended"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     stream
@@ -393,30 +429,65 @@ fn una_run_serves_a_program_whose_main_uses_http_server_and_una_build_fails_clos
         .unwrap();
     let mut reply = Vec::new();
     let _ = stream.read_to_end(&mut reply);
-    let reply = String::from_utf8_lossy(&reply).into_owned();
-    let killed = Command::new("kill")
-        .args(["-TERM", &served.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    let ended = served.wait_with_output().unwrap();
-    assert!(
-        reply.starts_with("HTTP/1.1 204"),
-        "{reply}{}",
-        stderr(&ended)
+    let status = served.terminate();
+    let ended = std::process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr: errors.join().unwrap(),
+    };
+    (String::from_utf8_lossy(&reply).into_owned(), ended)
+}
+
+#[test]
+fn una_run_and_the_executable_una_build_makes_serve_a_program_whose_main_uses_http_server() {
+    // `spec/31 §1` rule 10: `una run` of a program that serves runs it, and `una build` builds
+    // it, without any test flag: a request gets the program's `204`, and a host stop ends the
+    // run with exit code 0, in both engines.
+    let port = free_port();
+    let dir = package(
+        "serving",
+        &format!("    serve \"http://127.0.0.1:{port}\"\n"),
     );
-    assert_eq!(ended.status.code(), Some(0), "{}", stderr(&ended));
-    // The address it served, granted by `run grants` (`spec/31 §6` rule 14).
-    assert_eq!(
-        stderr(&ended),
-        format!("serving on 127.0.0.1:{port} (granted by the package)\n")
-    );
-    let wanted = "`main.main` uses `HttpServer`: `una run` serves it, but `una build` does not build a program that serves in this release yet";
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let checked = una(&dir, &["check"]);
+    assert!(checked.status.success(), "{}", stderr(&checked));
+    runtime();
     let out = dir.join("server");
-    let built = una(&dir, &["build", "--out", out.to_str().unwrap()]);
-    assert_eq!(built.status.code(), Some(2), "{}", stderr(&built));
-    assert!(stderr(&built).contains(wanted), "{}", stderr(&built));
-    assert!(!out.exists());
+    let built = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .args(["build", "--out", out.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{}", stderr(&built));
+    let mut interpreted = Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreted
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .arg("run")
+        .current_dir(&dir);
+    let mut native = Command::new(&out);
+    native
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .current_dir(&dir);
+    for (engine, command) in [("interpreter", interpreted), ("native", native)] {
+        let (reply, ended) = serve_once(command, port);
+        assert!(
+            reply.starts_with("HTTP/1.1 204"),
+            "{engine}: {reply}{}",
+            stderr(&ended)
+        );
+        assert_eq!(ended.status.code(), Some(0), "{engine}: {}", stderr(&ended));
+        // The address it served, granted by `run grants` (`spec/31 §6` rule 14).
+        assert_eq!(
+            stderr(&ended),
+            format!("serving on 127.0.0.1:{port} (granted by the package)\n"),
+            "{engine}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -424,12 +495,14 @@ fn una_run_serves_a_program_whose_main_uses_http_server_and_una_build_fails_clos
 /// code.
 fn notices(mut command: Command, count: usize) -> (Vec<String>, Option<i32>) {
     use std::io::BufRead as _;
-    let mut served = command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pipe = served.stderr.take().unwrap();
+    let mut served = Served(Some(
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let pipe = served.child().stderr.take().unwrap();
     let (sender, lines) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
@@ -445,12 +518,7 @@ fn notices(mut command: Command, count: usize) -> (Vec<String>, Option<i32>) {
                 .expect("a notice")
         })
         .collect();
-    let killed = Command::new("kill")
-        .args(["-TERM", &served.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    (seen, served.wait().unwrap().code())
+    (seen, served.terminate().code())
 }
 
 #[test]
@@ -466,7 +534,6 @@ fn a_run_that_serves_names_each_grant_in_order_in_both_engines() {
     std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
     let built = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env("UNA_TEST_BUILD_SERVER", "1")
         .arg("build")
         .current_dir(&dir)
         .output()
@@ -501,7 +568,9 @@ const BOUNDED_SERVER: &str = "module main\n\nimport std.host (HttpServer, Reply)
 fn a_language_form_server_without_diverges_ends_by_the_default_action_of_sigterm() {
     // ADR 0116 rule 18, `spec/31 §6` rule 14: only a run that can take a host stop installs the
     // handlers of SIGINT and SIGTERM. A `main` without `diverges` takes none, so SIGTERM ends
-    // the run at once with 143 (128 + 15), with no drain, while it waits in `next`.
+    // the run at once with 143 (128 + 15), with no drain, while it waits in `next`: under
+    // `una run` and in the executable that `una build` makes.
+    use std::os::unix::process::ExitStatusExt as _;
     let port = free_port();
     let dir = package(
         "bounded",
@@ -510,71 +579,151 @@ fn a_language_form_server_without_diverges_ends_by_the_default_action_of_sigterm
     std::fs::write(dir.join("src/main.una"), BOUNDED_SERVER).unwrap();
     let checked = una(&dir, &["check"]);
     assert!(checked.status.success(), "{}", stderr(&checked));
-    let mut served = Command::new(env!("CARGO_BIN_EXE_una"))
+    runtime();
+    let out = dir.join("server");
+    let built = una(&dir, &["build", "--out", out.to_str().unwrap()]);
+    assert!(built.status.success(), "{}", stderr(&built));
+    let mut interpreted = Command::new(env!("CARGO_BIN_EXE_una"));
+    interpreted
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env("NO_COLOR", "1")
         .env_remove("UNA_TEST_RUN_SERVER")
-        .arg("run")
-        .current_dir(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let started = std::time::Instant::now();
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "the run never listened"
-        );
-        assert!(served.try_wait().unwrap().is_none(), "the run ended");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        .arg("run");
+    for (engine, mut command) in [("interpreter", interpreted), ("native", Command::new(&out))] {
+        let mut served = Served(Some(
+            command
+                .env("NO_COLOR", "1")
+                .current_dir(&dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        ));
+        let started = std::time::Instant::now();
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "{engine}: the run never listened"
+            );
+            assert!(
+                served.child().try_wait().unwrap().is_none(),
+                "{engine}: the run ended"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let status = served.terminate();
+        assert_eq!(status.code(), None, "{engine}");
+        assert_eq!(status.signal(), Some(15), "{engine}");
     }
-    let killed = Command::new("kill")
-        .args(["-TERM", &served.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    let ended = served.wait_with_output().unwrap();
-    use std::os::unix::process::ExitStatusExt as _;
-    assert_eq!(ended.status.code(), None, "{}", stderr(&ended));
-    assert_eq!(ended.status.signal(), Some(15), "{}", stderr(&ended));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn una_run_of_a_program_that_serves_an_https_grant_fails_closed() {
+fn an_executable_whose_address_is_taken_is_a_usage_error() {
+    // `spec/31 §2` rule 7: an address the run cannot bind is a usage error before `main`, in the
+    // executable that `una build` makes of a program that serves, as in `una run`, with no hang.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let dir = package(
+        "taken-native",
+        &format!("    serve \"http://127.0.0.1:{port}\"\n"),
+    );
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    runtime();
+    let out = dir.join("server");
+    let built = una(&dir, &["build", "--out", out.to_str().unwrap()]);
+    assert!(built.status.success(), "{}", stderr(&built));
+    let mut served = Served(Some(
+        Command::new(&out)
+            .env("NO_COLOR", "1")
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while served.child().try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "the executable hung");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let ended = served.0.take().unwrap().wait_with_output().unwrap();
+    assert_eq!(ended.status.code(), Some(2), "{}", stderr(&ended));
+    assert!(
+        stderr(&ended).starts_with(&format!("error: cannot listen on `127.0.0.1:{port}`")),
+        "{}",
+        stderr(&ended)
+    );
+    assert_eq!(stdout(&ended), "", "main never starts");
+    drop(taken);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_run_of_a_program_that_serves_an_https_grant_fails_closed_in_both_engines() {
     // `spec/31 §6` rule 10: no TLS server is built while the TLS provider is undecided (#1059),
     // so a run that would serve an `https` grant is a usage error before `main`, with valid
-    // files, and never serves plain bytes on the address.
+    // files, and never serves plain bytes on the address: in `una run` with a flag, and with
+    // the grant in `run grants` in `una run` and in the executable that `una build` makes.
     let port = free_port();
-    let dir = package("https", "");
-    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
     let key = rcgen::KeyPair::generate().unwrap();
     let cert = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
         .unwrap()
         .self_signed(&key)
         .unwrap();
-    let (chain, key_file) = (dir.join("chain.pem"), dir.join("key.pem"));
-    std::fs::write(&chain, cert.pem()).unwrap();
-    std::fs::write(&key_file, key.serialize_pem()).unwrap();
-    std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let tls = |dir: &Path| {
+        let (chain, key_file) = (dir.join("chain.pem"), dir.join("key.pem"));
+        std::fs::write(&chain, cert.pem()).unwrap();
+        std::fs::write(&key_file, key.serialize_pem()).unwrap();
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        (chain, key_file)
+    };
+    let refused = |engine: &str, output: Output| {
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{engine}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("an https serve grant cannot be served yet"),
+            "{engine}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&output), "", "{engine}: main never starts");
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "{engine}: a listener is open"
+        );
+    };
+    let dir = package("https", "");
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    let (chain, key_file) = tls(&dir);
     let spec = format!(
         "serve:https://127.0.0.1:{port};certificate={};key={}",
         chain.display(),
         key_file.display()
     );
-    let output = una(&dir, &["run", "--grant", &spec]);
-    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
-    assert!(
-        stderr(&output).contains("an https serve grant cannot be served yet"),
-        "{}",
-        stderr(&output)
+    refused("flag", una(&dir, &["run", "--grant", &spec]));
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = package(
+        "https-built",
+        &format!(
+            "    serve \"https://127.0.0.1:{port}\"\n      certificate \"chain.pem\"\n      key \"key.pem\"\n"
+        ),
     );
-    assert_eq!(stdout(&output), "", "main never starts");
-    assert!(
-        std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
-        "a listener is open"
-    );
+    std::fs::write(dir.join("src/main.una"), SERVER).unwrap();
+    tls(&dir);
+    runtime();
+    let out = dir.join("server");
+    let built = una(&dir, &["build", "--out", out.to_str().unwrap()]);
+    assert!(built.status.success(), "{}", stderr(&built));
+    refused("interpreter", una(&dir, &["run"]));
+    let native = Command::new(&out)
+        .env("NO_COLOR", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    refused("native", native);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -107,19 +107,13 @@ pub(crate) fn build_command(
     // whose `main` runs.
     let (manifest, _) = crate::package::project(&package);
     // The host-driven form of a server (ADR 0123 rule 16): the module's shapes are a usage
-    // error; then the driver, whose operations of `HttpServer` run only in the toolchain's own
-    // test builds (`spec/31 §1` rule 10), fails closed in every other build. The grants of the
-    // executable may come from its flags, so a build does not require a `serve:` grant.
-    #[cfg(feature = "test-hooks")]
-    let test_server =
-        crate::variable(options.environment, "UNA_TEST_BUILD_SERVER").as_deref() == Some("1");
-    #[cfg(not(feature = "test-hooks"))]
-    let test_server = false;
+    // error; then `una build` builds the driver, as `una run` runs it (`spec/31 §1` rule 10,
+    // §7 rule 5). The grants of the executable may come from its flags, so a build does not
+    // require a `serve:` grant.
     if let Some(serve) = &manifest.serve {
         let module = serve.module.value.as_str();
         let refused = match crate::runtime::served_module(&analysis, &package.sources, module) {
             Err(message) => Some(message),
-            Ok(()) if !test_server => Some(crate::runtime::serve_pending(module)),
             // `within` is U4003 under the preview's `L_srv` (`spec/31 §7` rule 3 item 7), so a
             // package that checks has none; the driver never runs without the deadline it
             // names.
@@ -170,15 +164,8 @@ pub(crate) fn build_command(
         };
         (entry, main, ["main"].as_slice())
     };
-    // The toolchain's own test builds build a program that serves when `UNA_TEST_BUILD_SERVER`
-    // is 1, for the runs of `tests/serve_runs/` in native code, which its runtime's test hook
-    // feeds with a script (ADR 0123 rule 21); every other build keeps the usage error of
-    // `spec/31 §1` rule 10.
-    let pending = !test_server;
-    if pending && let Some(message) = crate::runtime::server_pending(&analysis, &entry, started) {
-        writeln!(stderr, "error: {message}")?;
-        return Ok(ExitStatus::Usage);
-    }
+    // A program whose entry functions use `HttpServer` builds as any other (`spec/31 §1` rule
+    // 10): its executable starts the serve threads before `main` (§6 rule 14).
     // The description the executable reads at start: `[run] grants`, and every `uses` of
     // `main`, or of the driven functions, with where it is written, for U3012 (`spec/16 §3`).
     let modules = Modules {

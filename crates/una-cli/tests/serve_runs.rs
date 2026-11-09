@@ -34,7 +34,7 @@
 //! every counter, reserve and share must be zero, and no reply right may be left.
 //!
 //! The same case then runs as a native executable under `--virtual-time` (ADR 0117 rule 12),
-//! built by a `una` of the toolchain's tests with `UNA_TEST_BUILD_SERVER=1` and linked with a
+//! built by `una build`, which needs no test flag (`spec/31 §1` rule 10), and linked with a
 //! runtime built with its `test-hooks`, which serves the same scripted engine
 //! (`una_http::serve::script`) when `UNA_TEST_SERVE_SCRIPT` names the case: its bytes, output,
 //! completion and trace must be the interpreter's, byte for byte.
@@ -44,9 +44,9 @@
 //! written out in the language form, and each `serve_section_program_<case>` likewise for
 //! `serve_section_<case>`: their bytes and traces must be the driver's, in both engines.
 //!
-//! `una run` and `una build` themselves still refuse these programs (`spec/31 §1` rule 10): this
-//! harness calls the interpreter with the engine directly, and builds the native executable
-//! through the test hook, until the serve threads start before `main`.
+//! `una run` and `una build` serve these programs over live listeners (`spec/31 §1` rule 10);
+//! this harness calls the interpreter with the scripted engine directly, and the native
+//! executable takes the script through its runtime's test hook, which only those builds compile.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -782,7 +782,6 @@ fn build_native(dir: &Path, tag: &str) -> (PathBuf, PathBuf, String) {
     let built = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("UNA_RT_LIB", &runtime)
-        .env("UNA_TEST_BUILD_SERVER", "1")
         .env("NO_COLOR", "1")
         .args(["build", "."])
         .current_dir(&package)

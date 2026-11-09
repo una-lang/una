@@ -1,8 +1,7 @@
 //! The `serve` section of `ita.una` (`spec/31 §7`, ADR 0123 rules 16 and 22): the usage errors of
 //! `una run` and `una build` for a module without the shapes of `handle` and `on_stop` and for a
-//! run without a `serve:` grant, the driver that `una run` runs, the build's fail-closed usage
-//! error while it does not build the driver, the tests that call `handle` directly, and the
-//! report's server entries. Every package lies below a
+//! run without a `serve:` grant, the driver that `una run` runs and `una build` builds, the
+//! `within` both refuse, the tests that call `handle` directly, and the report's server entries. Every package lies below a
 //! sealed directory (#1560).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -68,9 +67,6 @@ fn package(name: &str, grants: &str, health: &str) -> PathBuf {
 
 const LOOPBACK: &str = "    serve \"http://127.0.0.1:8080\"";
 
-/// The usage error of `una build` of a package with a `serve` section (`spec/31 §7` rule 5).
-const PENDING: &str = "`una build` does not build the driver in this release yet";
-
 /// A port the kernel had free a moment ago.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -80,18 +76,61 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// A run under test that is killed when it is dropped, so a test that fails never leaves it
+/// serving.
+struct Served(Option<std::process::Child>);
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Served {
+    fn child(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().unwrap()
+    }
+
+    /// SIGTERM, then its exit status within 30 s; past that the test fails and the run is
+    /// killed.
+    fn terminate(&mut self) -> std::process::ExitStatus {
+        let killed = Command::new("kill")
+            .args(["-TERM", &self.child().id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.child().try_wait().unwrap() {
+                self.0 = None;
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the run did not end within 30 s of SIGTERM"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
 /// Spawns `command`, which serves the section of `HEALTH` on `port`; waits for the first line
 /// of its stderr, the notice of the address it serves (`spec/31 §6` rule 14), which comes before
 /// any request; asks it `GET /health`, then sends it SIGTERM: the notice, the reply's status
 /// line, the run's exit code and the rest of its stderr.
 fn serve_once(mut command: Command, port: u16) -> (String, String, Option<i32>, String) {
     use std::io::{BufRead, Read, Write};
-    let mut served = command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pipe = served.stderr.take().unwrap();
+    let mut served = Served(Some(
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let pipe = served.child().stderr.take().unwrap();
     let (sender, lines) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines() {
@@ -115,12 +154,7 @@ fn serve_once(mut command: Command, port: u16) -> (String, String, Option<i32>, 
     let _ = stream.read_to_end(&mut reply);
     let reply = String::from_utf8_lossy(&reply).into_owned();
     let status = reply.lines().next().unwrap_or("").to_owned();
-    let killed = Command::new("kill")
-        .args(["-TERM", &served.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    let code = served.wait().unwrap().code();
+    let code = served.terminate().code();
     let rest: Vec<String> = lines.iter().collect();
     (notice, status, code, rest.join("\n"))
 }
@@ -238,7 +272,6 @@ fn the_final_grants_of_a_run_check_handle() {
         message.contains("U3012") && message.contains("`handle` uses `print` of `Console`"),
         "{message}"
     );
-    assert!(!message.contains(PENDING), "{message}");
 }
 
 #[test]
@@ -254,10 +287,10 @@ fn a_requires_on_handle_is_refused() {
 }
 
 #[test]
-fn una_run_serves_and_the_build_fails_closed_before_anything_is_made() {
+fn una_run_serves_and_so_does_the_executable_una_build_makes() {
     // `spec/31 §1` rule 10, §7 rule 5: `una run` runs the driver, which answers `GET /health`
-    // with `200` and ends with exit code 0 at a host stop; `una build` still refuses the
-    // package, exit code 2, and writes no executable.
+    // with `200` and ends with exit code 0 at a host stop; `una build`, with the plain
+    // toolchain and no test flag, builds the driver into an executable that does the same.
     let port = free_port();
     let dir = package(
         "runs",
@@ -282,16 +315,21 @@ fn una_run_serves_and_the_build_fails_closed_before_anything_is_made() {
     assert_eq!(code, Some(0), "{message}");
     // The notice is the run's only line on stderr.
     assert_eq!(message, "");
-    let build = una(&dir, &["build", ".", "--out", "app"]);
-    assert_eq!(build.status.code(), Some(2), "{}", stderr(&build));
-    assert!(
-        stderr(&build).contains("the `serve` section's module `health` is checked")
-            && stderr(&build).contains(PENDING),
-        "{}",
-        stderr(&build)
+    let build = plain_build(&dir);
+    assert!(build.status.success(), "{}", stderr(&build));
+    let mut command = Command::new(dir.join("app"));
+    command
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .current_dir(&dir);
+    let (notice, status, code, message) = serve_once(command, port);
+    assert_eq!(
+        notice,
+        format!("serving on 127.0.0.1:{port} (granted by the package)")
     );
-    assert!(!stderr(&build).contains("address"), "{}", stderr(&build));
-    assert!(!dir.join("app").exists(), "no executable is written");
+    assert_eq!(status, "HTTP/1.1 200 OK", "{message}");
+    assert_eq!(code, Some(0), "{message}");
+    assert_eq!(message, "");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -436,14 +474,13 @@ fn a_package_that_serves_nothing_has_no_server_entries() {
     assert_eq!(document["warnings"], serde_json::json!([]));
 }
 
-/// `una build . --out app` of the package in `dir` in the toolchain's test build, which builds
-/// the driver of a `serve` section (`spec/31 §1` rule 10).
-fn test_build(dir: &Path) -> Output {
+/// `una build . --out app` of the package in `dir`, which builds the driver of a `serve` section
+/// with no test flag (`spec/31 §1` rule 10).
+fn plain_build(dir: &Path) -> Output {
     native_build::runtime();
     Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("NO_COLOR", "1")
-        .env("UNA_TEST_BUILD_SERVER", "1")
         .args(["build", ".", "--out", "app"])
         .current_dir(dir)
         .output()
@@ -457,7 +494,7 @@ fn an_executable_without_a_serve_grant_is_the_usage_error_of_rule_1() {
     // executable that `una build` writes gives the error `una run` gives. The build itself
     // takes no grant: the executable's may come from its flags.
     let dir = package("ungranted-native", "    console", HEALTH);
-    let built = test_build(&dir);
+    let built = plain_build(&dir);
     assert!(built.status.success(), "{}", stderr(&built));
     let ran = Command::new(dir.join("app"))
         .env("NO_COLOR", "1")
@@ -534,7 +571,7 @@ fn a_serve_section_with_within_is_refused_by_the_build_and_the_executable() {
         manifest.replace("  module health\n", "  module health\n  within 5000\n"),
     )
     .unwrap();
-    let built = test_build(&dir);
+    let built = plain_build(&dir);
     assert_eq!(built.status.code(), Some(1), "{}", stderr(&built));
     assert!(stderr(&built).contains("U4003"), "{}", stderr(&built));
     assert!(!dir.join("app").exists(), "no executable is written");
@@ -542,7 +579,7 @@ fn a_serve_section_with_within_is_refused_by_the_build_and_the_executable() {
     // An executable whose description names a `within` is no description: the runtime refuses
     // to start it rather than run the driver without its deadline.
     let dir = package("within-description", LOOPBACK, HEALTH);
-    let built = test_build(&dir);
+    let built = plain_build(&dir);
     assert!(built.status.success(), "{}", stderr(&built));
     let executable = std::fs::read(dir.join("app")).unwrap();
     let null = br#""within":null}"#;

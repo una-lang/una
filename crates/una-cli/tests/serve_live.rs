@@ -5,10 +5,9 @@
 //! stop answers every reply right still held with `503` and `Retry-After: 1`, appending no
 //! `unanswered` event, in the interpreter as in native code.
 //!
-//! `una run` runs a program that serves; `una build` of one is still a usage error (`spec/31 §1`
-//! rule 10), and the test build of `una` builds one when `UNA_TEST_BUILD_SERVER` is 1. Both the
-//! interpreter of the plain `una run` and the executable link the plain runtime, whose live
-//! engine these runs exercise. Each run is bounded, and a run that hangs fails its test.
+//! `una run` runs a program that serves, and `una build` builds one, with no test flag (`spec/31
+//! §1` rule 10). Both the interpreter of the plain `una run` and the executable link the plain
+//! runtime, whose live engine these runs exercise. Each run is bounded, and a run that hangs fails its test.
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -99,7 +98,6 @@ fn package_granted(
         runtime();
         let built = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .env("UNA_TEST_BUILD_SERVER", "1")
             .env("NO_COLOR", "1")
             .args(["build", "."])
             .current_dir(&dir)
@@ -906,12 +904,11 @@ fn a_task_whose_depth_depends_on_secret_data_is_refused_before_it_serves() {
 fn refused_before_serving(name: &str, program: &str, at: &str) {
     let port = free_port();
     let dir = package(name, port, program, Engine::Interpreter);
-    // `una run` serves without a test flag (`spec/31 §1` rule 10); `una build` needs one.
-    for (verb, flag) in [("run", "UNA_TEST_NONE"), ("build", "UNA_TEST_BUILD_SERVER")] {
+    // Neither needs a test flag to serve (`spec/31 §1` rule 10), so neither has one here.
+    for verb in ["run", "build"] {
         let out = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .env_remove("UNA_TEST_RUN_SERVER")
-            .env(flag, "1")
             .env("NO_COLOR", "1")
             .args([verb, "."])
             .current_dir(&dir)
@@ -1314,7 +1311,6 @@ fn health_example(port: u16, engine: Engine) -> PathBuf {
         runtime();
         let built = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-            .env("UNA_TEST_BUILD_SERVER", "1")
             .env("NO_COLOR", "1")
             .args(["build", "."])
             .current_dir(&dir)
