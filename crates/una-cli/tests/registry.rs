@@ -545,6 +545,75 @@ fn an_archive_that_does_not_check_is_not_fetched() {
     );
 }
 
+/// ADR 0122, amendment of 2026-11-09 (L3): the root-version floor is stored as the version and
+/// the digest of that root metadata. A floor whose version the chain holds with another digest
+/// is a fork of the root chain: refused (U7010) by the offline load (`una check`), by
+/// `una ita lock --check`, which walks the chain online, and by `una ita fetch`. A floor of the
+/// earlier form, the version alone, is compared by version and never replaced by its equal
+/// version; a floor line of neither form is unreadable (U7013) offline.
+#[test]
+fn a_root_version_floor_with_another_digest_is_a_fork() {
+    let (registry, _) = acme();
+    let (dir, _, itaoca) = project("floor-fork", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    let first = una_project::tlog::root::digest(&registry.roots[0]);
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 {first}\n")
+    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+
+    let write = |text: &str| {
+        std::fs::remove_file(&floor).unwrap();
+        std::fs::write(&floor, text).unwrap();
+    };
+    write(&format!("1 sha256:{}\n", "0".repeat(64)));
+    let found = codes(&dir, &itaoca);
+    assert!(
+        found.contains(&"U7010".to_owned()) && !found.contains(&"U7013".to_owned()),
+        "{found:?}"
+    );
+    let (_, _, err) = una_in(&["una", "check", arg(&dir)], &itaoca);
+    assert!(
+        err.contains("another digest") && err.contains("forked") && !err.contains("older than"),
+        "{err}"
+    );
+    for command in ["--check", "fetch"] {
+        let args: Vec<&str> = if command == "fetch" {
+            vec!["una", "ita", "fetch", arg(&dir)]
+        } else {
+            vec!["una", "ita", "lock", "--check", arg(&dir)]
+        };
+        let (code, _, err) = una_in(&args, &itaoca);
+        assert_eq!(code, 1, "{command}: {err}");
+        assert!(
+            err.contains("U7010") && err.contains("forked"),
+            "{command}: {err}"
+        );
+    }
+
+    // The earlier form: by version, accepted, and kept by a command that walks version 1.
+    write("1\n");
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), "1\n");
+
+    // Neither form: unreadable offline, never no floor.
+    write(&format!("1 {first}x\n"));
+    let found = codes(&dir, &itaoca);
+    assert!(
+        found.contains(&"U7013".to_owned()) && !found.contains(&"U7010".to_owned()),
+        "{found:?}"
+    );
+}
+
 /// Floors are stored as soon as a checkpoint is accepted, even when nothing is written; and a
 /// registry whose log does not extend the lock's point is refused, with no floor stored.
 #[test]

@@ -608,6 +608,39 @@ fn a_tampered_bundle_is_refused() {
     assert!(!isolated.join("registry").exists());
 }
 
+/// ADR 0122, amendment of 2026-11-09 (L3): unbundling into an Itaoca whose root-version floor
+/// holds the bundle's root version with another digest refuses the bundle as a fork of the root
+/// chain (U7010) and writes no package; with the digest of the bundle's root it unbundles.
+#[test]
+fn unbundle_refuses_a_fork_at_the_root_version_floor() {
+    let (registry, dir, _, itaoca) = fetched("bundle-root-fork");
+    let file = scratch("ita-registry-bundles", "root-fork").join("demo.bundle");
+    let (status, _, _) = una_in(&["una", "ita", "bundle", path(&file), path(&dir)], &itaoca);
+    assert_eq!(status, 0);
+    let id = una_project::itaoca::registry_id(&registry.pin());
+    let floor = |store: &Path, text: &str| {
+        let at = store.join("registry").join(&id);
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(at.join("root-version"), text).unwrap();
+    };
+    let last = registry.roots.len();
+    let digest = una_project::tlog::root::digest(registry.roots.last().unwrap());
+    let isolated = scratch("ita-registry-store", "bundle-root-fork-isolated");
+    floor(&isolated, &format!("{last} sha256:{}\n", "0".repeat(64)));
+    let (status, out, err) = una_in(
+        &["una", "--json", "ita", "unbundle", path(&file), path(&dir)],
+        &isolated,
+    );
+    assert_eq!(status, 1, "{out}{err}");
+    assert_eq!(codes_of(&out), ["U7010"], "{out}");
+    assert!(out.contains("forked"), "{out}");
+    assert!(!isolated.join("packages").exists());
+    let same = scratch("ita-registry-store", "bundle-root-same-isolated");
+    floor(&same, &format!("{last} {digest}\n"));
+    let (status, out, err) = una_in(&["una", "ita", "unbundle", path(&file), path(&dir)], &same);
+    assert_eq!(status, 0, "{out}{err}");
+}
+
 /// Bundling reads the registry at the lock's resolution point: with no place to read it from,
 /// nothing is written.
 #[test]

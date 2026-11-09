@@ -1724,7 +1724,10 @@ fn resolve_and_lock(
                     .get(&expected.source)
                     .map(RefCell::try_borrow)
                 {
-                    floor = floor.at_least(crate::registry::accepted_root_version(&registry));
+                    floor = floor.at_least(
+                        crate::registry::accepted_root_version(&registry),
+                        &crate::registry::accepted_root_digest(&registry),
+                    );
                 }
                 match vendor::load_at(path, options.itaoca, &expected, &floor) {
                     Ok(_) | Err(Load::Absent(_)) => {}

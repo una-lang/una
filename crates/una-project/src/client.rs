@@ -431,6 +431,10 @@ pub struct Floors<'f> {
     pub checkpoint: Option<&'f str>,
     /// The highest root version accepted.
     pub root_version: Option<u64>,
+    /// The digest of that root version's metadata, `sha256:` and hex, when the floor stores
+    /// it: a chain whose version `root_version` has another digest is a fork, refused. A floor
+    /// of the earlier form holds none and is compared by version only.
+    pub root_digest: Option<&'f str>,
 }
 
 /// What the client found against a rule a registry MUST keep (`spec/30 §14`), every place of
@@ -917,6 +921,7 @@ impl<'t> Registry<'t> {
         let floors = Floors {
             checkpoint: floor,
             root_version: None,
+            root_digest: None,
         };
         Registry::open_with(source, transport, pin, point, &floors).map_err(OpenError::message)
     }
@@ -998,6 +1003,17 @@ impl<'t> Registry<'t> {
                 "it serves root version {}, below version {floor} already accepted",
                 last.version
             )));
+        }
+        // The same version with other root metadata than the one accepted is a fork of the root
+        // chain. The chain walked holds every version from the pinned one to its last, which is
+        // not below the floor; one it lacks (below the pinned version) is refused too.
+        if let (Some(floor), Some(digest)) = (floors.root_version, floors.root_digest) {
+            let held = chain.iter().find(|(root, _)| root.version == floor);
+            if held.is_none_or(|(_, held)| held != digest) {
+                return Err(refused(format!(
+                    "it serves root version {floor} with another digest than {digest}, already accepted, so its root chain forked"
+                )));
+            }
         }
         // The checkpoint.
         let path = match point {
