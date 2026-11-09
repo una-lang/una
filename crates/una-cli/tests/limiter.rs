@@ -181,3 +181,172 @@ pub main() -> Unit = unit
     let tested = una(&dir, &["--json", "test", "."]);
     assert_eq!(tested.status.code(), Some(0), "{tested:?}");
 }
+
+/// Four ways a wait at a limit inside `e within d` moves the virtual clock past the deadline,
+/// each followed by more of `e`: a call, a loop, a `together` block, and the wait in a task of a
+/// block with a sibling after it. Every call to `grab` is a check point, and each takes a token.
+const CUT: &str = r#"module cut
+
+import release (shown)
+import std.limit (Limit, limiter)
+import std.time (millisecond, minute)
+
+--- Takes a token, in a call of its own: the call is a check point of both engines.
+grab() -> Int
+  uses @gate: Limit[acquire]
+=
+  let got = attempt @gate.acquire()
+  1
+
+--- Takes the only token, then waits a minute for a refill, which the deadline cuts: the wait
+--- moves the virtual clock to the deadline and fails `RateLimited`, which `attempt` catches.
+spent() -> Unit
+  uses @gate: Limit[acquire]
+=
+  let first = attempt @gate.acquire()
+  let second = attempt @gate.acquire()
+  unit
+
+--- A call after the wait: the deadline has passed, so it never runs.
+called() -> Int
+  uses @gate: Limit[acquire]
+=
+  spent()
+  grab()
+
+--- A loop after the wait: no iteration runs.
+looped() -> Int
+  uses @gate: Limit[acquire]
+=
+  spent()
+  let edit total = 0
+  for i in 1..3
+    let one = grab()
+    total = total + one
+  total
+
+--- A block after the wait: its tasks are cut, each with its `cancelled` event.
+joined() -> Int
+  uses @gate: Limit[acquire]
+=
+  spent()
+  together
+    let a = grab()
+    let b = grab()
+  a + b
+
+--- The wait in a task of a block: the deadline of the `within` above it cuts the task's call.
+inside() -> Int
+  uses @gate: Limit[acquire]
+=
+  together
+    let a = called()
+    let b = grab()
+  a + b
+
+--- Case `n` bounded by a deadline of 50 ms: 0 once it is cut.
+bounded(n: Int) -> internal Int
+  uses @gate: Limit[acquire]
+=
+  if n == 1
+    let got = called() within 50 * millisecond
+      if error use 0
+    got
+  else if n == 2
+    let got = looped() within 50 * millisecond
+      if error use 0
+    got
+  else if n == 3
+    let got = joined() within 50 * millisecond
+      if error use 0
+    got
+  else
+    let got = inside() within 50 * millisecond
+      if error use 0
+    got
+
+pub main() -> Unit
+  uses @clock: Clock[now]
+  uses @console: Console[print]
+=
+  for n in 1..4
+    let got = bounded(n) with @gate = limiter(at_most: 1, per: minute, waiting: 4)
+    let now = @clock.now()
+    @console.print(shown("{n}: {got} at {now}"))
+"#;
+
+/// The trusted module that releases the `internal` count of [`CUT`] to the console.
+const RELEASE: &str = r#"--- Releases what a program decided from whether `acquire` failed, `internal` as `Limited` is.
+trusted module release
+
+pub policy shown
+  from internal Text
+  to Text
+  via same
+  purpose "show in a test whether a limiter served its calls"
+  owner tests
+
+same(text: internal Text) -> Text = text
+"#;
+
+#[test]
+fn a_wait_at_a_limit_past_the_deadline_cuts_the_within_in_both_engines() {
+    // `spec/27 §5` rule 5 and §8 rule 3, #1823: under `--virtual-time` the wait for a refill
+    // moves the clock to the covering deadline (§10), and the interpreter cuts `e` at its next
+    // check point, so nothing after it runs. Native code once noticed the passed deadline only
+    // when `e` returned, so it performed the `acquire`s after the wait, and the tasks of a block
+    // after it, before its `timeout` event. Both engines MUST give the same output and trace.
+    let dir = package("cut", CUT);
+    std::fs::write(
+        dir.join("ita.una"),
+        "ita cut\n  version 0.1.0\n  edition 0.4\n\ntrusted\n  release\n\nrun\n  entry cut\n  grants\n    console\n    clock\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/release.una"), RELEASE).unwrap();
+    let expected = ["1: 0 at 50", "2: 0 at 100", "3: 0 at 150", "4: 0 at 200"];
+
+    let interpreted = una_direct(&dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(
+        document["output"],
+        serde_json::json!(expected),
+        "{document}"
+    );
+    // The two `acquire`s of each wait, and nothing after it: no third `acquire`, no task of a
+    // block after the wait, no sibling of the task that waited; then the `timeout` event.
+    let trace = document["trace"].as_array().unwrap();
+    for instance in 1..=4 {
+        let acquires = trace
+            .iter()
+            .filter(|event| event["instance"] == format!("with:limiter#{instance}"))
+            .count();
+        assert_eq!(acquires, 2, "limiter #{instance}: {document}");
+    }
+    let timeouts = trace
+        .iter()
+        .filter(|event| event["outcome"]["kind"] == "timeout")
+        .count();
+    assert_eq!(timeouts, 4, "{document}");
+
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    for workers in ["1", "4"] {
+        let trace_file = dir.join(format!("trace-{workers}.json"));
+        let native = Command::new(dir.join("target/una/cut"))
+            .args(["--virtual-time", "--workers", workers, "--trace"])
+            .arg(&trace_file)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        let printed: Vec<&str> = std::str::from_utf8(&native.stdout)
+            .unwrap()
+            .lines()
+            .collect();
+        assert_eq!(printed, expected, "--workers {workers}");
+        let native_trace: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(trace_file).unwrap()).unwrap();
+        assert_eq!(document["trace"], native_trace, "--workers {workers}");
+    }
+}
