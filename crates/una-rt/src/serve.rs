@@ -9,8 +9,8 @@
 //!   `next`, and the abort that ends the run. Without one, a server operation is a defect that
 //!   ends the run with U8001, as in the interpreter. A program that serves installs the engine
 //!   of its serve threads before `main` ([`install_live`]), and the runs of
-//!   `tests/serve_runs/` a scripted one; `una build` still refuses a program that serves
-//!   outside the toolchain's own tests (`spec/31 §1` rule 10).
+//!   `tests/serve_runs/` a scripted one, which only a runtime built with its `test-hooks` has
+//!   (`spec/31 §1` rule 10, §8 rule 6).
 //! - **Holders.** Each task has a holder number in the run, the root 0 and each started task a
 //!   fresh one; a task of `together` or `first of` holds as the task that runs its block, as in
 //!   the interpreter, which runs those tasks inline (they perform no server operation, U3033).

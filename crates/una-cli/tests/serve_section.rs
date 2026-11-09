@@ -76,18 +76,61 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// A run under test that is killed when it is dropped, so a test that fails never leaves it
+/// serving.
+struct Served(Option<std::process::Child>);
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Served {
+    fn child(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().unwrap()
+    }
+
+    /// SIGTERM, then its exit status within 30 s; past that the test fails and the run is
+    /// killed.
+    fn terminate(&mut self) -> std::process::ExitStatus {
+        let killed = Command::new("kill")
+            .args(["-TERM", &self.child().id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.child().try_wait().unwrap() {
+                self.0 = None;
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the run did not end within 30 s of SIGTERM"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
 /// Spawns `command`, which serves the section of `HEALTH` on `port`; waits for the first line
 /// of its stderr, the notice of the address it serves (`spec/31 §6` rule 14), which comes before
 /// any request; asks it `GET /health`, then sends it SIGTERM: the notice, the reply's status
 /// line, the run's exit code and the rest of its stderr.
 fn serve_once(mut command: Command, port: u16) -> (String, String, Option<i32>, String) {
     use std::io::{BufRead, Read, Write};
-    let mut served = command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let pipe = served.stderr.take().unwrap();
+    let mut served = Served(Some(
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let pipe = served.child().stderr.take().unwrap();
     let (sender, lines) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines() {
@@ -111,12 +154,7 @@ fn serve_once(mut command: Command, port: u16) -> (String, String, Option<i32>, 
     let _ = stream.read_to_end(&mut reply);
     let reply = String::from_utf8_lossy(&reply).into_owned();
     let status = reply.lines().next().unwrap_or("").to_owned();
-    let killed = Command::new("kill")
-        .args(["-TERM", &served.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(killed.success());
-    let code = served.wait().unwrap().code();
+    let code = served.terminate().code();
     let rest: Vec<String> = lines.iter().collect();
     (notice, status, code, rest.join("\n"))
 }
