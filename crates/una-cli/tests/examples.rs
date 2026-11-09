@@ -5,6 +5,8 @@
 //! `verification.lock` on the path. A package of edition `0.4` is written in `ita.una` (ADR
 //! 0122); one with a `serve` section (`spec/31 §7`) is checked and tested, its tests calling
 //! `handle` directly, but not run: `una run` of a serving program waits for `spec/31 §1` rule 10.
+//! One with a `drive` section (`spec/26 §2`) runs until a host stop, so it runs with a stop
+//! requested after five steps.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -66,7 +68,8 @@ fn sources(dir: &std::path::Path) -> Vec<String> {
     out
 }
 
-/// What `una run` prints for each package with a `[run]` table, with its own grants.
+/// What `una run` prints for each package with an entry or a `drive` section, with its own
+/// grants; a driven one with `--stop-after-iterations 5`.
 const RUNS: &[(&str, &str)] = &[
     ("events", "availability of Launch: open\n"),
     (
@@ -77,6 +80,10 @@ const RUNS: &[(&str, &str)] = &[
     (
         "journal",
         "today's entry runs to about 2 hundred characters\n",
+    ),
+    (
+        "metronome",
+        "bar 1: tick\nbar 1: tock\nbar 1: tock\nbar 1: tock\nbar 2: tick\nstopped at bar 2, beat 1\n",
     ),
     ("pantry", "to buy: rice, oil\ngrams in stock: 700\n"),
     (
@@ -380,6 +387,7 @@ fn every_example_package_is_canonical_verified_and_tested() {
     let packages = packages();
     assert!(packages.len() >= 3, "{packages:?}");
     let mut serving = Vec::new();
+    let mut driven = Vec::new();
     for name in &packages {
         let path = format!("examples/{name}");
         let fmt = una(&["fmt", "--check", &path]);
@@ -421,28 +429,35 @@ fn every_example_package_is_canonical_verified_and_tested() {
             0,
             "{name}"
         );
-        let (runs, serves) =
+        let (runs, serves, drives) =
             match std::fs::read_to_string(repository().join(&path).join("una.toml")) {
-                Ok(manifest) => (manifest.contains("\n[run]\n"), false),
+                Ok(manifest) => (manifest.contains("\n[run]\n"), false, false),
                 Err(_) => {
                     let manifest =
                         std::fs::read_to_string(repository().join(&path).join("ita.una")).unwrap();
                     (
                         manifest.contains("\nrun\n  entry "),
                         manifest.contains("\nserve\n"),
+                        manifest.contains("\ndrive\n"),
                     )
                 }
             };
         let expected = RUNS.iter().find(|(package, _)| package == name);
         assert_eq!(
-            runs,
+            runs || drives,
             expected.is_some(),
-            "{name}: a package with an entry has its output in RUNS"
+            "{name}: a package with an entry or a `drive` section has its output in RUNS"
         );
         // A serving package is tested through `handle`; it runs in `serve_live.rs`.
-        assert!(!(runs && serves), "{name}: a package runs one program");
+        assert!(
+            u8::from(runs) + u8::from(serves) + u8::from(drives) <= 1,
+            "{name}: a package runs one program"
+        );
         if serves {
             serving.push(name.as_str());
+        }
+        if drives {
+            driven.push(name.as_str());
         }
         if let Some((_, output)) = expected {
             // `examples/journal` copies its entry only when `JOURNAL_COPY` is set.
@@ -450,6 +465,11 @@ fn every_example_package_is_canonical_verified_and_tested() {
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
                 .env_remove("UNA_PROOF_KEY")
                 .args(["run", &path])
+                .args(if drives {
+                    &["--stop-after-iterations", "5"][..]
+                } else {
+                    &[]
+                })
                 .env_remove("JOURNAL_COPY")
                 .current_dir(repository())
                 .output()
@@ -460,4 +480,6 @@ fn every_example_package_is_canonical_verified_and_tested() {
     }
     // `examples/health` serves (ADR 0123, "A health endpoint").
     assert_eq!(serving, ["health"]);
+    // `examples/metronome` is driven by the host (`spec/26 §2`).
+    assert_eq!(driven, ["metronome"]);
 }

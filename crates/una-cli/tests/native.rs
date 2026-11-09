@@ -89,6 +89,19 @@ fn has_serve_section(name: &str) -> bool {
         .is_ok_and(|manifest| manifest.contains("\nserve\n"))
 }
 
+/// The arguments each engine runs the program at `name` with: none, or for a driven package
+/// (`spec/26 §2`), whose host loop runs until a stop, a stop requested after five steps, the
+/// count its README shows.
+fn stop_arguments(name: &str) -> &'static [&'static str] {
+    let driven = std::fs::read_to_string(root().join(name).join("ita.una"))
+        .is_ok_and(|manifest| manifest.contains("\ndrive\n"));
+    if driven {
+        &["--stop-after-iterations", "5"]
+    } else {
+        &[]
+    }
+}
+
 /// The programs listed as not compiled yet, by repository path.
 fn unsupported() -> BTreeSet<String> {
     let list = root().join("tests/native/unsupported.txt");
@@ -163,6 +176,7 @@ fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) 
         run_args.push("--grant");
         run_args.push(grant);
     }
+    run_args.extend(stop_arguments(name));
     let run = una(&work, &run_args);
     // A case that `una run` rejects, or whose document does not parse, is compared with
     // nothing, so it is a failure unless tests/native/rejected.txt lists it with a reason
@@ -237,6 +251,7 @@ fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) 
         for grant in grants {
             native.arg("--grant").arg(grant);
         }
+        native.args(stop_arguments(name));
         let native = native.output().unwrap();
         let expected_stdout: String = document["output"]
             .as_array()
@@ -339,6 +354,7 @@ fn runs_alike_linked_by_una_link_and_by_cc(test: &str, name: &str, grants: &[&st
         for grant in grants {
             run.arg("--grant").arg(grant);
         }
+        run.args(stop_arguments(name));
         let output = run.output().unwrap();
         let trace: Value = std::fs::read(&trace)
             .ok()
