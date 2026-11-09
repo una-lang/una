@@ -2,7 +2,7 @@
 function `(seed, edition) -> Program`, registered in `OPERATORS` by its id."""
 
 from . import (boundaries, composed, composed2, concurrency, conditions, dependencies, fragment,
-               generics, handlers, keys, ordering, payloads, registry, sums, trusted)
+               generics, handlers, keys, ordering, payloads, registry, sums, timing, trusted)
 
 OPERATORS = {}
 OPERATORS.update(trusted.OPERATORS)
@@ -20,6 +20,10 @@ OPERATORS.update(boundaries.OPERATORS)
 OPERATORS.update(conditions.OPERATORS)
 OPERATORS.update(dependencies.OPERATORS)
 OPERATORS.update(registry.OPERATORS)
+
+# Family W, tasks and time (#973), runs under the cost clock in `hunt timing` alone, never in the
+# release gate's fixed run, which runs every operator of `OPERATORS`: so it is kept apart.
+TIMING_OPERATORS = dict(timing.OPERATORS)
 
 # The editions of the fixed run, by operator: 0.1 and 0.2 unless the operator's family says
 # otherwise. An operator of an edition 0.3 rule runs 0.2, as the edition gate's probe, and 0.3;
