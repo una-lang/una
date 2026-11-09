@@ -687,6 +687,132 @@ fn every_block_of_the_driven_programs_guide_is_checked() {
 }
 
 #[test]
+fn every_block_of_the_tasks_and_time_guide_is_checked() {
+    // #1803: the guide's code checks, or fails with the code it names, and each `text una="ARGS"`
+    // block is what `una ARGS` prints for the module or package just before it: an anchored
+    // excerpt of standard error for `check`, of standard output otherwise, a JSON document laid out
+    // with two spaces per level. What `run` prints, the
+    // native executable built from the same package prints too, given the same flags.
+    let path = "docs/guide/tasks-and-time.md";
+    let checked = check_guide(path, 900_000);
+    assert!(checked[0] > 0 && checked[3] >= 3, "{checked:?}");
+    let text = std::fs::read_to_string(repository().join(path)).unwrap();
+    let mut code: Option<PathBuf> = None;
+    let mut package: Option<usize> = None;
+    let mut shown = 0;
+    for block in blocks(&text) {
+        let at = block.line;
+        if let Some(number) = block.package {
+            if package != Some(number) {
+                package = Some(number);
+                code = Some(scratch(950_000 + at));
+            }
+            let dir = code.as_ref().unwrap();
+            let file = dir.join(block.path.as_deref().unwrap());
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, &block.body).unwrap();
+            complete(dir, "0.2");
+            continue;
+        }
+        package = None;
+        if block.kind() == "una" {
+            let dir = scratch(950_000 + at);
+            let file = dir.join(module_file(&block.body));
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, &block.body).unwrap();
+            complete(&dir, directives(&block.body).1);
+            code = Some(dir);
+            continue;
+        }
+        let attributes = block.attributes().unwrap();
+        let Some((_, args)) = attributes.iter().find(|(key, _)| *key == "una") else {
+            assert_ne!(
+                block.kind(),
+                "text",
+                "{path}, block at line {at}: a `text` block names its command, una=\"ARGS\""
+            );
+            continue;
+        };
+        let dir = code
+            .clone()
+            .unwrap_or_else(|| panic!("{path}, block at line {at}: no code before it"));
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let mut command = vec!["--color", "never"];
+        command.extend(&words);
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(&command)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let printed = if words[0] == "check" {
+            assert!(
+                !output.status.success(),
+                "{path}, block at line {at}: `una {args}` accepts the code"
+            );
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        } else {
+            assert!(
+                output.status.success(),
+                "{path}, block at line {at}: `una {args}` fails: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            if words.contains(&"--json") {
+                // A JSON document is shown laid out, two spaces per level.
+                let document: Value = serde_json::from_str(&stdout).unwrap();
+                serde_json::to_string_pretty(&document).unwrap()
+            } else {
+                stdout
+            }
+        };
+        assert!(
+            is_excerpt(&block.body, &printed, true),
+            "{path}, block at line {at}: not an excerpt of what `una {args}` prints:\n{}\nIt prints:\n{printed}",
+            block.body
+        );
+        if words[0] == "run" {
+            runtime();
+            let built = Command::new(env!("CARGO_BIN_EXE_una"))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
+                .args(["build", "."])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(
+                built.status.success(),
+                "{path}, block at line {at}: `una build .`: {}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+            let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+            let name = manifest
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("ita "))
+                .unwrap()
+                .trim();
+            let flags: Vec<&str> = words[1..].iter().copied().filter(|w| *w != ".").collect();
+            let native = Command::new(dir.join("target/una").join(name))
+                .args(&flags)
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .env_remove("UNA_PROOF_KEY")
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&native.stdout),
+                printed,
+                "{path}, block at line {at}: what the native executable prints"
+            );
+        }
+        shown += 1;
+    }
+    assert!(shown >= 6, "{path}: {shown} outputs shown");
+}
+
+#[test]
 fn the_policy_example_of_the_information_flow_spec_checks_in_the_events_package() {
     // #569: `spec/07 §5`'s `events.keys` module, put in place of the `events` example's own,
     // checks clean at tier 1 in canonical form, so the spec's example cannot drift into one

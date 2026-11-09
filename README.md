@@ -218,6 +218,7 @@ Every command takes `--json` and prints exactly one JSON document, with a `schem
 | [Serving HTTP](docs/guide/serving-http.md) | Grants, the `serve` section and the language form, stopping, tests and the report of a server, in edition 0.4 |
 | [Loops that run until stopped](docs/guide/language/control-flow/for-ever.md) | `for ever`, `for until`, `stop` and `skip`, `diverges`, `on stop` and the host stops (signals, `--deadline`, `--stop-grace`, `--stop-after-iterations`, `--virtual-time`), in edition 0.4 |
 | [Driven programs](docs/guide/driven-programs.md) | A loop the host runs: the `drive` section, `init`, `step` and `on_stop`, stopping and testing, in edition 0.4 |
+| [Tasks and time](docs/guide/tasks-and-time.md) | `together`, `tasks` and `start`, `within` and `first of`, cancellation, the two engines' schedules and the timing labels, in editions 0.2 and 0.4 |
 | [Specification](docs/spec/) | The normative definition of the language |
 | [Charter](docs/00-charter.md) | What Una is for, what it proves and what it assumes |
 | [Design decisions](docs/adr/) | Why each key decision was made |
