@@ -81,6 +81,10 @@ class Program:
     # the offline load reads it (ADR 0122, amendment of 2026-11-03, item 4). The manifest writes
     # it only when it is not empty.
     floors: dict = field(default_factory=dict)
+    # What a server program's peers must receive (family N, `hunt servers`, #1011): the judge of
+    # `hunt/serving.py` reads it; empty for every other family. The manifest writes it only when
+    # it is not empty, so the rows of every other family are unchanged.
+    serve: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.cls not in CLASSES:
@@ -131,6 +135,7 @@ class Program:
             **({"prove": True} if self.prove else {}),
             **({"command": self.command} if self.command != "check" else {}),
             **({"floors": self.floors} if self.floors else {}),
+            **({"serve": self.serve} if self.serve else {}),
         }
 
     def digest(self):

@@ -11,7 +11,7 @@ import os
 from collections import Counter
 
 from . import oracle, sandbox
-from .families import OPERATORS, TIMING_OPERATORS
+from .families import OPERATORS, SERVER_OPERATORS, TIMING_OPERATORS
 from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .refactor import REFACTORS
 
@@ -111,7 +111,9 @@ def lock_check(una, prog, pkg_dir, root, timeout):
 
 @functools.lru_cache(maxsize=None)
 def _build(op, seed, edition):
-    return (OPERATORS[op] if op in OPERATORS else TIMING_OPERATORS[op])(seed, edition)
+    every = OPERATORS if op in OPERATORS else TIMING_OPERATORS if op in TIMING_OPERATORS \
+        else SERVER_OPERATORS
+    return every[op](seed, edition)
 
 
 def rebuild(row):
