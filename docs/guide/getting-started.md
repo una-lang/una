@@ -14,6 +14,8 @@ curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
 
 It installs only an archive whose digest the release's validation record lists. On macOS arm64, the platform of this release, `una build` links with the linker built into `una` and needs no C compiler. The solver refuses to run as root, so `una check` as root fails with U5003; run `una` as an ordinary user, in a container too (`docker run --user 1000:1000 ...`). The README describes the other ways to install, and how to uninstall.
 
+The releases are for macOS on arm64. Linux is not available in this release yet: the Linux build of the solver that `una` carries is not yet pinned to a reproducible digest, and `una build` does not yet link Linux executables itself.
+
 The installer changes nothing outside `~/.una`, so your shell finds `una` only once that directory is on your `PATH`:
 
 ```sh
@@ -277,7 +279,7 @@ built target/una/wordfreq
 
 The executable prints what `una run` prints, and traces the same events: the interpreter is the reference, and the test suite runs every example program in both.
 
-On Linux, `una build` still links the executable against the system's C library, through `cc`. A Linux release of `una` already carries musl, the C library it will link instead (ADR 0124): once it does, an executable runs on any Linux of its architecture with no shared library, and it resolves host names through `/etc/hosts` and the DNS servers that `/etc/resolv.conf` names only, without the system's name-service modules, such as LDAP or mDNS.
+Linux is not available in this release yet (section 1). On Linux, `una build` still links the executable against the system's C library, through `cc`. The Linux `una` is to carry musl, the C library it will link instead (ADR 0124): once it does, an executable runs on any Linux of its architecture with no shared library, and it resolves host names through `/etc/hosts` and the DNS servers that `/etc/resolv.conf` names only, without the system's name-service modules, such as LDAP or mDNS.
 
 ## 7. An editor
 

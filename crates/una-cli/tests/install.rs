@@ -52,12 +52,11 @@ fn the_installer_pins_follow_the_repository() {
     }
 }
 
-/// The archive's target on this machine, as the installer names it, when it has releases.
+/// The archive's target on this machine, as the installer names it, when it has releases:
+/// macOS on arm64 only (#1819); Linux is not available in this release yet.
 fn target() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
-        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
-        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
         _ => None,
     }
 }
@@ -502,5 +501,89 @@ fn a_repacked_archive_is_accepted_only_as_repacked_md_pairs_it() {
         stderr(&output)
     );
     assert!(!home.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_installer_refuses_a_version_before_0_4_0_comparing_numbers_not_text() {
+    // A release before 0.4.0 needs a Z3 on PATH that the installer no longer installs (#1819):
+    // refused before anything is downloaded, so no release exists under `dir` and nothing is
+    // fetched, from the network or elsewhere.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-versions");
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home/.una");
+    for version in ["0.3.16", "0.3.99", "0.1.0", "0.0.9"] {
+        let output = install(&dir, version, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{version}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(&format!(
+                "this installer installs 0.4.0 and later; {version} needs a separate Z3"
+            )),
+            "{version}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stderr(&output).lines().count(), 1, "{}", stderr(&output));
+        assert!(!home.exists(), "{version}");
+    }
+    // Anything but MAJOR.MINOR.PATCH is refused as well.
+    for version in [
+        "0.4",
+        "0.4.0.1",
+        "0.4.0-rc1",
+        "v0.4.0",
+        "0..4",
+        ".0.4",
+        "a.b.c",
+    ] {
+        let output = install(&dir, version, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{version}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("is not a version"),
+            "{version}: {}",
+            stderr(&output)
+        );
+        assert!(!home.exists(), "{version}");
+    }
+    // 0.4.0 and 0.10.0 pass the check: 0.10 is after 0.4 as numbers, though not as text.
+    for version in ["0.4.0", "0.10.0", "1.0.0"] {
+        if let Some(target) = target() {
+            release(&dir, target, version, "PASS (every gate)", None);
+            let output = install(&dir, version, &[]);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{version}: {}",
+                stderr(&output)
+            );
+            assert!(home.join("bin/una").exists(), "{version}");
+            std::fs::remove_dir_all(&home).unwrap();
+        } else {
+            // No release for this platform: refused for the platform, not the version.
+            let output = install(&dir, version, &[]);
+            assert_eq!(output.status.code(), Some(1));
+            assert!(
+                !stderr(&output).contains("0.4.0 and later"),
+                "{}",
+                stderr(&output)
+            );
+            if std::env::consts::OS == "linux" {
+                assert!(
+                    stderr(&output).contains("Linux is not available in this release yet"),
+                    "{}",
+                    stderr(&output)
+                );
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
