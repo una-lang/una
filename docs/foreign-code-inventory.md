@@ -2,7 +2,7 @@
 
 Issue #1098, part of epic #1097. The rule this inventory serves: Una ships no C, C++ or foreign assembly, not in the `una` binary, not in the runtime (`una-rt`), and not in any linked program. Each finding is fixed by an implementation of our own in Rust. Z3 is the one accepted exception.
 
-This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the v0.3.16 release artifacts for `aarch64-apple-darwin`.
+This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the v0.3.16 release artifacts for `aarch64-apple-darwin`. The Z3 rows are updated for ADR 0124 step 1, which built the solver into `una`.
 
 ## Summary
 
@@ -18,7 +18,7 @@ This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the
 | Unwinder (`_Unwind_*`) | libunwind inside libSystem (macOS); `libgcc_s` on Linux, which `una build` links | Part of the open question below |
 | System linker `cc` | `una build` links through the host C compiler driver | A host tool, not code in the artifacts; no issue yet |
 | C-emitting release backend (ADR 0106) | Accepted design; no code on `main` | Withdrawn by ADR 0106's amendment of 2026-10-31 (#1099, epic #1097); release builds become Una's own code generation (#1305) |
-| Z3 5.1.0 | The SMT solver, an external program run as `z3 -in -smt2`, pinned by `verification.lock` | Accepted exception |
+| Z3 5.1.0 | The SMT solver, a C++ library built into `una` (ADR 0124 step 1), run in a confined child process of `una` itself; pinned by `supply-chain/z3.lock`, its version by `verification.lock` | Accepted exception |
 
 ## 1. Method
 
@@ -101,7 +101,7 @@ Also carried by the artifacts, outside the crate graph:
 | The unwinder | `_Unwind_*` functions for panics and backtraces | All three (`panic_unwind`, std's backtrace, `_Unwind_Resume` in every crate's landing pads) | Section 4 (libSystem on macOS, `libgcc_s` on Linux) |
 | System linker `cc` | `una build` links the program object and `libuna_rt.a` through the host C compiler driver (`crates/una-cli/src/build.rs`, ADR 0055 NB-1); on Linux it adds `-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`, after `-Wl,--as-needed` since #1103, so only the libraries the program uses get a `NEEDED` entry | Not in the artifacts; a host tool needed to build | No issue yet |
 | C-emitting release backend | ADR 0106 (accepted) chose C compiled by the system C compiler for release builds; no C emission exists in the code of `main` | None | Withdrawn by ADR 0106's amendment of 2026-10-31 (#1099, epic #1097) |
-| Z3 5.1.0 | `una-verify` runs `z3 -in -smt2` as a child process (`crates/una-verify/src/solver.rs`); the version is pinned by `verification.lock` | None (an external program, not linked) | Accepted exception |
+| Z3 5.1.0 | Z3's SMT-LIB front end, built by `scripts/build-z3.sh` from the source `supply-chain/z3.lock` pins and linked into `una` by `crates/una-z3`; each query runs in a child process of `una` itself, in solver mode, confined (`crates/una-cli/src/solver_child.rs`, `crates/una-sys/src/solver/`); the version is pinned by `verification.lock`. No `z3` program is run | `una` (with the system's C++ runtime, `/usr/lib/libc++.1.dylib` on macOS); not `libuna_rt.a` nor a linked program | Accepted exception |
 
 ## 3. C library symbols of the artifacts
 

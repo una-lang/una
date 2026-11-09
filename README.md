@@ -51,9 +51,7 @@ Before its tag, every area of v0.3.0 was reviewed by someone other than its auth
 
 ## Install
 
-The installer puts a release in `~/.una`:
-- the `una` binary, with the native runtime that `una build` links built into it (ADR 0124; a release before that built-in runtime ships it as `lib/libuna_rt.a`, which the installer puts beside `bin/`);
-- Z3 at the version the proofs need.
+The installer puts a release in `~/.una`: the `una` binary, with the Z3 solver and the native runtime that `una build` links built into it (ADR 0124; a release before that built-in runtime ships it as `lib/libuna_rt.a`, which the installer puts beside `bin/`). It installs no separate Z3, and `una` never looks for a `z3` on `PATH`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
@@ -63,12 +61,11 @@ una explain U5001   # check that it works
 
 What the installer checks:
 - It installs only an archive whose SHA-256 digest is listed in that release's validation summary, and only when the summary's verdict is PASS. The summaries are in [`docs/validation/`](docs/validation/), and [`docs/release-gates.md`](docs/release-gates.md) says how they are made.
-- Z3 must match the digest its project publishes.
 - On any mismatch it installs nothing.
 
-`UNA_VERSION` picks another release, and `UNA_HOME` picks another directory. The installer needs `curl` or `wget`, `tar`, `unzip`, and `shasum` or `sha256sum`. `una build` also needs a C compiler available as `cc`. To uninstall, run `sh install.sh --uninstall`, which removes exactly what the installer recorded.
+`UNA_VERSION` picks another release, and `UNA_HOME` picks another directory. The installer needs `curl` or `wget`, `tar`, and `shasum` or `sha256sum`. On macOS arm64, the platform of this release, `una build` links with the linker built into `una` and runs no other program, so it needs no C compiler; a `una` built from source for another platform links through a C compiler available as `cc`. To uninstall, run `sh install.sh --uninstall`, which removes exactly what the installer recorded.
 
-The [releases page](https://github.com/una-lang/una/releases) also has an archive per platform with its digest beside it: macOS arm64, Linux x86_64 and Linux arm64. Each archive, and an installation, also holds the guides under `docs/guide/`: [Getting started](docs/guide/getting-started.md), the [language guide](docs/guide/syntax-reference.md), [Una for agents](docs/guide/una-for-agents.md) and its [compact form](docs/guide/una-compact.md), under 2,000 tokens, so an agent can learn Una from the archive alone, with `una explain <code>` for each diagnostic. An archive whose `una` has the runtime built in holds no `lib/`; with an earlier archive, keep `lib/` beside `una`. Put Z3 5.1.0 on `PATH` (`scripts/install-z3.sh DIR` installs it). Without the pinned Z3, `una check` fails with U5003: verification never passes silently.
+The [releases page](https://github.com/una-lang/una/releases) also has an archive per platform with its digest beside it: macOS arm64, Linux x86_64 and Linux arm64. Each archive, and an installation, also holds the guides under `docs/guide/`: [Getting started](docs/guide/getting-started.md), the [language guide](docs/guide/syntax-reference.md), [Una for agents](docs/guide/una-for-agents.md) and its [compact form](docs/guide/una-compact.md), under 2,000 tokens, so an agent can learn Una from the archive alone, with `una explain <code>` for each diagnostic. An archive whose `una` has the runtime built in holds no `lib/`; with an earlier archive, keep `lib/` beside `una`. Z3 5.1.0 is built into `una`, and `una --version` prints its version. When the solver cannot run, `una check` fails with U5003, for example when it runs as root, which the solver refuses (in a container, run as an ordinary user: `docker run --user 1000:1000 ...`): verification never passes silently.
 
 ## A taste
 
@@ -245,11 +242,11 @@ Every package under [`examples/`](examples) checks with every obligation proven 
 
 ## Build from source
 
-You need the Rust toolchain pinned in `rust-toolchain.toml` (installed with [rustup](https://rustup.rs)) and Z3 5.1.0, which `scripts/install-z3.sh` downloads and checks.
+You need the Rust toolchain pinned in `rust-toolchain.toml` (installed with [rustup](https://rustup.rs)), and, to build the Z3 library that `una` links, `cmake`, `make`, a C++20 compiler and `git`. `scripts/z3-library.sh --export` builds that library once per pin and toolchain from the source `supply-chain/z3.lock` pins (10 to 20 minutes), keeps it in `~/.cache/una/z3`, and prints the line that sets `UNA_Z3_LIB` to it; `UNA_Z3_SOURCE` names a local copy of the pinned source tarball when it cannot be downloaded. Run it in every shell that builds `una`: without `UNA_Z3_LIB` the build warns and makes a `una` with no solver, whose `una check` fails with U5003 ([`docs/compiler/testing.md`](docs/compiler/testing.md) §3).
 
 ```bash
 git clone https://github.com/una-lang/una.git && cd una
-scripts/install-z3.sh "$HOME/.local/z3" && export PATH="$HOME/.local/z3/bin:$PATH"
+eval "$(scripts/z3-library.sh --export)"
 cargo build --release -p una-cli -p una-rt && export PATH="$PWD/target/release:$PATH"
 
 una check examples/events    # every check and every proof

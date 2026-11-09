@@ -2047,7 +2047,7 @@ una [--json] [--color never|auto|always] <COMMAND>
 
 **Checking before running**
 
-- `una run`, `una build` and `una test` first check the package at tier 1, like `una check`, so Z3 at the exact version of `verification.lock` must be on the path.
+- `una run`, `una build` and `una test` first check the package at tier 1, like `una check`, so the Z3 built into `una` must be the exact version of `verification.lock`; `una` never runs a `z3` from the path.
 - If the solver is missing or has another version, they stop with U5003. If the checks report errors, nothing runs and no executable is written.
 
 **Solver flag.** The commands that check at tier 1 (`check`, `run`, `build`, `test`, `obligations`, `trace`, `report`) take `--solver-wallclock <seconds>`.
@@ -2077,7 +2077,7 @@ una [--json] [--color never|auto|always] <COMMAND>
 
 **`una build`** (ADR 0055)
 
-- It checks the package at tier 1, then compiles it through Cranelift and the system linker (`cc`) into an executable for the host: `aarch64-apple-darwin` or `x86_64-unknown-linux-gnu`. There is no cross-compilation.
+- It checks the package at tier 1, then compiles it through Cranelift and links it, with the linker built into `una` on `aarch64-apple-darwin` and the system linker (`cc`) elsewhere, into an executable for the host: `aarch64-apple-darwin` or `x86_64-unknown-linux-gnu`. There is no cross-compilation.
 - It writes `target/una/<name>`, where `<name>` is the `[package] name` (or the module name for a single file), and prints `built <output>`. With `--json` it prints a `una.build/1` document whose `status` is `built` or `rejected`.
 - It embeds `[run] grants` in the executable as its default grants. Exit codes: `0` when the executable is written, `1` when the checks report errors, `2` for a usage error (as for `una run`, or a failure of the linker), `3` for U8001.
 - **The executable** behaves as `una run` in human mode: the lines `main` prints go to stdout, U6001 and U6003 go to stderr with exit code 1, and U3012 is checked against its grants before `main` starts. It takes `--grant <spec>`, `--max-depth <n>`, `--max-memory <MiB>` and `--trace <file>`, which writes the trace as a JSON array. It has no `--json` output.

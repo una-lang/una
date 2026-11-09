@@ -44,7 +44,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
 - **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15), text functions (§16), HTTP (§17) and `together` (§18). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §21 lists what changes between them.
-- `verification.lock` pins the solver: Z3 at the exact version it names must be on the path, or tier 1 reports U5003. `scripts/install-z3.sh` installs it.
+- `verification.lock` pins the solver: tier 1 runs the Z3 built into `una`, which must be the exact version the lock names, or it reports U5003. `una` never looks for a `z3` on the path, and installs no separate Z3; `una --version` prints the version it has. U5003 also reports a development build with no solver built in and a solver that could not be confined, such as one run as root (`una explain U5003`).
 
 ## 3. Syntax in brief
 

@@ -9,7 +9,7 @@ codes: [U5003, U7004]
 
 ## What it does
 
-Una proves a program's obligations, the facts each line needs to be safe, such as a value staying in its range, with a solver: a separate program, Z3, that decides whether such a fact always holds. `verification.lock` pins which Z3 and which settings, so that a proof means the same on every machine. It sits at the package root, beside `una.toml`, and is committed. Proofs already found are kept in the proof cache, a folder of saved answers keyed by the lock's contents, so changing the lock verifies every obligation again.
+Una proves a program's obligations, the facts each line needs to be safe, such as a value staying in its range, with a solver: Z3, built into `una`, which decides whether such a fact always holds. `verification.lock` pins which Z3 and which settings, so that a proof means the same on every machine. It sits at the package root, beside `una.toml`, and is committed. Proofs already found are kept in the proof cache, a folder of saved answers keyed by the lock's contents, so changing the lock verifies every obligation again.
 
 Learn more: [The manifest and the lock](/learn/packages/the-manifest-and-the-lock/) and [What the verifier proves](/learn/contracts/what-the-verifier-proves/).
 
@@ -58,7 +58,7 @@ Exactly these six keys.
 
 ## Examples
 
-A missing Z3, or Z3 at a version other than the one the lock names, is rejected once there is something to prove. Verification never passes silently. Here the lock names a version the machine does not have:
+A lock that names a Z3 version other than the one built into `una`, or a `una` whose solver cannot run, is rejected once there is something to prove. Verification never passes silently. Here the lock names a version this `una` does not have:
 
 `una.toml`
 
@@ -132,7 +132,7 @@ Further rules:
 
 ## Diagnostics
 
-- [U5003](../../../crates/una-explain/explain/U5003.md): a missing Z3, or Z3 at a version other than the one the lock names.
+- [U5003](../../../crates/una-explain/explain/U5003.md): the Z3 built into `una` is at a version other than the one the lock names, or cannot run: a development build with no solver built in, or a solver child that could not be confined, such as one run as root. `una` never runs a `z3` from the path.
 - [U7004](../../../crates/una-explain/explain/U7004.md): a missing lock, a syntax error, a missing or unknown key, or a wrong value.
 
 ## Edition

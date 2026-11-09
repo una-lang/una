@@ -6,13 +6,13 @@ Every code block of this tutorial is checked by the test suite (`crates/una-cli/
 
 ## 1. Install
 
-The installer puts a release in `~/.una`: the `una` binary, with the native runtime that `una build` links built into it, and Z3 at the version the proofs need.
+The installer puts a release in `~/.una`: the `una` binary, with the Z3 solver and the native runtime that `una build` links built into it. Nothing else is needed: there is no separate Z3 to install, and `una` never looks for a `z3` on your `PATH`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
 ```
 
-It installs only an archive whose digest the release's validation record lists. `una build` also needs a C compiler as `cc`, to link. The README describes the other ways to install, and how to uninstall.
+It installs only an archive whose digest the release's validation record lists. On macOS arm64, the platform of this release, `una build` links with the linker built into `una` and needs no C compiler. The solver refuses to run as root, so `una check` as root fails with U5003; run `una` as an ordinary user, in a container too (`docker run --user 1000:1000 ...`). The README describes the other ways to install, and how to uninstall.
 
 The installer changes nothing outside `~/.una`, so your shell finds `una` only once that directory is on your `PATH`:
 
@@ -28,7 +28,7 @@ Check the version:
 una --version
 ```
 
-It prints `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3, 0.4, 0.5`, the editions among them that are previews, such as `preview: 0.3, 0.4, 0.5`, and the version of Z3 it needs. A release with no preview edition prints no `preview:` line.
+It prints `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3, 0.4, 0.5`, the editions among them that are previews, such as `preview: 0.3, 0.4, 0.5`, and the version of Z3 built into it. A release with no preview edition prints no `preview:` line.
 
 A release older than 0.3 has no `--version` flag, and answers with an error:
 
