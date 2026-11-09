@@ -6,12 +6,15 @@
     python3 -m hunt repro --op T4 --seed SEED --edition 0.2 --out DIR
     python3 -m hunt gate --una PATH --out DIR --tip SHA
     python3 -B -m hunt timing --una PATH --out DIR [--seed 973] [--count 40] [--z3 PATH]
+    python3 -B -m hunt servers --una PATH --out DIR [--seed 1011] [--count 40] [--z3 PATH]
 
 `gen --ops W` and `repro --op W1` reach family W (tasks and time, #973), which no default
 selection and no gate includes: `timing` runs it, through must-reject and the oracle under the
-cost clock (`spec/27 §8` rule 6, `hunt/costclock.py`).
+cost clock (`spec/27 §8` rule 6, `hunt/costclock.py`). Likewise `gen --ops N` and `repro --op N1`
+reach family N (servers, #1011), which `servers` runs through scripts of connections
+(`spec/31 §8` rule 6, `hunt/serving.py`) with a test build of `una`.
 
-`gen` and `repro` only write files. `reject`, `keep`, `gate` and `timing` run the compiler,
+`gen` and `repro` only write files. `reject`, `keep`, `gate`, `timing` and `servers` run the compiler,
 which is heavy work: only in a machine slot. `gate` is the release gate's fixed run
 (`hunt/gate.py`).
 """
@@ -21,8 +24,9 @@ import os
 import sys
 from collections import Counter
 
-from . import costclock, drivers, gate
-from .families import OPERATORS, TIMING_OPERATORS, family_of
+from . import costclock, drivers, gate, serving
+from .families import OPERATORS, SERVER_OPERATORS, TIMING_OPERATORS, family_of
+from .families.servers import EDITIONS as SERVER_EDITIONS
 from .families.timing import EDITIONS as TIMING_EDITIONS
 from .program import derive_seed, write_manifest
 
@@ -31,7 +35,7 @@ def select_ops(spec):
     if not spec:
         return sorted(OPERATORS, key=lambda o: (family_of(o), int(o[len(family_of(o)):])))
     out = []
-    every = {**OPERATORS, **TIMING_OPERATORS}
+    every = {**OPERATORS, **TIMING_OPERATORS, **SERVER_OPERATORS}
     for part in spec.split(","):
         part = part.strip()
         if part in every:
@@ -49,8 +53,9 @@ def cmd_gen(a):
     for op in select_ops(a.ops):
         for i in range(a.count):
             seed = derive_seed(a.seed, op, i)
-            # Family W has the constructs of edition 0.4 alone.
-            editions = TIMING_EDITIONS if op in TIMING_OPERATORS else a.editions.split(",")
+            # Families W and N have the constructs of edition 0.4 alone.
+            editions = (TIMING_EDITIONS if op in TIMING_OPERATORS else
+                        SERVER_EDITIONS if op in SERVER_OPERATORS else a.editions.split(","))
             for edition in editions:
                 programs.append(drivers._build(op, seed, edition))
     root = drivers.campaign_root(a.out)
@@ -131,6 +136,13 @@ def main(argv=None):
     tm.add_argument("--count", type=int, default=costclock.COUNT,
                     help="programs per operator of family W")
     tm.add_argument("--z3", help="the pinned solver: its directory goes first on the runs' PATH")
+    sv = sub.add_parser("servers")
+    sv.add_argument("--una", required=True, help="a test build of una (`--features test-hooks`)")
+    sv.add_argument("--out", required=True)
+    sv.add_argument("--seed", type=int, default=serving.SEED)
+    sv.add_argument("--count", type=int, default=serving.COUNT,
+                    help="programs per operator of family N")
+    sv.add_argument("--z3", help="the pinned solver: its directory goes first on the runs' PATH")
     a = ap.parse_args(argv)
     if a.cmd == "gate":
         return gate.run(os.path.realpath(a.una), a.out, a.tip, os.path.realpath(a.core_check),
@@ -138,6 +150,9 @@ def main(argv=None):
     if a.cmd == "timing":
         return costclock.run(os.path.realpath(a.una), a.out, a.seed, a.count,
                              os.path.realpath(a.z3) if a.z3 else None)
+    if a.cmd == "servers":
+        return serving.run(os.path.realpath(a.una), a.out, a.seed, a.count,
+                           os.path.realpath(a.z3) if a.z3 else None)
     if a.cmd == "gen":
         cmd_gen(a)
     elif a.cmd == "repro":
