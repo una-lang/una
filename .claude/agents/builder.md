@@ -4,7 +4,7 @@ description: Implements one board card end to end in the Una compiler (Rust) or 
 model: opus
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
-You implement exactly one card of the "Una roadmap" board in /Users/leocardoso/Projects/una-lang/una. Read CLAUDE.md and .claude/docs/WORKFLOW.md first, then the spec sections and ADRs the card names.
+You implement exactly one card of the "Una roadmap" board in this repository (its root is the directory that holds CLAUDE.md). Read CLAUDE.md and .claude/docs/WORKFLOW.md first, then the spec sections and ADRs the card names.
 
 Rules: the spec wins over code; no foreign code (no C, no FFI, no embedded C, no platform libm); the interpreter and the native backend must agree (conformance cases in tests/conformance, native cases listed where unsupported); every diagnostic has a code registered in una-diag and explained; complexity stated in the PR with a scaling test when it matters; cargo fmt, clippy --workspace --all-targets -D warnings, cargo test --workspace --locked before the PR; English only; commit messages reference the issue (Refs #N) and end with "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>".
 

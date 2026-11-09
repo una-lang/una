@@ -15,7 +15,7 @@ One session works on Una, spawning subagents; there are no parallel "Una-N" sess
 
 Project documents the harness points to: `docs/00-charter.md` (principles), `docs/spec/` (normative), `docs/adr/` (decisions; accepted text is immutable, amend by dated sections), `docs/compiler/` (architecture, testing), `docs/plan/` (roadmap, backlog, design notes), `docs/security/` (advisories, TCB), `docs/release-gates.md`.
 
-Operational files that are not part of the language live outside the repository in `/Users/leocardoso/Projects/una-lang/ops/` (coordination logs, gate outputs, local install mirror).
+Operational files that are not part of the language live outside the repository, in `<workspace>/ops/`, where `<workspace>` is the directory that holds the repository's checkout (coordination logs, gate outputs, local install mirror).
 
 ## Workspace harness (evidence and gates)
 

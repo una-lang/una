@@ -70,5 +70,5 @@ The probe source, the scripts, every run's output and the digests of the binarie
 ## Evidence notes
 
 - The exec of the inherited-filter case is attributed to Rosetta, but the raw outputs do not show whether Rosetta or the VM's qemu ran it (both are registered as binfmt handlers); this is an inference. The conclusion does not depend on it.
-- The one case the Docker seccomp profile changes (strict mode) is not part of the table above; it is in the raw outputs under `ops/coordination/runs/1203-probe-p1/` and does not change the decision.
+- The one case the Docker seccomp profile changes (strict mode) is not part of the table above; it is in the raw outputs of the probe (#1203), kept outside the repository, and does not change the decision.
 - That qemu 10.0.13 does not crash when reading `/proc/self/maps` is from the probe session's terminal; it is not backed by the raw outputs.
