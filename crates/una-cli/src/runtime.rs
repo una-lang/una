@@ -280,6 +280,7 @@ fn limits<'a>(
         kernels: &una_core::dense::variants::Kernels::BASELINE,
         // A run that serves sets its engine after this, over its listeners or its script.
         serve: None,
+        http_places: None,
     }
 }
 
@@ -796,6 +797,12 @@ pub(crate) fn run_command(
             .as_deref()
             .map(|live| live as &dyn una_http::serve::program::Port),
     };
+    // The toolchain's test builds: fewer places for the sockets of `Http` requests than the
+    // descriptor limit gives, so a test reaches the cap of `spec/27 §2` rule 3 (#1730).
+    #[cfg(feature = "test-hooks")]
+    if let Some(places) = crate::variable(options.environment, "UNA_TEST_HTTP_PLACES") {
+        limits.http_places = places.parse().ok();
+    }
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;

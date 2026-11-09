@@ -138,6 +138,14 @@ pub trait Port: Sync {
     fn reveals_trace(&self) -> bool {
         false
     }
+
+    /// Whether the engine serves live peers, whose requests come in real time: the interpreter
+    /// then runs a task's `Http` request off its one thread while the task parks, so a slow
+    /// backend does not hold every other task (#1730). A script's engine says no, so its runs
+    /// keep the interpreter's reference schedule.
+    fn live_peers(&self) -> bool {
+        false
+    }
 }
 
 /// The peer's address as a request names it (`spec/31 §1`, `peer`): its IP address without its

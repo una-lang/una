@@ -14,10 +14,16 @@
 //!   coroutine too, so it takes turns with its tasks; [`drive`] resumes the task at the front of
 //!   the queue until the root has ended. A run without one runs as before, on its thread's own
 //!   stack, with no switch.
+//! - **`Http` off the thread.** In a run that serves live peers and has a `tasks` statement, a
+//!   task's `Http` request runs on a helper thread while the task parks ([`Offload`], #1730);
+//!   the driver puts the task back in the queue once its request has landed. Every other run
+//!   makes its requests on the run's thread, as before.
 
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use una_core::Expr;
 use una_syntax::Span;
@@ -87,7 +93,10 @@ pub(crate) struct Run<'p, 'w> {
     panic: RefCell<Option<Box<dyn std::any::Any + Send>>>,
     /// The run's `Http` grants and the state of their limits, which every task shares (ADR
     /// 0117 rule 8, `spec/27 §9`).
-    pub(crate) http_limits: una_http::limit::Governor,
+    pub(crate) http_limits: Arc<una_http::limit::Governor>,
+    /// The `Http` requests in flight off the run's thread, in a run that serves live peers and
+    /// has a `tasks` statement; `None` in every other run (#1730).
+    pub(crate) offload: Option<Offload>,
     /// The serve engine of a run that serves, and its reply rights (ADR 0123 rules 1 to 4).
     pub(crate) serve: Option<crate::machine::serve::Serving<'w>>,
     /// The tasks waiting in `next` of `HttpServer` for the engine, by id: a task waiting there
@@ -125,7 +134,8 @@ impl<'p, 'w> Run<'p, 'w> {
             cap: crate::concurrency::task_cap(),
             serving: Cell::new(false),
             panic: RefCell::new(None),
-            http_limits: una_http::limit::Governor::new(Vec::new()),
+            http_limits: Arc::new(una_http::limit::Governor::new(Vec::new())),
+            offload: None,
             serve: None,
             next_waiters: RefCell::new(BTreeMap::new()),
             test_rights: Cell::new(0),
@@ -195,6 +205,7 @@ impl<'p, 'w> Run<'p, 'w> {
         if !self.coroutines || !self.serving.get() {
             return;
         }
+        self.land();
         let switch = {
             let mut sched = self.sched.borrow_mut();
             sched.turn = sched.turn.saturating_add(1);
@@ -229,6 +240,7 @@ impl<'p, 'w> Run<'p, 'w> {
         if !self.coroutines || !self.serving.get() {
             return false;
         }
+        self.land();
         let now = self.clock.now();
         // Once the run aborted, every waiter can end its `next`. In this one-thread interpreter
         // the abort is recorded only by a task that runs, so a waiter already resumed sees it at
@@ -257,6 +269,143 @@ impl<'p, 'w> Run<'p, 'w> {
     /// `false`, with no switch, unless [`drive`] serves the run, which only a defect reaches.
     pub(crate) fn park(&self) -> bool {
         self.serving.get() && una_sys::coroutine::suspend()
+    }
+
+    /// The run's [`Offload`] when a task's `Http` request may run off the thread now: the run
+    /// serves live peers, and [`drive`] serves its queue, so the task can park.
+    pub(crate) fn offloads(&self) -> Option<&Offload> {
+        self.offload
+            .as_ref()
+            .filter(|_| self.coroutines && self.serving.get())
+    }
+
+    /// Puts each task whose request has landed at the back of the queue, in the order they
+    /// landed. O(1) when none has; O(landed · log f) otherwise, for the f requests in flight.
+    pub(crate) fn land(&self) {
+        if let Some(offload) = &self.offload
+            && offload.landed.rung()
+        {
+            self.wake_landed(offload, offload.landed.take(false));
+        }
+    }
+
+    /// Whether a request has landed that no task has been woken for yet: a wait for the engine
+    /// ends for it, so that the task runs.
+    pub(crate) fn landed(&self) -> bool {
+        self.offload
+            .as_ref()
+            .is_some_and(|offload| offload.landed.rung())
+    }
+
+    /// Takes a place for a request's socket (`spec/27 §2` rule 3) when one is free: `false`,
+    /// with nothing taken, when every place is held, and the request then runs on the run's
+    /// thread. O(1).
+    pub(crate) fn take_place(&self, offload: &Offload) -> bool {
+        let free = offload.free.get();
+        if free == 0 {
+            return false;
+        }
+        offload.free.set(free - 1);
+        true
+    }
+
+    /// Gives back a place. O(1).
+    pub(crate) fn give_place(&self, offload: &Offload) {
+        offload.free.set(offload.free.get() + 1);
+    }
+
+    /// The request of task `id` returned without the driver having woken the task for it: the
+    /// task did not park after its helper rang, as when the helper returned at once. Its ring is
+    /// taken back and its place given back, so no later wake reaches the task.
+    pub(crate) fn settle(&self, offload: &Offload, id: usize) {
+        let flight = offload.flights.borrow_mut().remove(&id);
+        if flight {
+            offload.landed.forget(id);
+            self.give_place(offload);
+        }
+    }
+
+    /// Wakes each task whose request has landed in `ids`, once, and gives its place back.
+    fn wake_landed(&self, offload: &Offload, ids: Vec<usize>) {
+        for id in ids {
+            let flight = offload.flights.borrow_mut().remove(&id);
+            if flight {
+                self.sched.borrow_mut().wake(id);
+                self.give_place(offload);
+            }
+        }
+    }
+}
+
+/// The `Http` requests of a run that run off its thread (#1730): each one's task is parked, and
+/// the helper thread that makes the request rings [`Landed`] when it returns. Each request holds
+/// a place for its socket from before its helper starts until it has landed, out of the places
+/// of `spec/27 §2` rule 3, which native code counts with the same rule
+/// ([`una_http::serve::request_places`]); a request that finds no place free runs on the run's
+/// thread instead.
+pub(crate) struct Offload {
+    /// The tasks whose request has landed, rung from the helpers.
+    pub(crate) landed: Arc<Landed>,
+    /// The requests in flight, by the id of the task parked on each.
+    pub(crate) flights: RefCell<BTreeSet<usize>>,
+    /// The places free.
+    free: Cell<usize>,
+}
+
+impl Offload {
+    /// The state of a run whose requests have `places` places for their sockets, at least 1.
+    pub(crate) fn new(places: usize) -> Offload {
+        Offload {
+            landed: Arc::default(),
+            flights: RefCell::new(BTreeSet::new()),
+            free: Cell::new(places.max(1)),
+        }
+    }
+}
+
+/// The tasks whose request has landed, in the order they landed, which the helpers ring and the
+/// driver takes.
+#[derive(Default)]
+pub(crate) struct Landed {
+    ids: Mutex<Vec<usize>>,
+    ready: Condvar,
+    /// Whether `ids` is not empty, read without the lock at each check point.
+    rung: AtomicBool,
+}
+
+impl Landed {
+    /// Rings for task `id`, whose request has returned, and sets `done` under the same lock.
+    pub(crate) fn ring(&self, id: usize, done: &AtomicBool) {
+        let mut ids = self.lock();
+        ids.push(id);
+        done.store(true, Ordering::SeqCst);
+        self.rung.store(true, Ordering::SeqCst);
+        self.ready.notify_all();
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<usize>> {
+        self.ids.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn rung(&self) -> bool {
+        self.rung.load(Ordering::SeqCst)
+    }
+
+    /// Takes back the ring of task `id`, which its task saw itself. O(rung).
+    fn forget(&self, id: usize) {
+        let mut ids = self.lock();
+        ids.retain(|rung| *rung != id);
+        self.rung.store(!ids.is_empty(), Ordering::SeqCst);
+    }
+
+    /// Takes the tasks rung so far; with `wait`, first waits until one is.
+    fn take(&self, wait: bool) -> Vec<usize> {
+        let mut ids = self.lock();
+        while wait && ids.is_empty() {
+            ids = self.ready.wait(ids).unwrap_or_else(PoisonError::into_inner);
+        }
+        self.rung.store(false, Ordering::SeqCst);
+        std::mem::take(&mut *ids)
     }
 }
 
@@ -400,6 +549,7 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
     run.sched.borrow_mut().queue.push_back(0);
     run.serving.set(true);
     loop {
+        run.land();
         let next = {
             let mut sched = run.sched.borrow_mut();
             let next = sched.queue.pop_front();
@@ -410,6 +560,14 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
             next
         };
         let Some(id) = next else {
+            // Every task is parked, and some on a request in flight: the thread waits for one to
+            // land, which `--http-timeout` bounds.
+            if let Some(offload) = &run.offload
+                && !offload.flights.borrow().is_empty()
+            {
+                run.wake_landed(offload, offload.landed.take(true));
+                continue;
+            }
             break;
         };
         if let std::collections::btree_map::Entry::Vacant(slot) = table.entry(id) {
@@ -687,5 +845,44 @@ mod tests {
             ]
         );
         assert_eq!(run.live.get(), 0);
+    }
+
+    /// A run that makes its `Http` requests off its thread, with `places` places (#1730).
+    fn offloading<'p, 'w>(world: &'w mut dyn World, places: usize) -> Run<'p, 'w> {
+        let mut run = Run::new(world, Clock::real(), true);
+        run.offload = Some(Offload::new(places));
+        run
+    }
+
+    #[test]
+    fn a_request_takes_a_place_only_while_one_is_free() {
+        // `spec/27 §2` rule 3: with two places, two requests take one each and a third finds
+        // none, so it runs on the run's thread; a place given back is taken again.
+        let mut world = crate::host::NoWorld;
+        let run = offloading(&mut world, 2);
+        let Some(offload) = &run.offload else { return };
+        assert!(run.take_place(offload) && run.take_place(offload));
+        assert!(!run.take_place(offload));
+        run.give_place(offload);
+        assert!(run.take_place(offload));
+        assert!(!run.take_place(offload));
+    }
+
+    #[test]
+    fn a_ring_its_task_saw_itself_reaches_no_later_wake() {
+        // A helper that returned before its task parked rang with no park after it; `settle`
+        // takes the ring back and gives the place back, so a later `land` wakes nothing.
+        let mut world = crate::host::NoWorld;
+        let run = offloading(&mut world, 1);
+        let Some(offload) = &run.offload else { return };
+        assert!(run.take_place(offload));
+        offload.flights.borrow_mut().insert(0);
+        let done = AtomicBool::new(false);
+        offload.landed.ring(0, &done);
+        run.settle(offload, 0);
+        assert!(!offload.landed.rung() && offload.flights.borrow().is_empty());
+        assert_eq!(offload.free.get(), 1);
+        run.land();
+        assert!(run.sched.borrow().queue.is_empty());
     }
 }

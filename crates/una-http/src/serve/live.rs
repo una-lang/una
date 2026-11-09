@@ -263,6 +263,10 @@ impl Port for Live {
         self.server.begin();
     }
 
+    fn live_peers(&self) -> bool {
+        true
+    }
+
     fn epoch(&self) -> u64 {
         lock(&self.epoch.0).sent
     }
