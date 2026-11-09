@@ -1,0 +1,85 @@
+module m
+
+import std.host (Exchange, Header, HttpServer, Method, Param, Reply, ReplyRight, Request,
+  ServeError, Status
+)
+
+--- The control: nothing of the server, so the model reads it.
+pub plain(x: Int) -> Int = x + 1
+
+--- The control of `Header`, a kind of `Http` that F1 models, which a server's request holds too.
+pub header_value(h: internal Header) -> internal Text = h.value
+
+--- The function of a package's `serve` section: the host calls it with each request it reads.
+pub handle(request: internal Request) -> internal Reply
+=
+  if request.method is Get and request.segments == ["health"]
+    Reply(status: 200, headers: [], body: "ok")
+  else
+    Reply(status: 404, headers: [], body: "")
+
+--- A `Reply` built from an integer, with no request.
+pub created(id: internal Int) -> internal Reply = Reply(status: 201,
+  headers: [Header(name: "location", value: "/orders/{id}")], body: ""
+)
+
+--- A `Status` alone, which Core reads as an integer.
+pub ok_status() -> Status = 200
+
+--- A variant of `Method`.
+pub method_of() -> Method = Post
+
+--- A parameter of the query.
+pub param_name(p: internal Param) -> internal Text = p.name
+
+--- A failure of the server, tested.
+pub why(failure: ServeError) -> Bool = failure is Closed
+
+--- A reply right, shown.
+pub shown(right: internal ReplyRight) -> internal Text = "{right}"
+
+--- Whether two exchanges name one reply right.
+pub same(a: internal Exchange, b: internal Exchange) -> internal Bool = a.right == b.right
+
+--- `next`, the input stream (ADR 0123 S10).
+pub serve_one() -> Bool
+  uses @server: HttpServer[next, reply]
+=
+  let next = attempt @server.next()
+  when next
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: ""))
+        if error use unit
+      true
+    is Err(failure) -> false
+
+--- `reply`, the effect (ADR 0123 S10).
+pub answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: created(7))
+    if error use unit
+
+--- `close`, with no type of the server in the declaration.
+pub stop_serving() -> Unit
+  uses @server: HttpServer[close]
+=
+  @server.close()
+
+--- A grant of `HttpServer` that the body does not use.
+pub granted() -> Int
+  uses @server: HttpServer[next]
+=
+  0
+
+--- A `Reply` only in a temporary: the signature holds no kind of the server.
+pub created_status(id: internal Int) -> internal Int = created(id).status
+
+--- What reaches the server: a call of a function that holds it.
+pub caller() -> internal Bool = created_status(7) == 201
+
+--- A server that has closed, as a test installs it.
+handler closed() for HttpServer
+  op next() = fail Closed
+  op reply(to, reply) = unit
+  op close() = unit

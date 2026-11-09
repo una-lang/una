@@ -177,6 +177,43 @@ def collectionsModule : String := "std.collections"
 `BitSet`. F1 does not model them (#983), so the importer refuses each by name. -/
 def collectionPrims : List String := ["seq", "set", "hash_map", "hash_set", "priority", "bit_set"]
 
+/-- The capability of ADR 0123's server (`spec/31 §1`), `std.host`'s `HttpServer`. -/
+def serverCapability : String := "HttpServer"
+
+/-- The kinds of ADR 0123's server that Core declares in the module `prelude` for a package that
+imports a name of the server (`spec/31 §1`), as `una_check`'s `SERVER_CORE_KINDS`;
+`formal/gen/server_import_tests.py` checks the two lists agree, and `ServerImportTests` that each
+is declared in `una`'s own export. `Status` is an `Int` with a refinement in Core, not a kind. -/
+def serverKinds : List String := ["Method", "Param", "Request", "Exchange", "Reply", "ServeError"]
+
+/-- **A construct of ADR 0123's server**, found anywhere in a declaration (#1012). F1 does not model
+`next` as an input stream, `reply` as an effect or the reply rights of `HttpServer` yet (ADR 0123
+S10), so a declaration that holds one is not re-checked, never accepted. A construct is: the base
+type `ReplyRight`; a reference to a kind of `serverKinds` in the module `prelude` (a type, a
+failure's kind, a constructor, a pattern); and a node that names the capability `HttpServer`, a
+`uses` entry, an operation, a handler or a capability path. A `uses` entry names its capability
+without its module, so a capability of the program named `HttpServer` is refused with it, which
+fails closed. A kind of the program named as one of the server's is in the program's own module
+and is read as before. `none` when the node and its children hold none. -/
+partial def serverSite (j : J) : Option String :=
+  match j with
+  | .obj kvs =>
+    let here : Option String :=
+      match j.getObjValD "kind", j.getObjValD "module", j.getObjValD "name",
+          j.getObjValD "capability" with
+      | .str "reply_right", _, _, _ => some "the reply right `ReplyRight`"
+      | _, .str "prelude", .str n, _ =>
+        if serverKinds.contains n then some s!"the server's kind `{n}`" else none
+      | _, .str "std.host", .str n, _ =>
+        if n == serverCapability then some s!"the capability `{n}`" else none
+      | _, _, _, .str c => if c == serverCapability then some s!"the capability `{c}`" else none
+      | _, _, _, _ => none
+    match here with
+    | some w => some w
+    | none => kvs.toArray.foldl (fun acc kv => acc <|> serverSite kv.2) none
+  | .arr xs => xs.foldl (fun acc x => acc <|> serverSite x) none
+  | _ => none
+
 /-- `module.name`. -/
 def path (j : J) : M String := do
   pure s!"{← str (← field j "module")}.{← str (← field j "name")}"
@@ -334,6 +371,8 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
     -- `Hashed` (`spec/03`), which only `Keys.hmac` produces (#587): F1 reads a digest as a text
     -- at its label, which T-Hmac gives it.
     | "hashed" => pure (.text l)
+    -- ADR 0123 (#1012): a reply right of `HttpServer`, which F1 does not model.
+    | "reply_right" => throw "F1 restriction (the reply right `ReplyRight`, ADR 0123)" -- restriction-check: importer refusal
     | "param" =>
       -- The checker labels a value of `T` with `ℓ_T`, in place; a signature writes `T` alone.
       -- Both are the same type at every instance, since instantiation drops `ℓ_T` at a position
@@ -351,6 +390,10 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       -- of the same name in another module is the document's own and read as before.
       if (← str (← field b "module")) == collectionsModule then
         throw s!"F1 restriction (the collection `{q}`, ADR 0119)" -- restriction-check: importer refusal
+      -- ADR 0123 (#1012): a kind of the server, as `serverSite` finds it, here for the fields of
+      -- a record, which no declaration's scan reads.
+      if let some w := serverSite b then
+        throw s!"F1 restriction ({w}, ADR 0123)" -- restriction-check: importer refusal
       -- A kind is a record or a failure's code, never both (#509); a document where one name is
       -- both is not one F1 reads.
       if c.records.contains q && c.codes.contains q then
@@ -1284,6 +1327,11 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
     match plainRun (do pure s!"{e.module}.{← str (← field e.value "name")}") with
     | .ok n => n == q && (e.kind == "fun" || e.kind == "policy")
     | .error _ => false
+  -- ADR 0123 S10 (#1012): `next`, `reply`, the reply rights and the server's kinds are not in F1
+  -- yet. A declaration that holds one is not read, before anything of it is, whatever else it
+  -- holds; what reaches it is not re-checked, as for every form outside F1.
+  if let some w := serverSite d.value then
+    throw s!"F1 restriction ({w}, ADR 0123)" -- restriction-check: importer refusal
   let read : M (Fun × List Fun × List Policy) := do
     let (_, fnHost) ← usesEffects (← arr (← field d.value "uses")) c.invoked c.dynCaps
     let own := s!"{d.module}.{← str (← field d.value "name")}"

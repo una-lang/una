@@ -1,0 +1,7 @@
+module n
+
+--- A user kind named as a kind of the server, in a module that does not import `std.host`'s.
+pub kind Request
+  path: Text
+
+pub path_of(r: Request) -> Text = r.path
