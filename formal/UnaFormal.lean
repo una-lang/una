@@ -81,4 +81,5 @@ import UnaFormal.F1.HmacVia
 import UnaFormal.F1.HmacViaExample
 import UnaFormal.F1.HmacImportTests
 import UnaFormal.F1.CollectionsImportTests
+import UnaFormal.F1.ServerImportTests
 import UnaFormal.F1.MarkerNamesTests
