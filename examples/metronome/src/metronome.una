@@ -1,0 +1,46 @@
+module metronome
+
+import std.drive (Tick)
+
+--- Where the metronome is: the bar it plays, and the beat in that bar, 0 before the first.
+pub kind Metronome
+  bar: Nat
+  beat: Int in 0..4
+
+--- The metronome before its first beat.
+pub init() -> Metronome = Metronome(bar: 1, beat: 0)
+
+--- The beat after `state`: the next one in the bar, or the first of the next bar after the
+--- fourth.
+pub advance(state: Metronome) -> Metronome
+  ensures result.beat >= 1
+  ensures state.beat < 4 implies result.bar == state.bar
+=
+  if state.beat < 4
+    Metronome(bar: state.bar, beat: state.beat + 1)
+  else
+    Metronome(bar: state.bar + 1, beat: 1)
+
+--- Plays one beat for each tick: `tick` on the first beat of a bar, `tock` on the others.
+pub step(edit state: Metronome, input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  state = advance(state)
+  if state.beat == 1
+    @console.print("bar {state.bar}: tick")
+  else
+    @console.print("bar {state.bar}: tock")
+
+--- Says where the metronome stopped.
+pub on_stop(state: Metronome) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("stopped at bar {state.bar}, beat {state.beat}")
+
+test "the first beat opens bar 1"
+  do advance(init())
+  expect result.bar == 1 and result.beat == 1
+
+test "the fourth beat is followed by the first of the next bar"
+  do advance(Metronome(bar: 1, beat: 4))
+  expect result.bar == 2 and result.beat == 1

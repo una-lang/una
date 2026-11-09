@@ -1,0 +1,11 @@
+ita metronome
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    console
+
+drive
+  module metronome
+  ticks 500

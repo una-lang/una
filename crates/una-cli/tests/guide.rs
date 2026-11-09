@@ -659,6 +659,34 @@ fn the_compact_reference_is_checked_and_within_its_token_budget() {
 }
 
 #[test]
+fn every_block_of_the_driven_programs_guide_is_checked() {
+    // #1802: the guide's packages check, or fail with the code they name, and its commands run
+    // in fresh copies of `examples/metronome`. The output it shows of a stopped run is the
+    // README's, which `every_example_has_a_readme_whose_commands_run` runs in both engines.
+    let path = "docs/guide/driven-programs.md";
+    let checked = check_guide(path, 800_000);
+    assert!(checked[2] > 0 && checked[3] >= 3, "{checked:?}");
+    let shown = |text: &str| -> Option<String> {
+        blocks(text)
+            .into_iter()
+            .find(|block| block.kind() == "text" && block.body.starts_with("bar 1: tick\n"))
+            .map(|block| block.body)
+    };
+    let guide = std::fs::read_to_string(repository().join(path)).unwrap();
+    let readme =
+        std::fs::read_to_string(repository().join("examples/metronome/README.md")).unwrap();
+    assert!(
+        shown(&readme).is_some(),
+        "the metronome README shows no run"
+    );
+    assert_eq!(
+        shown(&guide),
+        shown(&readme),
+        "{path}: the run of examples/metronome"
+    );
+}
+
+#[test]
 fn the_policy_example_of_the_information_flow_spec_checks_in_the_events_package() {
     // #569: `spec/07 §5`'s `events.keys` module, put in place of the `events` example's own,
     // checks clean at tier 1 in canonical form, so the spec's example cannot drift into one
@@ -1001,14 +1029,9 @@ fn every_example_has_a_readme_whose_commands_run() {
         let checked = check_guide(&relative, 2_000_000 + index * 10_000);
         assert!(checked[2] > 0, "{relative}: no commands");
 
-        let runs: Vec<&Block> = excerpts
-            .iter()
-            .filter(|(_, attributes)| value(attributes, "una").as_deref() == Some("run ."))
-            .map(|(block, _)| *block)
-            .collect();
         // `[package]` requires `name` and `edition` (`spec/13 §7`); from edition 0.4 the
         // manifest is `ita.una`, `ita NAME` with an `edition` line (ADR 0122).
-        let (package_name, edition, serves) =
+        let (package_name, edition, serves, drives) =
             match std::fs::read_to_string(package.join("una.toml")) {
                 Ok(manifest) => {
                     let key = |wanted: &str| -> String {
@@ -1019,7 +1042,7 @@ fn every_example_has_a_readme_whose_commands_run() {
                             .map(|(_, value)| value.trim().trim_matches('"').to_owned())
                             .unwrap_or_else(|| panic!("{relative}: its una.toml has no `{wanted}`"))
                     };
-                    (key("name"), key("edition"), false)
+                    (key("name"), key("edition"), false, false)
                 }
                 Err(_) => {
                     let manifest = std::fs::read_to_string(package.join("ita.una"))
@@ -1036,16 +1059,34 @@ fn every_example_has_a_readme_whose_commands_run() {
                         .unwrap_or_else(|| panic!("{relative}: its ita.una has no `edition`"))
                         .trim()
                         .to_owned();
-                    (name, edition, manifest.contains("\nserve\n"))
+                    (
+                        name,
+                        edition,
+                        manifest.contains("\nserve\n"),
+                        manifest.contains("\ndrive\n"),
+                    )
                 }
             };
+        // A driven package (`spec/26 §2`) runs until a host stop, so its README shows the
+        // output of a run with a stop requested after five steps.
+        let run_args: &[&str] = if drives {
+            &["run", ".", "--stop-after-iterations", "5"]
+        } else {
+            &["run", "."]
+        };
+        let run_shown = run_args.join(" ");
+        let runs: Vec<&Block> = excerpts
+            .iter()
+            .filter(|(_, attributes)| value(attributes, "una") == Some(run_shown.clone()))
+            .map(|(block, _)| *block)
+            .collect();
         // A package with a `serve` section serves under `una run` until it is stopped
         // (`spec/31 §1` rule 10), so its README shows no output of `una run`, and
         // `serve_live.rs` runs it in both engines.
         assert_eq!(
             runs.len(),
             usize::from(!serves),
-            "{relative}: one `text una=\"run .\"` block of what `una run` prints, none for a package that serves"
+            "{relative}: one `text una=\"{run_shown}\"` block of what `una run` prints, none for a package that serves"
         );
 
         // `una run` and the native executable print the `text` block.
@@ -1061,7 +1102,7 @@ fn every_example_has_a_readme_whose_commands_run() {
                 .unwrap()
         };
         if let Some(printed) = runs.first() {
-            let output = una(&["run", "."]);
+            let output = una(run_args);
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
                 printed.body,
@@ -1075,6 +1116,7 @@ fn every_example_has_a_readme_whose_commands_run() {
                 String::from_utf8_lossy(&built.stderr)
             );
             let output = Command::new(copy.join("target/una").join(&package_name))
+                .args(&run_args[2..])
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
                 .env_remove("UNA_PROOF_KEY")
                 .current_dir(&copy)
@@ -1272,7 +1314,7 @@ fn every_example_has_a_readme_whose_commands_run() {
                 continue;
             }
             let args = value(attributes, "una").unwrap();
-            if args == "run ." {
+            if args == run_shown {
                 continue;
             }
             let words: Vec<&str> = args.split_whitespace().collect();
