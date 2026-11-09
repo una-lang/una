@@ -72,8 +72,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) environment: Environment<'a>,
     /// How tier 1 runs the solver (ADR 0064).
     pub(crate) solving: crate::verification::Solving,
-    /// `--stop-after-iterations`: the host's stop after this many iterations have started
-    /// (ADR 0116 rule 19).
+    /// `--stop-after-iterations`: the budget of each loop instance, not a host stop request
+    /// (ADR 0116 rule 19, `spec/26 §6` rule 1).
     pub(crate) stop_after: Option<u64>,
     /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §8`). A test's
     /// clock is virtual whatever this says.

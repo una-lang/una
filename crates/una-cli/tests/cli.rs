@@ -236,6 +236,24 @@ fn help_is_printed_on_stdout() {
     assert_eq!(stderr(&output), "");
 }
 
+/// `spec/26 §6` rule 1: `--stop-after-iterations` is a per-loop budget, not a host stop request (#1806).
+#[test]
+fn run_help_describes_the_iteration_budget_as_the_spec_does() {
+    let output = una(&["run", "--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let at = text.find("--stop-after-iterations").expect("flag listed");
+    let entry = &text[at..];
+    let entry = &entry[..entry.find(" --virtual-time").unwrap_or(entry.len())];
+    for word in ["budget", "each", "iteration N + 1", "no host stop request"] {
+        assert!(entry.contains(word), "missing `{word}` in: {entry}");
+    }
+    assert!(!entry.contains("Request a host stop"), "{entry}");
+}
+
 #[test]
 fn check_reports_a_missing_path_as_a_usage_error() {
     for args in [
