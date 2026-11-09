@@ -181,16 +181,22 @@ def collectionPrims : List String := ["seq", "set", "hash_map", "hash_set", "pri
 def serverCapability : String := "HttpServer"
 
 /-- The kinds of ADR 0123's server that Core declares in the module `prelude` for a package that
-imports a name of the server (`spec/31 §1`), as `una_check`'s `SERVER_CORE_KINDS`;
-`formal/gen/server_import_tests.py` checks the two lists agree, and `ServerImportTests` that each
-is declared in `una`'s own export. `Status` is an `Int` with a refinement in Core, not a kind. -/
+imports a name of the server (`spec/31 §1`), as `una_check`'s `SERVER_CORE_KINDS`: the test
+`server_kinds` of `una-check` fails when the two lists differ, and `ServerImportTests` checks that
+each is declared in `una`'s own export. `Status` is an `Int` with a refinement in Core, not a kind. -/
 def serverKinds : List String := ["Method", "Param", "Request", "Exchange", "Reply", "ServeError"]
+
+/-- The names of `std.testing` that name the server's kinds (ADR 0123 rule 21, `spec/31 §8`), as
+`una_check`'s `STD_TESTING_SERVER_NAMES`: `TestRequestError`, a kind of `std.testing` in Core, and
+the functions `test_request` and `test_exchange`, whose types hold the server's kinds. -/
+def serverTestingNames : List String := ["test_request", "test_exchange", "TestRequestError"]
 
 /-- **A construct of ADR 0123's server**, found anywhere in a declaration (#1012). F1 does not model
 `next` as an input stream, `reply` as an effect or the reply rights of `HttpServer` yet (ADR 0123
 S10), so a declaration that holds one is not re-checked, never accepted. A construct is: the base
 type `ReplyRight`; a reference to a kind of `serverKinds` in the module `prelude` (a type, a
-failure's kind, a constructor, a pattern); and a node that names the capability `HttpServer`, a
+failure's kind, a constructor, a pattern); a reference to a name of `serverTestingNames` in the
+module `std.testing`; and a node that names the capability `HttpServer`, a
 `uses` entry, an operation, a handler or a capability path. A `uses` entry names its capability
 without its module, so a capability of the program named `HttpServer` is refused with it, which
 fails closed. A kind of the program named as one of the server's is in the program's own module
@@ -206,6 +212,8 @@ partial def serverSite (j : J) : Option String :=
         if serverKinds.contains n then some s!"the server's kind `{n}`" else none
       | _, .str "std.host", .str n, _ =>
         if n == serverCapability then some s!"the capability `{n}`" else none
+      | _, .str "std.testing", .str n, _ =>
+        if serverTestingNames.contains n then some s!"the server's `std.testing.{n}`" else none
       | _, _, _, .str c => if c == serverCapability then some s!"the capability `{c}`" else none
       | _, _, _, _ => none
     match here with
