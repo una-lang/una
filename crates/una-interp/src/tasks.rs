@@ -46,6 +46,9 @@ pub(crate) struct Run<'p, 'w> {
     pub(crate) world: RefCell<&'w mut dyn World>,
     /// The run's clock, real or virtual (ADR 0116 rule 19, `spec/26 §8`).
     pub(crate) clock: Clock,
+    /// Whether `clock` is a cost clock, which each check point moves by one tick (`spec/27 §8`
+    /// rule 6), read once so the check point's fast path reads a field.
+    cost: bool,
     /// `--stop-after-iterations`, or a test's `stop after N`: the budget of each loop instance,
     /// whose own iterations each loop counts (ADR 0116 rule 19, #1472).
     pub(crate) stop_after: Cell<Option<u64>>,
@@ -116,6 +119,7 @@ impl<'p, 'w> Run<'p, 'w> {
     pub(crate) fn new(world: &'w mut dyn World, clock: Clock, coroutines: bool) -> Run<'p, 'w> {
         Run {
             world: RefCell::new(world),
+            cost: clock.is_cost(),
             clock,
             stop_after: Cell::new(None),
             installs: RefCell::new(BTreeMap::new()),
@@ -202,6 +206,11 @@ impl<'p, 'w> Run<'p, 'w> {
     /// after [`TURN`] of them, while another task is ready, the task goes to the back of the
     /// queue and the next one runs. Nothing of the run is borrowed at the switch.
     pub(crate) fn tick(&self) {
+        // The cost clock (`spec/27 §8` rule 6): one tick, a millisecond of virtual time, per
+        // check point, before the check point reads any deadline. O(1).
+        if self.cost {
+            let _ = self.clock.elapse(1);
+        }
         if !self.coroutines || !self.serving.get() {
             return;
         }

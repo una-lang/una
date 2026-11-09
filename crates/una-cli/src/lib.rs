@@ -1320,6 +1320,7 @@ fn run_command(
                 solver_memory,
                 stop_after_iterations,
                 virtual_time,
+                cost_clock,
                 deadline,
                 stop_grace,
                 trace,
@@ -1346,6 +1347,7 @@ fn run_command(
                     solving: solving(solver_wallclock, solver_memory, json, stderr),
                     stop_after: stop_after_iterations,
                     virtual_time,
+                    cost_clock,
                     deadline,
                     stop_grace,
                     trace: trace.as_deref(),
@@ -1403,6 +1405,7 @@ fn run_command(
                     stop_after: None,
                     // Time in a test is always virtual (ADR 0116 rule 19).
                     virtual_time: true,
+                    cost_clock: false,
                     deadline: None,
                     stop_grace: una_interp::stopping::DEFAULT_GRACE_SECS,
                     trace: None,
