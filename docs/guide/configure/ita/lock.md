@@ -1,8 +1,8 @@
 ---
 construct: "ita.lock"
 editions: ["0.4"]
-spec: ["spec/30 §4", "spec/12 §9"]
-codes: [U7009]
+spec: ["spec/30 §4", "spec/30 §9", "spec/12 §9"]
+codes: [U7009, U7010, U7013]
 ---
 
 # `ita.lock`
