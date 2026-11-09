@@ -17,6 +17,13 @@
 //!
 //! So a run under virtual time reads the same times in both engines, and never sleeps.
 //!
+//! **The cost clock** (ADR 0117, implementation plan step 7, `spec/27 §8` rule 6). Under
+//! `una run --virtual-time --cost-clock`, the interpreter's virtual clock also moves by one
+//! millisecond, one tick, at each check point of the run: each call, operation and loop
+//! iteration (`spec/27 §8` rule 2). Time then follows how much work the run did, so a deadline
+//! or a refill that a count of check points decides shows in the run's values, which the
+//! security hunt's two-run oracle compares. Only the interpreter has it.
+//!
 //! **Costs.** Every operation is O(1): one atomic load, or one atomic `fetch_max` or
 //! `fetch_add`, and no allocation after the clock is made.
 
@@ -30,6 +37,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Default)]
 pub struct VirtualClock {
     now: AtomicU64,
+    /// Whether each check point moves the clock by one tick (the cost clock).
+    cost: bool,
 }
 
 impl VirtualClock {
@@ -37,7 +46,22 @@ impl VirtualClock {
     pub const fn new() -> VirtualClock {
         VirtualClock {
             now: AtomicU64::new(0),
+            cost: false,
         }
+    }
+
+    /// A cost clock at 0: a virtual clock that each check point of the interpreter moves by
+    /// one tick, a millisecond (`spec/27 §8` rule 6).
+    pub const fn cost() -> VirtualClock {
+        VirtualClock {
+            now: AtomicU64::new(0),
+            cost: true,
+        }
+    }
+
+    /// Whether this is a cost clock.
+    pub fn is_cost(&self) -> bool {
+        self.cost
     }
 
     /// The milliseconds since the run started.
@@ -103,6 +127,26 @@ impl Clock {
     /// A virtual clock at 0.
     pub fn virtual_time() -> Clock {
         Clock::Virtual(Arc::new(VirtualClock::new()))
+    }
+
+    /// A cost clock at 0 (`--virtual-time --cost-clock`, `spec/27 §8` rule 6).
+    pub fn cost_time() -> Clock {
+        Clock::Virtual(Arc::new(VirtualClock::cost()))
+    }
+
+    /// The clock of a run of the interpreter: the cost clock when `cost_clock` holds, which
+    /// needs `virtual_time` (the command line refuses it alone), else as [`Clock::for_run`].
+    pub fn for_interpreter(virtual_time: bool, cost_clock: bool) -> Clock {
+        if cost_clock {
+            Clock::cost_time()
+        } else {
+            Clock::for_run(virtual_time)
+        }
+    }
+
+    /// Whether the clock is a cost clock, which each check point moves by one tick.
+    pub fn is_cost(&self) -> bool {
+        matches!(self, Clock::Virtual(clock) if clock.is_cost())
     }
 
     /// The clock of `--virtual-time` when `virtual_time` holds, the real one otherwise.
@@ -211,6 +255,23 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn only_a_cost_clock_is_one() {
+        assert!(Clock::cost_time().is_cost());
+        assert!(Clock::cost_time().is_virtual());
+        assert!(!Clock::virtual_time().is_cost());
+        assert!(!Clock::real().is_cost());
+        assert!(Clock::for_interpreter(true, true).is_cost());
+        assert!(!Clock::for_interpreter(true, false).is_cost());
+        assert!(!Clock::for_interpreter(false, false).is_virtual());
+        // A clone shares the clock, and keeps its kind.
+        let clock = Clock::cost_time();
+        let other = clock.clone();
+        clock.elapse(3).unwrap();
+        assert!(other.is_cost());
+        assert_eq!(other.now(), 3);
+    }
 
     #[test]
     fn a_virtual_clock_starts_at_zero_and_moves_only_when_told() {

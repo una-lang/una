@@ -238,6 +238,11 @@ pub(crate) enum Command {
         /// Run on a virtual clock that starts at 0 and never waits (ADR 0116)
         #[arg(long)]
         virtual_time: bool,
+        /// With --virtual-time: each check point (call, operation, loop iteration) moves the
+        /// virtual clock by one millisecond, so time follows the run's work; the security hunt's
+        /// cost-clock oracle (ADR 0117, `spec/27 §8`)
+        #[arg(long, requires = "virtual_time")]
+        cost_clock: bool,
         /// Request a host stop after this many seconds, from 1 to 31536000 (ADR 0116)
         #[arg(long, value_name = "SECONDS", value_parser = deadline)]
         deadline: Option<u64>,

@@ -176,6 +176,7 @@ fn run_here(dir: &Path, reveal: bool) -> (Vec<Value>, Vec<Value>) {
         grants: vec![Grant::Console],
         keys: BTreeMap::new(),
         virtual_time: true,
+        cost_clock: false,
     };
     let mut lines = Lines::default();
     // The depths of `una run` and of a native executable by default: `--max-depth` and the

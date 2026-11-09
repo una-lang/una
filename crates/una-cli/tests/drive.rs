@@ -101,6 +101,7 @@ fn drive_on(
         grants: vec![Grant::Console, Grant::Clock],
         keys: BTreeMap::new(),
         virtual_time,
+        cost_clock: false,
     };
     let stack = una_interp::stack_bytes(10_000).unwrap();
     std::thread::scope(|scope| {

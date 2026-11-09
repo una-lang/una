@@ -34,6 +34,9 @@ pub struct Host {
     /// `--virtual-time`: the run's clock is virtual, from 0 at its start, and only the run's
     /// own waits move it (ADR 0116 rule 19, `spec/26 §8`).
     pub virtual_time: bool,
+    /// `--cost-clock`, with `--virtual-time`: each check point moves the virtual clock by one
+    /// tick, a millisecond (`spec/27 §8` rule 6). Only the interpreter has it.
+    pub cost_clock: bool,
 }
 
 /// How `main`, or the `do` line of an example, ended.
@@ -82,7 +85,7 @@ pub fn run_main(
         Ok(hashing) => hashing,
         Err(abort) => return Some(not_started(abort)),
     };
-    let clock = Clock::for_run(host.virtual_time);
+    let clock = Clock::for_interpreter(host.virtual_time, host.cost_clock);
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
     machine.keyed(hashing);
     let result = machine
@@ -132,7 +135,7 @@ pub fn run_drive(
         Ok(hashing) => hashing,
         Err(abort) => return Ok(not_started(abort)),
     };
-    let clock = Clock::for_run(host.virtual_time);
+    let clock = Clock::for_interpreter(host.virtual_time, host.cost_clock);
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
     machine.keyed(hashing);
     let result = machine
@@ -177,7 +180,7 @@ pub fn run_serve(
         Ok(hashing) => hashing,
         Err(abort) => return Some(not_started(abort)),
     };
-    let clock = Clock::for_run(host.virtual_time);
+    let clock = Clock::for_interpreter(host.virtual_time, host.cost_clock);
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits, clock);
     machine.keyed(hashing);
     let result = machine

@@ -78,6 +78,9 @@ pub(crate) struct RunOptions<'a> {
     /// `--virtual-time`: the run's clock is virtual (ADR 0116 rule 19, `spec/26 §8`). A test's
     /// clock is virtual whatever this says.
     pub(crate) virtual_time: bool,
+    /// `--cost-clock`, with `--virtual-time`: each check point moves the virtual clock by one
+    /// tick (`spec/27 §8` rule 6).
+    pub(crate) cost_clock: bool,
     /// `--deadline`: a host stop request after this many seconds (ADR 0116 rule 14).
     pub(crate) deadline: Option<u64>,
     /// `--stop-grace`: the seconds from the first host stop request to the hard stop (rule 16).
@@ -661,6 +664,7 @@ pub(crate) fn run_command(
         grants,
         keys,
         virtual_time: options.virtual_time,
+        cost_clock: options.cost_clock,
     };
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         writeln!(

@@ -88,6 +88,7 @@ fn run_here(dir: &Path) {
         grants: Vec::new(),
         keys: BTreeMap::new(),
         virtual_time: false,
+        cost_clock: false,
     };
     let stack = una_interp::stack_bytes(10_000).unwrap();
     std::thread::scope(|scope| {
