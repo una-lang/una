@@ -302,7 +302,7 @@ pub(crate) fn open<'t>(
     }
     if let Some(itaoca) = itaoca {
         let document = registry.point.document.clone();
-        let version = registry.root.version;
+        let version = accepted_root_version(&registry);
         let mut consistent = |stored: &str| registry.consistent_with(stored);
         if let Err(why) = itaoca.store_checkpoint(&id, &document, &mut consistent) {
             notes.push(format!(
@@ -316,6 +316,14 @@ pub(crate) fn open<'t>(
         }
     }
     Ok((registry, notes))
+}
+
+/// The root version the registry client accepted for `registry`: the last of the chain it
+/// walked, which [`open`] stores as the registry's root-version floor. `una ita lock --check`
+/// takes it as a floor of its own whether or not that store succeeded (ADR 0122, amendment of
+/// 2026-11-09).
+pub(crate) fn accepted_root_version(registry: &Registry<'_>) -> u64 {
+    registry.root.version
 }
 
 /// The lines of `ita.lock` for a registry's resolution point (rule 16), with the last root
