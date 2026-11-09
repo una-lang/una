@@ -1066,7 +1066,15 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     );
     let id = registry_id(&b.expected.root);
     assert!(store.load_checkpoint(&id).unwrap().is_some());
-    assert_eq!(store.load_root_version(&id).unwrap(), Some(1));
+    // The root-version floor binds the digest of that root metadata (ADR 0122, amendment of
+    // 2026-11-09, L3).
+    assert_eq!(
+        store.load_root_version(&id).unwrap(),
+        Some(una_project::itaoca::RootFloor {
+            version: 1,
+            digest: Some(una_project::tlog::root::digest(&b.test.roots[0])),
+        })
+    );
     assert!(done.notes.is_empty(), "{:?}", done.notes);
 }
 
@@ -1144,14 +1152,79 @@ fn unbundling_respects_the_root_version_floor() {
         root: scratch("unbundle-root-floor"),
     };
     let id = registry_id(&b.expected.root);
-    store.store_root_version(&id, 2).unwrap();
+    let other = format!("sha256:{}", "0".repeat(64));
+    store.store_root_version(&id, 2, &other).unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let (_, problem) =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
     assert!(matches!(problem, Failure::Refused(_)), "{problem:?}");
     assert!(!store.contains(&b.expected.digest).unwrap());
-    assert_eq!(store.load_root_version(&id).unwrap(), Some(2));
+    assert_eq!(
+        store
+            .load_root_version(&id)
+            .unwrap()
+            .map(|floor| floor.version),
+        Some(2)
+    );
     assert!(store.load_checkpoint(&id).unwrap().is_none());
+}
+
+/// ADR 0122, amendment of 2026-11-09 (L3): unbundling refuses a bundle whose root chain holds
+/// the floor's version with another digest than the one stored, a fork of the root chain
+/// (U7010), and writes nothing; with the same digest, or a floor of the earlier form, it
+/// unbundles, and the floor is not replaced by its equal version.
+#[test]
+fn unbundling_refuses_a_fork_at_the_floor_version() {
+    let b = bundled();
+    let id = registry_id(&b.expected.root);
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let first = una_project::tlog::root::digest(&b.test.roots[0]);
+    let store = Itaoca {
+        root: scratch("unbundle-root-fork"),
+    };
+    store
+        .store_root_version(&id, 1, &format!("sha256:{}", "0".repeat(64)))
+        .unwrap();
+    let (_, problem) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
+    assert!(
+        matches!(&problem, Failure::Refused(why) if why.contains("another digest") && why.contains("forked")),
+        "{problem:?}"
+    );
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    assert!(store.load_checkpoint(&id).unwrap().is_none());
+    // The same digest: unbundled.
+    let store = Itaoca {
+        root: scratch("unbundle-root-same"),
+    };
+    store.store_root_version(&id, 1, &first).unwrap();
+    let done =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
+    assert!(done.notes.is_empty(), "{:?}", done.notes);
+    assert!(store.contains(&b.expected.digest).unwrap());
+    // The earlier form: compared by version, unbundled, and kept as it is.
+    let store = Itaoca {
+        root: scratch("unbundle-root-old-form"),
+    };
+    let dir = store.root.join("registry").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("root-version"), "1\n").unwrap();
+    bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("root-version")).unwrap(),
+        "1\n"
+    );
+    // A floor line of neither form: unavailable (U7013), nothing written.
+    let store = Itaoca {
+        root: scratch("unbundle-root-malformed"),
+    };
+    let dir = store.root.join("registry").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("root-version"), format!("1 {first}x\n")).unwrap();
+    let (_, problem) =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
+    assert!(matches!(problem, Failure::Unavailable(_)), "{problem:?}");
+    assert!(!store.contains(&b.expected.digest).unwrap());
 }
 
 /// Unbundling never moves the checkpoint stored for a source backwards (rule 39).
@@ -2538,7 +2611,9 @@ fn unbundling_verifies_the_provenance_as_every_load_does() {
         root: scratch("unbundle-below-floor"),
     };
     let id = registry_id(&b.expected.root);
-    store.store_root_version(&id, 3).unwrap();
+    store
+        .store_root_version(&id, 3, &format!("sha256:{}", "0".repeat(64)))
+        .unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let (_, failure) =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();

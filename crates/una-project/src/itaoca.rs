@@ -13,8 +13,9 @@
 //!   provenance of format 2 is stored for that point;
 //! - `registry/<id>/checkpoint` and `registry/<id>/root-version`: the floors of rule 39 of the
 //!   registry whose identity is `id` ([`registry_id`]), the largest checkpoint and the highest
-//!   root version the client accepted, each replaced only by a larger one under the kernel-held
-//!   lock of `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`]).
+//!   root version the client accepted (with the digest of that root metadata, [`RootFloor`]),
+//!   each replaced only by a larger one under the kernel-held lock of
+//!   `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`]).
 //!
 //! The root itself must not be a symbolic link; what lies above it is the user's choice. A
 //! package is verified on every load, not once: its files are read again as [`crate::tree`]
@@ -354,48 +355,109 @@ impl Itaoca {
     }
 
     /// The highest root version of the registry `id` accepted, the floor of its root chain
-    /// (rule 39), or `None` when none is stored. Reading never takes the floor lock.
-    pub fn load_root_version(&self, id: &str) -> Result<Option<u64>, Refusal> {
+    /// (rule 39), or `None` when none is stored. Reading never takes the floor lock. The file is
+    /// `<n> sha256:<hex>` and a line feed, the version and the digest of that root metadata, or,
+    /// of the earlier form, `<n>` and a line feed, the version alone ([`RootFloor`]); any other
+    /// content is a floor that cannot be read, never none.
+    pub fn load_root_version(&self, id: &str) -> Result<Option<RootFloor>, Refusal> {
         check_id(id)?;
         tree::not_a_link(&self.root)?;
         let Some(path) = tree::locate(&self.root, &["registry", id, "root-version"])? else {
             return Ok(None);
         };
-        let bytes = tree::read_file(&path, 32)?;
+        let bytes = tree::read_file(&path, ROOT_FLOOR_BYTES)?;
         let text = String::from_utf8(bytes).map_err(|_| "a stored root version is not UTF-8")?;
-        let digits = text.trim_end_matches('\n');
-        let valid = !digits.is_empty()
-            && digits.len() <= 20
-            && digits.bytes().all(|b| b.is_ascii_digit())
-            && !digits.starts_with('0');
-        digits
-            .parse()
-            .ok()
-            .filter(|_| valid)
+        RootFloor::parse(&text)
             .map(Some)
             .ok_or_else(|| "a stored root version is not a version".to_owned())
     }
 
-    /// Stores `version`, a root version the client accepted for the registry `id`, as the floor
-    /// of its root chain: under the floor lock, only when it is higher than the one stored.
-    pub fn store_root_version(&self, id: &str, version: u64) -> Result<(), Refusal> {
+    /// Stores `version`, a root version the client accepted for the registry `id`, with
+    /// `digest`, the digest of that root metadata (`sha256:` and hex), as the floor of its root
+    /// chain: under the floor lock, only when it is higher than the one stored. An equal version
+    /// never replaces the stored floor, whatever its digest or form.
+    pub fn store_root_version(&self, id: &str, version: u64, digest: &str) -> Result<(), Refusal> {
+        let floor = RootFloor {
+            version,
+            digest: Some(digest.to_owned()),
+        };
+        let line = floor
+            .line()
+            .ok_or_else(|| format!("cannot store the root version: `{digest}` is not a digest"))?;
         self.locked(id, || {
             if self
                 .load_root_version(id)?
-                .is_some_and(|stored| stored >= version)
+                .is_some_and(|stored| stored.version >= version)
             {
                 return Ok(());
             }
             let parent = tree::make_dirs(&self.root, &["registry", id])?;
-            tree::store_file(
-                &parent,
-                "root-version",
-                format!("{version}\n").as_bytes(),
-                true,
-            )
-            .map_err(|refusal| format!("cannot store the root version: {refusal}"))
+            tree::store_file(&parent, "root-version", line.as_bytes(), true)
+                .map_err(|refusal| format!("cannot store the root version: {refusal}"))
         })
     }
+}
+
+/// The most bytes a stored root-version floor holds: a version of at most 20 digits, a space,
+/// `sha256:` and 64 hex digits, and a line feed.
+const ROOT_FLOOR_BYTES: u64 = 20 + 1 + 7 + 64 + 1;
+
+/// The root-version floor Itaoca stores for a registry (`registry/<id>/root-version`, rule 39):
+/// the highest root version the client accepted and, unless the floor is of the earlier form,
+/// the digest of that root metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootFloor {
+    /// The root version: a decimal without a leading zero, at least 1.
+    pub version: u64,
+    /// `sha256:` and the lowercase hex of the root metadata of that version, or `None` for a
+    /// floor of the earlier form, the version alone, which is compared by version only.
+    pub digest: Option<String>,
+}
+
+impl RootFloor {
+    /// Reads the file's text: `<n> sha256:<hex>` or `<n>`, then exactly one line feed. Anything
+    /// else is `None`.
+    pub fn parse(text: &str) -> Option<RootFloor> {
+        let line = text.strip_suffix('\n')?;
+        let (digits, digest) = match line.split_once(' ') {
+            Some((digits, digest)) => (digits, Some(digest)),
+            None => (line, None),
+        };
+        let valid = !digits.is_empty()
+            && digits.len() <= 20
+            && digits.bytes().all(|b| b.is_ascii_digit())
+            && !digits.starts_with('0');
+        if !valid || digest.is_some_and(|digest| !is_digest(digest)) {
+            return None;
+        }
+        Some(RootFloor {
+            version: digits.parse().ok()?,
+            digest: digest.map(str::to_owned),
+        })
+    }
+
+    /// The file's text, which [`RootFloor::parse`] reads back to this floor, or `None` when the
+    /// version is 0 or the digest is not `sha256:` and 64 lowercase hex digits.
+    pub fn line(&self) -> Option<String> {
+        if self.version == 0 {
+            return None;
+        }
+        match &self.digest {
+            Some(digest) if is_digest(digest) => Some(format!("{} {digest}\n", self.version)),
+            Some(_) => None,
+            None => Some(format!("{}\n", self.version)),
+        }
+    }
+}
+
+/// Whether `text` is `sha256:` and 64 lowercase hexadecimal digits.
+fn is_digest(text: &str) -> bool {
+    text.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 /// The identity of a registry, under which Itaoca keeps its floors: the hex SHA-256 of its pin,

@@ -490,9 +490,12 @@ fn every_load_reads_the_root_version_floor() {
     vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
     let id = una_project::itaoca::registry_id(&release.expected.root);
     assert!(vendor::load(&root, Some(&itaoca), &release.expected).is_ok());
-    itaoca.store_root_version(&id, 1).unwrap();
+    let first = una_project::tlog::root::digest(&release.provenance.roots[0]);
+    itaoca.store_root_version(&id, 1, &first).unwrap();
     assert!(vendor::load(&root, Some(&itaoca), &release.expected).is_ok());
-    itaoca.store_root_version(&id, 2).unwrap();
+    itaoca
+        .store_root_version(&id, 2, &format!("sha256:{}", "0".repeat(64)))
+        .unwrap();
     for place in [Some(root.as_path()), None] {
         let at = place.map_or_else(|| fresh("floor-no-vendor"), std::path::Path::to_path_buf);
         let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
@@ -518,6 +521,61 @@ fn every_load_reads_the_root_version_floor() {
         vendor::vendor(&root, Some(&itaoca), &release.expected),
         Err(Problem::Unavailable(_))
     ));
+}
+
+/// ADR 0122, amendment of 2026-11-09 (L3): a stored floor binds the digest of its root version.
+/// A chain whose version of the floor has another digest is a fork of the root chain, refused
+/// (U7010) from the vendor directory and from Itaoca alike; the same digest loads; a floor of
+/// the earlier form, the version alone, is compared by version only; a floor line of neither
+/// form is unreadable (U7013), never no floor.
+#[test]
+fn every_load_refuses_a_fork_at_the_floor_version() {
+    let (release, itaoca) = stored("floor-digest");
+    let root = fresh("floor-digest-root");
+    vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
+    let id = una_project::itaoca::registry_id(&release.expected.root);
+    let first = una_project::tlog::root::digest(&release.provenance.roots[0]);
+    let floor = itaoca.root.join("registry").join(&id).join("root-version");
+    let write = |text: &str| {
+        let _ = std::fs::remove_file(&floor);
+        std::fs::create_dir_all(floor.parent().unwrap()).unwrap();
+        std::fs::write(&floor, text).unwrap();
+    };
+    let places = || {
+        [Some(root.clone()), None]
+            .map(|place| place.unwrap_or_else(|| fresh("floor-digest-no-vendor")))
+    };
+    write(&format!("1 sha256:{}\n", "0".repeat(64)));
+    for at in places() {
+        let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
+        assert!(
+            matches!(&refusal, Problem::Refused(message)
+                if message.contains("another digest") && message.contains("forked")),
+            "{refusal:?}"
+        );
+    }
+    write(&format!("1 {first}\n"));
+    for at in places() {
+        assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
+    }
+    write("1\n");
+    for at in places() {
+        assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
+    }
+    for text in [
+        format!("1 {first}"),
+        format!("1 {first} \n"),
+        "1 sha256:00\n".to_owned(),
+    ] {
+        write(&text);
+        for at in places() {
+            let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
+            assert!(
+                matches!(&refusal, Problem::Unavailable(message) if message.contains("cannot be read")),
+                "{text:?}: {refusal:?}"
+            );
+        }
+    }
 }
 
 fn stored(name: &str) -> (Release, Itaoca) {

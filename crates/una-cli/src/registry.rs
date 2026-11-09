@@ -283,7 +283,10 @@ pub(crate) fn open<'t>(
     };
     let floors = Floors {
         checkpoint: floor.as_deref(),
-        root_version,
+        root_version: root_version.as_ref().map(|stored| stored.version),
+        root_digest: root_version
+            .as_ref()
+            .and_then(|stored| stored.digest.as_deref()),
     };
     let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
     if matches!(point, Point::Latest { .. } | Point::Served) {
@@ -303,13 +306,14 @@ pub(crate) fn open<'t>(
     if let Some(itaoca) = itaoca {
         let document = registry.point.document.clone();
         let version = accepted_root_version(&registry);
+        let digest = accepted_root_digest(&registry);
         let mut consistent = |stored: &str| registry.consistent_with(stored);
         if let Err(why) = itaoca.store_checkpoint(&id, &document, &mut consistent) {
             notes.push(format!(
                 "note: the checkpoint of `{name}` was not stored as its floor: {why}"
             ));
         }
-        if let Err(why) = itaoca.store_root_version(&id, version) {
+        if let Err(why) = itaoca.store_root_version(&id, version, &digest) {
             notes.push(format!(
                 "note: the root version of `{name}` was not stored as its floor: {why}"
             ));
@@ -324,6 +328,15 @@ pub(crate) fn open<'t>(
 /// 2026-11-09).
 pub(crate) fn accepted_root_version(registry: &Registry<'_>) -> u64 {
     registry.root.version
+}
+
+/// The digest of the root metadata of [`accepted_root_version`], `sha256:` and hex, which
+/// [`open`] stores with it as the floor (ADR 0122, amendment of 2026-11-09, L3).
+pub(crate) fn accepted_root_digest(registry: &Registry<'_>) -> String {
+    registry
+        .last_root()
+        .map(|(_, digest)| digest.to_owned())
+        .unwrap_or_default()
 }
 
 /// The lines of `ita.lock` for a registry's resolution point (rule 16), with the last root

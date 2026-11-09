@@ -1829,6 +1829,7 @@ fn client_view(
     let floors = crate::client::Floors {
         checkpoint: None,
         root_version: None,
+        root_digest: None,
     };
     let point = crate::client::Point::Latest { now: now + 60 };
     match crate::client::Registry::open_with("model", place, pin, &point, &floors) {

@@ -533,8 +533,8 @@ fn place_of(copy: &Memory, behind: &Behind<'_>) -> Fallback {
 /// `floors`, the checkpoint and the root version Itaoca stores (rules 35 to 39, no freshness),
 /// proves that the point extends the lock's ([`Registry::extends`]), and checks that each of
 /// those packages is the release the client reads there, by log index and digest, and that its
-/// name's yanks and advisories verify. Returns the checkpoint read and the last root version,
-/// to store as the source's floors; `Err` gives the package's index and the failure:
+/// name's yanks and advisories verify. Returns the checkpoint read and the last root version
+/// with its digest, to store as the source's floors; `Err` gives the package's index and the failure:
 /// unavailable when no place serves a document it needs, from the client's typed records
 /// ([`OpenError::Unavailable`], [`Registry::take_omitted`]), never from a message.
 fn verify_source(
@@ -542,7 +542,7 @@ fn verify_source(
     behind: &Behind<'_>,
     expected: &[Expected],
     floors: &Floors<'_>,
-) -> Result<(String, u64), (usize, Failure)> {
+) -> Result<(String, u64, String), (usize, Failure)> {
     let place = place_of(copy, behind);
     let mut opened: Option<Registry<'_>> = None;
     for (index, package) in expected.iter().enumerate() {
@@ -588,7 +588,17 @@ fn verify_source(
         check_opened(registry, package).map_err(|failure| (index, failure))?;
     }
     opened
-        .map(|registry| (registry.point.document.clone(), registry.root.version))
+        .map(|registry| {
+            let digest = registry
+                .last_root()
+                .map(|(_, digest)| digest.to_owned())
+                .unwrap_or_default();
+            (
+                registry.point.document.clone(),
+                registry.root.version,
+                digest,
+            )
+        })
         .ok_or_else(|| {
             (
                 0,
@@ -689,7 +699,7 @@ pub fn unbundle(
     // Each source's copy, opened by the client at the lock's resolution point, against the
     // floor Itaoca stores: the releases are the lock's, and their names' states verify.
     // Each source's floors, kept under its registry's identity (`registry_id`, from the pin).
-    let mut floors: Vec<(Memory, Expected, String, u64)> = Vec::new();
+    let mut floors: Vec<(Memory, Expected, String, u64, String)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let sources: BTreeSet<&str> = expected.iter().map(|e| e.source.as_str()).collect();
     for source in sources {
@@ -726,11 +736,14 @@ pub fn unbundle(
             .map_err(|why| unreadable("root version", why))?;
         let stored = Floors {
             checkpoint: floor.as_deref(),
-            root_version,
+            root_version: root_version.as_ref().map(|stored| stored.version),
+            root_digest: root_version
+                .as_ref()
+                .and_then(|stored| stored.digest.as_deref()),
         };
-        let (document, version) = verify_source(&copy, behind, expected, &stored)
+        let (document, version, digest) = verify_source(&copy, behind, expected, &stored)
             .map_err(|(index, failure)| (Some(index), failure))?;
-        floors.push((copy, package.clone(), document, version));
+        floors.push((copy, package.clone(), document, version, digest));
     }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
@@ -757,7 +770,7 @@ pub fn unbundle(
     // Through Itaoca's floor API, under its lock, each only forward (rule 39); the stored floor
     // is proven consistent again against the copy, opened anew. A floor that cannot be stored is
     // a note, never a failure: the packages are stored and verified already.
-    for (copy, package, document, version) in &floors {
+    for (copy, package, document, version, digest) in &floors {
         let source = &copy.source;
         let id = registry_id(&package.root);
         let point = Point::At {
@@ -779,7 +792,7 @@ pub fn unbundle(
                 error.message()
             )),
         }
-        if let Err(why) = itaoca.store_root_version(&id, *version) {
+        if let Err(why) = itaoca.store_root_version(&id, *version, digest) {
             notes.push(format!(
                 "note: the root version of `{source}` was not stored as its floor: {why}"
             ));

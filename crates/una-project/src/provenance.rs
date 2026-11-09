@@ -34,7 +34,8 @@
 //! this machine stores for the registry ([`Floor`]):
 //! - **the root:** the first root metadata has the digest the lock pins and the threshold of its
 //!   own root keys, and each next version the thresholds of rule 35; the chain holds the last
-//!   root version the lock records, with its digest; its last version is not below the floor;
+//!   root version the lock records, with its digest; its last version is not below the floor,
+//!   and, when the floor stores a digest, its version of the floor has that digest;
 //!   and the last has not expired at the witness time of the latest checkpoint carried, or, with
 //!   none, of the point's checkpoint;
 //! - **the latest checkpoint, when carried:** it names the last stored version, is of that
@@ -392,11 +393,18 @@ pub enum Floor {
     /// No Itaoca, or none stored for the registry: the vendored chain past the pin is trusted
     /// on first use.
     None,
-    /// The highest root version this machine accepted, by its number: the stored floor holds
-    /// no digest (`spec/30 §14`, Floors), so a chain that reaches that version through another
-    /// root document, which a threshold of root keys would have to sign, is not told apart
-    /// here; the registry client compares the digests of the chain it walks.
-    At(u64),
+    /// The highest root version this machine accepted, `version`, with `digest`, the digest of
+    /// that root metadata (`spec/30 §14`, Floors): a chain whose version `version` has another
+    /// digest is a fork of the root chain, refused. A floor of the earlier form holds no digest
+    /// (`None`) and is compared by version only, so a chain that reaches that version through
+    /// another root document, which a threshold of root keys would have to sign, is not told
+    /// apart from it.
+    At {
+        /// The root version.
+        version: u64,
+        /// `sha256:` and the hex of that root metadata, when the floor stores it.
+        digest: Option<String>,
+    },
     /// A floor that exists and cannot be read: the load is unavailable (U7013), never one
     /// without it.
     Unreadable(Refusal),
@@ -411,19 +419,36 @@ impl Floor {
         };
         match itaoca.load_root_version(&itaoca::registry_id(pin)) {
             Ok(None) => Floor::None,
-            Ok(Some(version)) => Floor::At(version),
+            Ok(Some(stored)) => Floor::At {
+                version: stored.version,
+                digest: stored.digest,
+            },
             Err(why) => Floor::Unreadable(why),
         }
     }
 
     /// This floor raised to `version`, a root version the registry client accepted in this run
-    /// whether or not it was stored (ADR 0122, amendment of 2026-11-09): the larger of the two.
-    /// A floor that cannot be read stays unreadable.
+    /// whether or not it was stored (ADR 0122, amendment of 2026-11-09), with `digest`, the
+    /// digest of that root metadata: the larger of the two. At the same version, the stored
+    /// digest is kept, and a floor of the earlier form takes `digest`; the client that walked
+    /// the chain refused it already if the two differ. A floor that cannot be read stays
+    /// unreadable.
     #[must_use]
-    pub fn at_least(self, version: u64) -> Floor {
+    pub fn at_least(self, version: u64, digest: &str) -> Floor {
+        let walked = Floor::At {
+            version,
+            digest: Some(digest.to_owned()),
+        };
         match self {
-            Floor::None => Floor::At(version),
-            Floor::At(stored) => Floor::At(stored.max(version)),
+            Floor::None => walked,
+            Floor::At {
+                version: stored, ..
+            } if stored < version => walked,
+            Floor::At {
+                version: stored,
+                digest: None,
+            } if stored == version => walked,
+            Floor::At { version, digest } => Floor::At { version, digest },
             Floor::Unreadable(why) => Floor::Unreadable(why),
         }
     }
@@ -572,13 +597,30 @@ pub fn verify(
     // versions that retire or revoke a witness.
     match floor {
         Floor::None => {}
-        Floor::At(floor) if last_version < *floor => {
+        Floor::At { version: floor, .. } if last_version < *floor => {
             return Err(Problem::Refused(format!(
                 "the provenance's root chain ends at root version {last_version}, older than root version {floor}, which this machine has accepted for `{}`; lock again at a fresh resolution point",
                 expected.source
             )));
         }
-        Floor::At(_) => {}
+        // With the digest this machine accepted for that version, the chain must hold the same
+        // root metadata there: another one of that version is a fork of the root chain. The
+        // chain holds every version from the pinned one to its last, and the floor, stored for
+        // the registry this pin names, is not below the pinned version, so one it lacks is
+        // refused too, never passed.
+        Floor::At {
+            version: floor,
+            digest: Some(digest),
+        } => {
+            let held = chain.iter().find(|(root, _)| root.version == *floor);
+            if held.is_none_or(|(_, held)| held != digest) {
+                return Err(Problem::Refused(format!(
+                    "the provenance's root chain holds root version {floor} with another digest than {digest}, which this machine has accepted for `{}`, so the root chain forked",
+                    expected.source
+                )));
+            }
+        }
+        Floor::At { digest: None, .. } => {}
         Floor::Unreadable(why) => {
             return Err(Problem::Unavailable(format!(
                 "the root version this machine has accepted for `{}` cannot be read, so the provenance cannot be verified offline: {why}",
