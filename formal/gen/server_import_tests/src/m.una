@@ -3,6 +3,7 @@ module m
 import std.host (Exchange, Header, HttpServer, Method, Param, Reply, ReplyRight, Request,
   ServeError, Status
 )
+import std.testing (TestRequestError)
 
 --- The control: nothing of the server, so the model reads it.
 pub plain(x: Int) -> Int = x + 1
@@ -34,6 +35,9 @@ pub param_name(p: internal Param) -> internal Text = p.name
 
 --- A failure of the server, tested.
 pub why(failure: ServeError) -> Bool = failure is Closed
+
+--- Why `test_request` refused a request: the server's kind of `std.testing`.
+pub refused(failure: TestRequestError) -> Bool = failure is Refused
 
 --- A reply right, shown.
 pub shown(right: internal ReplyRight) -> internal Text = "{right}"

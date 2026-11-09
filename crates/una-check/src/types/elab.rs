@@ -6821,4 +6821,48 @@ mod server_kinds {
             .collect();
         assert_eq!(kinds, super::SERVER_CORE_KINDS);
     }
+
+    /// The quoted names of the Lean definition `def <name> : List String := [...]` in `text`.
+    fn lean_list(text: &str, name: &str) -> Vec<String> {
+        let head = format!("def {name} : List String := [");
+        let start = text.find(&head).map(|i| i + head.len());
+        let Some(start) = start else {
+            return Vec::new();
+        };
+        let end = text[start..].find(']').map_or(start, |i| start + i);
+        text[start..end]
+            .split(',')
+            .map(|item| item.trim().trim_matches('"').to_owned())
+            .filter(|item| !item.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn the_formal_importer_refuses_every_name_of_the_server() {
+        // #1012: the formal re-check refuses the server's constructs by name until F1 models them
+        // (ADR 0123 S10, `spec/31 §9`). Its lists must be the checker's, so a kind of the server
+        // that Core gains is refused there too, never read as a record of the program.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../formal/UnaFormal/F1/Import.lean"
+        );
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(!text.is_empty(), "cannot read {path}");
+        assert_eq!(lean_list(&text, "serverKinds"), super::SERVER_CORE_KINDS);
+        assert_eq!(
+            lean_list(&text, "serverTestingNames"),
+            crate::names::prelude::STD_TESTING_SERVER_NAMES
+        );
+        assert!(text.contains("def serverCapability : String := \"HttpServer\""));
+        // Every other name of the server is the capability, `ReplyRight` (the base type the
+        // importer refuses by its node) or `Status` (an `Int` with a refinement in Core).
+        for name in crate::names::prelude::SERVER_NAMES {
+            assert!(
+                super::SERVER_CORE_KINDS.contains(&name)
+                    || matches!(name, "HttpServer" | "ReplyRight" | "Status"),
+                "`{name}` is a name of the server the formal importer does not refuse"
+            );
+        }
+        assert!(text.contains("| .str \"reply_right\", _, _, _ =>"));
+    }
 }

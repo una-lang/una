@@ -9,8 +9,9 @@ is empty; the script checks both and writes the document unchanged.
 
 It also checks that the importer's `serverKinds` (`formal/UnaFormal/F1/Import.lean`) is the
 checker's `SERVER_CORE_KINDS` (`crates/una-check/src/types/elab.rs`), the kinds Core declares in
-`prelude` for a package that imports a name of the server, so the two cannot drift apart while
-the tests are written again.
+`prelude` for a package that imports a name of the server. The gate that keeps them, and
+`serverTestingNames` with `STD_TESTING_SERVER_NAMES`, in step on every change is the test
+`server_kinds::the_formal_importer_refuses_every_name_of_the_server` of `una-check`.
 
 Usage: una --json core --with-rejected formal/gen/server_import_tests > export.json
        python3 formal/gen/server_import_tests.py export.json formal/UnaFormal/F1/ServerImportTests.lean
@@ -21,7 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 ORDER = {
     "m": ["plain", "header_value", "handle", "created", "ok_status", "method_of", "param_name",
-          "why", "shown", "same", "serve_one", "answer", "stop_serving", "granted",
+          "why", "refused", "shown", "same", "serve_one", "answer", "stop_serving", "granted",
           "created_status", "caller", "closed"],
     "n": ["Request", "path_of"],
 }
@@ -125,6 +126,11 @@ def srv : String := r#"{text}"#
 #guard (reason srv "m.param_name").endsWith ", ADR 0123)"
 #guard (reason srv "m.why").endsWith ", ADR 0123)"
 #guard (reason srv "m.shown") == "F1 restriction (the reply right `ReplyRight`, ADR 0123)"
+
+-- `TestRequestError`, the server's kind of `std.testing` (#1012, slice 2), refused by its module.
+#guard run srv "m.refused" == "not re-checked"
+#guard (reason srv "m.refused") == "F1 restriction (the server's `std.testing.TestRequestError`, ADR 0123)"
+#guard serverTestingNames.contains "TestRequestError"
 #guard (reason srv "m.same").endsWith ", ADR 0123)"
 
 -- `Status` is an `Int` with a refinement in Core, no construct of the server.
