@@ -25,3 +25,40 @@ pub logged(items: List[Int]) -> Int
 =
   @log.write("sum")
   fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
+
+pub kind Oops = | Bad
+
+pub run_it(act: fn(Int) -> Int) -> Int
+  uses of act
+  fails of act
+=
+  let r = act(1)
+    if error pass
+  r
+
+pub risky(x: Int) -> Int
+  fails Oops
+=
+  if x < 0
+    fail Bad
+  x
+
+pub failing_arg(n: Int) -> Int
+  fails Oops
+=
+  let r = run_it(risky)
+    if error pass
+  r
+
+pub safe_arg(n: Int) -> Int = run_it(fn(x) -> x + n)
+
+pub noisy() -> Unit
+  uses @log: Log[write]
+=
+  @log.write("x")
+
+pub other_op(items: List[Int]) -> Int
+  uses @log: Log[write]
+=
+  noisy()
+  fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)

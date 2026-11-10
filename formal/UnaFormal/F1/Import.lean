@@ -1323,6 +1323,10 @@ structure Prep where
   /-- The one operation the function mentions, if any. -/
   op : Option (String × String)
   nested : Bool
+  /-- The functions with `uses of` or `fails of` every call of which in its body performs
+  nothing, and those every call of which cannot fail (`ofCallees`, #1676). -/
+  opFree : List String := []
+  failFree : List String := []
 
 /-- A substitution of type arguments: `LTy.lsubst` with the record labels of the document, or a
 mutant of it in the tests. -/
@@ -1351,60 +1355,73 @@ partial def typedBinders (j : J) : List (String × J) :=
   | _ => []
 
 /-- Whether the argument `a` is a variable that every binding of its name types as a function
-with no `uses` (#1676). Anything else, a function named directly included, is not known pure. -/
-def pureFnArg (bs : List (String × J)) (a : J) : Bool :=
+whose type `ok` accepts (#1676): with no `uses` (`noUses`), or no `fails` (`noFails`). Anything
+else is not known to be such a function. The types are the export's, which F1 checks where they
+are bound: a `let`'s value flows into its type, a lambda's body is checked against it, and a
+parameter's is the caller's to meet. -/
+def fnArgWith (ok : J → Bool) (bs : List (String × J)) (a : J) : Bool :=
   match a.getObjValD "kind", a.getObjValD "value" with
   | .str "var", .str x =>
     let ts := bs.filter (·.1 == x)
-    !ts.isEmpty && ts.all fun (_, t) =>
-      t.getObjValD "kind" == .str "fn" && t.getObjValD "uses" == .arr #[]
+    !ts.isEmpty && ts.all fun (_, t) => t.getObjValD "kind" == .str "fn" && ok t
   | _, _ => false
 
-/-- The calls in `j` of a function of the document with `uses of` (ADR 0062), each with whether
-the call is pure: the callee declares no `uses` of its own, and every argument given for a
-parameter its `uses of` names is a function with no `uses` (`pureFnArg`), so the call performs
-what those arguments perform, nothing (ADR 0062 rule 1). -/
-partial def usesOfCalls (findDecl : String → Option Decl) (bs : List (String × J)) (j : J) :
-    List (String × Bool) :=
+/-- A function type with no `uses`. -/
+def noUses (t : J) : Bool := t.getObjValD "uses" == .arr #[]
+
+/-- A function type with no `fails`. -/
+def noFails (t : J) : Bool := t.getObjValD "fails" == .null
+
+/-- The calls in `j` of a function of the document with `uses of` or `fails of` (ADR 0062), each
+with whether the call performs nothing, and whether it cannot fail. It performs nothing when the
+callee declares no `uses` of its own and every argument given for a parameter its `uses of`
+names is a function with no `uses`; it cannot fail when the callee declares no `fails` of its
+own and the argument given for the parameter its `fails of` names, if any, is a function with no
+`fails`. A call's effects are then its arguments' (ADR 0062 rule 1): none. -/
+partial def ofCalls (findDecl : String → Option Decl) (bs : List (String × J)) (j : J) :
+    List (String × Bool × Bool) :=
   match j with
   | .obj kvs =>
-    let here : List (String × Bool) :=
+    let here : List (String × Bool × Bool) :=
       if j.getObjValD "kind" != .str "call" || (j.getObjVal? "predicate").toBool then []
       else match plainRun (do path (← field j "function")) with
         | .error _ => []
         | .ok g => match findDecl g with
           | none => []
           | some e =>
-            match e.value.getObjValD "uses_of" with
-            | .arr #[] => []
-            | .arr us =>
+            let us : List J := match e.value.getObjValD "uses_of" with
+              | .arr xs => xs.toList
+              | _ => []
+            let fo : List J := match e.value.getObjValD "fails_of" with
+              | .str x => [.str x]
+              | _ => []
+            if us.isEmpty && fo.isEmpty then []
+            else
               let names : List String := (typedPairs (e.value.getObjValD "params")).map (·.1)
               let args : List J := match j.getObjValD "args" with
                 | .arr xs => xs.toList
                 | _ => []
-              let pure_ := e.value.getObjValD "uses" == .arr #[] && us.toList.all fun u =>
+              let given := fun (ok : J → Bool) (ps : List J) => ps.all fun u =>
                 match u with
                 | .str x => match names.findIdx? (· == x) with
-                  | some i => (args[i]?).any (pureFnArg bs)
+                  | some i => (args[i]?).any (fnArgWith ok bs)
                   | none => false
                 | _ => false
-              [(g, pure_)]
-            | _ => [(g, false)]
-    here ++ kvs.toArray.toList.flatMap fun kv => usesOfCalls findDecl bs kv.2
-  | .arr items => items.toList.flatMap (usesOfCalls findDecl bs)
+              [(g, e.value.getObjValD "uses" == .arr #[] && given noUses us,
+                e.value.getObjValD "fails" == .null && given noFails fo)]
+    here ++ kvs.toArray.toList.flatMap fun kv => ofCalls findDecl bs kv.2
+  | .arr items => items.toList.flatMap (ofCalls findDecl bs)
   | _ => []
 
-/-- A call that makes F1 charge a function that declares no operation with one (#1676): the
-first call of a function with `uses of` in `v`'s body, when every such call is pure
-(`usesOfCalls`). F1 has no effect polymorphism: it reads a function with `uses of` as one that
-performs the operation (`signature`), sound for that function, so such a caller fails T-Fun
-although `una check` rightly finds it performs nothing. When a call gives an argument that is
-not known pure, there is none, and the declaration is checked as before. -/
-def pureUsesOfCall (findDecl : String → Option Decl) (v : J) : Option String :=
+/-- The functions with `uses of` or `fails of` that `v`'s body calls, each listed when every call
+of it performs nothing (first list), and when every call of it cannot fail (second list), by
+`ofCalls` (#1676). A function called once otherwise is not listed. -/
+def ofCallees (findDecl : String → Option Decl) (v : J) : List String × List String :=
   let bs := typedPairs (v.getObjValD "params") ++ typedBinders (v.getObjValD "body")
-  match usesOfCalls findDecl bs (v.getObjValD "body") with
-  | [] => none
-  | calls@((g, _) :: _) => if calls.all (·.2) then some g else none
+  let calls := ofCalls findDecl bs (v.getObjValD "body")
+  let gs := (calls.map (·.1)).eraseDups
+  (gs.filter fun g => calls.all fun (h, ok, _) => h != g || ok,
+    gs.filter fun g => calls.all fun (h, _, ok) => h != g || ok)
 
 /-- Reads one function declaration of a document; the error is why it is outside F1. -/
 def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : List Decl) (d : Decl) :
@@ -1450,12 +1467,6 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
       else signature c e.module e.value (.atom .unit)
     pure (fn, callees, pols)
   let ((fn, callees, pols), refs) ← run read
-  -- ADR 0062 (#1676): F1 has no effect polymorphism, so a function that declares no operation
-  -- and calls a function with `uses of`, given only functions with no `uses`, fails T-Fun
-  -- although it performs nothing. It is not read; a call given any other argument is checked.
-  if !fn.op then
-    if let some g := pureUsesOfCall findDecl d.value then
-      throw s!"F1 restriction (a call of `{g}` with `uses of` given a pure function, ADR 0062)" -- restriction-check: importer refusal
   if (List.lookup fn.name c.vias).isSome then throw "a `via` function, which no label rule checks"
   -- A declaration that reaches `Files` is re-checked against the document's host labels.
   if !refs.host.isNone then
@@ -1487,7 +1498,9 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
           pure a.base
         | _, _ => throw s!"the operation `{cap}.{o}`, which does not take a scalar and give `Unit`"
     | _ => throw "several operations"
-  pure { fn, callees, pols, acceptsOp, op := refs.ops.head?, nested := refs.nested }
+  let (opFree, failFree) := ofCallees findDecl d.value
+  pure {
+    fn, callees, pols, acceptsOp, op := refs.ops.head?, nested := refs.nested, opFree, failFree }
 
 /-- The program the re-checker certifies, with the document's host labels (`HostLabels`), which
 `Check.progOk` checks against `Program.HostWF`. -/
@@ -1660,6 +1673,35 @@ constructor of its refusal (`Check.Err`, #535), never by its wording. -/
 def classify : Check.Err → Outcome
   | .restriction why => .notRechecked why -- restriction-check: not a site
   | .reject why => .rejected why
+
+/-- The outcome of checking `fn` (`checkWith`), with ADR 0062's calls read per call (#1676). F1
+has no effect polymorphism: it reads a function with `uses of` as one that performs an operation,
+and with `fails of` as one that may fail (`signature`), sound for that function, so a caller that
+gives it functions with no `uses` (or no `fails`) fails T-Fun although its call performs nothing
+(or cannot fail). When the check rejects `fn`, it is checked again with the callees every call of
+which performs nothing (`Prep.opFree`) read as performing nothing, and those every call of which
+cannot fail (`Prep.failFree`) read as unable to fail; their markers, host effects, policies and
+raises are kept, and every other callee is read as before. If that check passes, the one
+rejection was that reading, and `fn` is not re-checked, never accepted: the step from ADR 0062
+rule 1 is not a theorem. If it fails, the first rejection stands, so any other operation,
+failure or flow of the body, another call of the same callee included, is still rejected. -/
+def checkOutcome (cats : List String) (hl : HostLabels) (recs : List Record) (sums : List Sum)
+    (ops : List (String × Label)) (prep : Prep) (fn : Fun) (handlerOf : List (String × String))
+    (opHandlers : List (String × List String)) (pre : String := "") : Outcome :=
+  match checkWith cats hl recs sums ops prep fn handlerOf opHandlers with
+  | .ok () => .accepted ""
+  | .error why =>
+    let relax := fun (g : Fun) =>
+      { g with op := g.op && !prep.opFree.contains g.name,
+               fails := g.fails && !prep.failFree.contains g.name }
+    let perCall := !(prep.opFree.isEmpty && prep.failFree.isEmpty) &&
+      match why, checkWith cats hl recs sums ops { prep with callees := prep.callees.map relax } fn
+          handlerOf opHandlers with
+      | .reject _, .ok () => true
+      | _, _ => false
+    if perCall then
+      .notRechecked "F1 restriction (a call of a function with `uses of` or `fails of`, read per call, ADR 0062)" -- restriction-check: importer refusal
+    else classify (why.prefix pre)
 
 /-- The key of an instance: its type arguments, written. -/
 def instKey (ts : List LTy) : String := ", ".intercalate (ts.map Check.fmtTy)
@@ -2477,10 +2519,8 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
       match prepOf f with
       | some (.ok pr) =>
         let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
-        let outcome := match checkWith cats hl recs sms opsAcc pr inst handlerOf opHandlers with
-          | .ok () => Outcome.accepted ""
-          | .error why =>
-            classify (why.prefix s!"at its instance `{inst.name}`, instantiated in `{origin}`: ")
+        let outcome := checkOutcome cats hl recs sms opsAcc pr inst handlerOf opHandlers
+          s!"at its instance `{inst.name}`, instantiated in `{origin}`: "
         results := results ++ [(f, outcome)]
         instFuns := instFuns ++ [(f, inst)]
         for (g, us) in Check.Expr.genericCalls inst.body do
@@ -2516,9 +2556,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
           if pr.nested then
             if pr.fn.tparams.isEmpty then .notRechecked "a call at type arguments that are not ground"
             else instanceOutcome (named d)
-          else match checkWith cats hl recs sms opsAcc pr pr.fn handlerOf opHandlers with
-            | .ok () => .accepted ""
-            | .error why => classify why
+          else checkOutcome cats hl recs sms opsAcc pr pr.fn handlerOf opHandlers
         | some (.error why) => .notRechecked why
         | none => .notRechecked "not read")
   -- **No accept without a theorem.** A declaration is checked against its callees' signatures,
