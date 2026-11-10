@@ -6,5 +6,4 @@ run
   entry srv
   grants
     console
-    clock
     serve "http://127.0.0.1:8080"

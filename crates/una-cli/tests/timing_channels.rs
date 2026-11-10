@@ -1395,13 +1395,19 @@ doubled(n: Int) -> Text
 
 /// The program of `serve_delivery_history` (SC3 of the S4 design, §10.3), with its key
 /// labeled `label`: under a rate of one exchange per second, the first delivery takes the
-/// bucket's token, and the code between it and the second `next`, which the key makes 0 or
+/// bucket's token, and the code between it and the second `next`, which the key makes 1 ms or
 /// 1.5 s long on the clock (not by a count of iterations, whose time the machine's load
 /// would decide), decides whether the second `next`, under a deadline of 500 ms, reaches the
-/// next token, 1 s after the first: the second peer is answered `late` or `in time`. The `secret` version is the
-/// conformance case `serve_delivery_history_secret`, refused by U4003: that wait reads the
-/// `secret` key after a server operation, so `L_srv` is `secret`, and so is the deadline's
-/// outcome, which decides the replies.
+/// next token, 1 s after the first: the second peer is answered `late` or `in time`. That
+/// wait is `spin`, a loop that never ends by itself, cut by a `within` whose deadline the key
+/// decides (`spec/27 §5` rule 5: at the first check point past the deadline, each iteration
+/// being one); a deadline is at least 1 ms (U5001), hence 1 ms for key 0. It is not a loop
+/// that stops on `Clock.now`: in edition 0.4 a reading in a program that performs an
+/// operation of `HttpServer` carries `L_srv`, at least `internal` (ADR 0116, Proposed
+/// amendment of 2026-11-09, C1 item 3), and a `stop` on it is U4002 (#1891). The `secret`
+/// version is the conformance case `serve_delivery_history_secret`, refused by U4003: that
+/// wait reads the `secret` key after a server operation, so `L_srv` is `secret`, and so is
+/// the deadline's outcome, which decides the replies.
 fn delivery_program(label: &str, key: u8) -> String {
     format!(
         r#"module srv
@@ -1411,19 +1417,14 @@ import std.time (millisecond, second)
 
 key() -> {label}Int = {key}
 
-pause(ms: {label}Int) -> Unit
-  uses @clock: Clock[now]
+spin() -> Unit
   diverges
 =
-  let start = @clock.now()
   for ever
-    let now = @clock.now()
-    if now >= start + ms
-      stop
+    unit
 
 {LATE}pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
-  uses @clock: Clock[now]
   diverges
 =
   let first = attempt @server.next()
@@ -1432,7 +1433,9 @@ pause(ms: {label}Int) -> Unit
       @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "first"))
         if error use unit
     is Err(failure) -> unit
-  pause(if key() > 0 then 1500 else 0)
+  let wait = if key() > 0 then 1500 else 1
+  let paused = spin() within wait * millisecond
+    if error use unit
   let second = attempt @server.next() within 500 * millisecond
   let answered_second = when second
     is Ok(exchange) ->
@@ -1644,7 +1647,7 @@ fn serve_delivery_history_native() {
         "delivery",
         "serve_delivery_history_secret",
         delivery_program,
-        "    clock\n",
+        "",
         "      connections at most 64\n      at most 1 per second\n",
         delivery_run,
         Engine::Native,
@@ -1659,7 +1662,7 @@ fn serve_delivery_history_interpreter() {
         "delivery",
         "serve_delivery_history_secret",
         delivery_program,
-        "    clock\n",
+        "",
         "      connections at most 64\n      at most 1 per second\n",
         delivery_run,
         Engine::Interpreter,
