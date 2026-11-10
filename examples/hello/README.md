@@ -150,7 +150,7 @@ There is no ambient authority. A host capability that is not granted is not ther
 - Construct pages: [`uses`](../../docs/guide/language/capabilities/uses.md), [host capabilities](../../docs/guide/language/capabilities/host.md), [capabilities](../../docs/guide/language/capabilities/capability.md), [`example`](../../docs/guide/language/examples/example.md).
 - Configuration: [`entry`](../../docs/guide/configure/run/entry.md), [`grants`](../../docs/guide/configure/run/grants.md), [`edition`](../../docs/guide/configure/package/edition.md), [`verification.lock`](../../docs/guide/configure/verification-lock.md).
 - Tutorial: [Getting started](../../docs/guide/getting-started.md).
-- Learn, the tutorial on the Una website: chapter 1, "Hello, Una"; chapter 8, "Capabilities".
+- Learn, the tutorial on the Una website: [Hello, Una](/learn/hello/); [Capabilities](/learn/capabilities/).
 - Specification: [capabilities and effects (spec/05 §3)](../../docs/spec/05-capabilities-and-effects.md), [host capabilities (spec/05 §7)](../../docs/spec/05-capabilities-and-effects.md), [the entry point (spec/04 §8)](../../docs/spec/04-functions-and-contracts.md), [the command line (spec/13 §5)](../../docs/spec/13-diagnostics-and-abi.md).
 
 ## Edition

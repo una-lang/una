@@ -202,7 +202,7 @@ Whether a function fails is observable, like a printed line. A failure is allowe
 
 - Construct pages: [labels](../../docs/guide/language/information-flow/labels.md), [`policy`](../../docs/guide/language/information-flow/policy.md), [`trusted module`](../../docs/guide/language/information-flow/trusted.md), [`capability`](../../docs/guide/language/capabilities/capability.md), [`handler`](../../docs/guide/language/capabilities/handler.md), [`fails`](../../docs/guide/language/errors/fails.md), [`if error`](../../docs/guide/language/errors/if-error.md), [`example`](../../docs/guide/language/examples/example.md).
 - Configuration: [`categories`](../../docs/guide/configure/labels/categories.md), [trusted `modules`](../../docs/guide/configure/trusted/modules.md), [`grants`](../../docs/guide/configure/run/grants.md).
-- Learn, the tutorial on the Una website: chapter 9, "Information flow".
+- Learn, the tutorial on the Una website: [Information flow](/learn/information-flow/).
 - Specification: [the guarantee (spec/07 §1)](../../docs/spec/07-information-flow.md), [labels (spec/07 §2)](../../docs/spec/07-information-flow.md), [typing rules (spec/07 §3)](../../docs/spec/07-information-flow.md), [sinks (spec/07 §4)](../../docs/spec/07-information-flow.md), [policies (spec/07 §5)](../../docs/spec/07-information-flow.md), [trusted modules (spec/07 §6)](../../docs/spec/07-information-flow.md), [host capabilities (spec/14 §3)](../../docs/spec/14-standard-library.md).
 
 ## Edition

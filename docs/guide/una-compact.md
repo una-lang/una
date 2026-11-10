@@ -1,6 +1,6 @@
 # Una, compact
 
-Edition `0.2`. Full guide: `una-for-agents.md`.
+Edition `0.2` only, not `0.3` or `0.4`. Full guide: `una-for-agents.md`.
 
 **Loop.** `una fmt .`, `una fix .` (safe mechanical edits), `una --json check .`; read `code` and `repairs`, `una explain <code>`; then `una --json test .`.
 

@@ -196,7 +196,7 @@ Delete the `is None -> 0` arm of `amount_of`:
 ## Learn more
 
 - Construct pages: [`kind`](../../docs/guide/language/types/kind.md), [`where`](../../docs/guide/language/types/where.md), [`requires`](../../docs/guide/language/functions/requires.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`when`](../../docs/guide/language/control-flow/when.md), [`example`](../../docs/guide/language/examples/example.md).
-- Learn, the tutorial on the Una website: chapter 4, "Kinds"; chapter 5, "Collections and the prelude"; chapter 7, "Contracts and the verifier".
+- Learn, the tutorial on the Una website: [Kinds](/learn/kinds/); [Collections](/learn/collections/); [Contracts and the verifier](/learn/contracts/).
 - Specification: [kinds (spec/03 §2)](../../docs/spec/03-types.md), [refinements (spec/03 §3)](../../docs/spec/03-types.md), [clauses (spec/04 §2)](../../docs/spec/04-functions-and-contracts.md), [obligation generation (spec/12 §3)](../../docs/spec/12-verification.md), [the prelude (spec/14 §1)](../../docs/spec/14-standard-library.md).
 
 ## Edition

@@ -9,9 +9,9 @@ codes: [U7013, U7014]
 
 ## What it does
 
-Publishing puts a release of a package in a registry, where other packages can need it. `una ita publish` checks the package, builds its archive, writes a release statement that says what the release is and what authority its code uses, signs it with the owner's keys, and sends both to the registry that the package's `publish to` line names. A published release never changes: a later fix is a new version. This release of `una` has no transport for a registry's `https://` URL, so `publish` and `yank` stop before an archive is built, a key is read or anything is sent (see the edge cases): what they do after that point is the ADR 0122 design, described here and not yet reached. `una ita yank` withdraws a release from new resolutions, `una ita audit` checks the releases a lock pins for yanks, advisories and key changes, and `una ita watch` follows what the registry logs for an owner.
+Publishing is designed to put a release of a package in a registry, where other packages can need it. In this release, `una ita publish` and `una ita yank` stop before anything is sent: this release of `una` has no transport for a registry's `https://` URL, and `itaty`, the planned public registry, is not served, so both commands stop at the source, before an archive is built or a key is read (see the edge cases). What follows that stop is the ADR 0122 design, described here and not yet reached: `una ita publish` checks the package, builds its archive, writes a release statement that says what the release is and what authority its code uses, signs it with the owner's keys, and sends both to the registry that the package's `publish to` line names. A published release never changes: a later fix is a new version, and `una ita yank` withdraws a release from new resolutions. Two commands work in this release, reading a registry from a mirror directory only: `una ita audit` checks the releases a lock pins for yanks, advisories and key changes, and `una ita watch` follows what the registry logs for an owner.
 
-Why it works this way: whoever installs a release trusts its publisher's keys, not the registry. The statement is signed, the registry logs it in a public transparency log, an append-only record that anyone can replay, and every client checks the signature, the log's proofs and that the archive is the one the statement describes. In the ADR 0122 design, with witnesses that cosign each checkpoint and clients that resolve against a fresh one, a registry cannot slip in a release, change one, or hide one from some users without the change showing. In this release no release can be sent to a registry, and loading a package checks its signature by the key the lock names but not the owner's key chain again (see [offline builds](offline.md)).
+Why it is designed this way: whoever installs a release trusts its publisher's keys, not the registry. The statement is signed, the registry logs it in a public transparency log, an append-only record that anyone can replay, and every client checks the signature, the log's proofs and that the archive is the one the statement describes. In the ADR 0122 design, with witnesses that cosign each checkpoint and clients that resolve against a fresh one, a registry cannot slip in a release, change one, or hide one from some users without the change showing. In this release no release can be sent to a registry, and loading a package checks its signature by the key the lock names but not the owner's key chain again (see [offline builds](offline.md)).
 
 `ita.una`
 
@@ -45,9 +45,9 @@ una ita watch <owner> [<name>...] [--from <source>]
 ```
 
 - **The head lines** a published package needs: `about` and `license`, non-empty texts, and `publish to <source>`. `home` is optional, an `https://` URL.
-- **`publish to`** names `itaty`, the default registry, or a source that the package's workspace declares.
+- **`publish to`** names `itaty`, the planned public registry (not served in this release), or a source that the package's workspace declares.
 - **`yank`** takes a full version, such as `0.1.0`.
-- **`watch`** reads the source `--from` names, `itaty` by default.
+- **`watch`** reads the source `--from` names, `itaty` by default, which this release does not serve, so in this release `--from` names a source that the package in the current directory, or its workspace, declares.
 
 ### The workspace: `itaty.una`
 
@@ -68,7 +68,7 @@ sources
 
 ### The owner's keys
 
-Releases and yanks are signed with the owner's keys, the files `<owner>-<id>.key` in `~/.una/keys/`. The directory and each file must be readable by their owner only. A file has the `ita-keyfile/1` form, not encrypted: a file encrypted with a passphrase is refused, since passphrase encryption is not implemented yet. This release has no command that creates a key file (`una ita key` joins later). Enough of the owner's registered keys must sign to reach the owner's threshold. This is the ADR 0122 design: in this release `publish` and `yank` stop at the source before they read the keys.
+Releases and yanks are signed with the owner's keys, the files `<owner>-<id>.key` in `~/.una/keys/`. The directory and each file must be readable by their owner only. A file has the `ita-keyfile/1` form, not encrypted: a file encrypted with a passphrase is refused, since passphrase encryption is not implemented yet. This release has no command that creates a key file: `una ita key`, planned by ADR 0122 rule 38, is not in this release. Enough of the owner's registered keys must sign to reach the owner's threshold. This is the ADR 0122 design: in this release `publish` and `yank` stop at the source before they read the keys.
 
 ## Examples
 

@@ -220,7 +220,7 @@ Change `status proposed` to `status active` in `LINKS_1`:
 
 - Construct pages: [predicates](../../docs/guide/language/types/predicate.md), [`where`](../../docs/guide/language/types/where.md), [`checked`](../../docs/guide/language/errors/checked.md), [`fails`](../../docs/guide/language/errors/fails.md), [`fail`](../../docs/guide/language/errors/fail.md), [`if error`](../../docs/guide/language/errors/if-error.md), [`attempt`](../../docs/guide/language/errors/attempt.md), [`requirement`](../../docs/guide/language/requirements/requirement.md), [`handler`](../../docs/guide/language/capabilities/handler.md).
 - Configuration: [`checked_per_module`](../../docs/guide/configure/escape-budget/checked-per-module.md).
-- Learn, the tutorial on the Una website: chapter 6, "Failure"; chapter 7, "Contracts and the verifier".
+- Learn, the tutorial on the Una website: [Results and failures](/learn/failure/); [Contracts and the verifier](/learn/contracts/).
 - Specification: [predicates (spec/03 §4)](../../docs/spec/03-types.md), [handling clauses (spec/06 §3)](../../docs/spec/06-errors.md), [`attempt` (spec/06 §5)](../../docs/spec/06-errors.md), [`checked` (spec/06 §6)](../../docs/spec/06-errors.md), [requirements (spec/08 §1)](../../docs/spec/08-requirements-and-examples.md).
 
 ## Edition

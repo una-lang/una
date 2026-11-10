@@ -38,7 +38,7 @@ Edition `0.4` is the current preview edition, under the terms of ADR 0121. R0.4 
 | The terms of a preview edition | Edition `0.4` may add constructs that let a program do more, with no stability promise until it is declared stable | ADR 0121 | Accepted; extended to every preview edition (ADR 0139) |
 | Collections | `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, with stated costs, and `Map.update` | ADR 0119 | Accepted; moves to edition `0.5` (ADR 0139, #1621) |
 | The numeric foundation | `F32`, `Decimal`, `Complex`, dense arrays and SIMD | ADR 0120 | Accepted; moves to edition `0.5` (ADR 0139, #1621), `F64` stays in `0.3` |
-| Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry | ADR 0122 | Accepted |
+| Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry. In `0.4.0` the registry is designed but not served: there is no https transport, registry packages are read only from a mirror directory, and `publish` and `yank` send nothing | ADR 0122 | Accepted |
 | HTTP servers | `HttpServer`, granted by address; a `Listener` of raw connections waits for a later record (ADR 0123 Question 1) | ADR 0123 | Accepted |
 | One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Accepted (2026-10-27) |
 | Optimized release builds | `una build --release` through Una's own optimizing code generation over Core IR; the C-emitting route of ADR 0106 is withdrawn | ADR 0106, amendment of 2026-10-31 | Design open (#1305) |

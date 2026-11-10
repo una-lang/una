@@ -42,4 +42,4 @@ Complexity: O(n) in the size of the argument types per constructor call (the lab
 
 - One top label, not per-position labels: the most secure simple rule.
 - Edition `0.4` only: released editions do not change.
-- The implementation lands while the amendment is Proposed, as a reversible default; a refusal restores U4001 at the constructor in edition `0.4`.
+- The implementation landed while the amendment was Proposed, as a reversible default. The amendment was accepted on 2026-11-10 (`docs/adr/0073-json.md`), so the default stands.

@@ -1169,9 +1169,9 @@ pub doubled(n: U8) -> List[Int]
 - **Handling clauses** go on their own indented lines below the call, as everywhere (§6.3).
 - **Captures.** A task sees the bindings before the block, never its siblings', and captures their values. Assigning a binding declared outside the task, or passing it as `edit` or `take`, is U2023: return new values from the task instead.
 - **Capabilities** in scope can be used by every task, and so can `uses of` parameters.
-- **Failures.** When a task fails, the tasks after it are cancelled, and the block fails with the failure of the lowest-indexed failing task, as running the tasks one after another would. A cancelled task stops at its next call, operation or loop iteration; an operation in progress completes.
+- **Failures.** When a task fails, the tasks after it are canceled, and the block fails with the failure of the lowest-indexed failing task, as running the tasks one after another would. A canceled task stops at its next call, operation or loop iteration; an operation in progress completes.
 - **Labels.** `together for` runs its tasks under the top label of its list, or the labels of its range bounds, as a `for` loop does, and its result carries that label.
-- **Traces** list the events of the tasks in task order, each with its task's path, as `"task": "2.1"`. A cancelled task that had started ends with a `cancelled` event.
+- **Traces** list the events of the tasks in task order, each with its task's path, as `"task": "2.1"`. A canceled task that had started ends with a `cancelled` event.
 - **Runtimes.** The interpreter runs the tasks one after another. A native executable runs each task on its own thread, so the lines that tasks print may interleave.
 
 ```una
