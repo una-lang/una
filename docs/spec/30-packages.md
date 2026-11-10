@@ -166,7 +166,37 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
 
 ## 6. Commands
 
-1. **`una ita`.** The package manager is the command `una ita` of the `una` binary. The same binary invoked under the name `ita` (its `argv[0]` basename, `ita` or `ita.exe`) behaves as `una ita`: `ita lock` is `una ita lock`. With `--json`, each command prints one document, `una.ita/1`: `schema` first, then `command`, `written` (the files it wrote) and `diagnostics`; a command that resolves (`lock`, `update`, `add`, `remove`) also gives `changes`, the review of §10 rule 8, after `written`, and `error` last, the reason it failed outside its diagnostics, such as a file it could not write, or `null`, and `tree` gives `root` and `packages` (§12 rule 9). The exit code is 1 when a diagnostic is an error, and 2 for a usage error, such as a directory without `ita.una`.
+With `--json`, each command of `una ita` prints one `una.ita/1` document (rule 1). `una --json ita lock` of a package whose `ita.una` adds the path dependency `util` (§12 rule 6) prints:
+
+```json
+{
+  "schema": "una.ita/1",
+  "command": "lock",
+  "written": ["ita.lock"],
+  "changes": [
+    {
+      "change": "add",
+      "package": "util",
+      "origin": "path deps/util",
+      "version_from": null,
+      "version_to": "0.2.0",
+      "digest_from": null,
+      "digest_to": "sha256:628a11aacf38c392c3224401a087d357fbee26abf719488dfdaec055872f1764",
+      "ceiling_from": "",
+      "ceiling_to": "",
+      "trusted_from": [],
+      "trusted_to": [],
+      "consented_from": null,
+      "consented_to": null,
+      "authority": []
+    }
+  ],
+  "diagnostics": [],
+  "error": null
+}
+```
+
+1. **`una ita`.** The package manager is the command `una ita` of the `una` binary. The same binary invoked under the name `ita` (its `argv[0]` basename, `ita` or `ita.exe`) behaves as `una ita`: `ita lock` is `una ita lock`. With `--json`, each command prints one document, `una.ita/1`: `schema` first, then `command`, `written` (the files it wrote) and `diagnostics`; a command that resolves (`lock`, `update`, `add`, `remove`) also gives `changes`, the review of §10 rule 8, after `written`, and `error` last, the reason it failed outside its diagnostics, such as a file it could not write, or `null`, and `tree` gives `root` and `packages` in place of `written` (§12 rule 9). The exit code is 1 when a diagnostic is an error, and 2 for a usage error, such as a directory without `ita.una`.
 2. **Commands of this release.** `una ita lock [--check [--fresh]] [--dry-run] [--accept-authority <package>]… [--accept-trust <package>@<digest>]… [--accept-key <package>]… [path]` (§4 rule 4, §10 rules 7 and 8, §12 rule 6, §13 rule 2, §14 rule 8); `una ita update [<name>…] [--cooldown <hours>] [--now] [--dry-run] [--accept-authority <package>]… [--accept-trust <package>@<digest>]… [--accept-key <package>]…` and `una ita add <name> [<version>] [--as <local>] [--from <source>] [--now] [--dry-run]`, on the package in the current directory (§10 rules 9 and 10); `una ita tree [path]` and `una ita remove <name> [path]` (§12 rule 9); `una ita fetch [path]` (§14 rule 9); `una ita vendor [path]` (§9 rule 8); `una ita verify [path]` (§10 rule 11); `una ita publish [path]`, `una ita yank <version> [path]`, `una ita audit [path]`, `una ita watch <owner> [<name>…] [--from <source>]`, `una ita bundle <file> [path]` and `una ita unbundle <file> [path]` (§15). `una ita key` joins later.
 3. **No network, no other program.** No command of this release opens a network connection: a registry is read from a local mirror directory (§14 rule 1), a submission to an `https://` source stops before anything is sent (§15 rule 1), and a bundle goes through a file. Itá never starts another program.
 
@@ -175,6 +205,24 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
 For a package of edition `0.4` and later, the key of a proof cache entry (`spec/12 §9`) is the hex SHA-256 of the domain tag `una-proof-cache/2`, then, for each of the canonical text of the lock's `solver` section and the query, its length in decimal, a NUL byte, and the text. It does not cover the packages of the lock, so adding a dependency invalidates no entry, and the tag and the length prefixes keep it apart from the key of editions `0.1` to `0.3`. The entry's HMAC of ADR 0064 authenticates it either way. The build report's lock digest is the SHA-256 of `ita.lock` as written.
 
 ## 8. Migration: `una migrate`
+
+`una --json migrate --dry-run` of a package `hello` of edition `0.3`, with a module and no `verification.lock`, prints one `una.migrate/1` document (rule 8):
+
+```json
+{
+  "schema": "una.migrate/1",
+  "dry_run": true,
+  "written": [],
+  "removed": [],
+  "name": {"from": "hello", "to": "hello"},
+  "edition": {"from": "0.3", "to": "0.4"},
+  "default_lock": true,
+  "comments_not_carried": [],
+  "ita_una": "ita hello\n  version 0.1.0\n  edition 0.4\n",
+  "ita_lock": "-- Written by `una ita`; do not edit.\nlock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+  "diagnostics": []
+}
+```
 
 1. **Edition 0.4 and later are not written in `una.toml`.** `una.toml` naming `edition = "0.4"`, or (ADR 0139) `edition = "0.5"`, is U7002 at the value, with the repair `una migrate`; the package is still checked in the edition it names. No released `una` accepted that form, so this changes no released form (ADR 0122 Question 8.1).
 2. **`una migrate [path] [--dry-run] [--name <name>]`** moves the package at `path`, `.` by default, from `una.toml` and `verification.lock`, of any edition from `0.1` to `0.5`, to `ita.una` and `ita.lock` of edition `0.4`, or of edition `0.5` when `una.toml` names it, since no migration lowers an edition, and nothing else: a directory that already has `ita.una`, or that is not a package with `una.toml` and `src/`, is a usage error (exit code 2).
@@ -304,7 +352,7 @@ The registry client verifies what it reads with these rules, each a pure functio
 4. **One program.** `una check` checks the root's modules and every used dependency's as one program, under the root's solver pin; a diagnostic in a dependency is reported at its file, and counts as any other. `una fix` never edits a dependency's file, `una fmt` of the package formats the root's modules only, and `una test` runs the root's examples only.
 5. **Authority.** Every module of a dependency is in its package's extent, a boundary of ADR 0093 whose ceiling is the one the root writes with `may` lines under the need, empty without them. A call into it takes no capability by name (U3020); each is granted with `with`, within that ceiling (U3021), and no release may be reachable (U3024). A dependency's examples are checked as its own, with no consumer ceiling on their `given` lines, since they never run with the root's authority.
 6. **The lock.** `una ita lock` locks each used path dependency as `package <name> <version>`, `from path "<dir>"`, its content digest (§9), and `granted by <root> may <ceiling>` for a non-empty ceiling. Loading checks that each path need has its locked package at the version its `ita.una` gives (U7009), and that every `may` line is within the ceiling the lock records as granted by the root (U7009 at the `may` line). `una ita lock` records a wider ceiling only with `--accept-authority <package>`, naming the package, so every widening is explicit and shows in the lock's diff; `una fix` never applies it. The digest of a path package is recorded for review and compared by `una ita lock --check`; loading does not compare it, since a path package is the root author's own working tree.
-7. **The Core export** of a program with dependencies is `una.core/2`, which this release does not write: `una core` refuses it as a usage error.
+7. **The Core export** of a program with dependencies, a later version of the Core document of `spec/13 §8` that ADR 0122 rule 59 describes, is not written by this release: `una core` refuses it as a usage error, and this release defines no schema for it.
 8. **Effective ceilings and the report.** The effective ceiling of a package bounds what it can ever exercise: the least fixpoint of `eff(p) = ⋃ over the packages d that need p of (ceiling_d(p) ∩ eff(d))`, computed by a worklist in O((P + R) · C) for P packages, R needs and C capability operations, cycles included (ADR 0122 rule 51). The root may be granted any host capability with `--grant`, so `eff(root)` is taken as every operation, and a direct dependency's effective ceiling is the ceiling of its package extent: the one the root writes for it, or, for a package with consented trusted modules, its intersection with the trust line's (§13 rule 4); a bound never narrower than what the package can exercise. The report (`spec/13 §6`) holds `dependencies`, after `handler_authority`, one entry per package of the program other than the root, in name order: `package`, `version`, `local`, `source` (`"path"`), `path`, `digest` (the content digest of the files analysed, the bytes loaded once, or `null`), `signed` (`null` for a path package), `replaced`, `edition`, `profile` (the package's, `app` when its `ita.una` names none), `granted_by` (per dependent, its name, its `source`, `null` for the root, and the ceiling it writes as `may`), `effective_ceiling`, `authority` (the union of the `uses` of its functions and handlers) and `trust` (`modules`). A package with no dependencies has `"dependencies": []`. `tcb` gains `registries` (each registry source of the program's mounted releases with the digest of its root metadata that the lock records, §14 rule 10) and `dependency_trust` (§13). The human report prints one line per dependency: `util 0.2.0 (path deps/util): may Console[print] (by demo); uses Console[print]; trust none`.
 9. **`una ita tree [path]`** checks the program at tier 0 and prints the root's name and version, then one line per dependency, in the form of the report's human line; with `--json`, one `una.ita/1` document with `schema`, `command` (`"tree"`), `root`, `packages`, the report's `dependencies`, and `diagnostics`. **`una ita remove <name> [path]`** removes the need of `name` from `ita.una`, with its indented lines, and the `needs` section when it empties, edited on the text as read, `\r\n` as `\n`; then resolves as `una ita lock` does and, only when the resolution succeeds, writes the lock and then `ita.una`, each through a temporary file and a rename, putting the lock back when `ita.una` cannot be written. A name the root does not need, or an `ita.una` that does not parse, is a usage error and nothing is written. Neither opens a connection.
 
