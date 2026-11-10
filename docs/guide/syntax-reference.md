@@ -166,14 +166,14 @@ active generated human owner proposed purpose regulation source status text to v
 
 | Word | Message |
 | --- | --- |
-| `shared`, `iso`, `weak` | reserved for v0.3 (aliasing) |
+| `shared`, `iso`, `weak` | reserved for a later edition (aliasing) |
 | `parallel`, `actor` | reserved for a later version (concurrency beyond `together`) |
 | `simd`, `profile` | reserved for v0.2 (systems profile) |
 | `trait`, `impl` | reserved for a later version (user traits) |
-| `law`, `all` | reserved for v0.3 (laws) |
-| `costs` | reserved for v0.3 or later (cost contracts) |
-| `traced` | reserved for v0.3 (provenance tracing) |
-| `service`, `table`, `query`, `observe`, `commit` | reserved for v0.4 (platform) |
+| `law`, `all` | reserved for a later edition (laws) |
+| `costs` | reserved for a later edition (cost contracts) |
+| `traced` | reserved for a later edition (provenance tracing) |
+| `service`, `table`, `query`, `observe`, `commit` | reserved for a later edition (platform) |
 | `match` | not a keyword in Una; use `when` |
 | `return` | not a keyword in Una; the last expression is the result |
 | `var` | not a keyword in Una; use `let edit` |
@@ -2438,9 +2438,9 @@ These are planned or deliberately absent. Using a reserved word gives U0103 (§1
 
 | Area | Status |
 | --- | --- |
-| Shared and isolated references (`shared`, `iso`, `weak`), cyclic structures | v0.3; use arenas and indices |
+| Shared and isolated references (`shared`, `iso`, `weak`), cyclic structures | not in any edition yet; the words are reserved for a later edition; use arenas and indices |
 | User traits and implementations (`trait`, `impl`), laws of constraints | later; edition `0.2` has `Eq`, `Ord` and `Integer` |
-| Task values, detached tasks, `race`, `select`, timeouts, channels, actors | not planned for v0.2; `together` is the only concurrency |
+| Task values, detached tasks, `race`, `select`, timeouts, channels, actors | in editions `0.2` and `0.3`, `together` is the only concurrency; edition `0.4` (preview) adds started tasks (`tasks` and `start`), deadlines (`within`) and races (`first of`) ([spec/27](../spec/27-tasks-and-time.md)); `select`, channels and actors are in no edition |
 | `break`, `continue`, an `invariant` clause for loops | not in v0.2 |
 | A checked left shift | not in v0.2; use `wrapping_shift_left` or a multiplication |
 | Cross-compilation of native executables | not in v0.2; each host builds for itself |
@@ -2448,8 +2448,8 @@ These are planned or deliberately absent. Using a reserved word gives U0103 (§1
 | Pipeline operator (`\|>`) | not added; method-call chains already cover this form ([ADR 0110](../adr/0110-pipelines-and-shorthand-lambdas.md)) |
 | Foreign code and FFI | not permitted in any edition ([ADR 0121](../adr/0121-the-terms-of-a-preview-edition.md), rule 17) |
 | Quantified laws and property tests | deferred: verification tiers 2 and 3 ([spec/12](../spec/12-verification.md), [backlog](../plan/backlog.md)) |
-| Semantic diff | planned for v0.3 ([roadmap](../plan/roadmap.md)) |
-| Cost contracts | v0.3 or later ([backlog](../plan/backlog.md)) |
-| External state semantics (idempotency, delivery, `observe`), durable effect journal | v0.4 |
-| Services, data access, infrastructure generation | v0.4 |
+| Semantic diff | deferred; in no release yet ([availability](availability.md)) |
+| Cost contracts | a later release, not yet scheduled ([backlog](../plan/backlog.md)) |
+| External state semantics (idempotency, delivery, `observe`), durable effect journal | not in 0.4.0, and no edition plans them yet ([ADR 0139](../adr/0139-edition-numbering-follows-the-release-that-closes-it.md), rule 6); `observe` is only a reserved word |
+| Services, data access, infrastructure generation | not in 0.4.0, and no edition plans them yet; edition `0.4` (preview) has HTTP servers only ([spec/31](../spec/31-http-servers.md)) |
 | Exceptions, null, inheritance, operator overloading, macros, implicit conversions, global mutable state, ambient authority | never |

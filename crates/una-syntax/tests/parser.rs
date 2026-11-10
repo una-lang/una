@@ -736,7 +736,7 @@ fn reserved_words_are_skipped_before_an_expression_and_read_as_names_elsewhere()
     assert_eq!(
         named.errors,
         [
-            "U0103 3:5 `table` is reserved for v0.4 (platform)",
+            "U0103 3:5 `table` is reserved for a later edition (platform)",
             "U0103 3:11 `match` is not a keyword in Una; use `when`",
             "U0103 3:32 `match` is not a keyword in Una; use `when`",
         ]
@@ -1027,14 +1027,14 @@ fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
         repairs("pub f(table: Int) -> Int = table\n"),
         [
             (
-                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                "U0103 `table` is reserved for a later edition (platform)".to_owned(),
                 vec![(
                     "rename it to `the_table`".to_owned(),
                     Some("the_table".to_owned())
                 )],
             ),
             (
-                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                "U0103 `table` is reserved for a later edition (platform)".to_owned(),
                 vec![(
                     "rename it to `the_table`".to_owned(),
                     Some("the_table".to_owned())
@@ -1047,7 +1047,7 @@ fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
     assert_eq!(
         repairs("pub kind service = A | B\n"),
         [(
-            "U0103 `service` is reserved for v0.4 (platform)".to_owned(),
+            "U0103 `service` is reserved for a later edition (platform)".to_owned(),
             vec![(
                 "rename it to `Service`".to_owned(),
                 Some("Service".to_owned())
@@ -1105,14 +1105,14 @@ fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
         repairs("import app.events (table)\n\npub f() -> Int = table(1)\n"),
         [
             (
-                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                "U0103 `table` is reserved for a later edition (platform)".to_owned(),
                 vec![(
                     "rename it to `the_table`".to_owned(),
                     Some("the_table".to_owned())
                 )],
             ),
             (
-                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                "U0103 `table` is reserved for a later edition (platform)".to_owned(),
                 vec![(
                     "rename it to `the_table`".to_owned(),
                     Some("the_table".to_owned())

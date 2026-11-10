@@ -48,7 +48,7 @@ Out of the model in v0.1, and stated as such: timing, termination and resource s
 | contract (`requires`, `ensures`) | Local behavioral guarantee of one function | Proven (tier 1) |
 | type refinement (`where`) | Invariant of every value of a kind | Proven (tier 1) |
 | `example` | Executable evidence of behavior, including performed effects | Executed by `una test` |
-| `law` | Universal property across functions | Deferred to v0.3 |
+| `law` | Universal property across functions | Deferred; the laws record (#1623) is planned for R0.8 (ADR 0139 rule 6; updated 2026-11-10) |
 
 Relations: requirement → (derives) contract → (constrains) implementation. Examples are evidence, never a substitute for a contract.
 
@@ -78,7 +78,7 @@ The project opened the v0.2 scope on 2026-10-01, in parallel with the v0.1 bench
 
 - **Native backend** (ADR 0055, `spec/16`): ahead-of-time compilation through Cranelift, refining the UAM.
 - **Fixed-width integers** (ADR 0057): `I8` to `I64` and `U8` to `U64`, with overflow obligations. `Int` stays mathematical.
-- **Memory model** (ADR 0056): mutable value semantics, with `edit`, `take`, `let edit` bindings, field edits and `for` loops. There is no mutable aliasing: `shared`, `iso` and `weak` stay reserved for v0.3.
+- **Memory model** (ADR 0056): mutable value semantics, with `edit`, `take`, `let edit` bindings, field edits and `for` loops. There is no mutable aliasing: `shared`, `iso` and `weak` stay reserved for a later edition (updated 2026-11-10: no release has added them).
 - **Recursive kinds** (ADR 0060): a kind may contain itself through any field when it has a finite value. They were added on 2026-10-02.
 - **Effect polymorphism** (ADR 0062): `uses of p` and `fails of p` let higher-order functions, the prelude's among them, take effectful and failing functions. It was added on 2026-10-02.
 - **Language server** (ADR 0063): `una lsp`, which shows diagnostics, proofs, contracts and labels in an editor and offers repairs as quick fixes. It was added on 2026-10-02.

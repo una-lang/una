@@ -33,15 +33,18 @@ pub const RESERVED_FOR_LATER: [(&str, &str); 31] = [
     ("profile", "reserved for v0.2 (systems profile)"),
     ("trait", "reserved for v0.2 (constraints on generics)"),
     ("impl", "reserved for v0.2 (constraints on generics)"),
-    ("law", "reserved for v0.3 (laws)"),
-    ("all", "reserved for v0.3 (laws)"),
-    ("costs", "reserved for v0.3 or later (cost contracts)"),
-    ("traced", "reserved for v0.3 (provenance tracing)"),
-    ("service", "reserved for v0.4 (platform)"),
-    ("table", "reserved for v0.4 (platform)"),
-    ("query", "reserved for v0.4 (platform)"),
-    ("observe", "reserved for v0.4 (platform)"),
-    ("commit", "reserved for v0.4 (platform)"),
+    ("law", "reserved for a later edition (laws)"),
+    ("all", "reserved for a later edition (laws)"),
+    ("costs", "reserved for a later edition (cost contracts)"),
+    (
+        "traced",
+        "reserved for a later edition (provenance tracing)",
+    ),
+    ("service", "reserved for a later edition (platform)"),
+    ("table", "reserved for a later edition (platform)"),
+    ("query", "reserved for a later edition (platform)"),
+    ("observe", "reserved for a later edition (platform)"),
+    ("commit", "reserved for a later edition (platform)"),
     ("match", "not a keyword in Una; use `when`"),
     (
         "return",
@@ -64,9 +67,9 @@ pub const RESERVED_FOR_LATER: [(&str, &str); 31] = [
 /// 0056; `spec/19 §9`, ADR 0065; `spec/20 §9`, ADR 0066); `edit`, `take` and `together` are
 /// keywords there.
 pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
-    ("shared", "reserved for v0.3 (aliasing)"),
-    ("iso", "reserved for v0.3 (aliasing)"),
-    ("weak", "reserved for v0.3 (aliasing)"),
+    ("shared", "reserved for a later edition (aliasing)"),
+    ("iso", "reserved for a later edition (aliasing)"),
+    ("weak", "reserved for a later edition (aliasing)"),
     (
         "region",
         "not a keyword in Una; the backend chooses where values live",

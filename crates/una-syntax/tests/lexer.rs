@@ -223,7 +223,7 @@ fn keywords_contextual_keywords_and_reserved_words() {
     );
     assert_eq!(
         errors("pub table() -> Int = 1\n"),
-        ["U0103 1:5 `table` is reserved for v0.4 (platform)"]
+        ["U0103 1:5 `table` is reserved for a later edition (platform)"]
     );
 }
 
@@ -627,7 +627,7 @@ fn capability_references() {
     );
     assert_eq!(
         errors("@table\n"),
-        ["U0103 1:2 `table` is reserved for v0.4 (platform)"]
+        ["U0103 1:2 `table` is reserved for a later edition (platform)"]
     );
 }
 

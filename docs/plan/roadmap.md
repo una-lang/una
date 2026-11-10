@@ -9,7 +9,7 @@ Status: Informative.
 | **v0.1** | Una Core | This repository's milestones M0 to M10 (`milestones-v0.1.md`) | Gate 1 |
 | v0.2 | Systems | Native backend (Cranelift) refining the UAM; fixed-width integers with overflow obligations; `edit` and `take` parameter conventions; implicit per-request regions; profiles `app` and `systems` | Gate 2 |
 | v0.3 | Verification and review | Laws (tier 2) and property tests (tier 3); semantic diff; full escape governance; requirement approval workflow; obligations grouped by proof domain | Gate 3 |
-| v0.4 | Platform | External state semantics (idempotency, delivery guarantees, `observe`, durable effect journal); services and SLOs; typed data access; OpenAPI and TypeScript generation; infrastructure policy generation | Gate 4 |
+| v0.4 | Platform (historical theme, superseded by ADR 0139) | Not in R0.4, and in no release of the plan of ADR 0139 rule 6: external state semantics (idempotency, delivery guarantees, `observe`, durable effect journal); services and SLOs; typed data access; OpenAPI and TypeScript generation; infrastructure policy generation. R0.4 ships the contents of the next section | Gate 4 |
 
 Each version starts only after the previous gate passes, with one exception: v0.2 runs in parallel with Gate 1 (decided 2026-10-01). The Gate 1 benchmark stays pinned to a v0.1.x release, so v0.2 work never changes what Gate 1 measures. Items and their target versions are in `backlog.md`. The themes of this table predate the numbering of ADR 0139: the releases, compiler versions and editions are numbered as the next section states.
 
@@ -39,7 +39,7 @@ Edition `0.4` is the current preview edition, under the terms of ADR 0121. R0.4 
 | Collections | `Stack`, `Queue`, `Set`, `HashMap`, `HashSet`, `PriorityQueue` and `BitSet`, with stated costs, and `Map.update` | ADR 0119 | Accepted; moves to edition `0.5` (ADR 0139, #1621) |
 | The numeric foundation | `F32`, `Decimal`, `Complex`, dense arrays and SIMD | ADR 0120 | Accepted; moves to edition `0.5` (ADR 0139, #1621), `F64` stays in `0.3` |
 | Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry | ADR 0122 | Accepted |
-| HTTP servers | `HttpServer` and `Listener`, granted by address | ADR 0123 | Accepted |
+| HTTP servers | `HttpServer`, granted by address; a `Listener` of raw connections waits for a later record (ADR 0123 Question 1) | ADR 0123 | Accepted |
 | One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Accepted (2026-10-27) |
 | Optimized release builds | `una build --release` through Una's own optimizing code generation over Core IR; the C-emitting route of ADR 0106 is withdrawn | ADR 0106, amendment of 2026-10-31 | Design open (#1305) |
 
