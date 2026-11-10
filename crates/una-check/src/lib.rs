@@ -18,7 +18,8 @@ pub fn server_names() -> &'static [&'static str] {
 }
 
 pub use types::{
-    DriveUnits, HandlerHeader, Header, HeaderUse, Index, PendingObligation, Rejected,
+    Between, DriveUnits, HandlerHeader, Header, HeaderUse, Index, PendingObligation, Rejected,
     StandardSource, TimingEdge, TimingGraph, TimingNode, TimingPlace, TimingSite, TimingTarget,
-    TypeCheck, builtin_methods, check_types, check_types_with_rejected, standard_source,
+    TypeCheck, between_summaries, builtin_methods, check_types, check_types_with_rejected,
+    standard_source,
 };

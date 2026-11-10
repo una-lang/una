@@ -13,6 +13,7 @@
 //! rules of `spec/12 §3` create. They stay pending until the verifier (M8) discharges them.
 
 mod authority;
+mod between;
 mod bit_set;
 mod boundary;
 mod call;
@@ -61,6 +62,7 @@ mod units;
 mod via;
 mod within;
 
+pub use between::{Between, between_summaries};
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
 pub use timing::{TimingEdge, TimingGraph, TimingNode, TimingPlace, TimingTarget};
