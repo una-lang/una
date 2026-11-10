@@ -1,10 +1,18 @@
 //! The solver child's system-call filter on Linux (ADR 0124 rule 7, Question 8). The filter
 //! checks the architecture first and, on x86-64, refuses a call with the x32 bit; allows the
-//! calls the front end needs, listed below per architecture; kills the process at once on the
-//! dangerous families (opening files, sockets, starting programs, reading other processes'
-//! memory, signals to another process, executable memory); and fails every other call with
-//! `ENOSYS`, so that it never runs and a newer C library takes the fallback it has for older
-//! kernels (`clone3` is in this class, so the C library falls back to `clone`).
+//! calls the front end needs, listed below per architecture; fails `open`, `openat` and
+//! `openat2` with `EACCES`, so that no file is opened and the C library takes its fallback;
+//! kills the process at once on the other dangerous families (creating files, sockets,
+//! starting programs, reading other processes' memory, signals to another process, executable
+//! memory); and fails every other call with `ENOSYS`, so that it never runs and a newer C
+//! library takes the fallback it has for older kernels (`clone3` is in this class, so the C
+//! library falls back to `clone`).
+//!
+//! Opening a file is `EACCES` rather than a tripwire because probe P6 showed that it is
+//! needed (rule 7, #1455): glibc 2.39 reads `/sys/devices/system/cpu/online` again each time
+//! it counts processors, during the query, so reading it once before the filter is not
+//! enough. Either way the call never runs: the child opens nothing after the filter, and reads
+//! only the descriptors it already holds, its three pipes.
 //!
 //! The filter is classic BPF over `seccomp_data`, built as a flat list: each check is a
 //! comparison that falls through when it does not match, so no jump crosses another check and
@@ -97,21 +105,17 @@ mod numbers {
         libc::SYS_exit_group,
     ];
 
-    /// Opening a file, by any name: a tripwire, or `EACCES` if probe P6 shows that the C
-    /// library still opens a file during a query (rule 7).
+    /// Opening a file, by any name: refused with `EACCES`, the call never running (rule 7,
+    /// probe P6). `creat`, which only creates, stays a tripwire.
     #[cfg(target_arch = "x86_64")]
-    pub(super) const OPEN: &[c_long] = &[
-        libc::SYS_open,
-        libc::SYS_openat,
-        libc::SYS_openat2,
-        libc::SYS_creat,
-    ];
+    pub(super) const OPEN: &[c_long] = &[libc::SYS_open, libc::SYS_openat, libc::SYS_openat2];
     #[cfg(target_arch = "aarch64")]
     pub(super) const OPEN: &[c_long] = &[libc::SYS_openat, libc::SYS_openat2];
 
     /// The other tripwires, which kill the process.
     #[cfg(target_arch = "x86_64")]
     pub(super) const TRIPWIRES: &[c_long] = &[
+        libc::SYS_creat,
         libc::SYS_socket,
         libc::SYS_socketpair,
         libc::SYS_connect,
@@ -166,9 +170,6 @@ mod numbers {
 /// The x32 bit of an x86-64 system-call number (`__X32_SYSCALL_BIT`).
 #[cfg(target_arch = "x86_64")]
 const X32_BIT: u32 = 0x4000_0000;
-
-/// Whether the open family returns `EACCES` instead of killing: decided by probe P6 (rule 7).
-const OPEN_RETURNS_EACCES: bool = false;
 
 /// Offsets into `seccomp_data`: the number, the architecture, and the low and high words of
 /// argument `i` (the arguments are 64-bit, and these targets are little-endian).
@@ -267,11 +268,7 @@ fn program(mode: Mode, pid: u32) -> Vec<libc::sock_filter> {
     out.push(jump(JEQ, 0, 0, 1));
     out.push(stmt(RET, allow));
     out.push(stmt(RET, enosys));
-    let open = if OPEN_RETURNS_EACCES {
-        refuse(libc::EACCES)
-    } else {
-        kill
-    };
+    let open = refuse(libc::EACCES);
     for n in numbers::OPEN {
         out.push(jump(JEQ, number(*n), 0, 1));
         out.push(stmt(RET, open));
@@ -326,4 +323,10 @@ pub fn install(mode: Mode) -> Result<(), InstallError> {
 /// it is a small constant, so the count bounds nothing but shows the lists were included.
 pub fn instruction_count() -> usize {
     program(Mode::Enforce, 1).len()
+}
+
+/// The enforcing program for `pid`, for the tests, which run it over every call number to
+/// show what each one gets. It installs nothing.
+pub fn enforcing_program(pid: u32) -> Vec<libc::sock_filter> {
+    program(Mode::Enforce, pid)
 }

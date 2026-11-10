@@ -158,7 +158,9 @@ fn platform_confine() -> Result<Confinement, ConfineError> {
         }
     }
     // What the C library would otherwise open a file for during the query (rule 7): the
-    // number of processors, which it reads from `/sys` once and keeps.
+    // number of processors, read from `/sys` once here. glibc 2.39 reads it again on each
+    // count; under the filter that open fails with `EACCES` and glibc falls back to
+    // `sched_getaffinity`, which the filter allows (probe P6, #1455).
     let _ = std::thread::available_parallelism();
     // SAFETY: `sysconf` reads a value of the system and touches no memory of the process.
     let _ = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
