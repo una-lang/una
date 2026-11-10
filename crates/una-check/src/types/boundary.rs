@@ -222,7 +222,7 @@ mod tests {
         let lexed = lex(sources.file(id), id, &mut interner);
         let parsed = parse(&lexed, id, &interner);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        let standard = Standard::load(Edition::V0_3);
+        let standard = Standard::load(Edition::V0_3, false, false);
         let mut report = Report::new(&sources);
         let mut env = Env::build(
             vec![Source {

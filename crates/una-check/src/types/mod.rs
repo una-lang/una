@@ -530,7 +530,6 @@ pub fn check_types_with_rejected(package: &PackageInput<'_>) -> (TypeCheck, Vec<
 }
 
 fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeCheck, Vec<Rejected>) {
-    let standard = Standard::load(package.settings.edition);
     let mut report = Report::new(package.sources);
     let sources = package
         .modules
@@ -570,13 +569,18 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     };
     let imports_collections = imports(una_core::COLLECTIONS_MODULE, Edition::V0_5);
     let imports_limit = imports(una_core::LIMIT_MODULE, Edition::V0_4);
+    // The optional modules are parsed only when this package takes them (#1894).
+    let standard = Standard::load(package.settings.edition, imports_collections, imports_limit);
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.after_prelude(),
-        (package.settings.edition >= Edition::V0_5).then(|| standard.source(&standard.map_0_4)),
-        imports_collections.then(|| standard.source(&standard.collections)),
-        imports_limit.then(|| standard.source(&standard.limit)),
+        standard.map_0_4.as_ref().map(|tree| standard.source(tree)),
+        standard
+            .collections
+            .as_ref()
+            .map(|tree| standard.source(tree)),
+        standard.limit.as_ref().map(|tree| standard.source(tree)),
         categories,
         package.settings.edition,
         package.settings.profile,
@@ -1400,19 +1404,27 @@ struct Standard {
     testing: File,
     /// The standard modules of edition 0.4 after `std.testing`, in their order.
     later: Vec<File>,
-    /// `std.collections` (ADR 0119), loaded when a package of edition 0.4 imports it.
-    collections: File,
-    /// The hidden module of the built-in `update` of maps in edition 0.4 (ADR 0119 rule 18).
-    map_0_4: File,
-    /// `std.limit` (ADR 0117 rule 9), loaded when a package of edition 0.4 imports it.
-    limit: File,
+    /// `std.collections` (ADR 0119), parsed when [`Standard::load`] is asked for it: a package
+    /// of edition 0.5 that imports it; `None` otherwise.
+    collections: Option<File>,
+    /// The hidden module of the built-in `update` of maps in edition 0.5 (ADR 0119 rule 18,
+    /// ADR 0139 rule 6), parsed for that edition; `None` before it.
+    map_0_4: Option<File>,
+    /// `std.limit` (ADR 0117 rule 9), parsed when [`Standard::load`] is asked for it: a package
+    /// of edition 0.4 that imports it; `None` otherwise.
+    limit: Option<File>,
 }
 
 impl Standard {
-    /// Parses the prelude and `std.testing`. They are part of the compiler and parse without
-    /// errors (a test checks it); their spans belong to a database of their own and are never
-    /// reported.
-    fn load(edition: Edition) -> Standard {
+    /// Parses the prelude, `std.testing` and the later standard modules of the edition, and of
+    /// the optional modules only those asked for: `std.collections` when `collections`,
+    /// `std.limit` when `limit`, and the map module of edition 0.5 for that edition. A module
+    /// not asked for is not parsed and not in `sources` (#1894: the optional modules are a
+    /// third of the standard text of editions 0.1 to 0.3, and no package of those editions can
+    /// take them). The cost of a load is linear in the text parsed. The modules are part of
+    /// the compiler and parse without errors (a test checks it); their spans belong to a
+    /// database of their own and are never reported.
+    fn load(edition: Edition, collections: bool, limit: bool) -> Standard {
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
         let StandardSource {
@@ -1423,9 +1435,6 @@ impl Standard {
         } = standard_source(edition);
         let prelude = sources.add("std/prelude.una", text.as_bytes());
         let testing = sources.add("std/testing.una", testing.as_bytes());
-        let collections = sources.add("std/collections.una", COLLECTIONS.as_bytes());
-        let map_0_4 = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
-        let limit = sources.add("std/limit.una", LIMIT.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, keywords);
         // The modules of edition 0.4 declare measures, a construct of edition 0.3.
@@ -1438,10 +1447,19 @@ impl Standard {
             })
             .collect();
         // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
-        let collections = parse_standard(&sources, collections, &mut interner, KeywordSet::V0_2);
-        let map_0_4 = parse_standard(&sources, map_0_4, &mut interner, KeywordSet::V0_2);
+        let collections = collections.then(|| {
+            let id = sources.add("std/collections.una", COLLECTIONS.as_bytes());
+            parse_standard(&sources, id, &mut interner, KeywordSet::V0_2)
+        });
+        let map_0_4 = (edition >= Edition::V0_5).then(|| {
+            let id = sources.add("std/map_0_4.una", MAP_0_4.as_bytes());
+            parse_standard(&sources, id, &mut interner, KeywordSet::V0_2)
+        });
         // `std.limit` writes a measure, `Int of Millisecond`, and a handler of edition 0.4.
-        let limit = parse_standard(&sources, limit, &mut interner, KeywordSet::V0_4);
+        let limit = limit.then(|| {
+            let id = sources.add("std/limit.una", LIMIT.as_bytes());
+            parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
+        });
         Standard {
             sources,
             interner,
@@ -1900,6 +1918,53 @@ mod tests {
     }
 
     #[test]
+    fn the_optional_standard_modules_are_parsed_only_when_asked_for_1894() {
+        // #1894: `std.collections`, `std.limit` and the map module of edition 0.5 are parsed,
+        // and are in the standard sources, only when `load` is asked for them (the checker
+        // asks when the package's edition and imports take them), so a check of a package
+        // that cannot take them never parses them.
+        for edition in &Edition::ALL {
+            let bare = Standard::load(*edition, false, false);
+            assert!(bare.collections.is_none(), "{edition:?}");
+            assert!(bare.limit.is_none(), "{edition:?}");
+            assert_eq!(
+                bare.map_0_4.is_some(),
+                *edition >= Edition::V0_5,
+                "{edition:?}"
+            );
+            let texts = bare.sources.texts();
+            assert!(!texts.contains_key("std/collections.una"), "{edition:?}");
+            assert!(!texts.contains_key("std/limit.una"), "{edition:?}");
+            assert_eq!(
+                texts.contains_key("std/map_0_4.una"),
+                *edition >= Edition::V0_5,
+                "{edition:?}"
+            );
+            let full = Standard::load(*edition, true, true);
+            assert!(full.collections.is_some(), "{edition:?}");
+            assert!(full.limit.is_some(), "{edition:?}");
+            let texts = full.sources.texts();
+            assert_eq!(
+                texts.get("std/collections.una").map(String::as_str),
+                Some(COLLECTIONS),
+                "{edition:?}"
+            );
+            assert_eq!(
+                texts.get("std/limit.una").map(String::as_str),
+                Some(LIMIT),
+                "{edition:?}"
+            );
+            // What every load parses is the same, whatever the optional modules.
+            assert_eq!(
+                bare.sources.texts().get("std/prelude.una"),
+                full.sources.texts().get("std/prelude.una"),
+                "{edition:?}"
+            );
+            assert_eq!(bare.later.len(), full.later.len(), "{edition:?}");
+        }
+    }
+
+    #[test]
     fn the_standard_source_is_the_text_the_checker_loads() {
         // #648: the reference listing reads `standard_source`; it must be exactly the text
         // `Standard::load` parses, for every edition.
@@ -1938,7 +2003,7 @@ mod tests {
                 "{edition:?}"
             );
             assert_eq!(source.keywords, keywords, "{edition:?}");
-            let texts = Standard::load(*edition).sources.texts();
+            let texts = Standard::load(*edition, false, false).sources.texts();
             assert_eq!(texts.get("std/prelude.una"), Some(&prelude), "{edition:?}");
             assert_eq!(
                 texts.get("std/testing.una").map(String::as_str),
@@ -2159,7 +2224,7 @@ mod tests {
 
     /// The diagnostics of the standard modules of `edition`, checked as a package's are.
     fn standard_diagnostics(edition: Edition) -> Vec<String> {
-        let standard = Standard::load(edition);
+        let standard = Standard::load(edition, edition >= Edition::V0_5, edition >= Edition::V0_4);
         let mut report = Report::new(&standard.sources);
         let source = |tree| Source {
             tree,
@@ -2174,9 +2239,9 @@ mod tests {
                 .chain(&standard.later)
                 .map(source)
                 .collect(),
-            (edition >= Edition::V0_5).then(|| source(&standard.map_0_4)),
-            (edition >= Edition::V0_5).then(|| source(&standard.collections)),
-            (edition >= Edition::V0_4).then(|| source(&standard.limit)),
+            standard.map_0_4.as_ref().map(source),
+            standard.collections.as_ref().map(source),
+            standard.limit.as_ref().map(source),
             Vec::new(),
             edition,
             una_project::Profile::App,
