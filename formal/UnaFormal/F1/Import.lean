@@ -1328,6 +1328,84 @@ structure Prep where
 mutant of it in the tests. -/
 abbrev Subst := (String → Label) → List (String × LTy) → LTy → LTy
 
+/-- The pairs `[name, type]` of a list of parameters. -/
+def typedPairs (ps : J) : List (String × J) :=
+  match ps with
+  | .arr qs => qs.toList.filterMap fun q => match q with
+    | .arr #[.str x, t] => some (x, t)
+    | _ => none
+  | _ => []
+
+/-- The names a function declaration binds at a written type (#1676): its parameters, its `let`s
+and its lambdas' parameters, each with that type. A name bound twice is listed twice. -/
+partial def typedBinders (j : J) : List (String × J) :=
+  match j with
+  | .obj kvs =>
+    let here : List (String × J) :=
+      match j.getObjValD "kind", j.getObjValD "name" with
+      | .str "let", .str x => [(x, j.getObjValD "ty")]
+      | .str "lambda", _ => typedPairs (j.getObjValD "params")
+      | _, _ => []
+    here ++ kvs.toArray.toList.flatMap fun kv => typedBinders kv.2
+  | .arr items => items.toList.flatMap typedBinders
+  | _ => []
+
+/-- Whether the argument `a` is a variable that every binding of its name types as a function
+with no `uses` (#1676). Anything else, a function named directly included, is not known pure. -/
+def pureFnArg (bs : List (String × J)) (a : J) : Bool :=
+  match a.getObjValD "kind", a.getObjValD "value" with
+  | .str "var", .str x =>
+    let ts := bs.filter (·.1 == x)
+    !ts.isEmpty && ts.all fun (_, t) =>
+      t.getObjValD "kind" == .str "fn" && t.getObjValD "uses" == .arr #[]
+  | _, _ => false
+
+/-- The calls in `j` of a function of the document with `uses of` (ADR 0062), each with whether
+the call is pure: the callee declares no `uses` of its own, and every argument given for a
+parameter its `uses of` names is a function with no `uses` (`pureFnArg`), so the call performs
+what those arguments perform, nothing (ADR 0062 rule 1). -/
+partial def usesOfCalls (findDecl : String → Option Decl) (bs : List (String × J)) (j : J) :
+    List (String × Bool) :=
+  match j with
+  | .obj kvs =>
+    let here : List (String × Bool) :=
+      if j.getObjValD "kind" != .str "call" || (j.getObjVal? "predicate").toBool then []
+      else match plainRun (do path (← field j "function")) with
+        | .error _ => []
+        | .ok g => match findDecl g with
+          | none => []
+          | some e =>
+            match e.value.getObjValD "uses_of" with
+            | .arr #[] => []
+            | .arr us =>
+              let names : List String := (typedPairs (e.value.getObjValD "params")).map (·.1)
+              let args : List J := match j.getObjValD "args" with
+                | .arr xs => xs.toList
+                | _ => []
+              let pure_ := e.value.getObjValD "uses" == .arr #[] && us.toList.all fun u =>
+                match u with
+                | .str x => match names.findIdx? (· == x) with
+                  | some i => (args[i]?).any (pureFnArg bs)
+                  | none => false
+                | _ => false
+              [(g, pure_)]
+            | _ => [(g, false)]
+    here ++ kvs.toArray.toList.flatMap fun kv => usesOfCalls findDecl bs kv.2
+  | .arr items => items.toList.flatMap (usesOfCalls findDecl bs)
+  | _ => []
+
+/-- A call that makes F1 charge a function that declares no operation with one (#1676): the
+first call of a function with `uses of` in `v`'s body, when every such call is pure
+(`usesOfCalls`). F1 has no effect polymorphism: it reads a function with `uses of` as one that
+performs the operation (`signature`), sound for that function, so such a caller fails T-Fun
+although `una check` rightly finds it performs nothing. When a call gives an argument that is
+not known pure, there is none, and the declaration is checked as before. -/
+def pureUsesOfCall (findDecl : String → Option Decl) (v : J) : Option String :=
+  let bs := typedPairs (v.getObjValD "params") ++ typedBinders (v.getObjValD "body")
+  match usesOfCalls findDecl bs (v.getObjValD "body") with
+  | [] => none
+  | calls@((g, _) :: _) => if calls.all (·.2) then some g else none
+
 /-- Reads one function declaration of a document; the error is why it is outside F1. -/
 def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : List Decl) (d : Decl) :
     Except String Prep := do
@@ -1372,6 +1450,12 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
       else signature c e.module e.value (.atom .unit)
     pure (fn, callees, pols)
   let ((fn, callees, pols), refs) ← run read
+  -- ADR 0062 (#1676): F1 has no effect polymorphism, so a function that declares no operation
+  -- and calls a function with `uses of`, given only functions with no `uses`, fails T-Fun
+  -- although it performs nothing. It is not read; a call given any other argument is checked.
+  if !fn.op then
+    if let some g := pureUsesOfCall findDecl d.value then
+      throw s!"F1 restriction (a call of `{g}` with `uses of` given a pure function, ADR 0062)" -- restriction-check: importer refusal
   if (List.lookup fn.name c.vias).isSome then throw "a `via` function, which no label rule checks"
   -- A declaration that reaches `Files` is re-checked against the document's host labels.
   if !refs.host.isNone then

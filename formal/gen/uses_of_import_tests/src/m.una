@@ -1,0 +1,27 @@
+module m
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+fold_with[T](items: List[T], initial: T, step: fn(T, T) -> T) -> T = items.fold(initial: initial, step: step)
+
+apply_int(f: fn(Int) -> Bool) -> Bool = f(-1)
+
+make(x: Int) -> fn(Int) -> Bool = fn(y) -> x > y
+
+add(a: Int, b: Int) -> Int = a + b
+
+pub total(items: List[Int]) -> Int = fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
+
+pub through(p: Int) -> Bool
+=
+  let f = make(p)
+  apply_int(f)
+
+pub named(items: List[Int]) -> Int = fold_with(items, initial: 0, step: add)
+
+pub logged(items: List[Int]) -> Int
+  uses @log: Log[write]
+=
+  @log.write("sum")
+  fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
