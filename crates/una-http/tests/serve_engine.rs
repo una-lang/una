@@ -317,6 +317,37 @@ fn a_chunked_body_reserves_64_kib_at_a_time() {
 }
 
 #[test]
+fn a_connection_that_yields_with_bytes_read_is_resumed_without_another_event() {
+    // 64 Ki chunks of one byte cross the first 64 KiB step of the body's reservation at their
+    // end, where `take` is bounded by the reservation's room and one 16 KiB read is fed in many
+    // steps (#1780). Sent in two pieces, the second exactly ten reads, the pump uses up its
+    // steps while bytes it read are not fed yet and the socket holds nothing more: those bytes
+    // make no socket ready, and the peer, whose request is complete, sends nothing until it is
+    // answered. The connection must be pumped again on the thread's next pass, not left until
+    // its `read` timer answers `408`, as the engine before #1780 did on every one of these
+    // splits, each with no byte left unread on the socket.
+    let chunks = 64 * 1024;
+    let mut body = b"1\r\nx\r\n".repeat(chunks);
+    body.extend_from_slice(b"0\r\n\r\n");
+    for shift in 0..6 {
+        let mut sim = Sim::new(&[GRANT], 1);
+        assert!(sim.connect(1, 0, &addr(1), Reads::Eager));
+        sim.send(
+            1,
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+        );
+        let split = body.len() - 10 * 16 * 1024 + shift;
+        sim.send(1, &body[..split]);
+        sim.send(1, &body[split..]);
+        let exchange = sim
+            .deliver()
+            .unwrap_or_else(|| panic!("split {split}: the request was not read in full"));
+        assert_eq!(exchange.request.body.len(), chunks, "split {split}");
+        assert_eq!(status_of(&sim.received(1)), 0, "split {split}");
+    }
+}
+
+#[test]
 fn waiting_is_bounded_and_a_full_queue_answers_503() {
     let mut sim = Sim::new(&["serve:http://127.0.0.1:8080;waiting=1"], 1);
     sim.connect(1, 0, &addr(1), Reads::Eager);

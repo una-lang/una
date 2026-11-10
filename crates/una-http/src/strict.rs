@@ -164,6 +164,21 @@ impl LineReader {
         std::mem::take(&mut self.line)
     }
 
+    /// The line just read, without its CRLF, left in place: [`LineReader::clear`] then starts
+    /// the next line in the same buffer. A reader of many short lines, a chunked body's, so
+    /// allocates once rather than once a line, which every serve thread would otherwise do
+    /// through the one counting allocator of the process (#1780).
+    pub fn line(&self) -> &[u8] {
+        &self.line
+    }
+
+    /// Starts the next line, keeping the buffer, whose capacity stays below twice the largest
+    /// `room` fed so far (a growing buffer may overshoot it). O(1).
+    pub fn clear(&mut self) {
+        self.cr = false;
+        self.line.clear();
+    }
+
     /// The bytes of the current line kept so far.
     pub fn pending(&self) -> usize {
         self.line.len() + usize::from(self.cr)
@@ -404,6 +419,11 @@ enum Chunk {
 /// whose lines and bytes count against what remains of the header section's limits, not a
 /// fresh allowance. A body that grows past its limit is `413` at the chunk-size line that
 /// would pass it, before any byte of that chunk is kept.
+///
+/// **Costs.** O(b) for b bytes fed, each examined a bounded number of times. Its size lines,
+/// data ends and trailers share one line buffer, kept between lines, so feeding allocates only
+/// when that buffer or the body itself grows: O(log b) times, however many chunks the body
+/// has, rather than once a chunk (#1780).
 #[derive(Clone, Debug)]
 pub struct ChunkedBody {
     state: Chunk,
@@ -464,7 +484,8 @@ impl ChunkedBody {
                             .feed(rest, MAX_CHUNK_DIGITS + 2, Refusal::BadRequest)?;
                     read += used;
                     if ended {
-                        let size = chunk_size(&self.lines.take())?;
+                        let size = chunk_size(self.lines.line())?;
+                        self.lines.clear();
                         if self.length.saturating_add(size) > self.max_body {
                             return Err(Refusal::ContentTooLarge);
                         }
@@ -480,7 +501,7 @@ impl ChunkedBody {
                     read += used;
                     if ended {
                         // The room of 2 admits only an empty line.
-                        self.lines.take();
+                        self.lines.clear();
                         self.state = Chunk::Size;
                     }
                 }
@@ -492,14 +513,15 @@ impl ChunkedBody {
                     )?;
                     read += used;
                     if ended {
-                        let line = self.lines.take();
+                        let line = self.lines.line();
                         self.trailers.charge(line.len(), !line.is_empty())?;
                         if line.is_empty() {
                             self.state = Chunk::Done;
                         } else {
                             // Read and dropped, but valid like any header line.
-                            header_line(&line)?;
+                            header_line(line)?;
                         }
+                        self.lines.clear();
                     }
                 }
             }
