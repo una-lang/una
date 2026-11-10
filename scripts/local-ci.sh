@@ -85,6 +85,18 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
         "una-local-ci-lean$suffix:/opt/lean" \
         || fail "handing the container's volumes to its user"
+    # The pinned Z3 tarball for a cold cache volume (#1340, #1902): UNA_Z3_SOURCE on the host,
+    # when set, names a local copy, which is mounted read-only and named to the container's
+    # scripts/z3-library.sh the same way; build-z3.sh still checks it against supply-chain/z3.lock.
+    # Set to anything but a readable file, the run fails here. Unset, the container takes the
+    # library from the cache volume or downloads the tarball from the lock's mirror, and fails
+    # when neither works: there is no build without the solver.
+    z3_source=$(scripts/z3-source.sh) || fail "the Z3 source that UNA_Z3_SOURCE names"
+    set --
+    if [ -n "$z3_source" ]; then
+        set -- --volume "$z3_source:/z3-src/z3-source.tar.gz:ro" \
+            --env UNA_Z3_SOURCE=/z3-src/z3-source.tar.gz
+    fi
     echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
     # registry and Z3 are volumes, which keep the container's builds apart from the host's. The
@@ -101,6 +113,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
         --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
         --env UNA_Z3_CACHE=/opt/z3-cache \
+        "$@" \
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \

@@ -5,7 +5,8 @@
 # (scripts/security-hunt/hunt/landlock.py).
 #
 # Two containers, one after the other:
-# 1. The build, as scripts/local-ci.sh runs its own: the release `una`, the pinned Z3 and Lean in
+# 1. The build, as scripts/local-ci.sh runs its own: the release `una`, with the Z3 library of
+#    supply-chain/z3.lock built in (UNA_Z3_LIB, from the cache volume), the pinned Z3 and Lean in
 #    their volumes, the native runtime that `una build` links (`libuna_rt.a`, next to `una`), and
 #    the re-check's executable (`lake build una-core-check`).
 # 2. The gate, hardened: no network (`--network none`, loopback only), a read-only root with a
@@ -73,13 +74,30 @@ volume="una-local-ci-target-$checkout$suffix"
 # The image runs as an unprivileged user, uid 1000 (#1394); the volumes are handed to it first.
 scripts/container-volumes.sh "linux/$arch" "$image" "$volume:/work/target" \
     una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3$suffix:/opt/z3" \
+    "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
     "una-local-ci-lean$suffix:/opt/lean" || fail "handing the container's volumes to its user"
+# The Z3 library built into una (ADR 0124 rules 1 and 19, #1902): the build container takes it
+# as scripts/local-ci.sh does, from the cache volume of this architecture through
+# scripts/z3-library.sh, which builds it once on a cold volume (from the local copy that
+# UNA_Z3_SOURCE names on the host, mounted read-only, else from the lock's mirror), and every
+# cargo step gets it by UNA_Z3_LIB. When no library can be had, the build fails: a una without
+# the solver would fail every check of the gate with U5003. The standalone z3 in /opt/z3 serves
+# the gate's residual rows (`--z3`), as on macOS.
+z3_source=$(scripts/z3-source.sh) || fail "the Z3 source that UNA_Z3_SOURCE names"
+set --
+if [ -n "$z3_source" ]; then
+    set -- --volume "$z3_source:/z3-src/z3-source.tar.gz:ro" \
+        --env UNA_Z3_SOURCE=/z3-src/z3-source.tar.gz
+fi
 echo "== building the release una and the re-check in $image, with the target directory in $volume"
 docker run --rm --platform "linux/$arch" \
     --volume "$root:/work" \
     --volume "$volume:/work/target" \
     --volume una-local-ci-registry:/opt/cargo/registry \
     --volume "una-local-ci-z3$suffix:/opt/z3" \
+    --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
+    --env UNA_Z3_CACHE=/opt/z3-cache \
+    "$@" \
     --volume "una-local-ci-lean$suffix:/opt/lean" \
     --env UNA_FORMAL_LEAN=/opt/lean \
     --env "CARGO_BUILD_JOBS=$jobs" \
@@ -87,6 +105,8 @@ docker run --rm --platform "linux/$arch" \
         set -e
         [ -x /opt/z3/bin/z3 ] || scripts/install-z3.sh /opt/z3
         PATH=/opt/z3/bin:$PATH scripts/check-solver.sh
+        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
+        export UNA_Z3_LIB
         cargo build --locked --release -p una-cli -p una-rt
         root=/work
         . scripts/lean-env.sh
