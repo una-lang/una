@@ -285,14 +285,27 @@ fn same_file(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
     }
 }
 
-/// The effective user of this process, without `unsafe` or a foreign call: the user that owns
-/// a file it creates. The file is made exclusively in the system's temporary directory, under a
-/// name unique to this process and probe, mode 0600, and removed at once. A file a process
-/// creates is owned by its effective user (its file-system user on Linux, which equals it),
-/// whichever directory it is in. `None` when no such file can be made, and the key is then not
-/// used.
+/// The effective user of this process, read through `una_sys::server::identity`, the one
+/// binding of `geteuid` (ADR 0058, amended for `una-sys`). It is the user that owns a file the
+/// process creates, which is what the check of the key file's owner compares with (#1164):
+/// a created file belongs to the process's effective user on macOS, and on Linux to its
+/// file-system user, which is the effective user unless the process changed it, and nothing in
+/// `una` does. Before #1894 the user was read by creating and removing a probe file in the
+/// temporary directory on every check; a test keeps that probe and checks that both agree.
+/// `None` when the identity cannot be read, and the key is then not used.
 #[cfg(unix)]
 fn effective_uid() -> Option<u32> {
+    una_sys::server::identity()
+        .ok()
+        .map(|identity| identity.uid)
+}
+
+/// The user that owns a file this process creates: the probe that read the effective user
+/// before #1894, kept as the reference the direct read is tested against. The file is made
+/// exclusively in the system's temporary directory, under a name unique to this process and
+/// probe, mode 0600, and removed at once.
+#[cfg(all(test, unix))]
+fn effective_uid_by_probe() -> Option<u32> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -326,6 +339,36 @@ fn effective_uid() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_effective_user_is_the_owner_of_a_file_the_process_creates_1894() {
+        // #1894: the owner check of #1164 compares the key file's owner with the user read
+        // through `una_sys`; it must be the user that owns a file this process creates, which
+        // the probe used before reads. Both read `Some`: the key is used, not refused, for a
+        // private file of the user.
+        let direct = effective_uid();
+        let probed = effective_uid_by_probe();
+        assert!(direct.is_some());
+        assert_eq!(direct, probed);
+        let dir = std::env::temp_dir().join(format!("una-proof-key-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("proof-cache.key");
+        std::fs::write(&file, [7u8; LENGTH]).unwrap();
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().uid(), direct.unwrap());
+        assert_eq!(read_or_make(&file), Ok(Some([7u8; LENGTH].to_vec())));
+        // Another user's number is refused, whatever the file.
+        let metadata = std::fs::symlink_metadata(&file).unwrap();
+        assert_eq!(
+            private(&metadata, direct.map(|user| user.wrapping_add(1))),
+            Err(Refusal::NotOwned)
+        );
+        assert_eq!(private(&metadata, None), Err(Refusal::NotOwned));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_key_is_made_once_read_after_and_never_shown() {
