@@ -172,8 +172,8 @@ impl LineReader {
         &self.line
     }
 
-    /// Starts the next line, keeping the buffer, whose capacity stays at most the largest
-    /// `room` fed so far. O(1).
+    /// Starts the next line, keeping the buffer, whose capacity stays below twice the largest
+    /// `room` fed so far (a growing buffer may overshoot it). O(1).
     pub fn clear(&mut self) {
         self.cr = false;
         self.line.clear();
