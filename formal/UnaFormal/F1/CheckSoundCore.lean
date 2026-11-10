@@ -246,7 +246,7 @@ mutual
       exact ⟨_, .parse (atomTy_sound ht) (isText_sound hs), flowTo_ok hf⟩
     | .checked a _ _, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
-      obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
+      obtain ⟨t, ht, _, hle, _, hsf, _, hs, _, hf, rfl⟩ := h
       exact ⟨_, .checked (atomTy_sound ht) (isScalar_sound hs) (le_ok hle) (symFree_sound hsf),
         flowTo_ok hf⟩
     | .eq a b, ε, h => by
