@@ -95,3 +95,27 @@ Each amendment below is appended, with the same text, to the record it amends. T
 **ADR 0120, Amendment of 2026-11-06: the target is edition `0.5` (ADR 0139).** The Target line reads: edition `0.5`. Editions `0.1` to `0.4` do not change, except for the U7007 of ADR 0139 rule 7 in edition `0.4`. Every "edition `0.4`" of this record that names the edition its constructs exist in, including rule 1 and the section "Edition `0.4`", reads "edition `0.5`", and each comparison with edition `0.3` is made with edition `0.4`. `F64` and the rules of ADR 0114 stay in edition `0.3`. No other rule changes.
 
 **ADR 0130, Amendment of 2026-11-06: the target is edition `0.8` (ADR 0139).** The Target line reads: edition `0.8`, closed by release R0.8, as a preview under the terms of ADR 0121 as its amendment of 2026-11-06 extends them. Editions `0.1` to `0.6` do not change. No other rule changes.
+
+## Amendment (2026-11-10, Proposed): release R0.4 ships edition `0.4` as a preview
+
+- Status: Proposed, for the project to accept. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ. It records the project's decision of 2026-11-10 on the version of release R0.4. No code changes with it: the compiler already serves edition `0.4` as a preview (`Edition::is_preview` in `crates/una-project`, the `preview:` line of `una --version`), and the documents that said `v0.4.0` makes edition `0.4` stable say "preview" with it (#1897).
+- Issue: #1897.
+
+**Why.** Rule 2 makes `v0.N.0` the release at which edition `0.N` stops being a preview, "by the stabilizing record and the gates of ADR 0121 rules 14 to 16". For edition `0.4` the two cannot both hold at `v0.4.0`. ADR 0121 rule 15 asks, among its checks, for a quiet period of at least four weeks and at least one release from the release that landed the last construct of `0.4`, and release R0.4 is the release that lands the last of them (HTTP servers, the core of Itá); no stabilizing record exists. A release numbered `v0.4.0` that promised a frozen edition `0.4` would contradict ADR 0121, and one numbered otherwise would contradict rule 1. The project decided on 2026-11-10 that release R0.4 is `v0.4.0` and that it ships edition `0.4` as a preview.
+
+**The change.**
+
+1. Rule 1 is unchanged for R0.4: it ships compiler version `v0.4.0`.
+2. Rule 2 does not make edition `0.4` stable at `v0.4.0`. Release `v0.4.0` ships edition `0.4` as a preview, under the terms of ADR 0121 (rules 1 to 19, as its amendment of 2026-11-06 extends them): `una --version` lists it after `preview:`, and the report's `edition` section has `"preview": true` for it. The changelog heading of ADR 0121 rule 6 applies to every later release that changes it.
+3. When edition `0.4` becomes stable is not decided here. A later dated amendment of this record names that release; the stabilizing record of ADR 0121 rule 15, with every check and gate it lists, quiet period included, still governs it. Until then, the sentence "That release is a minor release, `v0.4.0`" of ADR 0121 rule 15, and its reading "with `v0.N.0` in place of `v0.4.0`" in the amendment of 2026-11-06 (Appendix A), do not bind edition `0.4` to `v0.4.0`. On acceptance, a dated note with this paragraph is appended to ADR 0121.
+4. ADR 0121 rule 14 is unchanged: edition `0.3` becomes stable no later than edition `0.4`. Since edition `0.4` stays a preview at `v0.4.0`, edition `0.3` may stay one too, as the compiler serves it.
+5. In the table of rule 6, the R0.4 row reads: release R0.4, compiler `v0.4.0`, edition `0.4` as a preview (this amendment), with the same contents. The release that makes it stable is named by the later amendment of item 3.
+6. Rules 3, 4, 5, 7 and 8, and the rows of editions `0.5` and later, are unchanged. The same tension between rule 2 and the quiet period of ADR 0121 rule 15 can arise for a later edition; the amendment of item 3 may settle it for every edition.
+
+**What does not change.** No rule of the language, no guarantee and no check. A package of edition `0.4` is checked and run as before. The preview terms bind it: a later release may change it only as ADR 0121 rules 3 to 6 allow, and never in silence (rule 4). The benchmark baseline does not move.
+
+**Security.** A preview promises less stability, not less safety: ADR 0121 rule 17 binds every release, preview or not, so noninterference, authority checking and memory safety are not weakened for any program, and no trusted base or `out_of_model` entry is added.
+
+**Cost.** Not applicable: no algorithm and no run-time or check-time work.
+
+**The documents.** `spec/13 §7`, the README, the guide page on `[package] edition` and `docs/plan/roadmap.md` say that `v0.4.0` ships edition `0.4` as a preview and cite this amendment as Proposed (#1897). Once it is accepted, they cite it as accepted; if it is refused, the project decides the version of release R0.4 again before any tag.

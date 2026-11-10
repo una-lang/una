@@ -2,7 +2,7 @@
 //! (#1573), shared by the tests that run one (`lsp.rs`, `verification.rs` include this file by
 //! path).
 //!
-//! The parent waits 10 seconds for a solver child's handshake (ADR 0124 rule 4, Proposed
+//! The parent waits 10 seconds for a solver child's handshake (ADR 0124 rule 4, accepted
 //! amendment of 2026-11-09), counted from just before the spawn, and ends a child that has
 //! written none by then with U5003, "the solver child is not this `una`: no handshake within
 //! 10 seconds". A stand-in is a shell

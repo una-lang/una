@@ -1,7 +1,7 @@
 # ADR 0073 J5 amendment: `Json` values that carry labeled data (design note)
 
 - Issue: #917 (R0.4.5, information flow).
-- Record: the Proposed amendment of 2026-11-09 at the end of `docs/adr/0073-json.md`.
+- Record: the amendment of 2026-11-09 at the end of `docs/adr/0073-json.md`, accepted on 2026-11-10.
 - Scope: edition `0.4` and later; the prelude kind `Json` only. No syntax, no diagnostic code, no change to Core IR or the engines.
 
 ## 1. Current behavior
