@@ -939,7 +939,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n>, --file-threads <n>, --serve-threads <n>, --serve-script <file> and --serve-out <file>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB>, --http-timeout <seconds>, --stop-after-iterations <n>, --deadline <seconds>, --stop-grace <seconds>, --virtual-time, --workers <n>, --task-depth <n>, --io-threads <n>, --file-threads <n>, --serve-threads <n>, and, in toolchain test builds only, --serve-script <file> and --serve-out <file>"
                 ));
             }
         }

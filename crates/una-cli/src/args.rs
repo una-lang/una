@@ -180,7 +180,7 @@ pub(crate) enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Grant a host capability: `console`, `clock`, `env`, `keys:<file>`, `files:<path>:<access>` or `http:<origin>[:<methods>]`
+        /// Grant a host capability: `console`, `clock`, `env`, `keys:<file>`, `files:<path>:<access>`, `http:<origin>[:<methods>]` (edition 0.4: with `;<limit>` suffixes), or, from edition 0.4, `serve:<scheme>://<address>:<port>` with `;<item>` suffixes
         #[arg(long = "grant", value_name = "SPEC")]
         grants: Vec<String>,
 
@@ -256,11 +256,15 @@ pub(crate) enum Command {
         #[arg(long, value_name = "FILE")]
         trace: Option<PathBuf>,
 
-        /// Replace the listeners of the `serve:` grants with the connections this file describes, one JSON object per line; needs --virtual-time (ADR 0123)
+        /// Toolchain test builds only: a shipped `una` reads and checks the file, then refuses
+        /// the run as a usage error. Replace the listeners of the `serve:` grants with the
+        /// connections this file describes, one JSON object per line; needs --virtual-time
+        /// (ADR 0123, `spec/31 §8`)
         #[arg(long, value_name = "FILE")]
         serve_script: Option<PathBuf>,
 
-        /// Write what each scripted connection received to this file; needs --serve-script (ADR 0123)
+        /// Toolchain test builds only, as --serve-script is. Write what each scripted connection
+        /// received to this file; needs --serve-script (ADR 0123)
         #[arg(long, value_name = "FILE")]
         serve_out: Option<PathBuf>,
     },
@@ -286,7 +290,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "MIB", default_value_t = 4096, value_parser = clap::value_parser!(u64).range(256..=1_048_576))]
         solver_memory: u64,
     },
-    /// Run every example
+    /// Run every test (`example` in editions 0.1 and 0.2)
     Test {
         /// The package directory, or a single file
         #[arg(default_value = ".")]

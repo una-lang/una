@@ -261,7 +261,7 @@ una run .
 
 `main` uses `Console[print]` and nothing else, and `una run` gives it exactly what `[run] grants` lists in `una.toml`. Without `"console"` there, the program does not start: U3012 names the capability that is missing. Grants can also come from the command line, as `una run . --grant console`.
 
-The host offers `Console`, `Clock`, `Env`, `Files` and `Keys`, only to `main`, which passes them to the functions it calls. Text that comes from the outside, as `Files.read` returns, is labeled `internal`, and printing it needs a declassification policy: information flow is checked too (§9 of [the guide for agents](una-for-agents.md)).
+The host offers `Console`, `Clock`, `Env`, `Files` and `Keys`, and from edition `0.2` also `Http`, only to `main`, which passes them to the functions it calls. Edition `0.4` adds `HttpServer`, for a program that serves HTTP, and offers them to the entry functions of a driven or served module too ([Serving HTTP](serving-http.md), [Driven programs](driven-programs.md)). Text that comes from the outside, as `Files.read` returns, is labeled `internal`, and printing it needs a declassification policy: information flow is checked too (§9 of [the guide for agents](una-for-agents.md)).
 
 ## 6. A native executable
 

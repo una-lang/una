@@ -193,10 +193,15 @@ Every command takes `--json` and prints exactly one JSON document, with a `schem
 | Command | What it does |
 | --- | --- |
 | `una check` | Every check and every proof |
-| `una test` | Runs the examples, with their effect traces |
+| `una test` | Runs the tests (`example` in editions 0.1 and 0.2), with their effect traces |
 | `una run` | Runs `main` with the capabilities it is granted |
 | `una build` | Compiles `main` into a native executable |
 | `una fmt` | Rewrites source in canonical form |
+| `una fix` | Applies the mechanical repairs of `una check`, then formats, and reports what remains |
+| `una core` | Prints the package's Core IR; with `--json`, as `una.core/1` |
+| `una migrate` | Moves a package from `una.toml` to `ita.una` and `ita.lock`, edition 0.4 |
+| `una ita <command>` | The package manager of edition 0.4 (local and mirror sources only in this release) |
+| `una lsp` | The language server, for editors |
 | `una obligations` | Lists every proof obligation and its status |
 | `una contract <module.function>` | Prints a function's header, declared or inferred |
 | `una trace <REQUIREMENT_ID>` | Follows a requirement to its functions and proofs |

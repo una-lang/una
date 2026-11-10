@@ -1,6 +1,6 @@
 # Una for agents
 
-A compact reference for writing Una with the v0.2 toolchain, in packages of edition `0.2`. The specification in `docs/spec/` is normative; this guide summarizes it for an agent that writes, checks and repairs code.
+A compact reference for writing Una in packages of edition `0.2`, written for the v0.2 toolchain; later toolchains serve edition `0.2` unchanged. Editions `0.3` and `0.4` are previews: this guide notes where they differ and §22 moves a package to edition `0.4`, but it does not teach their new constructs (for edition `0.4`, see [Tasks and time](tasks-and-time.md), [Serving HTTP](serving-http.md) and [Driven programs](driven-programs.md)). The specification in `docs/spec/` is normative; this guide summarizes it for an agent that writes, checks and repairs code.
 
 How to read the blocks: every `una` block is a whole module that `una check` accepts in canonical form, as the only module of a package of edition `0.2`, unless its first line is `-- fails with U####`, in which case checking it yields that code and no other. A block whose first line is `-- edition 0.1` is checked in a package of edition `0.1`. A block preceded by a file path belongs to a package with the other files named around it. Every `json` block is a document the CLI prints, and every `sh` block runs from the repository root, or in a fresh copy of the directory its `# copy` comment names. `crates/una-cli/tests/guide.rs` checks all of them.
 
@@ -40,7 +40,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 ## 2. Files and packages
 
 - A package is a directory with `una.toml`, `verification.lock` and sources under `src/`. Module `shop.cart` lives in `src/shop/cart.una`, and a file holds exactly one module.
-- **Imports** name a module of the same package by its path and list what they take from it: `import shop.prices (Item, total)`. Only `pub` declarations can be imported (U1004, with an edit that adds `pub`). Importing a sum kind brings its variants too. The only other modules are the standard ones, `std.host` and `std.testing` (§8). The prelude is always in scope and is never imported, and no package imports another.
+- **Imports** name a module of the same package by its path and list what they take from it: `import shop.prices (Item, total)`. Only `pub` declarations can be imported (U1004, with an edit that adds `pub`). Importing a sum kind brings its variants too. The only other modules are the standard ones, `std.host` and `std.testing` (§8). The prelude is always in scope and is never imported, and no package imports another. (Edition `0.4` also has the standard modules `std.time`, `std.drive` and `std.limit`, and dependencies on other packages through `ita.una`.)
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
 - **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15), text functions (§16), HTTP (§17) and `together` (§18). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §21 lists what changes between them.
@@ -1197,13 +1197,16 @@ Every command takes `--json` and prints one document whose `schema` names its sh
 | `una check`, `una fmt --check` | `una.diagnostics/1` |
 | `una fix` | `una.fix/1`, the edits applied and skipped, and the diagnostics that remain (v0.2) |
 | `una obligations` | `una.obligations/1`, every obligation with `status`, `goal` and `hypotheses` |
-| `una test` | `una.test/1`, every example with its outcome and effect trace; `una.test/2` for a package of edition `0.3`, the same document with the key `tests` |
+| `una test` | `una.test/1`, every example with its outcome and effect trace; `una.test/2` for a package of edition `0.3` or later, the same document with the key `tests` |
 | `una run` | `una.run/1`, the program's output and trace |
 | `una build` | `una.build/1`, the native executable's path, or the diagnostics that rejected the package (v0.2, `spec/16`) |
 | `una contract <module.function>` | `una.contract/1`, the header, declared or inferred |
 | `una trace <REQUIREMENT_ID>` | `una.trace/1`, derived functions and their obligations |
 | `una report` | `una.report/2`, proofs, authority, policy calls, escapes, assumptions, host premises, trusted code, requirements, coverage, native target |
 | `una explain <code>` | `una.explain/1` |
+| `una core` | `una.core/1`, the package's Core IR (ADR 0083) |
+| `una migrate` | `una.migrate/1`, the files written for edition `0.4` and the diagnostics (`spec/30 §8`) |
+| `una ita <command>` | `una.ita/1`, the command, the files written and the diagnostics (`spec/30 §6`) |
 
 When the checks reject a package, `contract`, `trace`, `obligations` and `report` print the `una.diagnostics/1` of `una check`. Diagnostics are sorted by file, position and code; outputs are identical from run to run.
 

@@ -38,7 +38,7 @@
 | `spec/11-dynamic-semantics.md` | Una Abstract Machine, evaluation rules, traces |
 | `spec/12-verification.md` | Obligations, decidable fragment, SMT encoding, statuses, lock |
 | `spec/13-diagnostics-and-abi.md` | Diagnostic codes, JSON schemas, CLI, build report |
-| `spec/14-standard-library.md` | Prelude and host capabilities available in v0.1 |
+| `spec/14-standard-library.md` | Prelude, host capabilities and `std.testing`, by edition |
 | `spec/15-canonical-form.md` | The canonical form: lines, spacing, blank lines, comments, U7001 |
 | `spec/16-native-backend.md` | The native backend: `una build` and native executables |
 | `spec/17-memory-model.md` | Mutable value semantics: `let edit`, `edit` and `take` parameters, `for` loops |
@@ -51,11 +51,12 @@
 | `spec/24-http.md` | The HTTP client capability `Http` |
 | `spec/25-units-of-measure.md` | Units of measure, edition `0.3` |
 | `spec/26-long-running-programs.md` | Long-running programs, edition `0.4` |
+| `spec/27-tasks-and-time.md` | Tasks and time, edition `0.4` |
 | `spec/28-collections.md` | Collections, edition `0.5` (moved from edition `0.4`, ADR 0139) |
 | `spec/29-numerics.md` | Numerics: `F64` in edition `0.3`, the numeric foundation in edition `0.5` (moved from edition `0.4`, ADR 0139) |
 | `spec/30-packages.md` | Packages and dependencies: `ita.una` and `ita.lock`, edition `0.4` |
 | `spec/31-http-servers.md` | HTTP servers, edition `0.4` |
-| `spec/32-quality.md` | Una Quality: metrics, configuration, gates and the `UQ` registry (Draft, ADR 0127 accepted) |
+| `spec/32-quality.md` | Una Quality: metrics, configuration, gates and the `UQ` registry (Draft, ADR 0127 accepted; not implemented, no command runs it) |
 
 ## Starting a contribution
 

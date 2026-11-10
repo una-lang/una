@@ -1,6 +1,6 @@
-# 14. Standard library (v0.1)
+# 14. Standard library
 
-Status: Normative, v0.1. The standard library is part of the Trusted zone. Everything not listed here does not exist in v0.1.
+Status: Normative, v0.1, with the additions of later editions marked by edition. The standard library is part of the Trusted zone. Everything not listed here does not exist in v0.1. This chapter covers the prelude, `std.host` and `std.testing`; the other standard modules are specified with their constructs: `std.time` and `std.drive` in `spec/26 §2` (edition `0.4`), `std.limit` in `spec/27 §10` (edition `0.4`), and `std.collections` in `spec/28 §2` (edition `0.5`, a preview).
 
 ## 1. Prelude
 

@@ -1,6 +1,6 @@
-# Una Language Guide: Syntax Reference (v0.2)
+# Una Language Guide: Syntax Reference (edition 0.2)
 
-**Status.** Informative summary of the normative specification in `docs/spec/`, as of 2026-10-06, for the v0.2 toolchain and packages of edition `0.2`, the default of this guide. Where edition `0.1` differs, the text says so. If this guide and `docs/spec/` disagree, the spec wins.
+**Status.** Informative summary of the normative specification in `docs/spec/`, written for the v0.2 toolchain and packages of edition `0.2`, the default of this guide; the command line (§15) and the diagnostic ranges (§16) are kept current with the toolchain. Where edition `0.1` differs, the text says so. Editions `0.3` and `0.4` are previews, and this page covers only some of what they add: for edition `0.4`, see [Tasks and time](tasks-and-time.md), [Serving HTTP](serving-http.md), [Driven programs](driven-programs.md) and the package manager in [configure/ita](configure/ita/manifest.md). If this guide and `docs/spec/` disagree, the spec wins.
 
 **Conventions.** Code blocks tagged `una` are whole modules. Each one is checked as the only module of a package of edition `0.2`, unless its first lines say `-- edition 0.1`, and `una check` accepts it at tier 1 in canonical form. A block whose first line is `-- fails with U####` yields that code and no other. A block preceded by a file path belongs to a package with the files named around it. `crates/una-cli/tests/guide.rs` checks every block. Diagnostic codes use the form `U####` (see §16). Where this guide says "error", the compiler rejects the program with the code shown.
 
@@ -1916,7 +1916,7 @@ pub byte_total(bytes: List[U8]) -> Int = bytes.sum()
 pub ordered(names: List[Text]) -> List[Text] = sort(names)
 ```
 
-**`std.testing`:** `fake_hash(seed: Int) -> internal Hashed`. Equal seeds give equal hashes.
+**`std.testing`:** `fake_hash(seed: Int) -> internal Hashed`. Equal seeds give equal hashes. From edition `0.4`, it also has `elapse`, `test_request` and `test_exchange` ([Tasks and time](tasks-and-time.md), [Serving HTTP](serving-http.md)). Edition `0.4` also adds the modules `std.time`, `std.drive` and `std.limit` (`spec/26 §2`, `spec/27 §10`).
 
 ---
 
@@ -2006,13 +2006,13 @@ events/
 
 | Key | Meaning |
 | --- | --- |
-| `[package]` `name`, `version`, `edition` | required; `edition` is `"0.1"` or `"0.2"` |
+| `[package]` `name`, `version`, `edition` | required; `edition` is `"0.1"`, `"0.2"` or `"0.3"` (a preview); edition `0.4` is described by `ita.una`, not `una.toml`, and `una migrate` moves a package there |
 | `[labels]` `categories` | the label categories of §8.1 |
 | `[trusted]` `modules` | the trusted modules of §8.5 |
 | `[escape_budget]` `checked_per_module` | how many `checked` each module may use (default 0) |
 | `[run]` `entry`, `grants` | the module whose `main` runs, and the grants of `una run` and of the native executable |
 
-- **Editions.** The edition decides the language of the package: edition `0.2` has the memory model (§5.5, §5.6), fixed-width integers (§3.1), recursive kinds (§3.2), constraints (§3.3), effect polymorphism (§4.2) and `together` (§5.7). Edition `0.1` keeps the language of v0.1 in every version of the compiler. A single `.una` file has the default settings, and so edition `0.1`. Edition `0.3` is a preview: it has everything of edition `0.2`, and the rules of ADRs 0092 to 0094 join it as they land, which only ever adds errors.
+- **Editions.** The edition decides the language of the package: edition `0.2` has the memory model (§5.5, §5.6), fixed-width integers (§3.1), recursive kinds (§3.2), constraints (§3.3), effect polymorphism (§4.2) and `together` (§5.7). Edition `0.1` keeps the language of v0.1 in every version of the compiler. A single `.una` file has the default settings, and so edition `0.1`. Edition `0.3` is a preview: it has everything of edition `0.2`, and the rules of ADRs 0092 to 0094 join it as they land, which only ever adds errors. Edition `0.4`, in `ita.una`, is the preview of this release: it adds tasks and time, `for ever`, driven programs, HTTP servers and dependencies through Itá ([Edition](configure/package/edition.md)).
 - `verification.lock` pins the solver so that proofs are reproducible.
 - Unknown keys in `una.toml` are U7002. A missing or invalid lock is U7004.
 
@@ -2028,9 +2028,13 @@ una [--json] [--color never|auto|always] <COMMAND>
 | --- | --- |
 | `una check [path]` | tiers 0 and 1; `--tier 0` skips the solver; `--dump-core <module>` prints the Core IR |
 | `una fmt [path]` | rewrite to canonical form; `--check` reports U7001 without writing |
-| `una run [path]` | run `main` of the `[run] entry` module in the interpreter; `--grant <spec>`, repeatable; `--max-depth <n>`; `--max-memory <MiB>` |
-| `una build [path]` | compile `main` into a native executable, written to `target/una/<name>`; `--out <file>` |
-| `una test [path]` | run all examples; `--max-depth <n>`; `--max-memory <MiB>` |
+| `una fix [path]` | apply the mechanical repairs of `una check`, then format, and report what remains; `--tier`; `--dry-run` writes nothing |
+| `una core [path]` | print the package's Core IR; with `--json`, as `una.core/1`; `--with-rejected`, with `--json` only |
+| `una run [path]` | run `main` of the `[run] entry` module in the interpreter; `--grant <spec>`, repeatable; `--max-depth <n>`; `--max-memory <MiB>`; the other flags are listed below |
+| `una build [path]` | compile `main` into a native executable, written to `target/una/<name>`; `--out <file>`; `--debuggable` |
+| `una test [path]` | run all tests (`example` in editions 0.1 and 0.2); `--max-depth <n>`; `--max-memory <MiB>`; `--workers`, `--task-depth`, `--io-threads`, `--file-threads` |
+| `una migrate [path]` | move a package from `una.toml` and `verification.lock` to `ita.una` and `ita.lock`, edition `0.4`; `--dry-run`; `--name <name>` |
+| `una ita <command>` | the package manager of edition `0.4`: `lock`, `update`, `add`, `remove`, `tree`, `fetch`, `vendor`, `verify`, `publish`, `yank`, `audit`, `watch`, `bundle` and `unbundle`; in this release it reads path, workspace and mirror sources only ([Itá commands](configure/ita/commands.md)) |
 | `una obligations [path]` | list every obligation and its status |
 | `una contract <module.function>` | full header, declared or inferred |
 | `una trace <REQUIREMENT_ID>` | requirement → contracts → proof status |
@@ -2050,10 +2054,11 @@ una [--json] [--color never|auto|always] <COMMAND>
 - `una run`, `una build` and `una test` first check the package at tier 1, like `una check`, so the Z3 built into `una` must be the exact version of `verification.lock`; `una` never runs a `z3` from the path.
 - If the solver is missing or has another version, they stop with U5003. If the checks report errors, nothing runs and no executable is written.
 
-**Solver flag.** The commands that check at tier 1 (`check`, `run`, `build`, `test`, `obligations`, `trace`, `report`) take `--solver-wallclock <seconds>`.
+**Solver flags.** The commands that check at tier 1 (`check`, `fix`, `run`, `build`, `test`, `obligations`, `trace`, `report`) take `--solver-wallclock <seconds>` and `--solver-memory <MiB>`.
 
-- It is a wall-clock guard against a hanging solver query, 60 seconds by default.
+- `--solver-wallclock` is a wall-clock guard against a hanging solver query, 60 seconds by default.
 - A query that hits it is `unknown` with reason `wallclock` (U5002), marked non-deterministic in the build report.
+- `--solver-memory` is the memory limit of each solver query, from 256 to 1048576 MiB, 4096 by default; another value is a usage error.
 
 **`una run`**
 
@@ -2061,9 +2066,11 @@ una [--json] [--color never|auto|always] <COMMAND>
 - **Grants.**
   - `--grant` may repeat, and the flags are combined with `[run] grants` of `una.toml` into the final grants.
   - Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write` and the combined `files:<path>:read,write`.
+  - From edition `0.2`, also `http:<origin>` and `http:<origin>:<methods>`, which grant `Http`. From edition `0.4`, an `http:` spec may end with limit suffixes such as `;10/second` or `;waiting=5` (`spec/27 §9`), and `serve:<scheme>://<address>:<port>` with `;<item>` suffixes lets the run accept connections there and grants `HttpServer` ([Serving HTTP](serving-http.md)).
   - Relative paths in grants resolve against the package root when they come from `una.toml`, and against the current directory when they come from `--grant`.
   - A `uses` of `main` that the final grants do not cover is U3012, before anything runs.
 - **Depth and memory.** `--max-depth <n>` sets the maximum call depth, 10,000 by default, on a stack capped at 1 GiB. `--max-memory <MiB>` bounds the heap of the run, 4096 MiB by default. Exceeding either aborts with U6003.
+- **Other flags.** `--max-response <MiB>` and `--http-timeout <seconds>` bound `Http` requests (`spec/24 §4`). The task flags `--workers`, `--task-depth`, `--io-threads`, `--file-threads` and `--serve-threads` size the threads of a run (`spec/27 §3`, `spec/31 §6`). `--stop-after-iterations <n>`, `--virtual-time`, `--cost-clock`, `--deadline <seconds>` and `--stop-grace <seconds>` control `for ever` loops, the clock and host stops (`spec/26 §6`, `§8`). `--trace <file>` writes the trace as a JSON array. `--serve-script <file>` and `--serve-out <file>` run only in the toolchain's own test builds: a shipped `una` refuses them as a usage error (`spec/31 §8`). `una run --help` lists every flag with its range and default.
 - **Usage errors (exit code 2):**
   - a package without an entry, or an entry without `pub main() -> Unit`;
   - a `--grant` value that is not a grant spec;
@@ -2080,7 +2087,7 @@ una [--json] [--color never|auto|always] <COMMAND>
 - It checks the package at tier 1, then compiles it through Cranelift and links it, with the linker built into `una` on `aarch64-apple-darwin` and the system linker (`cc`) elsewhere, into an executable for the host: `aarch64-apple-darwin` or `x86_64-unknown-linux-gnu`. There is no cross-compilation.
 - It writes `target/una/<name>`, where `<name>` is the `[package] name` (or the module name for a single file), and prints `built <output>`. With `--json` it prints a `una.build/1` document whose `status` is `built` or `rejected`.
 - It embeds `[run] grants` in the executable as its default grants. Exit codes: `0` when the executable is written, `1` when the checks report errors, `2` for a usage error (as for `una run`, or a failure of the linker), `3` for U8001.
-- **The executable** behaves as `una run` in human mode: the lines `main` prints go to stdout, U6001 and U6003 go to stderr with exit code 1, and U3012 is checked against its grants before `main` starts. It takes `--grant <spec>`, `--max-depth <n>`, `--max-memory <MiB>` and `--trace <file>`, which writes the trace as a JSON array. It has no `--json` output.
+- **The executable** behaves as `una run` in human mode: the lines `main` prints go to stdout, U6001 and U6003 go to stderr with exit code 1, and U3012 is checked against its grants before `main` starts. It takes `--grant <spec>`, `--max-depth <n>`, `--max-memory <MiB>` and `--trace <file>`, which writes the trace as a JSON array, and also the flags of the **Other flags** item of `una run` above, except `--cost-clock`. It has no `--json` output.
 - **Equivalence.** The executable's output, exit status, failure and trace are ones the interpreter produces; the interpreter is the reference. With `together`, the lines that tasks print may interleave (§5.7).
 
 **`una lsp`** (ADR 0063) serves the Language Server Protocol 3.17 on stdin and stdout, for editors. It publishes the diagnostics of `una check` with their repairs as quick fixes, formats documents, shows contracts, types and obligation statuses on hover, and goes to definitions. It checks at tier 0 on every change and at tier 1 on save, with the proof cache of the CLI. It never runs programs.
@@ -2115,13 +2122,13 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | Range | Domain |
 | --- | --- |
 | U0001 to U0103 | syntax: characters, indentation, literals, tokens, clause order, reserved words |
-| U1001 to U1009 | names: resolution, duplicates, cycles, visibility, conventions, requirements, file paths, reserved module names |
-| U2001 to U2027 | types: mismatches, labels, exhaustiveness, constructors, RL, predicates, conventions, literals, tasks, constraints |
-| U3001 to U3019 | authority: capabilities, effects, failures, handlers, one effect per line, `of` clauses |
-| U4001 to U4008 | security: flows, implicit flows, sinks, policies, categories, interpolation in a pattern |
+| U1001 to U1010 | names: resolution, duplicates, cycles, visibility, conventions, requirements, file paths, reserved module names, a module named like a dependency |
+| U2001 to U2040 (no U2036) | types: mismatches, labels, exhaustiveness, constructors, RL, predicates, conventions, literals, tasks, constraints, units, floats, loops, `first of` and `start`, decimals, tensors, `simd required` |
+| U3001 to U3033 (no U3030, U3031) | authority: capabilities, effects, failures, handlers, one effect per line, `of` clauses, boundaries, `diverges`, `HttpServer` in a branch |
+| U4001 to U4008 (no U4006) | security: flows, implicit flows, sinks, policies, categories, interpolation in a pattern |
 | U5001 to U5003 | verification: refuted, unknown, solver missing |
-| U6001, U6003 | runtime: `main` failed, call depth or memory limit exceeded |
-| U7001 to U7005 | project: formatting, `una.toml`, escape budget, lock, trusted modules |
+| U6001, U6003 to U6009 (no U6008) | runtime: `main` failed, call depth or memory limit exceeded, header values, UTF-8, the floating-point environment, a host stop, no random bytes for keyed hashing |
+| U7001 to U7005, U7008 to U7015 | project: formatting, `una.toml`, escape budget, lock, trusted modules, `ita.una`, `ita.lock`, verification of packages, resolution, audits, executable layout |
 | U8001 | internal compiler error (always a bug) |
 
 **Codes of edition `0.2`**

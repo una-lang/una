@@ -1,7 +1,7 @@
 ---
 construct: "[run] grants"
 editions: ["0.1", "0.2"]
-spec: ["spec/13 §7", "spec/13 §5", "spec/05 §7", "spec/14 §3", "spec/24 §2", "spec/07 §1"]
+spec: ["spec/13 §7", "spec/13 §5", "spec/05 §7", "spec/14 §3", "spec/24 §2", "spec/07 §1", "spec/27 §9", "spec/31 §2"]
 codes: [U3012, U7002]
 ---
 
@@ -54,8 +54,10 @@ The grant specs:
 | `keys:<keyfile>` | `Keys[hmac]`, with the keys of the file |
 | `files:<path>:read`, `files:<path>:write`, `files:<path>:read,write` | the `Files` operations of the mode, under the path |
 | `http:<origin>`, `http:<origin>:<methods>` (edition `0.2`) | `Http` operations for the origin |
+| `http:` with limit suffixes, such as `http:<origin>;10/second` (edition `0.4`, `--grant` only) | the same, at most at that rate (`spec/27 §9`) |
+| `serve:<scheme>://<address>:<port>`, with `;<item>` suffixes (edition `0.4`, `--grant` only) | accepting connections at that address, and `HttpServer` (`spec/31 §2`; see [Serving HTTP](../../serving-http.md)) |
 
-`una run` also takes `--grant <spec>` flags; the grants of `una.toml` and of the flags apply together.
+`una run` also takes `--grant <spec>` flags; the grants of `una.toml` and of the flags apply together. The grants of edition `0.4` are given with `--grant`, or in the `run` section of `ita.una` (see [`ita.una`](../ita/manifest.md)); in `ita.una`, limits and `serve` items are lines below their grant. In `una.toml`, a `serve:` spec is U7002 in every edition.
 
 ## Examples
 
@@ -126,7 +128,7 @@ Further rules:
 
 ## Edition
 
-The grant specs of v0.1 are in editions `0.1` and `0.2`. Edition `0.2` adds the `http:` grants.
+The grant specs of v0.1 are in editions `0.1`, `0.2` and `0.3`. Edition `0.2` adds the `http:` grants, which edition `0.3` keeps. From edition `0.4`, a package lists its grants in `ita.una` instead of `una.toml`, an `http` grant may carry limits, and the `serve` grant lets a program accept connections.
 
 ## Normative source
 
