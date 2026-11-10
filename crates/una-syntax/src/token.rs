@@ -266,11 +266,72 @@ impl Keyword {
         }
     }
 
-    /// The keyword spelled `word`, if any.
+    /// The keyword of [`Keyword::ALL`] spelled `word`, if any. A `match` on the word, which
+    /// the compiler lowers to a switch on its length and a few comparisons, instead of a scan
+    /// of the table with a comparison per keyword: the lexer asks this for every lowercase
+    /// word, most of them names (#1894). A test checks it against the table.
     pub fn from_word(word: &str) -> Option<Keyword> {
-        Keyword::ALL
-            .into_iter()
-            .find(|keyword| keyword.as_str() == word)
+        Some(match word {
+            "accepts" => Keyword::Accepts,
+            "and" => Keyword::And,
+            "attempt" => Keyword::Attempt,
+            "capability" => Keyword::Capability,
+            "checked" => Keyword::Checked,
+            "confidential" => Keyword::Confidential,
+            "derived" => Keyword::Derived,
+            "do" => Keyword::Do,
+            "else" => Keyword::Else,
+            "ensures" => Keyword::Ensures,
+            "error" => Keyword::Error,
+            "example" => Keyword::Example,
+            "expect" => Keyword::Expect,
+            "fail" => Keyword::Fail,
+            "fails" => Keyword::Fails,
+            "false" => Keyword::False,
+            "fn" => Keyword::Fn,
+            "for" => Keyword::For,
+            "from" => Keyword::From,
+            "given" => Keyword::Given,
+            "handler" => Keyword::Handler,
+            "if" => Keyword::If,
+            "implies" => Keyword::Implies,
+            "import" => Keyword::Import,
+            "in" => Keyword::In,
+            "internal" => Keyword::Internal,
+            "is" => Keyword::Is,
+            "it" => Keyword::It,
+            "kind" => Keyword::Kind,
+            "let" => Keyword::Let,
+            "mod" => Keyword::Mod,
+            "module" => Keyword::Module,
+            "none" => Keyword::None,
+            "not" => Keyword::Not,
+            "op" => Keyword::Op,
+            "opaque" => Keyword::Opaque,
+            "or" => Keyword::Or,
+            "pass" => Keyword::Pass,
+            "performed" => Keyword::Performed,
+            "policy" => Keyword::Policy,
+            "predicate" => Keyword::Predicate,
+            "pub" => Keyword::Pub,
+            "public" => Keyword::Public,
+            "reflect" => Keyword::Reflect,
+            "requirement" => Keyword::Requirement,
+            "requires" => Keyword::Requires,
+            "restricted" => Keyword::Restricted,
+            "result" => Keyword::Result,
+            "secret" => Keyword::Secret,
+            "then" => Keyword::Then,
+            "true" => Keyword::True,
+            "trusted" => Keyword::Trusted,
+            "unit" => Keyword::Unit,
+            "use" => Keyword::Use,
+            "uses" => Keyword::Uses,
+            "when" => Keyword::When,
+            "where" => Keyword::Where,
+            "with" => Keyword::With,
+            _ => return None,
+        })
     }
 
     /// The keywords that edition 0.2 adds to [`Keyword::ALL`] (`spec/17 §9`, ADR 0056;
@@ -501,6 +562,37 @@ pub struct Comment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_word_is_the_table_of_all_keywords() {
+        // #1894: `from_word` matches on the word; it must agree with a scan of `ALL` on every
+        // keyword, on the keywords of later editions (not in `ALL`, so `None`), and on words one
+        // character away from a keyword.
+        let scan = |word: &str| Keyword::ALL.into_iter().find(|k| k.as_str() == word);
+        let mut words: Vec<String> = Vec::new();
+        for keyword in Keyword::ALL
+            .iter()
+            .chain(&Keyword::EDITION_0_2)
+            .chain(&Keyword::EDITION_0_3)
+        {
+            let text = keyword.as_str();
+            words.push(text.to_owned());
+            words.push(format!("{text}s"));
+            words.push(format!("_{text}"));
+            words.push(text[..text.len() - 1].to_owned());
+            words.push(text.to_ascii_uppercase());
+        }
+        words.extend(["", "_", "x", "the_table"].map(str::to_owned));
+        for word in &words {
+            assert_eq!(Keyword::from_word(word), scan(word), "{word:?}");
+        }
+        for keyword in Keyword::ALL {
+            assert_eq!(Keyword::from_word(keyword.as_str()), Some(keyword));
+        }
+        for keyword in Keyword::EDITION_0_2.iter().chain(&Keyword::EDITION_0_3) {
+            assert_eq!(Keyword::from_word(keyword.as_str()), None, "{keyword:?}");
+        }
+    }
 
     #[test]
     fn example_is_a_keyword_through_edition_0_3_and_an_identifier_from_0_4() {

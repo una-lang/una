@@ -83,9 +83,13 @@ pub fn lex_in(
         project: false,
     };
     lexer.run();
-    let used = names(&lexer.out, lexer.interner);
-    let chosen = choose(&lexer.out.renames, &used);
-    apply(&mut lexer.out, &chosen);
+    // The names the file uses are collected only to choose a rename clear of them, so a file
+    // with no rename, such as every standard module, skips the collection (#1894).
+    if !lexer.out.renames.is_empty() {
+        let used = names(&lexer.out, lexer.interner);
+        let chosen = choose(&lexer.out.renames, &used);
+        apply(&mut lexer.out, &chosen);
+    }
     let out = &mut lexer.out;
     // The renames of names that start with `_` (ADR 0096 A).
     let keywords = out.keywords;
@@ -1132,9 +1136,12 @@ impl Lexer<'_> {
     fn lower_word(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-        let word = self.slice(start, self.pos).to_owned();
+        // A slice of the text, whose reference outlives this borrow of the lexer: no copy per
+        // word (#1894).
+        let text = self.text;
+        let word = text.get(start..self.pos).unwrap_or("");
         if self.project {
-            let symbol = self.interner.intern(&word);
+            let symbol = self.interner.intern(word);
             self.push(TokenKind::LowerIdent(symbol), start, self.pos);
             return;
         }
@@ -1154,7 +1161,7 @@ impl Lexer<'_> {
         // methods (ADR 0120, moved to edition 0.5 by ADR 0139); they stay keywords, which the
         // parser accepts as labels in a call's arguments only.
         if self.out.keywords >= KeywordSet::V0_5 && self.peek() == Some(':') {
-            match word.as_str() {
+            match word {
                 "with" => self.out.with_label = Some(self.interner.intern("with")),
                 "and" => self.out.and_label = Some(self.interner.intern("and")),
                 _ => {}
@@ -1208,14 +1215,14 @@ impl Lexer<'_> {
             || clause
             || deadline
         {
-            TokenKind::LowerIdent(self.interner.intern(&word))
-        } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
+            TokenKind::LowerIdent(self.interner.intern(word))
+        } else if let Some(keyword) = Keyword::from_word_in(word, self.out.keywords) {
             TokenKind::Keyword(keyword)
-        } else if let Some(message) = reserved_in(&word, self.out.keywords) {
-            self.reserved(&word, message, start);
-            TokenKind::Reserved(self.interner.intern(&word))
+        } else if let Some(message) = reserved_in(word, self.out.keywords) {
+            self.reserved(word, message, start);
+            TokenKind::Reserved(self.interner.intern(word))
         } else {
-            TokenKind::LowerIdent(self.interner.intern(&word))
+            TokenKind::LowerIdent(self.interner.intern(word))
         };
         self.push(kind, start, self.pos);
     }
@@ -1614,6 +1621,85 @@ fn indent_description(level: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_standard_modules_lex_without_renames_or_errors() {
+        // #1894: `lex_in` collects the names a file uses only when a reserved word needs a
+        // rename. The standard modules, lexed on every check, must never need one, so that
+        // their lexing stays on the path without the collection. Each is lexed alone under the
+        // keyword set `una_check::types::Standard::load` lexes it with.
+        let modules: [(&str, &str, KeywordSet); 12] = [
+            (
+                "prelude.una",
+                include_str!("../../una-check/src/std/prelude.una"),
+                KeywordSet::V0_1,
+            ),
+            (
+                "prelude_0_2.una",
+                include_str!("../../una-check/src/std/prelude_0_2.una"),
+                KeywordSet::V0_2,
+            ),
+            (
+                "prelude_0_3.una",
+                include_str!("../../una-check/src/std/prelude_0_3.una"),
+                KeywordSet::V0_3,
+            ),
+            (
+                "prelude_0_4.una",
+                include_str!("../../una-check/src/std/prelude_0_4.una"),
+                KeywordSet::V0_5,
+            ),
+            (
+                "host_0_4.una",
+                include_str!("../../una-check/src/std/host_0_4.una"),
+                KeywordSet::V0_4,
+            ),
+            (
+                "testing.una",
+                include_str!("../../una-check/src/std/testing.una"),
+                KeywordSet::V0_1,
+            ),
+            (
+                "testing_0_4.una",
+                include_str!("../../una-check/src/std/testing_0_4.una"),
+                KeywordSet::V0_4,
+            ),
+            (
+                "time.una",
+                include_str!("../../una-check/src/std/time.una"),
+                KeywordSet::V0_4,
+            ),
+            (
+                "drive.una",
+                include_str!("../../una-check/src/std/drive.una"),
+                KeywordSet::V0_4,
+            ),
+            (
+                "collections.una",
+                include_str!("../../una-check/src/std/collections.una"),
+                KeywordSet::V0_2,
+            ),
+            (
+                "map_0_4.una",
+                include_str!("../../una-check/src/std/map_0_4.una"),
+                KeywordSet::V0_2,
+            ),
+            (
+                "limit.una",
+                include_str!("../../una-check/src/std/limit.una"),
+                KeywordSet::V0_4,
+            ),
+        ];
+        for (name, text, keywords) in modules {
+            let mut sources = crate::source::SourceDb::new();
+            let id = sources.add(name, text.as_bytes());
+            let mut interner = Interner::new();
+            let lexed = lex_in(sources.file(id), id, &mut interner, keywords);
+            assert!(lexed.renames.is_empty(), "{name}: {:?}", lexed.renames);
+            assert!(lexed.errors.is_empty(), "{name}: {:?}", lexed.errors);
+            assert!(!lexed.tokens.is_empty(), "{name}");
+        }
+    }
 
     #[test]
     fn canonical_integers() {
