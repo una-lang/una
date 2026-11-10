@@ -154,7 +154,7 @@ It is written `edit xs.set(index: i, item: v)`. Graphs and cyclic structures use
 
 | Keywords | Message |
 | --- | --- |
-| `shared`, `iso`, `weak` | reserved for v0.3 (aliasing) |
+| `shared`, `iso`, `weak` | reserved for a later edition (aliasing) |
 | `region` | not a keyword in Una; the backend chooses where values live |
 | `var` | not a keyword in Una; use `let edit` |
 | `while`, `loop` | not a keyword in Una; use `for` or recursion |
