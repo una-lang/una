@@ -176,8 +176,21 @@ ORACLE_FORMS = (
     "H3:reach-under-pc", "K4:list", "K4:record", "K4:text", "P1:list", "P1:option", "P1:scalar",
     "Q3:guarded-dry", "Q3:guarded-live", "T8:effect-public", "T8:via-calls-policy",
 )
-LIVE_FORMS = ("C6:secret-fan-out", "H3:install-under-pc", "H3:reach-under-pc")
+# Liveness is read from the example probe since #1911 (`oracle.run_probe`): a run's trace leaves
+# out every operation performed in quiet code (S-42, #1515), and an example's trace keeps them,
+# but never those of a handler instance that quiet code installed (S-41, #1514, #1544), which no
+# trace shows. So `H3:install-under-pc`, whose secret decides an installation and nothing else
+# any trace shows, is compared (its public view must not move) and is no longer live; the forms
+# whose secret decides which operations of an instance installed under a public program counter
+# run stay live (docs/release-gates.md, the hunt gate).
+LIVE_FORMS = ("C6:secret-fan-out", "H3:reach-under-pc")
 PINNED_SET_ASIDE_REJECTED = {"B": 14, "C": 20, "D": 22, "Q": 12, "T": 29}
+# The example probe (#1911): the programs the oracle compares whose probe is unavailable, by
+# reason, pinned exactly, so that a probe lost for a new reason, or for more programs, is seen.
+# U3014: `main` needs a host capability other than `Console`, which an example cannot use
+# (`spec/08 §2` rule 1): the 110 programs of K4, whose `main` reads `Keys`. Measured on
+# 2026-11-10 (docs/release-gates.md): 399 of the 509 compared programs have a probe.
+PINNED_PROBE_UNAVAILABLE = {"U3014": 110}
 # The native sample (#792): its size, pinned, the families it compares, pinned, and a floor on the
 # programs it compares, about 90% of the measured run's (docs/release-gates.md).
 NATIVE_SAMPLE = 54
@@ -458,15 +471,19 @@ VAULT = ("capability Vault\n  op note(x: Int) -> Unit\n    accepts secret\n\n"
 def canary_internal():
     """An accepted program that calls an operation accepting `secret` under a secret branch; the
     gate plants that operation as accepting `internal`. The `public` observer must see the same in
-    every variant, and the `internal` observer the event come and go: a leak at `internal` only."""
+    every variant, and the `internal` observer the event come and go: a leak at `internal` only.
+    The handler is installed in `main`, under a public program counter: the run's trace leaves
+    the operation out either way (S-42), and only the example probe shows an operation performed
+    in quiet code, never one of an instance that quiet code installed (#1544, `spec/08 §2` rule 7),
+    so the canary is what the probe can see, and a probe that goes missing leaves it uncaught."""
     v = Varied()
     lit = v.lit("Bool", "secret", "true")
     text = join_decls(
         header(MOD), VAULT,
         "work(n: Int) -> Unit\n  uses @vault: Vault[note]\n=\n  @vault.note(n)",
-        "guarded(flag: secret Bool) -> Unit\n=\n"
-        "  if flag\n    work(1) with @vault = quiet()\n  else\n    unit",
-        CONSOLE_MAIN + f"  let s: secret Bool = {lit}\n  guarded(s)\n"
+        "guarded(flag: secret Bool) -> Unit\n  uses @vault: Vault[note]\n=\n"
+        "  if flag\n    work(1)\n  else\n    unit",
+        CONSOLE_MAIN + f"  let s: secret Bool = {lit}\n  guarded(s) with @vault = quiet()\n"
         '  @console.print("done")')
     files, vary = v.place(package("canary", "0.2", {MOD: text}, entry=MOD, grants=["console"]))
     return Program(op="canary-internal", rule="the gate's own canary", edition="0.2", seed=0,
@@ -1027,6 +1044,24 @@ def run(una, out_dir, tip, core_check, z3):
     compared = sum(r.get("compared", 0) for r in oracle_rows)
     programs_compared = sum(1 for r in oracle_rows if r.get("compared", 0) > 0)
     live = sum(1 for r in oracle_rows if r.get("live"))
+    # The example probe (#1911): available for every compared program but those unavailable for
+    # a pinned reason, in the pinned number.
+    probed, probe_unavailable = 0, Counter()
+    for r in oracle_rows:
+        if r.get("compared", 0) <= 0:
+            continue
+        status = r.get("probe")
+        if status == "available":
+            probed += 1
+        elif isinstance(status, str) and status.startswith("unavailable: "):
+            probe_unavailable[status[len("unavailable: "):]] += 1
+        else:
+            errors.append(f"oracle {r['name']}: compared, and its probe is {status!r}")
+    for why in sorted(set(probe_unavailable) | set(PINNED_PROBE_UNAVAILABLE)):
+        if probe_unavailable.get(why, 0) != PINNED_PROBE_UNAVAILABLE.get(why, 0):
+            errors.append(f"oracle: {probe_unavailable.get(why, 0)} compared programs whose probe "
+                          f"is unavailable for {why!r}, and the gate pins "
+                          f"{PINNED_PROBE_UNAVAILABLE.get(why, 0)}")
 
     # The re-check comparison (part (b) of docs/plan/security-hunt.md, #791): every program the
     # checks accept is exported and re-checked by the model's checker.
@@ -1193,6 +1228,7 @@ def run(una, out_dir, tip, core_check, z3):
                    "set_aside": sum(1 for r in oracle_rows if r.get("set_aside")),
                    "programs_compared": programs_compared, "variants_compared": compared,
                    "live": live, "compared_forms": compared_forms, "live_forms": live_forms,
+                   "probed": probed, "probe_unavailable": dict(sorted(probe_unavailable.items())),
                    "set_aside_rejected": set_aside_rejected,
                    "timeouts_decided": killed},
         "differ": {"expected": len(rows), "judged": len(differ_rows), "clean": differ_clean,
