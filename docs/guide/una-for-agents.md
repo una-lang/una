@@ -1184,7 +1184,7 @@ pub count(xs: List[Int]) -> Int
 ## 19. Native executables and the language server
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
-- The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. Its output and trace match the interpreter's.
+- The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. That its output and trace match the interpreter's is tested, not proven: the toolchain's tests run the runnable programs in both engines and compare them. With tasks on the real clock the order of the effects of different tasks may differ; `--virtual-time` makes the executable follow the interpreter's schedule (`spec/27 §8` rules 3 and 4).
 - Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
 - `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
 
