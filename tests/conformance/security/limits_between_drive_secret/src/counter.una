@@ -1,0 +1,16 @@
+-- test: the driver's gaps (ADR 0116 P11): the wait for the next tick, between one step's last request and the next step's first, lasts as long as the step left of its period, so all of `τ⁰(step)` counts, and `step` works on its `secret` state after its request: U4001 at the request, beside IF7's U4001 at the tick, whose time the same work moves
+-- spec: spec/27 §9
+-- expect: error U4001 at src/counter.una:11:41
+-- expect: error U4001 at src/counter.una:14:25
+module counter
+
+import std.drive (Tick)
+
+pub init() -> secret Int = 42
+
+pub step(edit count: secret Int, input: internal Tick) -> Unit
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get("https://api.example.com/tick", headers: [], key_name: None)
+  let spent = count * 3
+  unit

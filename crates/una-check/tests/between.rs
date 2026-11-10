@@ -23,6 +23,12 @@ fn top() -> Label {
 /// The summaries of each unit of the module `app` whose text is `text`, with the check's
 /// diagnostics, which must be empty.
 fn summaries(text: &str) -> Vec<(String, Between)> {
+    let check = checked(text);
+    between_summaries(&check.program, &top())
+}
+
+/// The type check of the module `app` whose text is `text`, whose errors must be none.
+fn checked(text: &str) -> una_check::TypeCheck {
     let mut db = SourceDb::new();
     let mut interner = Interner::new();
     let manifest = db.add("una.toml", MANIFEST.as_bytes());
@@ -55,7 +61,7 @@ fn summaries(text: &str) -> Vec<(String, Between)> {
         .map(|d| format!("{} {}", d.code.as_str(), d.message))
         .collect();
     assert!(errors.is_empty(), "{errors:?}");
-    between_summaries(&check.program, &top())
+    check
 }
 
 /// `(reaches, pre, suf, gap, whole)` of the unit `name`, as text.
@@ -305,6 +311,82 @@ fn a_start_is_a_call_of_its_task() {
     // Before the statement, nothing decides it.
     assert_eq!(
         gap("  let spent = crunch(key)\n  tasks\n    start fetch(url)\n    unit\n  unit\n"),
+        "internal"
+    );
+}
+
+/// `L_lim` of the package whose `run` has the body `body`, beside [`SHARED`]: the meet of P10's
+/// label and P11's (ADR 0116 P11, #1155).
+fn limit(body: &str) -> String {
+    let text = format!(
+        "{SHARED}\npub run(url: Text, key: secret Int, n: Int) -> Unit\n  uses @http: Http[get]\n=\n{body}"
+    );
+    checked(&text).limit_label.to_string()
+}
+
+#[test]
+fn every_history_channel_that_p10_refused_stays_refused() {
+    // P10's example: a `secret` read between two requests.
+    assert_eq!(
+        limit("  fetch(url)\n  let spent = crunch(key)\n  fetch(url)\n"),
+        "secret"
+    );
+    // Failure edges: the work of a step that can fail, between requests.
+    assert_eq!(
+        limit("  fetch(url)\n  let w = work(key, n)\n    if error use 0\n  fetch(url)\n"),
+        "secret"
+    );
+    // `within` and its handling.
+    assert_eq!(
+        limit(
+            "  fetch(url)\n  let v = crunch(key) within 5 * millisecond\n    if error use key\n  fetch(url)\n"
+        ),
+        "secret"
+    );
+    // Loops with back edges, either order in the body.
+    assert_eq!(
+        limit("  for i in 0..n\n    fetch(url)\n    let spent = crunch(key)\n    unit\n  unit\n"),
+        "secret"
+    );
+    assert_eq!(
+        limit("  for i in 0..n\n    let spent = crunch(key)\n    fetch(url)\n  unit\n"),
+        "secret"
+    );
+    // Both orders of `Pre` and `Suf` of a callee.
+    assert_eq!(limit("  tail(url, key)\n  fetch(url)\n"), "secret");
+    assert_eq!(limit("  fetch(url)\n  head(url, key)\n"), "secret");
+    // A lambda from `Λ` applied between requests.
+    assert_eq!(
+        limit("  fetch(url)\n  let xs = [1, 2].map(each: fn(x) -> x + key)\n  fetch(url)\n"),
+        "secret"
+    );
+    // A started task's request, with work on a `secret` beside it until the statement ends.
+    assert_eq!(
+        limit("  tasks\n    start fetch(url)\n    let spent = crunch(key)\n    unit\n  unit\n"),
+        "secret"
+    );
+}
+
+#[test]
+fn what_p10_refused_only_conservatively_is_accepted() {
+    // Work before the first request, or after the last.
+    assert_eq!(
+        limit("  let spent = crunch(key)\n  fetch(url)\n  fetch(url)\n"),
+        "internal"
+    );
+    assert_eq!(
+        limit("  fetch(url)\n  fetch(url)\n  let spent = crunch(key)\n  unit\n"),
+        "internal"
+    );
+    // Their `public` twins of the refused cases, which P10 accepted too.
+    assert_eq!(
+        limit("  fetch(url)\n  let spent = crunch_open(n)\n  fetch(url)\n"),
+        "internal"
+    );
+    assert_eq!(
+        limit(
+            "  fetch(url)\n  let v = crunch_open(n) within 5 * millisecond\n    if error use 0\n  fetch(url)\n"
+        ),
         "internal"
     );
 }
