@@ -1292,6 +1292,14 @@ pub(crate) fn underscore_renames(
     keywords: KeywordSet,
     errors: &mut [SyntaxError],
 ) {
+    // The errors this repairs: U0001 on a `_`, with no repair yet. The lines of the text are
+    // read only when there is one (#1894): every file is lexed through here.
+    let wanted = |error: &SyntaxError| {
+        error.code == Code::U0001 && error.message.contains("`_`") && error.repairs.is_empty()
+    };
+    if !errors.iter().any(wanted) {
+        return;
+    }
     let Some(lines) = lines_of(text) else {
         return;
     };
@@ -1301,8 +1309,7 @@ pub(crate) fn underscore_renames(
     let mut decls: BTreeMap<usize, Option<DeclText<'_>>> = BTreeMap::new();
     let mut renames: BTreeMap<(usize, String), Option<SyntaxRepair>> = BTreeMap::new();
     for error in errors.iter_mut() {
-        if error.code != Code::U0001 || !error.message.contains("`_`") || !error.repairs.is_empty()
-        {
+        if !wanted(error) {
             continue;
         }
         let at_offset = error.span.start;
