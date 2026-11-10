@@ -47,7 +47,7 @@ Una is a verification-first programming language for software that AI agents wri
 
 Releases, compiler versions and editions follow one number ([ADR 0139](docs/adr/0139-edition-numbering-follows-the-release-that-closes-it.md)): release R0.N ships `una` v0.N.0, and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of [ADR 0121](docs/adr/0121-the-terms-of-a-preview-edition.md), and a later release makes it stable (ADR 0139, amendment of 2026-11-10, proposed). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is in [`docs/plan/roadmap.md`](docs/plan/roadmap.md#releases-and-editions).
 
-Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md).
+Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. Edition 0.4, the edition of v0.4.0, is a preview (ADR 0121): a later release may ask for edits to a package of edition 0.4. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md); what this release proves, tests and assumes is in [Known limits](docs/guide/known-limits.md#assurance-in-this-release).
 
 ## Install
 
@@ -149,7 +149,9 @@ Every guarantee has the form: *the implementation satisfies its specification, a
 | **Assumed** | The behavior of external systems as declared in `capability` signatures | Capability authors |
 | **Human** | That requirements and contracts capture the intent | Requirement owners and reviewers |
 
-Outside the model, as every report says: timing, termination and resource side channels, and the behavior of external systems beyond their declared signatures. Una proves **conformance to an explicit specification**, not that the specification says the right thing.
+Proven means discharged by the checker and the Z3 solver, relative to the verifier's encoding, and an obligation the solver cannot decide is an error (U5002), never a pass. The formal model in Lean re-checks a fragment of the language only, which leaves out servers and collections ([`docs/security/tcb.md`](docs/security/tcb.md)).
+
+Every report lists what is outside the model, among them: timing, termination and resource side channels, and the behavior of external systems beyond their declared signatures. Una proves **conformance to an explicit specification**, not that the specification says the right thing.
 
 A few principles of the design:
 

@@ -2,7 +2,7 @@
 
 Every Una guarantee holds "assuming the trusted base behaves as specified" (charter §3). The build report counts part of that base: its `tcb` section lists a package's `trusted` modules with their line counts, the host capabilities it uses, the solver and the proof cache (`spec/13 §6`). Line counts do not say what a bug in a component could do, what catches it, or what is left open. This document says that for each component of the toolchain's trusted base, and ranks the open gaps.
 
-It describes the repository at commit `3e5b800b` (edition `0.3` in preview). Sizes are lines of Rust under each crate's `src/`, unit tests included. The counts of `unsafe` code (§3.2, §3.3) were taken again from the code at commit `0516fba0` (#1686), by a regular expression over every crate's `src/` and the tests of `una-sys`, comments left out, cross-checked with `grep -c` and the `// SAFETY:` comments of each file. Proposed decisions are described as proposals.
+Its sizes describe the repository at commit `3e5b800b`, when edition `0.3` was in preview. The formal coverage of §3.1 was refreshed at commit `491dc89c` (2026-11-10), for v0.4.0, whose previews are editions `0.3`, `0.4` and `0.5` (`una --version`). Sizes are lines of Rust under each crate's `src/`, unit tests included. The counts of `unsafe` code (§3.2, §3.3) were taken again from the code at commit `0516fba0` (#1686), by a regular expression over every crate's `src/` and the tests of `una-sys`, comments left out, cross-checked with `grep -c` and the `// SAFETY:` comments of each file. Proposed decisions are described as proposals.
 
 ## 1. What a bug can cause
 
@@ -48,9 +48,9 @@ Ranked by the worst class, then by what guards it today:
   - adversarial reviews of each change that touches these rules, where the advisories above were found.
 - **Formal coverage:** the Lean development in `formal/` (`docs/plan/formal-track.md`, `formal-track-status.md`) proves type safety (T1), the unary halves of T2 and T3, and noninterference (T6) for fragment F1, with no `sorry` and no axioms beyond Lean's standard three (checked by `scripts/formal.sh`). A Lean checker proven sound re-checks the exported Core (`una core --json`, ADR 0083) of each declaration it can read: it accepts only what it proves, and answers "not re-checked" for a form outside F1. The replay of past findings on pre-fix releases is rejected by the re-check for most of them.
 - **Open gaps:**
-  - The re-check reads a part of the language: on the corpus of the status document, about a quarter of all declarations are accepted by it, and none rejected. What it does not read is guarded by tests and review only.
+  - The re-check reads a part of the language: on the corpus of the status document, about a quarter of all declarations are accepted by it. On `main` it rejected four declarations of three conformance cases, triaged in the status document (#1676): none is a flow `una check` gets wrong. Two (`move_checked.kept` and `.moved`, a `checked` of a collection) are now refused as not re-checked; the other two (`fold.total` and `inference.contravariant`) stay rejected until F1 models `uses of`, since F1 has no effect polymorphism. What it does not read is guarded by tests and review only.
   - Capability confinement (T4, fragment F2, milestone M7) is not proven. Handlers declared outside a document, and `given`, are outside the re-check until then.
-  - Refinements, `together`, maps, text, JSON and HTTP are outside F1 (formal plan §3).
+  - Refinements, `together`, maps, text, JSON and HTTP are outside F1 (formal plan §3). So are the forms of edition `0.4` and `0.5` that F1 does not model, which the re-check refuses as not re-checked: HTTP servers, refused by name (#1012, `spec/31 §9`); the collections of `std.collections` (#983) and a `checked` of a collection (#1676); `tasks` statements, `start` and `first of`; and `for ever within`, whose deadline is timing. No server and no collection of edition `0.4` or `0.5` is proven by the Lean model: those guarantees are checked by the checker's rules and tested.
 
 ### 3.2 The verifier and the solver
 

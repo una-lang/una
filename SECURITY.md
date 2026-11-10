@@ -21,7 +21,7 @@ We will acknowledge your report, keep you informed while we work on it, and than
 
 ## Supported versions
 
-Una is a research language and is not ready for production use. Fixes go into the latest release, and older versions are not patched.
+Una is a research language and is not ready for production use; edition 0.4, the edition of v0.4.0, is a preview (ADR 0121). Fixes go into the next release from `main`, and are backported to two maintenance lines when the defect is present there: v0.3.x (branch `release/v0.3`) and v0.1.x (branch `release/v0.1`). Each advisory in [`docs/security/advisories.md`](docs/security/advisories.md) names the releases that fix it, and says when a line is not fixed. A fix reaches a line as a new patch release of it; other versions are not patched.
 
 ## Scope
 
