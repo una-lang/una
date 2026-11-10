@@ -578,6 +578,60 @@ fn check_with(root: &Path, solver: &Path) -> Output {
 
 #[cfg(unix)]
 #[test]
+fn a_check_with_no_obligation_starts_no_solver_child_and_one_with_an_obligation_does() {
+    // #1894: the solver linked into `una` (ADR 0124) runs only in a solver child, and a child is
+    // started only for an obligation to solve; a tier-1 check of a package that has none starts
+    // none, so it never pays the child's start. Structural, not timed: the stand-in leaves a
+    // mark when it is started. The twin with one obligation does start it, so the mark is seen.
+    let marks = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("solver-started-marks");
+    std::fs::create_dir_all(&marks).unwrap();
+    let mark = marks.join("started");
+    let _ = std::fs::remove_file(&mark);
+    let solver = stand_in_solver(
+        "solver-leaving-a-mark",
+        &format!(
+            "touch '{}'\necho \"$1\"\ncat > /dev/null\necho unsat\n",
+            mark.display()
+        ),
+    );
+    let none = package(
+        "no-obligation",
+        &[("src/app.una", "module app\n\npub one() -> Int = 1\n")],
+    );
+    let output = check_with(&none, &solver);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        document["diagnostics"].as_array().map(Vec::len),
+        Some(0),
+        "{document}"
+    );
+    assert!(
+        !mark.exists(),
+        "a check with no obligation started the solver"
+    );
+    let one = package(
+        "one-obligation",
+        &[(
+            "src/app.una",
+            "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
+        )],
+    );
+    let (output, late) = stand_in::check_with_stand_in(|| check_with(&one, &solver));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{} (earlier runs: {late:?})",
+        stdout(&output)
+    );
+    assert!(
+        mark.exists(),
+        "the obligation was proven without the solver"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn a_handshake_after_two_seconds_and_inside_ten_still_proves() {
     // ADR 0124 rule 4, Proposed amendment of 2026-11-09 (#1791): the window is ten seconds of
     // the wall-clock guard (60 s by default), so a child that writes its handshake four seconds
