@@ -621,12 +621,14 @@ mutual
       pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t, []⟩
     | .checked a _ _ => do
       let t ← atomTy Γ a
-      -- `checked` of a collection, with a predicate on the whole value (ADR 0103 rules 3 and 4),
-      -- is a form Una has and F1 does not model (#1676): not re-checked, never rejected.
-      need (isScalar t) (.restriction "F1 restriction (`checked` of a value that is not a scalar)")
       le p (pc.join (p.deep t)) LExpr.bot
         "`checked` of a labeled value, or under a raised program counter (U4002)"
       need (symFree pc) "`checked` under a symbolic program counter"
+      -- `checked` of a collection, with a predicate on the whole value (ADR 0103 rules 3 and 4),
+      -- is a form Una has and F1 does not model (#1676): not re-checked, never rejected. The
+      -- label and program-counter premises above come first, so a `checked` of a labeled
+      -- collection, or one under a raised or symbolic program counter, stays rejected (U4002).
+      need (isScalar t) (.restriction "F1 restriction (`checked` of a value that is not a scalar)")
       flowTo p t ann "the value `checked` gives"
       pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t, []⟩
     | .eq a b => do
