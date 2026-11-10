@@ -1149,4 +1149,39 @@ mod tests {
         assert!(!own_deadline(None, wake_at(None, Some(7))));
         assert!(!own_deadline(None, None));
     }
+
+    /// Every serve thread of an executable allocates through the process's one counting
+    /// allocator (`Cap`, ADR 0061), whose counters all threads update: a parser that allocates
+    /// once a chunk makes the serve threads of a body of small chunks contend for them, so 8
+    /// threads read such bodies more slowly than 1 (#1780). A chunked body allocates only as
+    /// its buffers grow, O(log b) times: here at most its own data again in bytes, where the
+    /// reader before #1780 allocated 8 more bytes a chunk, for the line of its size.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_chunked_body_allocates_as_it_grows_not_once_a_chunk() {
+        use una_http::request::{RequestLimits, RequestReader, Scheme};
+        // Growing sizes: the bound is linear in the data, the old cost was 9 times it.
+        for chunks in [4 * 1024, 16 * 1024, 64 * 1024] {
+            let mut wire = b"1\r\nx\r\n".repeat(chunks);
+            wire.extend_from_slice(b"0\r\n\r\n");
+            let mut reader = RequestReader::new(RequestLimits::default(), Scheme::Http);
+            let head = b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n";
+            assert!(!reader.feed(head).unwrap().done);
+            let before = crate::ffi::thread_allocated();
+            let mut done = false;
+            // As a serve thread feeds it: a read of at most 16 KiB at a time.
+            for piece in wire.chunks(16 * 1024) {
+                let progress = reader.feed(piece).unwrap();
+                assert_eq!(progress.used, piece.len());
+                done = progress.done;
+            }
+            let allocated = crate::ffi::thread_allocated() - before;
+            assert!(done);
+            assert_eq!(reader.body_length(), chunks);
+            assert!(
+                allocated <= 2 * chunks,
+                "{allocated} bytes allocated for {chunks} chunks of one byte"
+            );
+        }
+    }
 }
