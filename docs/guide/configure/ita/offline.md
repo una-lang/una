@@ -11,9 +11,9 @@ codes: [U7010, U7011, U7013]
 
 A package of edition `0.4` builds with no network once its registry packages are on the machine. There are three ways to put them there, and each one checks every byte against `ita.lock`:
 
-- **Itaoca**, the local store, filled by `una ita fetch` on a machine that can read the registry.
+- **Itaoca**, the local store, filled by `una ita fetch` on a machine that holds a mirror of the registry (in this release a registry is read only from a mirror directory).
 - **The vendor directory**, `vendor/ita/` in the package, filled by `una ita vendor` and committed with the package, so that a fresh checkout builds with `una` alone.
-- **A bundle**, one file written by `una ita bundle` on a connected machine and read by `una ita unbundle` on an air-gapped one, a machine with no network at all, which it fills Itaoca from.
+- **A bundle**, one file written by `una ita bundle` on a machine that holds a mirror and read by `una ita unbundle` on an air-gapped one, a machine with no network at all, which it fills Itaoca from.
 
 Why it works this way: a build that reaches the network can give a different result on a different day, or fail when a registry is down. `una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server never open a connection for a package. They read the locked packages from the vendor directory or Itaoca and check each against the lock's digest, its signature by the key the lock names and its inclusion in the logged checkpoint, all offline. That the key was the owner's, valid at its log position, is checked by the registry client when the lock is resolved and when the package is fetched, bundled or unbundled, not again when it is loaded. So the same package gives the same result with or without a network, and a vendored copy that someone edited does not load.
 
@@ -91,7 +91,7 @@ The vendored copy of `acme/ledger` was edited after `una ita vendor` wrote it: i
 ## Forms
 
 ```text
-una ita fetch [path]             download the locked releases into Itaoca, verified
+una ita fetch [path]             copy the locked releases into Itaoca, verified
 una ita vendor [path]            copy them from Itaoca into vendor/ita/
 una ita verify [path]            check every copy again, in vendor/ita/ and in Itaoca
 una ita bundle <file> [path]     write them, with their proofs, into one file
@@ -104,7 +104,7 @@ una ita unbundle <file> [path]   verify a bundle against the lock and fill Itaoc
 
 ## Examples
 
-On a connected machine, fetch and vendor the locked releases, then commit `vendor/` with the package:
+On a machine that holds a mirror of the registry, fetch and vendor the locked releases, then commit `vendor/` with the package:
 
 ```text
 $ una ita fetch
@@ -125,7 +125,7 @@ vendor/ita/acme/acme+ledger-0.3.1.provenance
 
 A fresh checkout, on a machine whose Itaoca is empty and that has no mirror, checks and builds from it alone: `una check` exits with code 0.
 
-For a machine with no network, write a bundle on the connected one, carry the file over, and unbundle it in the package there. A second unbundle stores nothing new:
+For a machine with no network, write a bundle on the one that holds the mirror, carry the file over, and unbundle it in the package there. A second unbundle stores nothing new:
 
 ```text
 $ una ita bundle ../shop.bundle

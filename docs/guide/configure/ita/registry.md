@@ -9,7 +9,7 @@ codes: [U7008, U7010, U7011, U7013]
 
 ## What it does
 
-A registry is a place that publishes packages for others to use. A package that needs a package from a registry names the registry in its `sources` section and the package in its `needs` section, with `from` and the registry's name. `una ita lock` then reads the registry, checks every byte it reads against the keys the package pins, and writes the release it chose into `ita.lock`. `una ita fetch` downloads that release into Itaoca, the local store of packages on the machine, and checks it again. From then on, `una check`, `una run` and `una build` read the package from Itaoca, with no network.
+A registry is a place that publishes packages for others to use. A package that needs a package from a registry names the registry in its `sources` section and the package in its `needs` section, with `from` and the registry's name. `una ita lock` then reads the registry, checks every byte it reads against the keys the package pins, and writes the release it chose into `ita.lock`. `una ita fetch` copies that release into Itaoca, the local store of packages on the machine, and checks it again. In this release a registry is read only from a mirror directory, a `file://` location that holds a copy of the registry's files: there is no `https://` transport, and `itaty`, the planned public registry, is not served (see the edge cases). From then on, `una check`, `una run` and `una build` read the package from Itaoca, with no network.
 
 Why it works this way: a dependency is code that runs inside your program, so where it comes from is part of the program's meaning. Una never takes a registry's word for anything. The `root` line pins the digest of the registry's root metadata, the document that names the registry's keys: the log key that signs every checkpoint, and the witnesses that cosign it. Every entry the registry serves must be proven included in a checkpoint signed that way, and each release must be signed by its owner's keys, which the client replays from the owner's chain in the log, or the command fails. A mirror that serves a changed file, or a registry that changes a release it already published, is caught, never trusted.
 
@@ -94,7 +94,7 @@ mirrors
     "file:///srv/ita-mirror"
 ```
 
-A location is an `https://` URL or a `file://` URL of a local directory that holds a copy of the registry's files. A mirror is trusted for nothing: what it serves is checked exactly as the registry's own copy is, and a mirror whose copy does not verify is skipped and named (U7010).
+A location is an `https://` URL or a `file://` URL of a local directory that holds a copy of the registry's files; in this release only a `file://` location is read, since there is no https transport. A mirror is trusted for nothing: what it serves is checked exactly as the registry's own copy is, and a mirror whose copy does not verify is skipped and named (U7010).
 
 ### The commands
 
@@ -102,7 +102,7 @@ A location is an `https://` URL or a `file://` URL of a local directory that hol
 una ita lock                 resolve the needs and write ita.lock
 una ita add acme/ledger      add a need, newest release, and lock
 una ita update [<name>...]   raise needs to newer releases, and lock
-una ita fetch                download the locked releases into Itaoca
+una ita fetch                copy the locked releases into Itaoca, verified
 ```
 
 Of the `una ita` commands, `lock` (with `--check`, for the newest checkpoint), `add`, `update`, `fetch`, `bundle`, `audit` and `watch` read a registry, from a mirror directory in this release (`unbundle` reads one too, for a file the bundle lacks); `publish` and `yank` stop before they read one (see [publishing](publishing.md)). The commands that check, run, build and test a package (`una check`, `una run`, `una build`, `una test`, `una report`, `una fmt`, `una fix` and the language server) never read a registry: they read Itaoca or the vendor directory, never the network.
@@ -132,7 +132,7 @@ $ una ita add acme/ledger --from other
 error: the owner of `acme/ledger` is served by the source `acme`, so the need is `from acme`, never `from other`
 ```
 
-Fetching downloads each locked release once, checks it, and keeps it in Itaoca; a release Itaoca holds already is not read again:
+Fetching copies each locked release from the mirror once, checks it, and keeps it in Itaoca; a release Itaoca holds already is not read again:
 
 ```text
 $ una ita fetch
@@ -162,7 +162,7 @@ shop 0.1.0
 ## Edge cases
 
 - **No https transport yet.** This release has no transport for `https://` locations, so a source is read only through a mirror directory, listed as a `file://` URL in `mirrors.una`. With no place it can read, the source is U7013, and the message says to list a mirror.
-- **`itaty`, the default registry.** A need without `from` is a need of `itaty`. Its root metadata is not built into this release, so a need of `itaty` has no resolution: `una ita` reports U7013, and `una check` refuses the need (U7008).
+- **`itaty`, the planned public registry.** A need without `from` is a need of `itaty`, which this release does not serve. Its root metadata is not built into this release, so a need of `itaty` has no resolution: `una ita` reports U7013, and `una check` refuses the need (U7008).
 - **Plain HTTP.** An `http://` URL in `sources` is U7008, and an `http://` location in `mirrors.una` makes the whole file U7008: plain HTTP is never used.
 - **Fresh state.** `lock`, `update` and `add` need a checkpoint, the registry's signed statement of its contents, less than 24 hours old by the time its witnesses give it. An older one, or a local clock more than an hour behind it, is U7010, and nothing is written.
 - **Never backwards.** Itaoca keeps, for each registry, the largest checkpoint it has accepted. A registry, or a mirror, that later serves a smaller or inconsistent one is refused (U7010): it cannot roll a machine back to an older view.

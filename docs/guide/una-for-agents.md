@@ -1137,7 +1137,7 @@ example "the stand-in answers every GET"
 - A `together` statement holds two or more `let` branches (U2024 otherwise). Each branch runs as a task, sees the bindings before the block but not its siblings, and its binding is in scope after the block. Each branch's handling clauses stand on their own lines, as for any `let`.
 - `let ys = together for x in xs` runs its indented body once per element, or per integer of a range, and builds the list of results in order.
 - A task cannot assign, `edit` or `take` a binding declared outside it (U2023): return new values instead. Tasks use the capabilities of the enclosing function, and a parameter named by `uses of` or `fails of`.
-- When a task fails, the tasks after it are cancelled, and the block fails with the failure of the first task that failed: the outcome of running the tasks one after another.
+- When a task fails, the tasks after it are canceled, and the block fails with the failure of the first task that failed: the outcome of running the tasks one after another.
 - The trace lists each task's events in task order, with the task's path, as `"task": "2"`; the order in which tasks really performed effects, such as the lines they print, may differ.
 
 ```una

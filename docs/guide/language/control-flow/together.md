@@ -125,12 +125,12 @@ pub prepare(units: Int) -> Int
 Further rules:
 
 - **Scope.** A branch sees the bindings in scope before the block, and none of its siblings'.
-- **Failure and cancellation.** When a task fails, every task after it is cancelled, and the block fails with the failure of the lowest-indexed task that failed. Cancellation is cooperative, which means a task is never stopped in the middle of a step: a cancelled task stops at its next call, operation or loop iteration, and effects already performed stay.
+- **Failure and cancellation.** When a task fails, every task after it is canceled, and the block fails with the failure of the lowest-indexed task that failed. Cancellation is cooperative, which means a task is never stopped in the middle of a step: a canceled task stops at its next call, operation or loop iteration, and effects already performed stay.
 - **The trace** of a block is the traces of its tasks in index order, whatever the interleaving.
 - **Verification.** Each branch is verified with the facts known before the block and none of its siblings'.
 - **Labels.** Each branch runs under the block's program counter (the label of the conditions that decide whether a line runs; see [Branches and failures: implicit flows](/learn/information-flow/branches-and-failures-implicit-flows/)). A `together for` over a labeled list, or a range with labeled bounds, runs its body under that label, so `fail` and calls that can fail are U4002 there.
-- **Timing is out of the model.** The relative order of the effects of different tasks, and how far a cancelled task got, depend on timing.
-- **No task values.** There are no detached tasks, no `race` or `select`, no timeouts and no channels.
+- **Timing.** The relative order of the effects of different tasks, and how far a canceled task got, depend on timing. In editions `0.2` and `0.3` timing is out of the model. Edition `0.4` adds time limits and races, and gives each of their sites a timing label that the checker enforces (see [Tasks and time](../../tasks-and-time.md#timing-labels-what-the-checker-refuses-and-why)).
+- **No task values.** No value stands for a task, to keep or pass on: every task ends before its block does. In editions `0.2` and `0.3` there are no other tasks, no races, no timeouts and no channels. Edition `0.4` adds tasks that only have effects (`tasks` and `start`), a time limit (`within`) and a race (`first of`), described in [Tasks and time](../../tasks-and-time.md).
 - **A statement, not an expression.** `let x = together` with branches is U0101: write `together for` to build a list.
 
 ## Diagnostics

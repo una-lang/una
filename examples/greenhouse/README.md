@@ -244,7 +244,7 @@ A fake is checked like any other code. A test that passes against a fake therefo
 ## Learn more
 
 - Construct pages: [`requirement`](../../docs/guide/language/requirements/requirement.md), [`where` and ranges](../../docs/guide/language/types/where.md), [`capability`](../../docs/guide/language/capabilities/capability.md), [`handler`](../../docs/guide/language/capabilities/handler.md), [`uses`](../../docs/guide/language/capabilities/uses.md), [`with`](../../docs/guide/language/capabilities/with.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`when`](../../docs/guide/language/control-flow/when.md), [`example`](../../docs/guide/language/examples/example.md).
-- Learn, the tutorial on the Una website: chapter 7, "Contracts and the verifier"; chapter 8, "Capabilities"; chapter 10, "Testing".
+- Learn, the tutorial on the Una website: "Contracts and the verifier" (`/learn/contracts/`); "Capabilities" (`/learn/capabilities/`); "Testing" (`/learn/testing/`).
 - Specification: [capability declarations (spec/05 §2)](../../docs/spec/05-capabilities-and-effects.md), [passing capabilities (spec/05 §4)](../../docs/spec/05-capabilities-and-effects.md), [handlers (spec/05 §5)](../../docs/spec/05-capabilities-and-effects.md), [requirements (spec/08 §1)](../../docs/spec/08-requirements-and-examples.md), [examples (spec/08 §2)](../../docs/spec/08-requirements-and-examples.md), [the build report (spec/13 §6)](../../docs/spec/13-diagnostics-and-abi.md).
 
 ## Edition

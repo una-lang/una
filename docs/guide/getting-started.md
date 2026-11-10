@@ -285,9 +285,34 @@ Linux is not available in this release yet (section 1). On Linux, `una build` st
 
 `una lsp` is a language server (LSP 3.17 over stdin and stdout) for any editor that speaks the protocol: it checks, formats and solves as you type, and never runs programs.
 
+## 8. Edition 0.4
+
+`wordfreq` is a package of edition `0.2`, a stable edition. Edition `0.4` is a preview: it adds programs that run until they are stopped, tasks and time limits, HTTP servers, and dependencies on other packages through Itá, the package manager (in this release, path dependencies and registry packages read from a mirror directory). A preview carries no stability promise, so a later release may still change what it accepts (ADR 0121). A package of edition `0.4` is described by `ita.una` and pinned by `ita.lock`, not by `una.toml` and `verification.lock`: `una.toml` naming `edition = "0.4"` is U7002, and `una migrate` is the repair.
+
+To move a copy of `wordfreq` to edition `0.4`:
+
+1. Its tests are written `example`, the form of editions `0.1` and `0.2`. From edition `0.3` on they are written `test`, and `una fix` rewrites them in a package of edition `0.3` only. So first set `edition = "0.3"` in `una.toml`, then run `una fix .`, which rewrites both tests.
+2. Run `una migrate .`. It writes `ita.una` and `ita.lock`, removes `una.toml` and `verification.lock`, and prints every diagnostic that the change of edition causes, none here.
+3. `una check .`, `una test .` and `una run .` then work as before, in edition `0.4`.
+
+The `ita.una` it writes:
+
+```text
+ita wordfreq
+  version 0.1.0
+  edition 0.4
+
+run
+  entry wordfreq
+  grants
+    console
+```
+
+The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/blob/main/docs/guide/tasks-and-time.md), [Serving HTTP](https://github.com/una-lang/una/blob/main/docs/guide/serving-http.md), [Driven programs](https://github.com/una-lang/una/blob/main/docs/guide/driven-programs.md) and [the package manager](https://github.com/una-lang/una/blob/main/docs/guide/configure/ita/commands.md); [Known limits](https://github.com/una-lang/una/blob/main/docs/guide/known-limits.md) says what this release does not do yet.
+
 ## Where next
 
-- [The guide for agents](una-for-agents.md) is the compact reference to the whole language.
-- [The syntax reference](syntax-reference.md) lists every construct.
+- [The guide for agents](una-for-agents.md) is the compact reference to edition `0.2`, with notes where editions `0.3` and `0.4` differ and how to move a package to edition `0.4`; it does not teach the constructs that edition `0.4` adds.
+- [The syntax reference](syntax-reference.md) lists the constructs of edition `0.2`, and some of what editions `0.3` and `0.4` add.
 - [The specification](https://github.com/una-lang/una/tree/main/docs/spec) is the normative definition.
 - `una explain <code>` explains any diagnostic, with examples.

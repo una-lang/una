@@ -78,7 +78,7 @@ The bindings that a loop updates (the `let edit` names declared before it) keep 
 
 ## Examples
 
-**`stop` and `skip` in a loop over a list.** The total of the orders, leaving out the cancelled ones, until it passes `limit`:
+**`stop` and `skip` in a loop over a list.** The total of the orders, leaving out the canceled ones, until it passes `limit`:
 
 ```una
 -- edition 0.4
@@ -108,7 +108,7 @@ pub main() -> Unit
   @console.print("total {total(orders: [first, second, third, fourth], limit: 35)}")
 ```
 
-Both engines print `total 40`: 10 is added, the cancelled 99 is skipped, 30 is added, and at the fourth order the total, 40, is over 35, so the loop stops before adding 5. `main` here does not say `diverges`: `stop` and `skip` need no clause, since a loop over a list always ends.
+Both engines print `total 40`: 10 is added, the canceled 99 is skipped, 30 is added, and at the fourth order the total, 40, is over 35, so the loop stops before adding 5. `main` here does not say `diverges`: `stop` and `skip` need no clause, since a loop over a list always ends.
 
 **`for until` with a measure.** How many times a number can be halved before it reaches 1:
 
@@ -429,7 +429,7 @@ Written `within 100 * millisecond`, with `import std.time (millisecond)`, it che
 - [U4002](../../../../crates/una-explain/explain/U4002.md): a `stop` whose condition, or whose branch, depends on labeled data.
 - [U5001](../../../../crates/una-explain/explain/U5001.md): a measure of `for until` that may not decrease, or may be negative.
 - [U6001](../../../../crates/una-explain/explain/U6001.md): `main` failed, also when the failure came from the body of a `for ever`.
-- [U6007](../../../../crates/una-explain/explain/U6007.md): the hard stop cancelled the run.
+- [U6007](../../../../crates/una-explain/explain/U6007.md): the hard stop canceled the run.
 
 ## Edition
 

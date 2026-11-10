@@ -8,7 +8,7 @@ This page shows how a Una program does several pieces of work at once and how it
 
 - A **task** is a piece of work that may run at the same time as other work of the same program. `together`, `start` and `first of` start tasks, and none of them lets a task outlive the code that started it: a block that starts tasks ends only once they have all ended (`spec/19 §1`, `spec/27 §7` rule 4).
 - A **deadline** is a moment after which the program stops waiting for a piece of work. `within` sets one; its length is a number of milliseconds (`spec/27 §5` rule 2).
-- **Cancelling** a task asks it to stop. The task is never stopped in the middle of a step: it stops at its next **check point**, which is each call, each operation and each loop iteration (`spec/19 §6` rule 4, `spec/27 §5` rule 5).
+- **Canceling** a task asks it to stop. The task is never stopped in the middle of a step: it stops at its next **check point**, which is each call, each operation and each loop iteration (`spec/19 §6` rule 4, `spec/27 §5` rule 5).
 - An **operation** is a call of a capability, such as `@console.print`. Its effects are what the program does outside itself, and the **trace** is the record of them (`spec/11 §5`).
 
 ## Work side by side: `together`
@@ -224,7 +224,7 @@ pub plan(stops: Int) -> Int
   route
 ```
 
-**What happens at the deadline.** When the deadline passes, `e` is cancelled at its next check point. An operation in progress completes first; nothing after it runs. The result is the time-out even when `e` returns at its deadline or after it, and its value is dropped (`spec/27 §5` rule 5). Effects already performed stay. In this edition, only the operations of `Http` are cut while they wait: a request fails with `HttpError.TimedOut` at the deadline, and what it sent before stays sent (`spec/27 §5` rule 6).
+**What happens at the deadline.** When the deadline passes, `e` is canceled at its next check point. An operation in progress completes first; nothing after it runs. The result is the time-out even when `e` returns at its deadline or after it, and its value is dropped (`spec/27 §5` rule 5). Effects already performed stay. In this edition, only the operations of `Http` are cut while they wait: a request fails with `HttpError.TimedOut` at the deadline, and what it sent before stays sent (`spec/27 §5` rule 6).
 
 A test shows a time-out without waiting: tests run on a virtual clock, which only the program's own waits move, and `elapse` of `std.testing` moves it forward at once (`spec/26 §8`). This handler takes `delay` to answer:
 
@@ -283,7 +283,7 @@ When one `within` is inside another, only the outermost one whose deadline passe
 
 ## The first to finish: `first of`
 
-`first of` runs two or more branches as tasks. The first branch to return wins, and the others are cancelled. A failed branch cancels nothing: the race goes on with the others, and it fails only when every branch fails, with the failure of the lowest-indexed branch (`spec/27 §6` rule 3). Each branch is a `handled` line, so a branch that can fail takes a handling clause (`spec/27 §6` rule 2). Use it for a fallback, or to ask several sources the same question and keep the first answer.
+`first of` runs two or more branches as tasks. The first branch to return wins, and the others are canceled. A failed branch cancels nothing: the race goes on with the others, and it fails only when every branch fails, with the failure of the lowest-indexed branch (`spec/27 §6` rule 3). Each branch is a `handled` line, so a branch that can fail takes a handling clause (`spec/27 §6` rule 2). Use it for a fallback, or to ask several sources the same question and keep the first answer.
 
 `ita.una`
 ```text
@@ -357,14 +357,14 @@ When the outcome depends on which branch ends first, the engines may differ. The
 
 ## What cancellation does
 
-A task is cancelled when the code around it no longer needs it:
+A task is canceled when the code around it no longer needs it:
 
 - the losers of a `first of` (`spec/27 §6` rule 3);
 - the tasks after a failed task of `together` (`spec/19 §6` rule 4);
 - every task of a `tasks` statement whose block fails or is cut by a deadline (`spec/27 §7` rule 4);
 - every task inside `e` when the deadline of `e within d` passes (`spec/27 §5` rule 5).
 
-A cancelled task stops at its next check point. An operation in progress completes, effects already performed stay, and the task leaves its frames as a failure does, so it holds no memory afterwards (`spec/27 §5` rule 5, `§7` rule 4). An `Http` request that is waiting when the losers of a race are cancelled ends at once with the outcome `interrupted` in the trace (`spec/27 §6` rule 7). The trace ends each task that had not returned with a `cancelled` event, and the `within` with a `timeout` event (`spec/27 §5` rule 7).
+A canceled task stops at its next check point. An operation in progress completes, effects already performed stay, and the task leaves its frames as a failure does, so it holds no memory afterwards (`spec/27 §5` rule 5, `§7` rule 4). An `Http` request that is waiting when the losers of a race are canceled ends at once with the outcome `interrupted` in the trace (`spec/27 §6` rule 7). The trace ends each task that had not returned with a `cancelled` event, and the `within` with a `timeout` event (`spec/27 §5` rule 7).
 
 In this test, each message takes 60 ms and the three tasks share a deadline of 100 ms:
 
@@ -552,7 +552,7 @@ pub attempts(key: secret Int) -> Int
   tries
 ```
 
-Two more sources raise a timing label. Tasks that run beside `e` count, since they share the machine with it (`spec/27 §11`). And in a program whose started tasks or races make `Http` requests, every `within` is at least `internal`, since a cancelled request can keep running on a helper thread for a moment (`spec/26 §7` rule 5, [Known limits](known-limits.md#tasks-and-timing)).
+Two more sources raise a timing label. Tasks that run beside `e` count, since they share the machine with it (`spec/27 §11`). And in a program whose started tasks or races make `Http` requests, every `within` is at least `internal`, since a canceled request can keep running on a helper thread for a moment (`spec/26 §7` rule 5, [Known limits](known-limits.md#tasks-and-timing)).
 
 ## Before edition 0.4
 
