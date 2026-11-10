@@ -258,7 +258,7 @@ The rule is enforced where the value enters, in another module, with a pointer b
 ## Learn more
 
 - Construct pages: [`requirement`](../../docs/guide/language/requirements/requirement.md), [predicates](../../docs/guide/language/types/predicate.md), [`where` and ranges](../../docs/guide/language/types/where.md), [`requires`](../../docs/guide/language/functions/requires.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`attempt`](../../docs/guide/language/errors/attempt.md), [`with`](../../docs/guide/language/capabilities/with.md), [`if error`](../../docs/guide/language/errors/if-error.md), [host capabilities](../../docs/guide/language/capabilities/host.md).
-- Learn, the tutorial on the Una website: [Results and failures](/learn/failure/); [Contracts and the verifier](/learn/contracts/); [Testing](/learn/testing/).
+- Learn, the tutorial on the Una website: "Results and failures" (`/learn/failure/`); "Contracts and the verifier" (`/learn/contracts/`); "Testing" (`/learn/testing/`).
 - Specification: [refinements (spec/03 §3)](../../docs/spec/03-types.md), [predicates (spec/03 §4)](../../docs/spec/03-types.md), [clauses (spec/04 §2)](../../docs/spec/04-functions-and-contracts.md), [passing capabilities (spec/05 §4)](../../docs/spec/05-capabilities-and-effects.md), [`attempt` (spec/06 §5)](../../docs/spec/06-errors.md), [requirements (spec/08 §1)](../../docs/spec/08-requirements-and-examples.md).
 
 ## Edition
