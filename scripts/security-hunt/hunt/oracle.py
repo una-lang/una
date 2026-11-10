@@ -23,6 +23,25 @@ wallclock` among them) or was missing (U5003) is an error too, never a program s
 runs do the full check with the pinned solver (#813), whose answers are deterministic under its
 rlimit (`spec/12 §10`).
 
+**The example probe** (#1911). Since S-41 and S-42 (`spec/11 §5`, `spec/26 §6` rule 4, #1514,
+#1515, #1544) a run's trace leaves out every operation performed in quiet code, under a program
+counter above `public`, and every operation of a handler instance that quiet code installed: the
+trace a run shows is public by construction, so what an observer sees of such operations can no
+longer be read from it, in any variant. An example's trace keeps the operations performed in
+quiet code (`spec/08 §2` rule 7), though never those of instances quiet code installed. So each
+variant also runs once more as an example, the probe (`probe_files`, `run_probe`): the entry
+module gets a handler of `Console` that does nothing and a test (`example` in editions 0.1 and
+0.2) that gives it as `@console` and runs `main()`, and `una test --json` reports its trace. The
+probe's events join every observer's view, projected by `accepts` as the run's are (`EvVis`),
+their redacted sinks counted as violations, and the liveness view at the literal's own level,
+with their outcomes; the test's own result does not, since the test report of edition 0.2 and
+later writes labeled fields of a failure unredacted (ADR 0078). A program whose `main` needs a
+host capability other than `Console` has no probe (U3014: an example cannot use host
+capabilities), which the result records; the gate pins those reasons and their counts. A probe
+whose check the solver did not decide, that aborts or times out while the run completed, whose
+report is not a test document, or that is available for the base and not for a variant, is an
+error. The cost-clock and server modes run no probe: an example has neither clock nor peers.
+
 **The cost clock** (#973, ADR 0117 S8). With `cost=True`, every run is `una run --virtual-time
 --cost-clock` (`spec/27 §8` rule 6): each check point moves the virtual clock by one millisecond, so
 a deadline passes, or a token is left at a limit, by how much work the run did. A secret that
@@ -55,6 +74,7 @@ from collections import Counter
 
 from . import native, sandbox
 from .program import Program
+from .una import module_file
 
 ABORT_CODES = {"U6003", "U6004", "U6005"}
 # The solver's own ends in a run: an obligation `unknown` (U5002, `unknown: wallclock` among them)
@@ -300,9 +320,45 @@ def project(doc, observer, table, keep_outcome=False, cost=False):
     return view
 
 
-def observe(run, observers, table, live_level, cost=False):
-    """One run's end: (`complete`, {"views": {observer: view}, "live": view at `live_level`}),
-    (`abort`, codes), (`rejected`, codes), or (`error`, why)."""
+def observe(run, observers, table, live_level, cost=False, probe=None, probe_observers=None):
+    """One run's end: (`complete`, {"views": {observer: view}, "live": view at `live_level`,
+    "probe": status}), (`abort`, codes), (`rejected`, codes), or (`error`, why). `probe`, the
+    probe's end (`run_probe`), adds its events to each view of `probe_observers` (every observer
+    by default) and to the liveness view, as `probe`, or None when the probe is unavailable; its
+    status, `available`, `unavailable: <reason>` or None without a probe, is the end's `probe`.
+    A probe that errs or aborts is the end's error."""
+    if probe is not None and probe[0] == "error":
+        return ("error", "probe: " + probe[1])
+    end = _observe(run, observers, table, live_level, cost)
+    if end[0] != "complete" or probe is None:
+        return end
+    if probe[0] == "abort":
+        return ("error", "probe: the probe aborted while the run completed: " + probe[1])
+    views, live = end[1]["views"], end[1]["live"]
+    if probe[0] == "unavailable":
+        for view in views.values():
+            view["probe"] = None
+        live["probe"] = None
+        end[1]["probe"] = "unavailable: " + probe[1]
+        return end
+    seen = observers if probe_observers is None else probe_observers
+    try:
+        for o, view in views.items():
+            if o not in seen:
+                view["probe"] = None
+                continue
+            pv = project(probe[1], o, table)
+            view["probe"] = pv["trace"]
+            view["violations"] = sorted(set(view["violations"]) | set(pv["violations"]))
+        live["probe"] = project(probe[1], live_level, table, keep_outcome=True)["trace"]
+    except UnknownOperation as e:
+        return ("error", "probe: " + str(e))
+    end[1]["probe"] = "available"
+    return end
+
+
+def _observe(run, observers, table, live_level, cost=False):
+    """`observe` without a probe."""
     if run.timed_out:
         return ("abort", ["timeout"])
     try:
@@ -444,13 +500,112 @@ def raw(run):
     return (run.timed_out, run.code, doc)
 
 
+# The example probe (the module's docstring, #1911): the handler of `Console` that does nothing
+# and the test that gives it and runs `main()`, appended to the entry module. The test's name and
+# the handler's are the probe's own, so they collide with nothing a generator writes.
+PROBE_HANDLER = "hunt_probe_console"
+PROBE_TEST = "hunt probe"
+# The keyword of the test declaration by edition (`spec/01`, ADR 0105): `example` in editions 0.1
+# and 0.2, `test` from 0.3 on, where `example` is no longer a declaration.
+PROBE_EXAMPLE_EDITIONS = ("0.1", "0.2")
+# The schemas of `una test --json` and the key under which each lists the tests (ADR 0105 rule 6).
+PROBE_SCHEMAS = {"una.test/1": "examples", "una.test/2": "tests"}
+TOML_EDITION = re.compile(r'^edition\s*=\s*"([^"]*)"', re.M)
+TOML_ENTRY = re.compile(r'^entry\s*=\s*"([^"]*)"', re.M)
+# The same in `ita.una`, the manifest of edition 0.4 packages (`spec/30 §2`): `edition X` in the
+# `ita` block, `entry X` in the `run` section.
+ITA_EDITION = re.compile(r"^  edition\s+(\S+)", re.M)
+ITA_ENTRY = re.compile(r"^run\n(?:  (?!entry\b)[^\n]*\n)*  entry\s+(\S+)", re.M)
+
+
+def manifest_of(files):
+    """The package's edition and entry module, from `una.toml` or `ita.una`: (edition, entry),
+    either None when the manifest does not say; or None when there is no manifest."""
+    text = files.get("una.toml")
+    if isinstance(text, str):
+        edition, entry = TOML_EDITION.search(text), TOML_ENTRY.search(text)
+    else:
+        text = files.get("ita.una")
+        if not isinstance(text, str):
+            return None
+        edition, entry = ITA_EDITION.search(text), ITA_ENTRY.search(text)
+    return (edition.group(1) if edition else None, entry.group(1) if entry else None)
+
+
+def probe_files(files):
+    """The variant's files with the probe appended to its entry module, and None; or None and
+    the reason there is none: no manifest (`una.toml` or `ita.una`), no entry in it, or no
+    module file for the entry."""
+    found = manifest_of(files)
+    if found is None:
+        return None, "no manifest"
+    edition, entry = found
+    if entry is None:
+        return None, "no entry"
+    path = module_file(entry)
+    module = files.get(path)
+    if not isinstance(module, str):
+        return None, f"no module file for the entry {entry}"
+    keyword = "example" if edition in PROBE_EXAMPLE_EDITIONS else "test"
+    decls = (f"handler {PROBE_HANDLER}() for Console\n  op print(line) = unit\n\n"
+             f'{keyword} "{PROBE_TEST}"\n  given @console = {PROBE_HANDLER}()\n'
+             "  do main()\n  expect true\n")
+    return dict(files, **{path: module.rstrip("\n") + "\n\n" + decls}), None
+
+
+def run_probe(una, files, name, root, timeout):
+    """One run of the probe of a variant, in a fresh directory of its own: (`doc`, a document
+    whose `trace` is the test's), (`unavailable`, why), (`abort`, why) or (`error`, why). The
+    test's own result is not in the document (the module's docstring). Unavailable: no probe for
+    the files (`probe_files`), or a check that rejects the probed package, by its codes, among
+    them U3014, a `main` that needs a host capability other than `Console`."""
+    probed, why = probe_files(files)
+    if probed is None:
+        return ("unavailable", why)
+    rundir = sandbox.fresh_dir(root, f"{name}-probe-")
+    pkg = Program(op="oracle", rule="", edition="", seed=0, cls="open", files=probed,
+                  variant=name + "-probe").write(rundir)
+    r = sandbox.run([una, "--json", "test", ".", *RUN_LIMITS, *native.SOLVER_FLAGS], cwd=pkg,
+                    writable=rundir, timeout=timeout, env_extra=native.RUN_ENV)
+    if r.timed_out:
+        return ("abort", "timeout")
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        return ("error", f"exit {r.code}, the probe's output is not a document: "
+                         f"{(r.stdout + r.stderr)[-300:]}")
+    if not isinstance(doc, dict) or doc.get("schema") not in PROBE_SCHEMAS:
+        return ("error", f"exit {r.code}, not a test document")
+    diags = doc.get("diagnostics", [])
+    solver = sorted({d.get("code") for d in diags} & SOLVER_CODES)
+    if solver:
+        return ("error", "the solver did not decide: " + ", ".join(solver))
+    codes = sorted({d.get("code") for d in diags if d.get("severity") == "error"})
+    if codes:
+        return ("unavailable", ", ".join(codes))
+    if diags:
+        return ("error", "diagnostics other than errors: "
+                         + ", ".join(d.get("code", "?") for d in diags))
+    tests = [t for t in doc.get(PROBE_SCHEMAS[doc["schema"]], []) if t.get("name") == PROBE_TEST]
+    if len(tests) != 1 or r.code not in (0, 1):
+        return ("error", f"exit {r.code}, {len(tests)} probe tests in the document")
+    result = tests[0].get("result") or {}
+    if result.get("kind") == "aborted":
+        return ("abort", tests[0].get("reason") or "aborted")
+    if result.get("kind") not in ("ok", "fail"):
+        return ("error", f"the probe's result is {result.get('kind')!r}")
+    return ("doc", {"trace": tests[0].get("trace", [])})
+
+
 def run_twice(una, files, name, root, timeout, observers, table, live_level, cost=False,
-              serve=False):
+              serve=False, probe=False, probe_observers=None):
     """Runs the variant twice, each run in a fresh directory of its own (its package, home and
     temporary files), and returns its end; an error when the two runs' documents differ. `cost`
-    runs both under the cost clock, `serve` over the program's script of connections."""
+    runs both under the cost clock, `serve` over the program's script of connections; `probe`
+    also runs the example probe once (`run_probe`), whose events join the views of
+    `probe_observers` (`observe`)."""
     return run_twice_kept(una, files, name, root, timeout, observers, table, live_level, None,
-                          cost, serve)[0]
+                          cost, serve, probe, probe_observers)[0]
 
 
 def with_serve_out(run, out):
@@ -476,11 +631,12 @@ def with_serve_out(run, out):
 
 
 def run_twice_kept(una, files, name, root, timeout, observers, table, live_level,
-                   doc_plant=None, cost=False, serve=False):
+                   doc_plant=None, cost=False, serve=False, probe=False, probe_observers=None):
     """`run_twice`, and the first of the two runs, for the native comparison. `doc_plant`, for the
     gate's canary only, rewrites the run's document, given the variant's files. `cost` runs both
     under the cost clock (`COST_CLOCK`); `serve` over the script of connections, with what the
-    peers received in the document (`with_serve_out`)."""
+    peers received in the document (`with_serve_out`). `probe` runs the example probe once after
+    the two runs, when they completed (`run_probe`, `observe`)."""
     clock = COST_CLOCK if cost else []
     runs = []
     for k in range(2):
@@ -512,7 +668,11 @@ def run_twice_kept(una, files, name, root, timeout, observers, table, live_level
     if doc_plant is not None and not run.timed_out:
         run = sandbox.Run(run.code, json.dumps(doc_plant(json.loads(run.stdout), files)),
                           run.stderr, run.timed_out, run.seconds)
-    return observe(run, observers, table, live_level, cost), runs[0]
+    end = _observe(run, observers, table, live_level, cost)
+    if not probe or end[0] != "complete":
+        return end, runs[0]
+    probed = run_probe(una, files, name, root, timeout)
+    return observe(run, observers, table, live_level, cost, probed, probe_observers), runs[0]
 
 
 def native_check(result, una, files, name, root, timeout, end, run, native_files=None):
@@ -616,8 +776,10 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
     program that names `Clock` set aside, and no native sample. `serve` is the server mode: every
     run over the program's script of connections, the wire in the `internal` view, the operations
     of `HttpServer` in the table, a program whose policy releases to `internal` compared at
-    `public` only, and no native sample."""
+    `public` only, and no native sample. In neither mode does the example probe run; otherwise
+    each variant runs it once, and the result's `probe` says whether it was available."""
     tally = Counter()
+    probe = not cost and not serve
     for row in rows:
         if not row.get("vary"):
             continue
@@ -626,11 +788,15 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if serve and releases_to(prog.files, "internal"):
             # What the peers see is what the policy released: only `public` stays to compare.
             observers = [o for o in observers if o == "public"]
+        # The probe's events join the `internal` view unless a policy releases to `internal`:
+        # then what that observer sees of them is what the policy released.
+        probe_observers = [o for o in observers
+                           if o == "public" or not releases_to(prog.files, "internal")]
         live_level = literal_level(prog.vary)
         result = {"name": prog.name, "op": prog.op, "seed": prog.seed, "edition": prog.edition,
                   "class": prog.cls, "observers": observers, "variants": [], "finding": False,
                   "error": None, "termination": [], "violations": [], "compared": 0,
-                  "live": False,
+                  "live": False, "probe": None,
                   "native": {"sampled": not cost and not serve
                                         and (native_plant is not None
                                              or native.sampled(prog.name)),
@@ -695,11 +861,14 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
         if plant is not None:
             table = plant(table)
         base, base_run = run_twice_kept(una, prog.files, prog.name + "-base", root, timeout,
-                                        observers, table, live_level, doc_plant, cost, serve)
+                                        observers, table, live_level, doc_plant, cost, serve,
+                                        probe, probe_observers)
         if base[0] == "rejected":
             result["error"] = "the checks reject a program whose Core export is complete"
         elif base[0] == "error":
             result["error"] = "base: " + base[1]
+        elif base[0] == "complete":
+            result["probe"] = base[1].get("probe")
         native_check(result, una, prog.files, prog.name + "-base", root, timeout, base, base_run,
                      native_plant(prog.files) if native_plant else None)
         result["base_timed_out"] = base == ("abort", ["timeout"])
@@ -712,11 +881,19 @@ def oracle(rows, una, root, timeout, out, rebuild, plant=None, native_plant=None
                 files = substitute(prog.files, pos, text)
                 end, end_run = run_twice_kept(una, files, f"{prog.name}-v{i}-{j}", root, timeout,
                                               observers, table, live_level, doc_plant, cost,
-                                              serve)
+                                              serve, probe, probe_observers)
                 native_check(result, una, files, f"{prog.name}-v{i}-{j}", root, timeout, end,
                              end_run, native_plant(files) if native_plant else None)
                 if end[0] == "rejected":
                     end = ("error", "a variant is rejected by the checks: " + ", ".join(end[1]))
+                elif end[0] == "complete" and ref is not None and ref[0] == "complete" \
+                        and end[1].get("probe") != ref[1].get("probe"):
+                    # The probe is a view of the program, so its availability cannot depend on
+                    # the literal; a variant whose probe differs is an error, never a comparison.
+                    end = ("error", f"the probe is {end[1].get('probe')} for a variant and "
+                                    f"{ref[1].get('probe')} for the reference")
+                if end[0] == "complete" and result["probe"] is None:
+                    result["probe"] = end[1].get("probe")
                 verdict = judge(ref, end)
                 entry = {"position": i, "value": text, "verdict": verdict}
                 if end == ("abort", ["timeout"]):

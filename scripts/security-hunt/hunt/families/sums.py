@@ -47,6 +47,8 @@ def s1(seed, edition):
 
 
 # S2. `is` on a secret sum value and `in` on a secret integer, into a public result or a print.
+# The function is `probe`: `test` is the keyword of the test declaration from edition 0.3 on
+# (ADR 0105, `spec/01`), so a function of that name is U0101 there, a generator error (#1911).
 def s2(seed, edition):
     rng = rng_for(seed)
     test = rng.choice(["is", "in-range", "in-open-range"])
@@ -61,13 +63,13 @@ def s2(seed, edition):
         # `in` takes a range only (a list is U0101).
         param, expr = f"n: {lab}Int", "n in 0..<5"
     if sink == "return":
-        fn = f"pub test({param}) -> Bool = {expr}"
+        fn = f"pub probe({param}) -> Bool = {expr}"
         expect = ["U4001"]
     elif sink == "print":
-        fn = f"pub test({param}) -> Unit\n" + CONSOLE + f'=\n  @console.print("{{{expr}}}")'
+        fn = f"pub probe({param}) -> Unit\n" + CONSOLE + f'=\n  @console.print("{{{expr}}}")'
         expect = ["U4003"]
     else:
-        fn = (f"pub test({param}) -> Unit\n" + CONSOLE + f"=\n  if {expr}\n"
+        fn = (f"pub probe({param}) -> Unit\n" + CONSOLE + f"=\n  if {expr}\n"
               '    @console.print("yes")\n  else\n    unit')
         expect = ["U4003"]
     text = join_decls(header(MOD), GUESS, fn)

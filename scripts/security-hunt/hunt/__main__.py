@@ -25,7 +25,7 @@ import sys
 from collections import Counter
 
 from . import costclock, drivers, gate, serving
-from .families import OPERATORS, SERVER_OPERATORS, TIMING_OPERATORS, family_of
+from .families import OPERATORS, SERVER_OPERATORS, TIMING_OPERATORS, editions_for, family_of
 from .families.servers import EDITIONS as SERVER_EDITIONS
 from .families.timing import EDITIONS as TIMING_EDITIONS
 from .program import derive_seed, write_manifest
@@ -53,9 +53,13 @@ def cmd_gen(a):
     for op in select_ops(a.ops):
         for i in range(a.count):
             seed = derive_seed(a.seed, op, i)
-            # Families W and N have the constructs of edition 0.4 alone.
+            # Families W and N have the constructs of edition 0.4 alone. `--editions gate` writes
+            # the i-th program in the editions the gate's fixed run gives it (`editions_for`:
+            # the operator's own, and the edition 0.3 sample's first seeds), so a sample of the
+            # gate's programs can be checked outside it (#1911).
             editions = (TIMING_EDITIONS if op in TIMING_OPERATORS else
-                        SERVER_EDITIONS if op in SERVER_OPERATORS else a.editions.split(","))
+                        SERVER_EDITIONS if op in SERVER_OPERATORS else
+                        editions_for(op, i) if a.editions == "gate" else a.editions.split(","))
             for edition in editions:
                 programs.append(drivers._build(op, seed, edition))
     root = drivers.campaign_root(a.out)

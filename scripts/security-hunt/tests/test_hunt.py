@@ -3,6 +3,7 @@
     cd scripts/security-hunt && python3 -m unittest discover -s tests
 """
 
+import argparse
 import dataclasses
 import io
 import json
@@ -22,7 +23,7 @@ from hunt.program import (CLASSES, MUST_REJECT, OPEN, RESIDUAL, Program, derive_
                           rng_for)
 from hunt.refactor import _blocks, r6_rename, r9_reorder  # noqa: E402
 from hunt.sandbox import Run  # noqa: E402
-from hunt.una import Varied  # noqa: E402
+from hunt.una import Varied, package  # noqa: E402
 
 def every_program(n=40):
     for op in sorted(OPERATORS):
@@ -2399,6 +2400,293 @@ class Messages(unittest.TestCase):
                "variants": [{"verdict": "leak", "observers": ["public"]}], "violations": []}
         self.assertTrue(gate.caught("message", row))
         self.assertFalse(gate.caught("message", dict(row, finding=False)))
+
+
+class Probe(unittest.TestCase):
+    """The example probe (#1911): a run's trace leaves out the operations of quiet code (S-42),
+    so each variant also runs as an example, whose trace keeps them."""
+
+    TABLE = {k: {v} for k, v in oracle.HOST_ACCEPTS.items()}
+    NOTE = {"seq": 2, "instance": "with:quiet#1", "capability": "Vault", "op": "note",
+            "args": {"x": "1"}, "outcome": {"kind": "ok", "value": "unit"}}
+
+    def files(self, edition, entry="app.main"):
+        return package("hunt", edition, {"app.main": "module app.main\n\npub main() -> Unit\n"
+                                                     "  uses @console: Console[print]\n=\n"
+                                                     '  @console.print("done")\n'},
+                       entry=entry, grants=["console"])
+
+    def test_the_probe_is_appended_to_the_entry_module_with_the_editions_keyword(self):
+        for edition, keyword in (("0.1", "example"), ("0.2", "example"), ("0.3", "test"),
+                                 ("0.4", "test"), ("0.5", "test")):
+            files = self.files(edition)
+            probed, why = oracle.probe_files(files)
+            self.assertIsNone(why)
+            module = probed["src/app/main.una"]
+            self.assertTrue(module.startswith(files["src/app/main.una"]))
+            self.assertIn(f"handler {oracle.PROBE_HANDLER}() for Console\n  op print(line) = unit",
+                          module)
+            self.assertIn(f'{keyword} "{oracle.PROBE_TEST}"\n  given @console = '
+                          f"{oracle.PROBE_HANDLER}()\n  do main()\n  expect true\n", module)
+            self.assertNotIn("example" if keyword == "test" else "test \"", module)
+            # Only the entry module changes.
+            self.assertEqual({k: v for k, v in probed.items() if k != "src/app/main.una"},
+                             {k: v for k, v in files.items() if k != "src/app/main.una"})
+            self.assertEqual(files, self.files(edition))
+
+    def test_a_program_without_an_entry_module_has_no_probe(self):
+        files = self.files("0.2")
+        self.assertEqual(oracle.probe_files({k: v for k, v in files.items() if k != "una.toml"}),
+                         (None, "no manifest"))
+        self.assertEqual(oracle.probe_files(package("hunt", "0.2", {"app.main": "module app.main\n"})),
+                         (None, "no entry"))
+        self.assertEqual(oracle.probe_files(self.files("0.2", entry="app.other")),
+                         (None, "no module file for the entry app.other"))
+
+    def test_an_edition_0_4_package_names_its_entry_in_ita_una(self):
+        from hunt import packages
+        files = packages.package_files("hunt", "0.4", {"app.main": "module app.main\n\n"
+                                                        "pub main() -> Unit = unit\n"},
+                                       entry="app.main", grants=["console"])
+        self.assertIn("ita.una", files)
+        self.assertNotIn("una.toml", files)
+        self.assertEqual(oracle.manifest_of(files), ("0.4", "app.main"))
+        probed, why = oracle.probe_files(files)
+        self.assertIsNone(why)
+        self.assertIn(f'test "{oracle.PROBE_TEST}"', probed["src/app/main.una"])
+        no_run = packages.package_files("hunt", "0.4", {"app.main": "module app.main\n"})
+        self.assertEqual(oracle.manifest_of(no_run), ("0.4", None))
+        self.assertEqual(oracle.probe_files(no_run), (None, "no entry"))
+        # Every program of the gate with a varied literal has a probe, or no `[run] entry`.
+        for prog in gate.programs():
+            if prog.vary:
+                probed, why = oracle.probe_files(prog.files)
+                self.assertTrue(probed is not None or why == "no entry", (prog.name, why))
+
+    def doc_of(self, schema="una.test/1", name=None, result=None, trace=None, diagnostics=(),
+                 count=1):
+        name = oracle.PROBE_TEST if name is None else name
+        test = {"module": "app.main", "name": name, "outcome": "pass", "reason": None,
+                "result": result or {"kind": "ok", "value": "unit"},
+                "trace": [self.NOTE] if trace is None else trace}
+        return json.dumps({"schema": schema, "tier": 1, "redacted": False,
+                           "diagnostics": list(diagnostics),
+                           oracle.PROBE_SCHEMAS[schema]: [test] * count, "passed": 1, "failed": 0})
+
+    def probe(self, answer, files=None):
+        """`run_probe` with `sandbox.run` answering `answer(argv, cwd)`; returns the end and the
+        argv seen."""
+        seen = []
+        saved = oracle.sandbox.run, oracle.sandbox.fresh_dir
+
+        def run(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
+            seen.append(list(argv))
+            return answer(argv, cwd)
+        oracle.sandbox.run = run
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                oracle.sandbox.fresh_dir = lambda root, prefix: tempfile.mkdtemp(prefix=prefix,
+                                                                                  dir=tmp)
+                end = oracle.run_probe("una", files or self.files("0.2"), "p", tmp, 1)
+        finally:
+            oracle.sandbox.run, oracle.sandbox.fresh_dir = saved
+        return end, seen
+
+    def test_run_probe_runs_the_probed_package_as_tests_and_reads_the_trace(self):
+        written = []
+
+        def answer(argv, cwd):
+            with open(os.path.join(cwd, "src", "app", "main.una"), encoding="utf-8") as f:
+                written.append(f.read())
+            return Run(0, self.doc_of(), "", False, 0.1)
+        end, seen = self.probe(answer)
+        self.assertEqual(end, ("doc", {"trace": [self.NOTE]}))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][:4], ["una", "--json", "test", "."])
+        for flag in oracle.RUN_LIMITS + native.SOLVER_FLAGS:
+            self.assertIn(flag, seen[0])
+        self.assertIn(f'example "{oracle.PROBE_TEST}"', written[0])
+        # The second schema lists the tests under `tests`; a failed `do` keeps its trace.
+        end, _ = self.probe(lambda a, c: Run(0, self.doc_of("una.test/2"), "", False, 0.1))
+        self.assertEqual(end, ("doc", {"trace": [self.NOTE]}))
+        end, _ = self.probe(lambda a, c: Run(1, self.doc_of(result={"kind": "fail",
+                                                                      "variant": "Bad",
+                                                                      "value": "Bad"}),
+                                             "", False, 0.1))
+        self.assertEqual(end, ("doc", {"trace": [self.NOTE]}))
+
+    def test_run_probe_fails_closed(self):
+        def end(run):
+            return self.probe(lambda a, c: run)[0]
+        self.assertEqual(end(Run(1, self.doc_of(diagnostics=[diag("U3014")]), "", False, 0.1)),
+                         ("unavailable", "U3014"))
+        self.assertEqual(end(Run(1, self.doc_of(diagnostics=[diag("U3014"), diag("U3001")]),
+                                 "", False, 0.1)),
+                         ("unavailable", "U3001, U3014"))
+        self.assertEqual(end(Run(None, "", "", True, 1))[0], "abort")
+        self.assertEqual(end(Run(1, self.doc_of(result={"kind": "aborted"}), "", False, 0.1))[0],
+                         "abort")
+        for run in (Run(1, self.doc_of(diagnostics=[diag("U5002")]), "", False, 0.1),
+                    Run(1, self.doc_of(diagnostics=[diag("U5003")]), "", False, 0.1),
+                    Run(0, self.doc_of(diagnostics=[diag("U0001", "warning")]), "", False, 0.1),
+                    Run(0, "not json", "", False, 0.1),
+                    Run(0, run_doc("ok", ["done"]), "", False, 0.1),
+                    Run(0, self.doc_of(count=0), "", False, 0.1),
+                    Run(0, self.doc_of(count=2), "", False, 0.1),
+                    Run(0, self.doc_of(name="other"), "", False, 0.1),
+                    Run(0, self.doc_of(result={"kind": "odd"}), "", False, 0.1),
+                    Run(3, self.doc_of(), "", False, 0.1)):
+            self.assertEqual(end(run)[0], "error", run.stdout[:80])
+        # No entry module: unavailable before any run.
+        end, seen = self.probe(lambda a, c: Run(0, "", "", False, 0.1),
+                               files=package("hunt", "0.2", {"app.main": "module app.main\n"}))
+        self.assertEqual(end, ("unavailable", "no entry"))
+        self.assertEqual(seen, [])
+
+    def observe(self, probe, table=None, observers=("public", "internal"), probe_observers=None):
+        run = Run(0, run_doc("ok", ["done"]), "", False, 0.1)
+        return oracle.observe(run, list(observers), table or self.TABLE, "secret", False, probe,
+                              probe_observers)
+
+    def test_the_probes_events_join_the_views_by_accepts_and_the_liveness_view_whole(self):
+        table = oracle.accepts_table({"modules": [{"path": "app.main", "decls": [
+            {"kind": "cap", "name": "Vault", "ops": [{"name": "note", "accepts": "secret"}]}]}]})
+        end = self.observe(("doc", {"trace": [self.NOTE]}), table)
+        self.assertEqual(end[0], "complete")
+        self.assertEqual(end[1]["probe"], "available")
+        self.assertEqual(end[1]["views"]["public"]["probe"], [])
+        self.assertEqual(end[1]["views"]["internal"]["probe"], [])
+        self.assertEqual(end[1]["live"]["probe"],
+                         [{k: v for k, v in self.NOTE.items() if k != "seq"}])
+        # The run's own views are as without a probe, but for the probe's key.
+        plain = oracle.observe(Run(0, run_doc("ok", ["done"]), "", False, 0.1),
+                               ["public", "internal"], table, "secret")
+        for o in ("public", "internal"):
+            self.assertEqual({k: v for k, v in end[1]["views"][o].items() if k != "probe"},
+                             plain[1]["views"][o])
+        self.assertNotIn("probe", plain[1])
+        # Planted as accepting `internal`, the event is in the internal view alone: the canary.
+        planted = gate.planted("internal")(table)
+        end = self.observe(("doc", {"trace": [self.NOTE]}), planted)
+        self.assertEqual(end[1]["views"]["public"]["probe"], [])
+        self.assertEqual(end[1]["views"]["internal"]["probe"],
+                         [{k: v for k, v in self.NOTE.items() if k not in ("seq", "outcome")}])
+        # A view the probe does not join keeps None.
+        end = self.observe(("doc", {"trace": [self.NOTE]}), planted, probe_observers=["public"])
+        self.assertIsNone(end[1]["views"]["internal"]["probe"])
+        self.assertEqual(end[1]["views"]["public"]["probe"], [])
+
+    def test_a_redacted_sink_in_the_probe_is_a_violation(self):
+        table = gate.planted("public")({})
+        ev = dict(self.NOTE, args={"x": "<redacted:secret>"})
+        end = self.observe(("doc", {"trace": [ev]}), table)
+        self.assertEqual(end[1]["views"]["public"]["violations"],
+                         ["Vault.note(x) is <redacted:secret> at a sink public sees"])
+        self.assertEqual(oracle.violations(end),
+                         ["Vault.note(x) is <redacted:secret> at a sink internal sees",
+                          "Vault.note(x) is <redacted:secret> at a sink public sees"])
+
+    def test_an_unavailable_probe_leaves_none_and_an_erring_one_is_the_ends_error(self):
+        end = self.observe(("unavailable", "U3014"))
+        self.assertEqual(end[0], "complete")
+        self.assertEqual(end[1]["probe"], "unavailable: U3014")
+        self.assertIsNone(end[1]["views"]["public"]["probe"])
+        self.assertIsNone(end[1]["live"]["probe"])
+        self.assertEqual(self.observe(("error", "boom")), ("error", "probe: boom"))
+        self.assertEqual(self.observe(("abort", "timeout"))[0], "error")
+        # An event of an operation the table does not know is an error, as in a run.
+        self.assertEqual(self.observe(("doc", {"trace": [self.NOTE]}))[0], "error")
+        # A run that did not complete is judged before the probe.
+        run = Run(1, run_doc("aborted", diagnostics=[diag("U6003")]), "", False, 0.1)
+        self.assertEqual(oracle.observe(run, ["public"], self.TABLE, "secret", False,
+                                        ("error", "boom")), ("error", "probe: boom"))
+        self.assertEqual(oracle.observe(run, ["public"], self.TABLE, "secret", False,
+                                        ("doc", {"trace": []})), ("abort", ["U6003"]))
+
+    def drive(self, ends, cost=False):
+        """`oracle.oracle` on the internal canary with `run_twice_kept` answering `ends`."""
+        prog = gate.canary_internal()
+        calls = iter(ends)
+        probes = []
+        saved = oracle.run_twice_kept, oracle.export_core
+        oracle.export_core = lambda *a: ({"complete": True, "modules": []}, None)
+
+        def kept(*a):
+            probes.append(a[11:13])
+            return next(calls), None
+        oracle.run_twice_kept = kept
+        try:
+            buf = io.StringIO()
+            with tempfile.TemporaryDirectory() as tmp:
+                oracle.oracle([dict(prog.manifest(), digest=prog.digest())], "una", tmp, 1, buf,
+                              lambda row: prog, cost=cost)
+        finally:
+            oracle.run_twice_kept, oracle.export_core = saved
+        return json.loads(buf.getvalue()), probes
+
+    def test_the_probe_runs_in_the_plain_mode_alone_and_its_status_is_the_programs(self):
+        same = {"public": {"output": ["x"], "probe": []}, "internal": {"output": ["x"], "probe": []}}
+        available = ("complete", {"views": same, "live": {}, "probe": "available"})
+        row, probes = self.drive([available] * 2)
+        self.assertIsNone(row["error"])
+        self.assertEqual(row["probe"], "available")
+        self.assertEqual(probes, [(True, ["public", "internal"])] * 2)
+        row, probes = self.drive([available] * 2, cost=True)
+        self.assertEqual(probes, [(False, ["public", "internal"])] * 2)
+        unavailable = ("complete", {"views": same, "live": {}, "probe": "unavailable: U3014"})
+        row, _ = self.drive([unavailable] * 2)
+        self.assertIsNone(row["error"])
+        self.assertEqual(row["probe"], "unavailable: U3014")
+
+    def test_a_probe_available_for_the_base_and_not_for_a_variant_is_an_error(self):
+        same = {"public": {"output": ["x"]}, "internal": {"output": ["x"]}}
+        available = ("complete", {"views": same, "live": {}, "probe": "available"})
+        unavailable = ("complete", {"views": same, "live": {}, "probe": "unavailable: U3014"})
+        row, _ = self.drive([available, unavailable])
+        self.assertIn("the probe is unavailable: U3014 for a variant and available", row["error"])
+        self.assertFalse(row["finding"])
+        row, _ = self.drive([unavailable, available])
+        self.assertIn("for a variant and unavailable: U3014 for the reference", row["error"])
+        # A probe's liveness: the liveness view of two complete ends differs by the probe alone.
+        live = ("complete", {"views": same, "live": {"probe": [1]}, "probe": "available"})
+        other = ("complete", {"views": same, "live": {"probe": [1, 2]}, "probe": "available"})
+        row, _ = self.drive([live, other])
+        self.assertIsNone(row["error"])
+        self.assertTrue(row["live"])
+        self.assertFalse(row["finding"])
+
+    def test_the_internal_canary_installs_its_handler_under_a_public_program_counter(self):
+        text = gate.canary_internal().files["src/app/main.una"]
+        self.assertIn("  guarded(s) with @vault = quiet()\n", text)
+        self.assertIn("  if flag\n    work(1)\n  else\n    unit", text)
+        self.assertNotIn("work(1) with", text)
+
+    def test_the_live_forms_are_those_the_probe_can_see(self):
+        self.assertNotIn("H3:install-under-pc", gate.LIVE_FORMS)
+        self.assertIn("H3:install-under-pc", gate.ORACLE_FORMS)
+        self.assertEqual(set(gate.LIVE_FORMS), {"C6:secret-fan-out", "H3:reach-under-pc"})
+        self.assertTrue(set(gate.LIVE_FORMS) <= set(gate.ORACLE_FORMS))
+        self.assertEqual(set(gate.PINNED_PROBE_UNAVAILABLE), {"U3014"})
+
+    def test_gen_in_the_gates_editions_writes_each_seed_as_the_fixed_run_runs_it(self):
+        from hunt.__main__ import cmd_gen
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = out
+            try:
+                cmd_gen(argparse.Namespace(ops="S2,B1", count=2, seed=767, editions="gate",
+                                           out=tmp))
+            finally:
+                sys.stdout = saved
+            with open(os.path.join(tmp, "manifest.jsonl"), encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f]
+        want = {(op, i, ed) for op in ("S2", "B1") for i in range(2)
+                for ed in editions_for(op, i)}
+        got = {(r["op"], i, r["edition"]) for r in rows for i in range(2)
+               if r["seed"] == derive_seed(767, r["op"], i)}
+        self.assertEqual(got, want)
+        self.assertIn(("S2", 0, "0.3"), want)
 
 
 if __name__ == "__main__":
