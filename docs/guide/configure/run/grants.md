@@ -54,8 +54,8 @@ The grant specs:
 | `keys:<keyfile>` | `Keys[hmac]`, with the keys of the file |
 | `files:<path>:read`, `files:<path>:write`, `files:<path>:read,write` | the `Files` operations of the mode, under the path |
 | `http:<origin>`, `http:<origin>:<methods>` (edition `0.2`) | `Http` operations for the origin |
-| `http:` with limit suffixes, such as `http:<origin>;10/second` (edition `0.4`, `--grant` only) | the same, at most at that rate (`spec/27 §9`) |
-| `serve:<scheme>://<address>:<port>`, with `;<item>` suffixes (edition `0.4`, `--grant` only) | accepting connections at that address, and `HttpServer` (`spec/31 §2`; see [Serving HTTP](../../serving-http.md)) |
+| `http:` with limit suffixes, such as `http:<origin>;10/second` (edition `0.4`; this spec form is for `--grant`, and `ita.una` writes limits as lines) | the same, at most at that rate (`spec/27 §9`) |
+| `serve:<scheme>://<address>:<port>`, with `;<item>` suffixes (edition `0.4`; this spec form is for `--grant`, and `ita.una` writes a `serve` line with item lines) | accepting connections at that address, and `HttpServer` (`spec/31 §2`; see [Serving HTTP](../../serving-http.md)) |
 
 `una run` also takes `--grant <spec>` flags; the grants of `una.toml` and of the flags apply together. The grants of edition `0.4` are given with `--grant`, or in the `run` section of `ita.una` (see [`ita.una`](../ita/manifest.md)); in `ita.una`, limits and `serve` items are lines below their grant. In `una.toml`, a `serve:` spec is U7002 in every edition.
 
