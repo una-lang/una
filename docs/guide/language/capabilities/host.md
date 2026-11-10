@@ -1,7 +1,7 @@
 ---
 construct: Host capabilities and grants
 editions: ["0.1", "0.2"]
-spec: ["spec/05 §7", "spec/14 §3", "spec/13 §5", "spec/13 §7", "spec/07 §4", "spec/07 §7", "spec/24 §1", "spec/24 §2", "spec/24 §5"]
+spec: ["spec/05 §7", "spec/14 §3", "spec/13 §5", "spec/13 §7", "spec/07 §4", "spec/07 §7", "spec/24 §1", "spec/24 §2", "spec/24 §5", "spec/31 §1", "spec/31 §2"]
 codes: [U3012, U4003, U6005]
 ---
 
@@ -9,7 +9,7 @@ codes: [U3012, U4003, U6005]
 
 ## What it does
 
-Host capabilities are the ones the runtime implements: `Console`, `Clock`, `Env`, `Files` and `Keys`, and from edition `0.2` on also `Http`. They enter a program only through `main`'s `uses` clauses, and the runtime provides them only when they are granted (allowed by whoever runs the program), in `una.toml` or with `--grant`. Other functions receive them from their callers by name, like any [capability](capability.md).
+Host capabilities are the ones the runtime implements: `Console`, `Clock`, `Env`, `Files` and `Keys`, from edition `0.2` on also `Http`, and from edition `0.4` on also `HttpServer`, which a module imports from `std.host` (see [Serving HTTP](../../serving-http.md)). They enter a program only through `main`'s `uses` clauses, and the runtime provides them only when they are granted (allowed by whoever runs the program), in `una.toml` or with `--grant`. Other functions receive them from their callers by name, like any [capability](capability.md).
 
 Learn more: [The host's capabilities and grants](/learn/capabilities/the-hosts-capabilities-and-grants/).
 
@@ -145,7 +145,7 @@ Further rules:
 
 ## Edition
 
-The five host capabilities of v0.1 are in editions `0.1` and `0.2`. Edition `0.2` adds `Http`, with its grants `http:<origin>` and `http:<origin>:<methods>`.
+The five host capabilities of v0.1 are in every edition. Edition `0.2` adds `Http`, with its grants `http:<origin>` and `http:<origin>:<methods>`. Edition `0.4`, a preview, adds `HttpServer`, imported from `std.host` and granted by a `serve:` grant (`spec/31 §1`, `spec/31 §2`), lets an `http` grant carry limits, and moves a package's grants to `ita.una`.
 
 ## Normative source
 
@@ -154,4 +154,5 @@ The five host capabilities of v0.1 are in editions `0.1` and `0.2`. Edition `0.2
 - `spec/13 §5`: grant specs and `una run`; `spec/13 §7`: `[run] grants`.
 - `spec/07 §4`: sinks; `spec/07 §7` rule 4: labeled failures.
 - `spec/24 §1`: the `Http` operations; `spec/24 §2`: `Http` grants; `spec/24 §5` rule 3: the labels of `Http` failures.
+- `spec/31 §1`: `HttpServer`; `spec/31 §2`: `serve:` grants (edition `0.4`).
 - Decision record: [ADR 0039](../../../adr/0039-labels-of-keys-hmac.md), for the labels of `Keys.hmac`.

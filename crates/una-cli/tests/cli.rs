@@ -254,6 +254,31 @@ fn run_help_describes_the_iteration_budget_as_the_spec_does() {
     assert!(!entry.contains("Request a host stop"), "{entry}");
 }
 
+/// `spec/31 §8` rule 6: the scripted connections run only in the toolchain's own test builds, so
+/// the help of `--serve-script` and `--serve-out` says so (#1899).
+#[test]
+fn run_help_marks_the_serve_script_flags_as_test_builds_only() {
+    let output = una(&["run", "--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (flag, next) in [
+        ("--serve-script <FILE>", " --serve-out"),
+        ("--serve-out <FILE>", " -h, --help"),
+    ] {
+        let at = text.find(flag).expect("flag listed");
+        let entry = &text[at..];
+        let entry = &entry[..entry.find(next).unwrap_or(entry.len())];
+        assert!(entry.contains("test builds only"), "{entry}");
+    }
+    let at = text.find("--grant <SPEC>").expect("flag listed");
+    let grant = &text[at..];
+    let grant = &grant[..grant.find(" --max-depth").unwrap_or(grant.len())];
+    assert!(grant.contains("serve:"), "{grant}");
+}
+
 #[test]
 fn check_reports_a_missing_path_as_a_usage_error() {
     for args in [

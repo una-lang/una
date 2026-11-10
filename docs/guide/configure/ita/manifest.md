@@ -56,7 +56,7 @@ ita <name>                       -- or <owner>/<name>
   home "<https URL>"             -- optional
   publish to <source>            -- optional; without it the package is never published
 
-sources | needs | replace | trust | labels | trusted | escapes | boundaries | contracts | run | drive
+sources | needs | replace | trust | labels | trusted | escapes | boundaries | contracts | run | drive | serve
 ```
 
 - **The head's lines** appear at most once each, in any order; `una fmt ita.una` puts them in the order above.
@@ -69,7 +69,8 @@ sources | needs | replace | trust | labels | trusted | escapes | boundaries | co
   - `escapes`: `checked per module <n>`;
   - `boundaries`: a module path, then its ceiling as `may` lines;
   - `contracts`: a function's qualified name, then its locked `uses` clauses, one per line;
-  - `run`: `entry <module>`, `max_memory <MiB>` (see [`[run] max_memory`](../run/max_memory.md)), and `grants`, one grant per line: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, `http "<origin>" get, post`.
+  - `run`: `entry <module>`, `max_memory <MiB>` (see [`[run] max_memory`](../run/max_memory.md)), and `grants`, one grant per line: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, `http "<origin>" get, post`, and `serve "<scheme>://<address>:<port>"`, with its items one per line below it, such as `at most 64 at once` (see [Serving HTTP](../../serving-http.md)).
+- **The sections of edition `0.4`:** `drive`, with `module <module>`, `ticks <milliseconds>` and an optional `budget <milliseconds>`, for a program the host drives (see [Driven programs](../../driven-programs.md)); `serve`, with `module <module>` and an optional `within <milliseconds>`, for a program that serves HTTP (see [Serving HTTP](../../serving-http.md)). In this preview every `within` of a `serve` section is refused (U4003), since the label of a server's timing is the top label; the grant's `answer` bounds what each peer waits instead.
 
 ## Examples
 
