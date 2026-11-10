@@ -6,9 +6,9 @@ The worked example is [`examples/health`](../../examples/health/): a server that
 
 ## Grants: an address and its limits
 
-A run listens only on an address that a `serve:` grant names; there is no other way for a program to accept connections. In `ita.una` the grant is a `serve` line under `run grants`, with one item per line below it (`spec/31 §2` rule 3):
+A run listens only on an address that a `serve:` grant names; there is no other way for a program to accept connections. In `ita.una` the grant is a `serve` line under `run grants`, with one item per line below it (`spec/31 §2` rule 3). This `run` section, in place of the one of `examples/health`, grants its address with four limits:
 
-```text
+```text section="examples/health/ita.una"
 run
   grants
     serve "http://127.0.0.1:8080"
@@ -27,7 +27,7 @@ Every grant has limits, whether it writes them or not. The defaults include 256 
 
 In the host-driven form, the package declares no `main`. A `serve` section in `ita.una` names the module whose `handle` the host calls once for each request it reads (`spec/31 §7` rule 1). This is the manifest of `examples/health`:
 
-```text
+```text file="examples/health/ita.una"
 ita health
   version 0.1.0
   edition 0.4
@@ -42,14 +42,14 @@ serve
 
 The module declares `handle`, and optionally `on_stop`, in exactly these shapes, with `Request` and `Reply` of `std.host` (`spec/31 §7` rule 2):
 
-```text
+```text shapes="examples/health/src/health.una"
 pub handle(request: internal Request) -> internal Reply
 pub on_stop() -> Unit
 ```
 
 The host owns every connection and answers each request with the reply `handle` returns, so `handle` is an ordinary function, which the checker, the verifier and the tests see as any other. This is `handle` of `examples/health`:
 
-```text
+```text file="examples/health/src/health.una"
 pub handle(request: internal Request) -> internal Reply
 =
   if request.method is Get and request.segments == ["health"]
@@ -64,6 +64,19 @@ The request and the reply are `internal`: a reply carries what the server's peer
 
 A program can also take requests itself, through the operations `next`, `reply` and `close` of the capability `HttpServer`. Its `main` is a `diverges` function with a `for ever` loop that calls `next` and starts a task per request (`spec/31 §1` rule 6). This server answers every request with `200 ok`; its `ita.una` names `run entry main` and a `serve:` grant, and no `serve` section:
 
+`ita.una`
+```text
+ita server
+  version 0.1.0
+  edition 0.4
+
+run
+  entry main
+  grants
+    serve "http://127.0.0.1:8080"
+```
+
+`src/main.una`
 ```text
 module main
 
@@ -97,12 +110,12 @@ pub main() -> Unit
 `una run` serves a package with a `serve` section, and a program of the language form, in the interpreter over live listeners, and so does the executable that `una build` makes of it (below), after every check of the program and of its grants (`spec/31 §1` rule 10, `§7` rule 5). From `examples/health`:
 
 ```sh
-una run .
+una run .   # copy examples/health
 ```
 
 Once the serve threads have started, and before the first request, the run writes one line on stderr for each `serve:` grant, in the order of the grants (`spec/31 §6` rule 14):
 
-```text
+```text una="run ." in="examples/health"
 serving on 127.0.0.1:8080 (granted by the package)
 ```
 
@@ -123,7 +136,7 @@ Tests run in the interpreter (`spec/31 §8` rule 5). `std.testing` gives two fun
 
 A test of the host-driven form calls `handle` directly. These are the three tests of `examples/health`, each with a request that `test_request` builds:
 
-```text
+```text file="examples/health/src/health.una"
 test "the health endpoint answers ok"
   do handle(test_request(method: Get, target: "/health", body: ""))
   expect result.status == 200
@@ -139,7 +152,7 @@ test "a request of another method is not found"
 
 The first sends `GET /health`, whose segments are `["health"]`, and reads `200`. The second keeps the method and changes the path, and the third keeps the path and changes the method, so each branch of the condition in `handle` is taken by one test. `una test .` runs them:
 
-```text
+```text una="test ." in="examples/health"
 test health "the health endpoint answers ok" ... ok
 test health "every other path is not found" ... ok
 test health "a request of another method is not found" ... ok

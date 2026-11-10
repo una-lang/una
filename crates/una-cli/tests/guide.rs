@@ -812,6 +812,364 @@ fn every_block_of_the_tasks_and_time_guide_is_checked() {
     assert!(shown >= 6, "{path}: {shown} outputs shown");
 }
 
+/// The address the serving guide's grants name; a run of the guide's code serves on a free port
+/// in its place, and what it writes is read back with this address.
+const SHOWN_ADDRESS: &str = "127.0.0.1:8080";
+
+/// A port on `127.0.0.1` that nothing listens on now.
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// Serves the package at `dir` with `una run . ARGS` until it writes its `serving on` lines, one
+/// per `serve:` grant, then stops it with SIGTERM, a host stop (`spec/31 §6` rule 9). Its grants,
+/// in `ita.una` and in `args`, are moved from [`SHOWN_ADDRESS`] to a free port first. Returns the
+/// exit code and the lines written on standard error before the stop, with the address shown.
+fn serve(dir: &Path, args: &[&str], what: &str) -> (Option<i32>, String) {
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+    let port = format!("127.0.0.1:{}", free_port());
+    let manifest = dir.join("ita.una");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, text.replace(SHOWN_ADDRESS, &port)).unwrap();
+    let grants = text.matches("    serve \"").count()
+        + args.iter().filter(|arg| arg.starts_with("serve:")).count();
+    assert!(grants > 0, "{what}: no `serve:` grant");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_TEST_RUN_SERVER")
+        .args(["run", "."])
+        .args(args.iter().map(|arg| arg.replace(SHOWN_ADDRESS, &port)))
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (sender, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    // The run checks the package, with the solver, before it serves.
+    let hang = Duration::from_secs(300);
+    let end = Instant::now() + hang;
+    let mut seen: Vec<String> = Vec::new();
+    while seen
+        .iter()
+        .filter(|line| line.starts_with("serving on "))
+        .count()
+        < grants
+    {
+        let left = end.saturating_duration_since(Instant::now());
+        let line = lines.recv_timeout(left);
+        if line.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            line.is_ok(),
+            "{what}: the run never wrote its `serving on` lines: {seen:?}"
+        );
+        seen.push(line.unwrap().replace(&port, SHOWN_ADDRESS));
+    }
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success(), "{what}: kill -TERM");
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        let late = started.elapsed() > hang;
+        if late {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(!late, "{what}: the run did not end at SIGTERM");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let code = child.wait().unwrap().code();
+    let mut shown = seen.join("\n");
+    shown.push('\n');
+    (code, shown)
+}
+
+/// `manifest` with its top-level section `name` replaced by `section`, each section ending with a
+/// newline; an empty `section` removes it.
+fn replace_section(manifest: &str, name: &str, section: &str) -> String {
+    let lines: Vec<&str> = manifest.lines().collect();
+    let start = lines.iter().position(|line| *line == name);
+    assert!(start.is_some(), "no section `{name}` in {manifest}");
+    let start = start.unwrap();
+    let end = (start + 1..lines.len())
+        .find(|&k| !lines[k].is_empty() && !lines[k].starts_with(' '))
+        .unwrap_or(lines.len());
+    let mut out = String::new();
+    for line in &lines[..start] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(section);
+    if !section.is_empty() && end < lines.len() {
+        out.push('\n');
+    }
+    for line in &lines[end..] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn every_block_of_the_serving_http_guide_is_checked() {
+    // #1887: every block of the guide is checked, and each `text` block names what it shows.
+    // `file="PATH"` is an excerpt of a file of the repository. `section="PATH"` is a section of
+    // the manifest PATH, put in place of the section of the same name: the package checks and
+    // serves. `shapes="PATH"` lists the first lines of the functions the host calls: each that
+    // the module PATH lacks is added, as `LINE = unit`, and the package serves and ends with
+    // exit code 0 at the host stop. `una="ARGS" in="DIR"` is what `una ARGS` prints in a copy of
+    // DIR: for `run`, the lines it writes on standard error before the first request, else an
+    // anchored excerpt of standard output. A package checks clean and canonical, and serves. Each
+    // `una run` of a `sh` block serves and ends with exit code 0 at the host stop; its other `una`
+    // lines exit with 0. The `--grant` flag of the page, quoted where its value holds a `;` that a
+    // shell would end the command at (D6), serves `examples/health` as the page says it does.
+    let path = "docs/guide/serving-http.md";
+    let root = repository();
+    let text = std::fs::read_to_string(root.join(path)).unwrap();
+    let base = 5_000_000;
+    let copy_of = |dir: &str, slot: usize| -> PathBuf {
+        let name = Path::new(dir).file_name().unwrap();
+        let copy = scratch(base + slot).join(name);
+        copy_dir(&root.join(dir), &copy);
+        copy
+    };
+    let all = blocks(&text);
+    let mut packages: BTreeMap<usize, Vec<&Block>> = BTreeMap::new();
+    let mut shown: BTreeMap<&str, usize> = BTreeMap::new();
+    for block in &all {
+        let at = block.line;
+        if let Some(number) = block.package {
+            packages.entry(number).or_default().push(block);
+            continue;
+        }
+        let attributes = block
+            .attributes()
+            .unwrap_or_else(|why| panic!("{path}, block at line {at}: {why}"));
+        let value = |wanted: &str| {
+            attributes
+                .iter()
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, value)| *value)
+        };
+        match block.kind() {
+            "sh" => {
+                assert!(attributes.is_empty(), "{path}, block at line {at}");
+                for (k, line) in block.body.lines().enumerate() {
+                    let (words, comment) = line.split_once('#').unwrap_or((line, ""));
+                    let words: Vec<&str> = words.split_whitespace().collect();
+                    if words.first() != Some(&"una") {
+                        continue;
+                    }
+                    let dir = comment.trim().strip_prefix("copy ").unwrap_or_else(|| {
+                        panic!("{path}, block at line {at}: `{line}` names `# copy DIR`")
+                    });
+                    let copy = copy_of(dir, at * 10 + k);
+                    if words[1] == "run" {
+                        let (code, _) = serve(&copy, &words[3..], &format!("{path}:{at}"));
+                        assert_eq!(code, Some(0), "{path}, block at line {at}: `{line}`");
+                    } else {
+                        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                            .env_remove("UNA_PROOF_KEY")
+                            .args(&words[1..])
+                            .current_dir(&copy)
+                            .output()
+                            .unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{path}, block at line {at}: `{line}`"
+                        );
+                    }
+                }
+                *shown.entry("sh").or_default() += 1;
+            }
+            "text" => {
+                if let Some(file) = value("file") {
+                    assert_eq!(attributes.len(), 1, "{path}, block at line {at}");
+                    let whole = std::fs::read_to_string(root.join(file))
+                        .unwrap_or_else(|_| panic!("{path}, block at line {at}: no file {file}"));
+                    assert!(
+                        is_excerpt(&block.body, &whole, false),
+                        "{path}, block at line {at}: not an excerpt of {file}"
+                    );
+                    *shown.entry("file").or_default() += 1;
+                } else if let Some(file) = value("section") {
+                    assert_eq!(attributes.len(), 1, "{path}, block at line {at}");
+                    let file = Path::new(file);
+                    let copy = copy_of(file.parent().unwrap().to_str().unwrap(), at * 10);
+                    let manifest = copy.join(file.file_name().unwrap());
+                    let name = block.body.lines().next().unwrap();
+                    let replaced = replace_section(
+                        &std::fs::read_to_string(&manifest).unwrap(),
+                        name,
+                        &block.body,
+                    );
+                    std::fs::write(&manifest, replaced).unwrap();
+                    let (_, found) = check(&copy);
+                    assert_eq!(found, Vec::<String>::new(), "{path}, block at line {at}");
+                    let (code, _) = serve(&copy, &[], &format!("{path}:{at}"));
+                    assert_eq!(code, Some(0), "{path}, block at line {at}");
+                    *shown.entry("section").or_default() += 1;
+                } else if let Some(file) = value("shapes") {
+                    assert_eq!(attributes.len(), 1, "{path}, block at line {at}");
+                    let file = Path::new(file);
+                    let package = file.parent().unwrap().parent().unwrap();
+                    let copy = copy_of(package.to_str().unwrap(), at * 10);
+                    let module = copy.join(file.strip_prefix(package).unwrap());
+                    let mut source = std::fs::read_to_string(&module).unwrap();
+                    let mut added = 0;
+                    for line in block.body.lines() {
+                        if source.lines().any(|have| have == line) {
+                            continue;
+                        }
+                        assert!(
+                            line.ends_with("-> Unit"),
+                            "{path}, block at line {at}: `{line}` is not in {} and returns no Unit",
+                            file.display()
+                        );
+                        source.push_str(&format!("\n{line} = unit\n"));
+                        added += 1;
+                    }
+                    assert!(added > 0, "{path}, block at line {at}: nothing to add");
+                    std::fs::write(&module, source).unwrap();
+                    let (code, _) = serve(&copy, &[], &format!("{path}:{at}"));
+                    assert_eq!(code, Some(0), "{path}, block at line {at}");
+                    *shown.entry("shapes").or_default() += 1;
+                } else if let (Some(args), Some(dir)) = (value("una"), value("in")) {
+                    assert_eq!(attributes.len(), 2, "{path}, block at line {at}");
+                    let copy = copy_of(dir, at * 10);
+                    let words: Vec<&str> = args.split_whitespace().collect();
+                    if words[0] == "run" {
+                        let (code, written) = serve(&copy, &words[2..], &format!("{path}:{at}"));
+                        assert_eq!(code, Some(0), "{path}, block at line {at}");
+                        assert_eq!(
+                            written, block.body,
+                            "{path}, block at line {at}: what `una {args}` writes"
+                        );
+                    } else {
+                        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                            .env_remove("UNA_PROOF_KEY")
+                            .args(["--color", "never"])
+                            .args(&words)
+                            .current_dir(&copy)
+                            .output()
+                            .unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{path}, block at line {at}: `una {args}`"
+                        );
+                        let printed = String::from_utf8_lossy(&output.stdout);
+                        assert!(
+                            is_excerpt(&block.body, &printed, true),
+                            "{path}, block at line {at}: not what `una {args}` prints:\n{printed}"
+                        );
+                    }
+                    *shown.entry("una").or_default() += 1;
+                } else {
+                    panic!(
+                        "{path}, block at line {at}: a `text` block names what it shows, file=\"PATH\", section=\"PATH\", shapes=\"PATH\" or una=\"ARGS\" in=\"DIR\""
+                    );
+                }
+            }
+            other => panic!("{path}, block at line {at}: a `{other}` block is not checked"),
+        }
+    }
+    for files in packages.values() {
+        let at = files[0].line;
+        let dir = scratch(base + at * 10);
+        for file in files {
+            let target = dir.join(file.path.as_deref().unwrap());
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, &file.body).unwrap();
+        }
+        complete(&dir, "0.4");
+        let (_, found) = check(&dir);
+        assert_eq!(found, Vec::<String>::new(), "{path}, package at line {at}");
+        let output = canonical(&dir);
+        assert!(
+            output.status.success(),
+            "{path}, package at line {at} is not canonical: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let (code, _) = serve(&dir, &[], &format!("{path}:{at}"));
+        assert_eq!(code, Some(0), "{path}, package at line {at}");
+        *shown.entry("package").or_default() += 1;
+    }
+    for kind in ["sh", "file", "section", "shapes", "una", "package"] {
+        assert!(
+            shown.contains_key(kind),
+            "{path}: no {kind} block: {shown:?}"
+        );
+    }
+
+    // The `--grant` flag of the page, in place of the grant of `run grants`, serves
+    // `examples/health` and says so. A value that holds `;` is quoted (D6).
+    let inline = |open: &str, close: &str| -> Vec<&str> {
+        text.split(open)
+            .skip(1)
+            .map(|rest| rest.split(close).next().unwrap())
+            .collect()
+    };
+    let flags = inline("`--grant ", "`");
+    assert!(!flags.is_empty(), "{path}: no `--grant` flag shown");
+    for flag in &flags {
+        assert!(
+            !flag.contains(';') || (flag.starts_with('\'') && flag.ends_with('\'')),
+            "{path}: `--grant {flag}` is not quoted, and a shell ends the command at its `;`"
+        );
+    }
+    let said = inline("`` serving on ", " ``");
+    assert_eq!(said.len(), 1, "{path}: {said:?}");
+    let copy = copy_of("examples/health", 9);
+    let manifest = copy.join("ita.una");
+    let without = replace_section(&std::fs::read_to_string(&manifest).unwrap(), "run", "");
+    assert!(!without.contains("serve \""), "{without}");
+    std::fs::write(&manifest, without).unwrap();
+    let flag = flags[0].trim_matches('\'');
+    let (code, written) = serve(&copy, &["--grant", flag], &format!("{path}: --grant"));
+    assert_eq!(code, Some(0), "{path}: `--grant {}`", flags[0]);
+    assert_eq!(
+        written,
+        format!("serving on {}\n", said[0]),
+        "{path}: --grant"
+    );
+}
+
+#[test]
+fn the_known_limits_page_shows_only_checked_code() {
+    // #1887: a block the page adds is checked as the guides' are; a `text` block, which those
+    // checks do not run, is refused.
+    let path = "docs/guide/known-limits.md";
+    let text = std::fs::read_to_string(repository().join(path)).unwrap();
+    for block in blocks(&text) {
+        assert_ne!(
+            block.kind(),
+            "text",
+            "{path}, block at line {}: a `text` block is not checked",
+            block.line
+        );
+    }
+    check_guide(path, 5_100_000);
+}
+
 #[test]
 fn the_policy_example_of_the_information_flow_spec_checks_in_the_events_package() {
     // #569: `spec/07 §5`'s `events.keys` module, put in place of the `events` example's own,
