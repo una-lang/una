@@ -1,0 +1,36 @@
+-- test: the code between two requests (ADR 0116 P11): work on a `secret` parameter before a function's only request, and an operation of a handler installed with a `secret` argument it never reads, run before the first request of the run, which cannot matter, since every bucket starts full; P10 refused both for the ancestors' whole bodies and the handler's parameters, P11 accepts them
+-- spec: spec/27 §9
+-- expect: ok
+module fetch
+
+capability Store
+  op get(key: Text) -> Int
+
+handler hidden(seed: secret Int) for Store
+  op get(key) = 0
+
+--- A request on `internal` data only.
+pub openly(url: Text) -> internal Bool
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  when outcome
+    is Ok(response) -> true
+    is Err(failure) -> false
+
+--- A request after work on a `secret` parameter: when it is made depends on the secret.
+pub keyed(url: Text, key: secret Int) -> Unit
+  uses @http: Http[get]
+=
+  let doubled = key * 2
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit
+
+--- A request after an operation that a handler installed with a `secret` argument can serve.
+pub stored(url: Text) -> Unit
+  uses @store: Store[get]
+  uses @http: Http[get]
+=
+  let value = @store.get("k")
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  unit

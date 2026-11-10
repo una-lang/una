@@ -549,26 +549,37 @@ fn the_history_of_a_limit_does_not_depend_on_a_secret() {
 }
 
 #[test]
-fn a_request_called_from_a_lambda_names_the_functions_called_as_values() {
-    // The conformance case `limits_lambda_handler` (ADR 0116 P1, P8): the request in `fetch` is
-    // called only from a lambda, whose node of the call graph has `⊤` as its body, so U4001
-    // names it as what raised the request.
-    let case = root().join("tests/conformance/security/limits_lambda_handler");
-    let dir = std::env::temp_dir().join(format!("una-limits-lambda-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("src")).unwrap();
-    for file in ["ita.una", "ita.lock", "src/relay.una"] {
-        std::fs::copy(case.join(file), dir.join(file)).unwrap();
+fn a_request_called_from_a_lambda_names_the_code_between_requests() {
+    // The conformance case `limits_between_lambda_secret` (ADR 0116 P1, P8, P11): the requests
+    // in `fetch` are called only from a lambda, which runs `twice`, whose code between its two
+    // requests works on a captured `secret`, so U4001 names the code between requests of a function
+    // that leads to it (`run`, whose call of `serve` runs `twice`). Its
+    // twin `limits_lambda_handler`, with no such work, is accepted.
+    for (name, refused) in [
+        ("limits_between_lambda_secret", true),
+        ("limits_lambda_handler", false),
+    ] {
+        let case = root().join("tests/conformance/security").join(name);
+        let dir = std::env::temp_dir().join(format!("una-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        for file in ["ita.una", "ita.lock", "src/relay.una"] {
+            std::fs::copy(case.join(file), dir.join(file)).unwrap();
+        }
+        let checked = una(&dir, &["check", "."]);
+        let stderr = String::from_utf8_lossy(&checked.stderr);
+        if refused {
+            assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+            assert!(stderr.contains("U4001"), "{stderr}");
+            assert!(
+                stderr.contains("depends on the code between two requests in `relay."),
+                "{stderr}"
+            );
+        } else {
+            assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
-    let checked = una(&dir, &["check", "."]);
-    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
-    let stderr = String::from_utf8_lossy(&checked.stderr);
-    assert!(stderr.contains("U4001"), "{stderr}");
-    assert!(
-        stderr.contains("depends on the work of functions called as values, which leads to it"),
-        "{stderr}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A program whose request is made after work on a `secret` parameter when `secretly`, so its

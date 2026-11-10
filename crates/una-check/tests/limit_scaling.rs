@@ -35,7 +35,8 @@ const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 
 const MANIFEST_0_4: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n";
 
 /// A module of `n` functions, each making one request and calling the next, under a `top` that
-/// works on a `secret` before it calls the first: an ancestor of every request.
+/// works on a `secret` between two calls of the first: an ancestor of every request, whose code
+/// between two requests (ADR 0116 P11) is `secret`.
 fn app(n: usize) -> String {
     let mut text = String::from("module app\n");
     for i in 0..n {
@@ -49,7 +50,7 @@ fn app(n: usize) -> String {
         ));
     }
     text.push_str(
-        "\npub top(url: Text, key: secret Int) -> Unit\n  uses @http: Http[get]\n=\n  let doubled = key * 2\n  f0(url)\n",
+        "\npub top(url: Text, key: secret Int) -> Unit\n  uses @http: Http[get]\n=\n  f0(url)\n  let doubled = key * 2\n  f0(url)\n",
     );
     text
 }

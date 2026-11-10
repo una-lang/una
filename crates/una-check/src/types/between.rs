@@ -117,6 +117,136 @@ pub(crate) struct Summaries {
     pub(crate) units: Vec<(String, Between)>,
 }
 
+impl Summaries {
+    /// The summaries of the unit `name`, a function by its qualified name.
+    fn find(&self, name: &str) -> Option<&Between> {
+        self.units.iter().find(|(n, _)| n == name).map(|(_, b)| b)
+    }
+}
+
+/// P11's `L_lim` of the checked package (ADR 0117 IF4, ADR 0116 P11): the join of `Gap` over
+/// every unit that reaches a request, of the driver's gaps in a driven run (all of `τ⁰(step)`,
+/// `Suf(init) ⊔ Pre(step)` and `Pre(on_stop)`), of `τ_conc` at every request, and of `L_res`;
+/// with the source a message names when it is above `bound`, and the units whose `Gap` is above
+/// `bound`, with that `Gap`. Core IR is elaborated for it, so
+/// it runs only when P10's label is above `internal`. A deadline's decision is the label the
+/// checks gave its time-out (`τ` of the `within`, of the body of a `for ever within`), `L_res`
+/// joined; a driver whose `step` Core IR does not hold counts as `⊤`.
+pub(crate) fn limit_label(
+    env: &super::env::Env<'_>,
+    findings: &super::Findings,
+    settings: &una_project::Manifest,
+    concurrency: &super::timing::Concurrency,
+    residue: &super::timing::Residue,
+    sources: (&una_syntax::SourceDb, &una_syntax::SourceDb),
+    bound: &Label,
+) -> (
+    Label,
+    Option<(String, Label)>,
+    std::collections::BTreeMap<String, Label>,
+) {
+    let top = Label::top(&env.categories);
+    let (program, _) = super::elab::program(env, findings, sources.0, sources.1);
+    // The label of each deadline's decision, by the span of the whole `e within d` and by that
+    // of a `for ever within` loop, as Core IR keeps them.
+    let mut deadlines: HashMap<Span, Label> = HashMap::new();
+    for site in &findings.withins {
+        if let Some(label) = env.within_timing.get(&site.key) {
+            deadlines.insert(site.span, label.join(&residue.label));
+        }
+    }
+    if !findings.deadline_loops.is_empty() {
+        let timings = super::timing::summaries(env, findings).frames(env, &findings.frames);
+        for site in &findings.deadline_loops {
+            let beside = concurrency.tau_conc(&findings.frames.own(site.frame));
+            let label = timings
+                .timing(site.frame, beside)
+                .label
+                .join(&residue.label);
+            deadlines.insert(site.span, label);
+        }
+    }
+    let deadline = |span: Span| deadlines.get(&span).cloned();
+    let context = Context {
+        top: top.clone(),
+        deadline: &deadline,
+    };
+    let summaries = summaries(&program, &context);
+    let mut label = Label::public();
+    let mut culprit: Option<(String, Label)> = None;
+    let mut add = |label: &mut Label, part: &Label, source: &dyn Fn() -> String| {
+        if culprit.is_none() && !part.flows_to(bound) {
+            culprit = Some((source(), part.clone()));
+        }
+        *label = label.join(part);
+    };
+    let mut units: Vec<&(String, Between)> =
+        summaries.units.iter().filter(|(_, b)| b.reaches).collect();
+    // Declared functions first, then handlers' operations and lambdas, for the message.
+    units.sort_by_key(|(name, _)| {
+        (
+            name.starts_with("a lambda") || name.starts_with("handler") || name == "lambda",
+            name.clone(),
+        )
+    });
+    let raised: std::collections::BTreeMap<String, Label> = units
+        .iter()
+        .filter(|(_, b)| !b.gap.flows_to(bound))
+        .map(|(name, b)| (name.clone(), b.gap.clone()))
+        .collect();
+    for (name, between) in units {
+        add(&mut label, &between.gap, &|| {
+            format!("the code between two requests in {}", named(name))
+        });
+    }
+    if let Some(drive) = &settings.drive {
+        let module = drive.module.value.as_str();
+        let unit = |name: &str| summaries.find(&format!("{module}.{name}"));
+        match unit("step") {
+            Some(step) => {
+                add(&mut label, &step.whole.join(&step.pre), &|| {
+                    format!("the driver's wait between two steps, which `{module}.step` decides")
+                });
+                if let Some(init) = unit("init") {
+                    add(&mut label, &init.suf, &|| {
+                        format!("the code of `{module}.init` after its last request")
+                    });
+                }
+                if let Some(on_stop) = unit("on_stop") {
+                    add(&mut label, &on_stop.pre, &|| {
+                        format!("the code of `{module}.on_stop` before its first request")
+                    });
+                }
+            }
+            None => add(&mut label, &top, &|| "the driver of the run".to_owned()),
+        }
+    }
+    for site in &findings.http_sites {
+        if let Some(beside) = super::timing::beside_label(env, concurrency, site) {
+            add(&mut label, &beside, &|| {
+                "tasks that can run beside a request".to_owned()
+            });
+        }
+    }
+    let residue_label = residue.label.clone();
+    add(&mut label, &residue_label, &|| {
+        residue.culprit(bound).map_or_else(
+            || "the work cancelled requests leave".to_owned(),
+            |(_, s)| s.clone(),
+        )
+    });
+    (label, culprit, raised)
+}
+
+/// A unit's name as a message shows it.
+fn named(name: &str) -> String {
+    match name {
+        "lambda" | "a lambda" => "a lambda".to_owned(),
+        _ if name.starts_with("handler ") || name.starts_with("handlers of ") => name.to_owned(),
+        _ => format!("`{name}`"),
+    }
+}
+
 /// The summaries of every body of `program`, by the name of its unit, with every deadline's
 /// decision counted as `⊤`: the entry point of the tests of P11 (issue #1155). `Λ` is named
 /// `lambda`, a handler's operation `handler h.op`.

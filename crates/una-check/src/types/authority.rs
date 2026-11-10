@@ -3331,8 +3331,11 @@ pub(crate) fn serve_within(
 /// grant of the manifest's `run grants` carries limits and `L_lim` is above `internal`, U4001 at
 /// each request whose own label is above it, in source order, naming the ancestor that raised it
 /// (`spec/27 §9` rule 5). `L_lim` also joins `L_res` (ADR 0116 P9, P10): a request waits at a
-/// slot that an interrupted request can still hold. Returns `L_lim`, which `una build` embeds
-/// and `una run` checks a limited `--grant` against.
+/// slot that an interrupted request can still hold. When that label is above `internal`, P11's
+/// label of the code between requests ([`super::between::limit_label`], ADR 0116 P11, #1155)
+/// is computed too, and `L_lim` is their meet, both being sound; U4001 then goes to the requests
+/// in the bodies whose `Gap` raised it, or to every request P10 raised when none did. Returns
+/// `L_lim`, which `una build` embeds and `una run` checks a limited `--grant` against.
 ///
 /// O(V + E log E + N + (R + F) log F) to build the graph and [`super::timing::Concurrency`],
 /// for `V` nodes, `E` edges, `N` recorded items, `R` reads and `F` frames, then O(1) label
@@ -3343,6 +3346,7 @@ pub(crate) fn limit_timing(
     findings: &Findings,
     settings: &Manifest,
     residue: &super::timing::Residue,
+    sources: (&una_syntax::SourceDb, &una_syntax::SourceDb),
     report: &mut Report<'_>,
 ) -> Label {
     let graph = super::timing::graph(env, findings);
@@ -3355,12 +3359,27 @@ pub(crate) fn limit_timing(
     if limits.label.flows_to(&internal) {
         return limits.label;
     }
+    // ADR 0116 P11 (#1155): the code between two requests. P10's label and P11's are both
+    // sound bounds of the history, so their meet is; P11 needs Core IR, built only here.
+    let (between, gap, raised) = super::between::limit_label(
+        env,
+        findings,
+        settings,
+        &concurrency,
+        residue,
+        sources,
+        &internal,
+    );
+    let label = limits.label.meet(&between);
+    if label.flows_to(&internal) {
+        return label;
+    }
     let Some(grant) = settings.grants.iter().find(|grant| {
         una_core::http::Grant::parse_limited(&grant.value)
             .and_then(Result::ok)
             .is_some_and(|http| http.limits().any())
     }) else {
-        return limits.label;
+        return label;
     };
     let section = settings.format.section("[run] grants");
     let section = if section.starts_with('`') {
@@ -3371,12 +3390,40 @@ pub(crate) fn limit_timing(
     let mut sites: Vec<&super::timing::LimitSite> = limits.sites.iter().collect();
     sites.sort_by_key(|site| (site.span.file, site.span.start, site.span.end));
     sites.dedup_by_key(|site| site.span);
+    sites.retain(|site| !site.label.flows_to(&internal));
+    // P11 (#1155): the requests in the bodies whose code between requests raised `L_lim`, when
+    // there are some; otherwise every request P10 labels above `internal`.
+    let functions: std::collections::HashMap<Span, String> = findings
+        .http_sites
+        .iter()
+        .filter_map(|site| {
+            let def = env.functions.get(site.function?)?;
+            let module = env.modules.get(def.module).map_or("", |m| m.path.as_str());
+            Some((site.span, format!("{module}.{}", def.name)))
+        })
+        .collect();
+    let function = |span: Span| functions.get(&span);
+    let inside: Vec<&super::timing::LimitSite> = sites
+        .iter()
+        .copied()
+        .filter(|site| function(site.span).is_some_and(|f| raised.contains_key(f)))
+        .collect();
+    if !inside.is_empty() {
+        sites = inside;
+    }
     for site in sites {
-        if site.label.flows_to(&internal) {
-            continue;
-        }
-        let (by, raised) = match &site.raiser {
-            Some(super::timing::Raiser::Ancestor(name, label, own)) => {
+        // P11 names the code between requests that raised it: in the request's own function
+        // when that raised it, else the first source.
+        let own = function(site.span).and_then(|f| raised.get(f).map(|label| (f, label)));
+        let (by, raised) = match (&site.raiser, &gap, own) {
+            (Some(super::timing::Raiser::Ancestor(..)), _, Some((f, label))) => (
+                format!("the code between two requests in `{f}`"),
+                label.clone(),
+            ),
+            (Some(super::timing::Raiser::Ancestor(..)), Some((source, label)), None) => {
+                (source.clone(), label.clone())
+            }
+            (Some(super::timing::Raiser::Ancestor(name, label, own)), None, _) => {
                 let how = if *own {
                     "which makes it"
                 } else {
@@ -3384,8 +3431,10 @@ pub(crate) fn limit_timing(
                 };
                 (format!("the work of {name}, {how}"), label.clone())
             }
-            Some(super::timing::Raiser::Residue(source, label)) => (source.clone(), label.clone()),
-            Some(super::timing::Raiser::Beside) | None => (
+            (Some(super::timing::Raiser::Residue(source, label)), _, _) => {
+                (source.clone(), label.clone())
+            }
+            (Some(super::timing::Raiser::Beside) | None, _, _) => (
                 "tasks that can run beside it".to_owned(),
                 site.label.clone(),
             ),
@@ -3403,7 +3452,7 @@ pub(crate) fn limit_timing(
         )));
         report.push(diagnostic);
     }
-    limits.label
+    label
 }
 
 /// IF8 (ADR 0116): the operations that the deadline of a `for ever within d` can interrupt run

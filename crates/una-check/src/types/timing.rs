@@ -2630,19 +2630,27 @@ pub(crate) fn site_labels(
     residue: &Residue,
     sites: &[HttpSite],
 ) -> LimitLabels {
-    let top = Label::top(&env.categories);
-    // The precise `τ_conc` of each request (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`,
-    // issue #1154), at most the ancestors' `τ⁰` there (see above). Any other site keeps `⊤`,
-    // fail-closed: none reaches it today, and the rule of P10 counts a handler's request as `⊤`.
-    let beside = |site: &HttpSite| match site.node {
+    let beside = |site: &HttpSite| beside_label(env, concurrency, site);
+    ancestor_labels(env, graph, &beside, residue, sites)
+}
+
+/// The precise `τ_conc` of a request (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`, issue
+/// #1154), at most the ancestors' `τ⁰` there (see [`limit_labels`]); `None` when nothing runs
+/// beside it. Any other site keeps `⊤`, fail-closed: none reaches it today, and the rule of P10
+/// counts a handler's request as `⊤`.
+pub(crate) fn beside_label(
+    env: &Env<'_>,
+    concurrency: &Concurrency,
+    site: &HttpSite,
+) -> Option<Label> {
+    match site.node {
         Some(Caller::Function(_)) => concurrency.tau_conc(&TimingSeed {
             node: site.node,
             construct: site.construct,
             ..TimingSeed::default()
         }),
-        _ => Some(top.clone()),
-    };
-    ancestor_labels(env, graph, &beside, residue, sites)
+        _ => Some(Label::top(&env.categories)),
+    }
 }
 
 /// The preview's `τ_conc` of a site of `L_srv` (ADR 0123, S4 amendment IF-S1), which keeps it

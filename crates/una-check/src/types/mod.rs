@@ -917,8 +917,14 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     let residue = timing::residue_of(&env, &findings);
     authority::drive_timing(&env, &findings, package.settings, &residue, &mut report);
     authority::serve_within(&env, &findings, package.settings, &residue, &mut report);
-    let limit_label =
-        authority::limit_timing(&env, &findings, package.settings, &residue, &mut report);
+    let limit_label = authority::limit_timing(
+        &env,
+        &findings,
+        package.settings,
+        &residue,
+        (package.sources, &standard.sources),
+        &mut report,
+    );
     authority::limiter_timing(&env, &findings, &residue, &mut report);
     let mut timing_sites = authority::deadline_timing(&env, &findings, &residue, &mut report);
     // ADR 0116 amendment of 2026-11-09 (#898, C4, C5): the readings of `Clock`.

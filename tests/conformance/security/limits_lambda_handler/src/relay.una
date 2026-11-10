@@ -1,6 +1,6 @@
--- test: the history of a limit through a lambda and a handler (ADR 0116 P1, P8, ADR 0117 IF4): the request in `fetch` is called only from a lambda, and every lambda is one node of the call graph, reached from the handler `relay`, which calls its function parameter; that node's body has the timing label `⊤`, since a lambda runs wherever a function value is called (IF5 item 4), so it raises the request above `internal`, and the request is U4001, the message naming the functions called as values
+-- test: the history of a limit through a lambda and a handler (ADR 0116 P1, P8, P11, ADR 0117 IF4): the request in `fetch` is called only from a lambda, and every lambda is one node of the call graph, reached from the handler `relay`, which calls its function parameter; P10 counts that node's body as `⊤`, since a lambda runs wherever a function value is called (IF5 item 4), and refused the request; P11 summarizes every lambda of the package, and no code on data above `internal` runs between two requests, so it is accepted (`limits_between_lambda_secret` is its refused twin)
 -- spec: spec/27 §9
--- expect: error U4001 at src/relay.una:13:25
+-- expect: ok
 module relay
 
 capability Work
