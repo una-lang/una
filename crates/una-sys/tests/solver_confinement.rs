@@ -259,6 +259,17 @@ fn under_the_filter_an_unlisted_call_is_enosys_and_tripwires_kill() {
                 println!("survived={page:?}");
                 std::process::exit(0);
             }
+            #[cfg(target_arch = "x86_64")]
+            "creat" => {
+                install(Mode::Enforce).unwrap();
+                println!("installed");
+                // SAFETY: `creat` takes a C string and a mode; the filter kills the process
+                // before the kernel sees it, so nothing is created.
+                let fd =
+                    unsafe { libc::syscall(libc::SYS_creat, c"/una-sys-creat".as_ptr(), 0o600) };
+                println!("survived={fd}");
+                std::process::exit(0);
+            }
             "fork" => {
                 install(Mode::Enforce).unwrap();
                 println!("installed");
@@ -280,12 +291,368 @@ fn under_the_filter_an_unlisted_call_is_enosys_and_tripwires_kill() {
         "{text}"
     );
     assert!(text.contains("raise=0 read=true written=false"), "{text}");
-    for scenario in ["socket", "kill-other", "exec-mapping", "fork"] {
+    let mut tripwires = vec!["socket", "kill-other", "exec-mapping", "fork"];
+    if cfg!(target_arch = "x86_64") {
+        tripwires.push("creat");
+    }
+    for scenario in tripwires {
         let (ended, text) = run(scenario, test);
         assert_eq!(ended, Ended::Signaled(libc::SIGSYS), "{scenario}: {text}");
         assert!(text.contains("installed"), "{scenario}: {text}");
         assert!(!text.contains("survived="), "{scenario}: {text}");
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn under_the_filter_opening_a_real_file_is_eacces_and_the_child_goes_on() {
+    use una_sys::solver::seccomp::{Mode, install};
+    if let Some(scenario) = scenario() {
+        let Some(rest) = scenario.strip_prefix("open ") else {
+            return;
+        };
+        let (existing, absent) = rest.split_once(' ').unwrap();
+        let existing = CString::new(existing).unwrap();
+        let absent = CString::new(absent).unwrap();
+        // Before the filter the file opens: the refusal below is the filter's, not the file's.
+        // SAFETY: `existing` is a valid C string; the descriptor is closed at once.
+        let before = unsafe { libc::open(existing.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        assert!(before >= 0);
+        // SAFETY: `before` is the descriptor just opened.
+        unsafe { libc::close(before) };
+        install(Mode::Enforce).unwrap();
+        println!("installed");
+        let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        // SAFETY: each call takes valid C strings or a zeroed `open_how`; the filter refuses
+        // every one before the kernel looks at its arguments.
+        let read = unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                existing.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            )
+        };
+        let read_errno = errno();
+        // SAFETY: as above.
+        let created = unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                absent.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        let created_errno = errno();
+        let how = [0u64; 3];
+        // SAFETY: as above: `how` is a zeroed `open_how` of its 24 bytes.
+        let two = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                libc::AT_FDCWD,
+                existing.as_ptr(),
+                how.as_ptr(),
+                std::mem::size_of_val(&how),
+            )
+        };
+        let two_errno = errno();
+        // The legacy `open`, which only x86-64 has.
+        #[cfg(target_arch = "x86_64")]
+        let legacy = {
+            // SAFETY: as above.
+            let code = unsafe { libc::syscall(libc::SYS_open, existing.as_ptr(), libc::O_RDONLY) };
+            format!(" open={code}/{}", errno())
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let legacy = String::new();
+        // The processor count still answers, through `sched_getaffinity`.
+        let processors = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
+        println!(
+            "read={read}/{read_errno} created={created}/{created_errno} openat2={two}/{two_errno} \
+             processors={}{legacy}",
+            processors > 0
+        );
+        std::process::exit(0);
+    }
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("una-sys-open-eacces");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let existing = dir.join("present");
+    std::fs::write(&existing, "secret").unwrap();
+    let absent = dir.join("absent");
+    let scenario = format!("open {} {}", existing.display(), absent.display());
+    let test = "under_the_filter_opening_a_real_file_is_eacces_and_the_child_goes_on";
+    let (ended, text) = run(&scenario, test);
+    assert_eq!(ended, Ended::Exited(0), "{text}");
+    let e = libc::EACCES;
+    assert!(
+        text.contains(&format!(
+            "read=-1/{e} created=-1/{e} openat2=-1/{e} processors=true{}",
+            if cfg!(target_arch = "x86_64") {
+                format!(" open=-1/{e}")
+            } else {
+                String::new()
+            }
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("secret"), "{text}");
+    // The refused create made nothing.
+    assert!(!absent.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The verdict of the filter for one call: allowed, refused with an errno, or killed.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    Allow,
+    Errno(u32),
+    Kill,
+    /// An action or instruction the filter does not use: never expected, so every assertion
+    /// on a verdict fails on it.
+    Unexpected(u32),
+}
+
+/// Runs a classic BPF seccomp program over `seccomp_data` for `arch`, `nr` and `args`, with
+/// only the instructions the filter uses; any other is [`Verdict::Unexpected`].
+#[cfg(target_os = "linux")]
+fn evaluate(program: &[libc::sock_filter], arch: u32, nr: u32, args: [u64; 6]) -> Verdict {
+    // `seccomp_data`: the number, the architecture, the instruction pointer, the arguments.
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&nr.to_le_bytes());
+    data.extend_from_slice(&arch.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    for a in args {
+        data.extend_from_slice(&a.to_le_bytes());
+    }
+    let (ld, jeq, jset, ret) = (
+        (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+        (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+        (libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K) as u16,
+        (libc::BPF_RET | libc::BPF_K) as u16,
+    );
+    let mut acc = 0u32;
+    let mut pc = 0usize;
+    loop {
+        // A program that runs off its end is a failure: `get` gives `None` and the unwrap fails.
+        let ins = *program.get(pc).unwrap();
+        pc += 1;
+        match ins.code {
+            c if c == ld => {
+                let k = ins.k as usize;
+                acc = u32::from_le_bytes(data.get(k..k + 4).unwrap().try_into().unwrap());
+            }
+            c if c == jeq || c == jset => {
+                let taken = if c == jeq {
+                    acc == ins.k
+                } else {
+                    acc & ins.k != 0
+                };
+                pc += usize::from(if taken { ins.jt } else { ins.jf });
+            }
+            c if c == ret => {
+                return match ins.k & libc::SECCOMP_RET_ACTION_FULL {
+                    libc::SECCOMP_RET_ALLOW => Verdict::Allow,
+                    libc::SECCOMP_RET_KILL_PROCESS => Verdict::Kill,
+                    libc::SECCOMP_RET_ERRNO => Verdict::Errno(ins.k & libc::SECCOMP_RET_DATA),
+                    other => Verdict::Unexpected(other),
+                };
+            }
+            other => return Verdict::Unexpected(u32::from(other)),
+        }
+    }
+}
+
+/// Every call number the enforcing program can allow, over every number up to 1,024 and
+/// arguments that exercise each conditional check, is in the fixed list of rule 7, and the
+/// open family is `EACCES` under every argument: refusing it with an errno opened no call
+/// that the tripwire closed (#1455). The lists here are written out again, independently of
+/// `una-sys`, so that a change to either shows.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_filter_allows_only_its_fixed_list_and_refuses_the_open_family_with_eacces() {
+    use una_sys::solver::seccomp::enforcing_program;
+    let pid: u32 = 4242;
+    let program = enforcing_program(pid);
+    let n = |x: libc::c_long| u32::try_from(x).unwrap();
+    let mut allowed: Vec<u32> = [
+        libc::SYS_read,
+        libc::SYS_write,
+        libc::SYS_readv,
+        libc::SYS_writev,
+        libc::SYS_close,
+        libc::SYS_fstat,
+        libc::SYS_lseek,
+        libc::SYS_munmap,
+        libc::SYS_madvise,
+        libc::SYS_mremap,
+        libc::SYS_brk,
+        libc::SYS_futex,
+        libc::SYS_rseq,
+        libc::SYS_set_robust_list,
+        libc::SYS_set_tid_address,
+        libc::SYS_sigaltstack,
+        libc::SYS_rt_sigaction,
+        libc::SYS_rt_sigprocmask,
+        libc::SYS_rt_sigreturn,
+        libc::SYS_restart_syscall,
+        libc::SYS_clock_gettime,
+        libc::SYS_clock_getres,
+        libc::SYS_clock_nanosleep,
+        libc::SYS_nanosleep,
+        libc::SYS_gettimeofday,
+        libc::SYS_getrandom,
+        libc::SYS_sched_getaffinity,
+        libc::SYS_sched_yield,
+        libc::SYS_getpid,
+        libc::SYS_gettid,
+        libc::SYS_getrlimit,
+        libc::SYS_exit,
+        libc::SYS_exit_group,
+    ]
+    .into_iter()
+    .map(n)
+    .collect();
+    let conditional: Vec<u32> = [
+        libc::SYS_clone,
+        libc::SYS_kill,
+        libc::SYS_tkill,
+        libc::SYS_tgkill,
+        libc::SYS_mmap,
+        libc::SYS_mprotect,
+        libc::SYS_prlimit64,
+    ]
+    .into_iter()
+    .map(n)
+    .collect();
+    #[cfg(target_arch = "x86_64")]
+    let (arch, open, tripwires) = (
+        0xc000_003e_u32,
+        vec![libc::SYS_open, libc::SYS_openat, libc::SYS_openat2],
+        vec![
+            libc::SYS_creat,
+            libc::SYS_socket,
+            libc::SYS_socketpair,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_accept,
+            libc::SYS_accept4,
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_ptrace,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+            libc::SYS_fork,
+            libc::SYS_vfork,
+        ],
+    );
+    #[cfg(target_arch = "aarch64")]
+    let (arch, open, tripwires) = (
+        0xc000_00b7_u32,
+        vec![libc::SYS_openat, libc::SYS_openat2],
+        vec![
+            libc::SYS_socket,
+            libc::SYS_socketpair,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_accept,
+            libc::SYS_accept4,
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_ptrace,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+        ],
+    );
+    let open: Vec<u32> = open.into_iter().map(n).collect();
+    let tripwires: Vec<u32> = tripwires.into_iter().map(n).collect();
+    // Arguments that take each branch of the conditional checks: zero, this pid, another
+    // pid, -1, `CLONE_THREAD`, `PROT_EXEC`, high words set, and every bit.
+    let values: [u64; 9] = [
+        0,
+        u64::from(pid),
+        1,
+        u64::MAX,
+        u64::from(libc::CLONE_THREAD.cast_unsigned()),
+        u64::from(libc::PROT_EXEC.cast_unsigned()),
+        u64::from((libc::PROT_READ | libc::PROT_WRITE).cast_unsigned()),
+        1 << 32,
+        u64::from(pid) | (1 << 32),
+    ];
+    let mut seen_allowed = Vec::new();
+    for nr in 0..1024u32 {
+        let mut verdicts = Vec::new();
+        for a0 in values {
+            for a2 in values {
+                verdicts.push(evaluate(&program, arch, nr, [a0, 0, a2, 0, 0, 0]));
+            }
+        }
+        if verdicts.contains(&Verdict::Allow) {
+            seen_allowed.push(nr);
+        }
+        if open.contains(&nr) {
+            assert!(
+                verdicts
+                    .iter()
+                    .all(|v| *v == Verdict::Errno(libc::EACCES.cast_unsigned())),
+                "{nr}: {verdicts:?}"
+            );
+        } else if tripwires.contains(&nr) {
+            assert!(
+                verdicts.iter().all(|v| *v == Verdict::Kill),
+                "{nr}: {verdicts:?}"
+            );
+        } else if allowed.contains(&nr) {
+            assert!(
+                verdicts.iter().all(|v| *v == Verdict::Allow),
+                "{nr}: {verdicts:?}"
+            );
+        } else if !conditional.contains(&nr) {
+            assert!(
+                verdicts
+                    .iter()
+                    .all(|v| *v == Verdict::Errno(libc::ENOSYS.cast_unsigned())),
+                "{nr}: {verdicts:?}"
+            );
+        }
+    }
+    // The conditional calls: allowed only as rule 7 says.
+    let ev =
+        |nr: libc::c_long, a0: u64, a2: u64| evaluate(&program, arch, n(nr), [a0, 0, a2, 0, 0, 0]);
+    let thread = u64::from(libc::CLONE_THREAD.cast_unsigned());
+    assert_eq!(ev(libc::SYS_clone, thread, 0), Verdict::Allow);
+    assert_eq!(ev(libc::SYS_clone, 0, 0), Verdict::Kill);
+    for sig in [libc::SYS_kill, libc::SYS_tkill, libc::SYS_tgkill] {
+        assert_eq!(ev(sig, u64::from(pid), 0), Verdict::Allow);
+        assert_eq!(ev(sig, 1, 0), Verdict::Kill);
+        assert_eq!(ev(sig, 0, 0), Verdict::Kill);
+        assert_eq!(ev(sig, u64::MAX, 0), Verdict::Kill);
+    }
+    let exec = u64::from(libc::PROT_EXEC.cast_unsigned());
+    for map in [libc::SYS_mmap, libc::SYS_mprotect] {
+        assert_eq!(ev(map, 0, 3), Verdict::Allow);
+        assert_eq!(ev(map, 0, exec), Verdict::Kill);
+        assert_eq!(ev(map, 0, exec | 3), Verdict::Kill);
+    }
+    let enosys = Verdict::Errno(libc::ENOSYS.cast_unsigned());
+    assert_eq!(ev(libc::SYS_prlimit64, 0, 0), Verdict::Allow);
+    assert_eq!(ev(libc::SYS_prlimit64, u64::from(pid), 0), Verdict::Allow);
+    assert_eq!(ev(libc::SYS_prlimit64, 1, 0), enosys);
+    assert_eq!(ev(libc::SYS_prlimit64, 0, 0x1000), enosys);
+    assert_eq!(ev(libc::SYS_prlimit64, 0, 1 << 32), enosys);
+    allowed.extend(conditional);
+    allowed.sort_unstable();
+    assert_eq!(seen_allowed, allowed);
+    // Another architecture, and on x86-64 the x32 bit, kill before any list.
+    assert_eq!(
+        evaluate(&program, 0x4000_0003, n(libc::SYS_read), [0; 6]),
+        Verdict::Kill
+    );
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(
+        evaluate(&program, arch, n(libc::SYS_read) | 0x4000_0000, [0; 6]),
+        Verdict::Kill
+    );
 }
 
 #[cfg(target_os = "macos")]
