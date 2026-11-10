@@ -225,10 +225,17 @@ impl Sim {
         self.clock.now()
     }
 
-    /// Delivers every message waiting for the threads.
+    /// Delivers every message waiting for the threads, and pumps again the connections that
+    /// yielded with work left, as each thread's next pass does (`Thread::resume`).
     pub fn settle(&mut self) {
         loop {
             let mut any = false;
+            let now = self.clock.now();
+            for thread in &mut self.threads {
+                while thread.resume(now) {
+                    any = true;
+                }
+            }
             for (index, inbox) in self.inboxes.iter().enumerate() {
                 let Some(inbox) = inbox else { continue };
                 while let Ok(msg) = inbox.try_recv() {

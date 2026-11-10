@@ -11,6 +11,11 @@
 //! reading to the reply, `write` while a reply is written, and one second while it drains
 //! after a refusal.
 //!
+//! A connection that used up its [`PUMP_STEPS`] with work left yields to the others and is
+//! queued to be pumped again on the thread's next pass ([`Thread::advance`]), whether or not
+//! its socket signals again: the bytes it already read and has not fed may hold the rest of a
+//! request whose peer sends nothing more until it is answered (#1780).
+//!
 //! **Costs.** Accepting, reading a request, queueing it, arming and cancelling a timer, and
 //! closing are O(1) apart from the O(b) of reading b bytes (the reader examines each byte a
 //! bounded number of times). A pass handles a bounded number of timers.
@@ -137,6 +142,8 @@ struct Conn {
     forgot: bool,
     /// The close ran every step: nothing is held any more.
     finished: bool,
+    /// The connection yielded with work left and is in `Core::yielded`, once.
+    yielded: bool,
 }
 
 struct Slot {
@@ -154,6 +161,11 @@ struct Core {
     live: usize,
     /// The thread is ending (`Thread::abandon`): every fault of a connection is contained.
     abandoning: bool,
+    /// The connections that yielded with work left, to be pumped again on the next pass: each
+    /// connection at most once (`Conn::yielded`), so the queue holds at most the thread's open
+    /// connections and those closed since the last pass, whose entries are passed over by
+    /// their generation.
+    yielded: VecDeque<u64>,
     /// Raised while the thread-wide wheel or readiness is being changed. A panic that leaves it
     /// raised may have left them half-updated, so it is not contained: the thread ends and the
     /// connections it owns are closed against a fresh wheel (`Thread::abandon`).
@@ -214,6 +226,7 @@ impl Thread {
                 live: 0,
                 critical: 0,
                 abandoning: false,
+                yielded: VecDeque::new(),
                 #[cfg(feature = "test-hooks")]
                 fail_next_arm: false,
                 #[cfg(feature = "test-hooks")]
@@ -245,9 +258,9 @@ impl Thread {
     }
 
     /// The earliest time something is due: the wheel's next expiration, or now when due
-    /// timers wait for another pass.
+    /// timers or yielded connections wait for another pass.
     pub fn next_wake(&self) -> Option<u64> {
-        if self.backlog.is_empty() {
+        if self.backlog.is_empty() && self.core.yielded.is_empty() {
             self.core.wheel.next_expiration()
         } else {
             Some(self.core.wheel.now())
@@ -286,8 +299,9 @@ impl Thread {
         self.run(slot, now, |core, c, now| core.pump(c, now));
     }
 
-    /// Time reached `now`: handles the timers due, at most [`TIMERS_PER_PASS`] of them; `true`
-    /// when more are due and another pass is needed.
+    /// Time reached `now`: handles the timers due, at most [`TIMERS_PER_PASS`] of them, then the
+    /// connections that yielded ([`Thread::resume`]); `true` when more timers are due or a
+    /// connection yielded again, and another pass is needed.
     pub fn advance(&mut self, now: u64) -> bool {
         self.core.wheel.advance(now, &mut self.fired);
         for (_, timer) in self.fired.drain(..) {
@@ -331,7 +345,33 @@ impl Thread {
                 }
             }
         }
-        !self.backlog.is_empty()
+        let resumed = self.resume(now);
+        !self.backlog.is_empty() || resumed
+    }
+
+    /// Pumps again the connections that yielded with work left before this pass, each once; a
+    /// connection that yields again waits for the next pass, so the others' events are not
+    /// starved. `true` when some yielded again. O(1) a connection, apart from its pump.
+    pub fn resume(&mut self, now: u64) -> bool {
+        for _ in 0..self.core.yielded.len() {
+            let Some(token_value) = self.core.yielded.pop_front() else {
+                break;
+            };
+            let slot = (token_value >> 32) as u32;
+            let generation = (token_value & 0xffff_ffff) as u32;
+            let live = self
+                .slots
+                .get(slot as usize)
+                .is_some_and(|entry| entry.generation == generation);
+            if live {
+                self.run(slot, now, |core, c, now| {
+                    if std::mem::take(&mut c.yielded) {
+                        core.pump(c, now);
+                    }
+                });
+            }
+        }
+        !self.core.yielded.is_empty()
     }
 
     /// Takes a connection out of its slot, runs `f` on it, and puts it back or frees the slot.
@@ -429,6 +469,8 @@ impl Thread {
         self.core.critical = 0;
         self.core.abandoning = true;
         let old = std::mem::replace(&mut self.core.wheel, Wheel::new(now));
+        // Every connection closes below; none is pumped again.
+        self.core.yielded.clear();
         for slot in 0..self.slots.len() {
             self.run(slot as u32, now, |core, c, now| {
                 // Its timer was in the old wheel.
@@ -582,6 +624,7 @@ impl Thread {
             notified: false,
             forgot: false,
             finished: false,
+            yielded: false,
         });
         // In its slot before any step, so a fault in the steps is contained by `run` and an
         // ending thread's `abandon` finds the connection.
@@ -769,7 +812,13 @@ impl Core {
                 },
             }
         }
-        // Yield to the other connections: both interests fire at once on a ready socket.
+        // Yield to the other connections, and be pumped again on the next pass: a ready socket
+        // fires both interests at once, but bytes already read into `input` and not fed yet
+        // make no socket ready, and may hold the rest of a request whose peer then waits.
+        if !c.yielded {
+            c.yielded = true;
+            self.yielded.push_back(token(c.slot, c.generation));
+        }
         Interest {
             read: matches!(c.phase, Phase::Reading | Phase::Lingering | Phase::Waiting),
             write: matches!(c.phase, Phase::Writing),
