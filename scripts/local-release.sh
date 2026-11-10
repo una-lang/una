@@ -64,17 +64,15 @@ export SOURCE_DATE_EPOCH
 # builds a second time in volumes of its own, from cold (#679).
 volume=${UNA_LOCAL_RELEASE_VOLUME:-una-local-release-target}
 
-# Z3, which check-release.sh needs, as scripts/local-ci.sh installs it.
-z3="$root/target/z3"
-if [ ! -x "$z3/bin/z3" ]; then
-    scripts/install-z3.sh "$z3" || fail "installing Z3"
-fi
+# No standalone Z3 is installed (#1902): una embeds the Z3 library (ADR 0124), which
+# scripts/release.sh takes from the cache by the digest supply-chain/z3.lock records for each
+# target, never rebuilding it, and fails (exit 2) when no entry holds that digest; and
+# scripts/check-release.sh runs no z3. On this machine the cache is UNA_Z3_CACHE, else
+# ~/.cache/una/z3.
 
 echo "== aarch64-apple-darwin, natively, from $commit"
 (
     cd "$checkout" || exit 1
-    PATH="$z3/bin:$PATH"
-    export PATH
     scripts/release.sh aarch64-apple-darwin && scripts/check-release.sh aarch64-apple-darwin
 ) || fail "the macOS archive"
 cp "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz" \
@@ -84,8 +82,11 @@ cp "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz" 
 toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' "$checkout/rust-toolchain.toml")
 
 # The Linux archive of `target`, in a container of `arch` (amd64, emulated on an arm64 Mac, or
-# arm64, native on one, #241), with the image, the target directory and Z3 of that
-# architecture. The image comes from this checkout's scripts/local-ci, which a tag made before
+# arm64, native on one, #241), with the image, the target directory and the Z3 library cache of
+# that architecture: the volume of scripts/local-ci.sh, mounted read-only at /opt/z3-cache and
+# named by UNA_Z3_CACHE, where scripts/release.sh finds the library by its pinned digest (#1902).
+# The reproducible gate's second build, with target volumes of its own, reads the same cache:
+# the library is checked by digest, not rebuilt (ADR 0124 rule 31). The image comes from this checkout's scripts/local-ci, which a tag made before
 # it lacks; the toolchain is the one the tag's commit pins.
 linux_archive() {
     arch=$1 target=$2 suffix=$3
@@ -96,17 +97,17 @@ linux_archive() {
     name="una-$version-$target.tar.gz"
     # The image runs as an unprivileged user, uid 1000 (#1394); the volumes are handed to it first.
     "$root/scripts/container-volumes.sh" "linux/$arch" "$image" "$volume$suffix:/work/target" \
-        una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3$suffix:/opt/z3" \
+        una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
         || fail "handing the container's volumes to its user for linux/$arch"
     docker run --rm --platform "linux/$arch" \
         --volume "$checkout:/work" \
         --volume "$volume$suffix:/work/target" \
         --env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
         --volume una-local-ci-registry:/opt/cargo/registry \
-        --volume "una-local-ci-z3$suffix:/opt/z3" \
+        --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache:ro" \
+        --env UNA_Z3_CACHE=/opt/z3-cache \
         --volume "$out:/out" \
         "$image" sh -c "set -e
-            [ -x /opt/z3/bin/z3 ] || scripts/install-z3.sh /opt/z3
             scripts/release.sh $target
             scripts/check-release.sh $target
             cp target/release-archives/$name target/release-archives/$name.sha256 /out/" \
