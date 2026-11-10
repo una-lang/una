@@ -1,0 +1,1 @@
+- **Every block of the serving guide is checked** (#1887): its manifests, module excerpts and outputs against `examples/health` and live runs, its language-form server as a package that checks and serves, and its quoted `--grant` flag, which a test now runs; the known-limits page refuses an unchecked block.
