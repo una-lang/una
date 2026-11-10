@@ -799,7 +799,7 @@ where
     let json = args.iter().skip(1).any(|arg| arg == "--json");
     // What a panic report needs from the command line, read before the command runs; parsing
     // is guarded too, and a panic in it leaves both unknown.
-    let parsed = std::panic::catch_unwind(|| Cli::try_parse_from(args.clone()).ok())
+    let parsed = std::panic::catch_unwind(|| parse_line(args.clone()).ok())
         .ok()
         .flatten();
     let command = parsed.as_ref().and_then(|cli| cli.command.as_ref());
@@ -814,9 +814,34 @@ where
         held,
         location,
     };
+    // The command line is parsed once (#1894): building clap's command for every subcommand is
+    // a fixed cost of each process. A line that did not parse here is parsed again inside the
+    // guard, which reports its error, or a panic in parsing as U8001.
     guard.run(stdout, stderr, |stdout, stderr| {
-        run_command(args, stdout, stderr, stderr_is_terminal, environment, heap)
+        run_command(
+            args,
+            parsed,
+            stdout,
+            stderr,
+            stderr_is_terminal,
+            environment,
+            heap,
+        )
     })
+}
+
+/// Parses the command line. [`run`] calls it once for a line that parses, and once more for
+/// one that does not, to report clap's error inside the guard (#1894).
+fn parse_line(args: Vec<OsString>) -> Result<Cli, clap::Error> {
+    #[cfg(test)]
+    PARSES.with(|count| count.set(count.get() + 1));
+    Cli::try_parse_from(args)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`parse_line`] ran on this thread, for the tests of [`run`].
+    static PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Whether the program name, `argv[0]`, has the basename `ita`, or `ita.exe`.
@@ -974,9 +999,11 @@ fn internal_error(
     }
 }
 
-/// [`run`] without the guard: parses `args` and runs the command.
+/// [`run`] without the guard: runs the command `parsed` holds, or, when `args` did not parse
+/// in [`run`], parses them again for clap's error.
 fn run_command(
     args: Vec<OsString>,
+    parsed: Option<Cli>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
     stderr_is_terminal: bool,
@@ -1011,7 +1038,11 @@ fn run_command(
         },
         itaoca: itaoca(environment),
     };
-    let status = match Cli::try_parse_from(args) {
+    let parsed = match parsed {
+        Some(cli) => Ok(cli),
+        None => parse_line(args),
+    };
+    let status = match parsed {
         Ok(cli) if cli.version => version_command(cli.json, stdout),
         // Neither a command nor `--version`: the usage, as clap prints it for a missing command.
         Ok(Cli { command: None, .. }) => {
@@ -2012,6 +2043,41 @@ fn keyword_set(edition: una_project::Edition) -> KeywordSet {
 mod tests {
     use super::{ExitStatus, Guard, on_large_stack, panic_location};
     use crate::args::Command;
+
+    /// The parses that `run` makes of `args`, with its exit status and stderr (#1894).
+    fn parses_of(args: &[&str]) -> (usize, ExitStatus, String) {
+        super::PARSES.with(|count| count.set(0));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let status = super::run(
+            args.iter().copied(),
+            &mut stdout,
+            &mut stderr,
+            false,
+            &|_| Ok(None),
+            super::Heap::unmeasured(),
+        );
+        let parses = super::PARSES.with(std::cell::Cell::get);
+        (
+            parses,
+            status,
+            String::from_utf8_lossy(&stderr).into_owned(),
+        )
+    }
+
+    /// #1894: a command line that parses is parsed once per process, not once for the panic
+    /// report and again for the command; one that does not parse is parsed a second time,
+    /// inside the guard, and its error is clap's, as before.
+    #[test]
+    fn a_command_line_is_parsed_once_and_a_refused_one_reports_its_error() {
+        let (parses, status, _) = parses_of(&["una", "--version"]);
+        assert_eq!((parses, status), (1, ExitStatus::Success));
+        let (parses, status, _) = parses_of(&["una", "explain", "U0001"]);
+        assert_eq!((parses, status), (1, ExitStatus::Success));
+        let (parses, status, stderr) = parses_of(&["una", "--no-such-flag"]);
+        assert_eq!((parses, status), (2, ExitStatus::Usage), "{stderr}");
+        assert!(stderr.contains("--no-such-flag"), "{stderr}");
+    }
 
     /// ADR 0124 rule 20: the build record's keys, in their fixed order, with the musl inputs'
     /// digests after the runtime's (step 4a): an object by file name and libunwind's digest,
