@@ -2639,7 +2639,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// Returns the label of the constructed value's top position: `public`, except for a
     /// variant of the prelude kind `Json` in edition `0.4` and later when `labeled` is true,
     /// whose arguments may carry any label and whose result carries the join of every label of
-    /// every argument (ADR 0073, Proposed amendment of 2026-11-09 to J5, #917).
+    /// every argument (ADR 0073, accepted amendment of 2026-11-09 to J5, #917).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn construct(
         &mut self,
@@ -2860,7 +2860,7 @@ impl<'a> Checker<'_, 'a, '_> {
         for (arg_span, found, expected, field) in flows {
             let into = format!("field `{field}` of `{constructor}`");
             if labeled_json {
-                // ADR 0073 J5 as amended (Proposed, 2026-11-09): the argument enters with its
+                // ADR 0073 J5 as amended (accepted, 2026-11-10): the argument enters with its
                 // labels removed, as a prelude function's argument does, and every label it
                 // carries, at every position that holds data (`spec/07 §7` rule 3), labels the
                 // result's top. Reading the value back is raised by that top label (rule 3),

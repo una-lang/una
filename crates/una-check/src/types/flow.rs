@@ -128,7 +128,7 @@ fn walk(
 }
 
 /// A labeled argument of a `Json` constructor in edition 0.4 (ADR 0073 J5 as amended,
-/// Proposed): the U4001, U4002 and U4003 that a labeled `Json` causes name it, as a related
+/// accepted): the U4001, U4002 and U4003 that a labeled `Json` causes name it, as a related
 /// location, beside the labeled answer of [`Answer`] (#917).
 #[derive(Clone, Debug)]
 pub(crate) struct JsonSource {
@@ -329,7 +329,7 @@ impl Checker<'_, '_, '_> {
 
     /// Names in `diagnostic`, a U4001, U4002 or U4003 of a flow from `found` to `allowed`, the
     /// first labeled argument of a `Json` constructor in this declaration whose label `found`
-    /// carries and `allowed` does not (ADR 0073 J5 as amended, Proposed, #917): the message says
+    /// carries and `allowed` does not (ADR 0073 J5 as amended, accepted, #917): the message says
     /// that this argument labeled a `Json` value, and the argument is a related location. The
     /// clause states what the argument did, not that this value holds it, since labels do not
     /// record their sources; the label filter keeps it to a source that explains the label.

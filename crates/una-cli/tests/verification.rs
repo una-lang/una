@@ -633,7 +633,7 @@ fn a_check_with_no_obligation_starts_no_solver_child_and_one_with_an_obligation_
 #[cfg(unix)]
 #[test]
 fn a_handshake_after_two_seconds_and_inside_ten_still_proves() {
-    // ADR 0124 rule 4, Proposed amendment of 2026-11-09 (#1791): the window is ten seconds of
+    // ADR 0124 rule 4, accepted amendment of 2026-11-09 (#1791): the window is ten seconds of
     // the wall-clock guard (60 s by default), so a child that writes its handshake four seconds
     // after its start, past the two seconds of the accepted rule, is still this `una`, and its
     // `unsat` with a normal exit is a proof (rule 8).
@@ -687,7 +687,7 @@ fn a_handshake_after_two_seconds_and_inside_ten_still_proves() {
 #[cfg(unix)]
 #[test]
 fn a_handshake_missing_after_ten_seconds_is_u5003_and_never_a_proof() {
-    // ADR 0124 rule 4, Proposed amendment of 2026-11-09 (#1791): a child that writes no
+    // ADR 0124 rule 4, accepted amendment of 2026-11-09 (#1791): a child that writes no
     // handshake within the ten seconds is U5003, "the solver child is not this `una`", and is
     // ended; no obligation is proven and the check fails. The stand-in replaces itself by a
     // `sleep` that outlives the window, so the parent ends it, not its exit.

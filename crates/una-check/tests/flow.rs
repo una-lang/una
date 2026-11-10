@@ -801,7 +801,7 @@ fn a_for_ever_within_beside_secret_tasks_names_the_tasks_beside_it() {
     );
 }
 
-// ----- `Json` values that carry labeled data (ADR 0073 J5, Proposed amendment of 2026-11-09, #917) -----
+// ----- `Json` values that carry labeled data (ADR 0073 J5, accepted amendment of 2026-11-09, #917) -----
 
 /// The diagnostics of one module `t` in a package of `edition`, at `src/t.una`, whose
 /// declarations start on line 3.

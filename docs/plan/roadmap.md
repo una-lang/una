@@ -29,7 +29,7 @@ Release R0.N ships compiler version `v0.N.0`, and edition `0.N` is named by the 
 
 ### Edition `0.4`
 
-Edition `0.4` is the current preview edition, under the terms of ADR 0121, and closes at R0.4 (`v0.4.0`). Its language and toolchain work, with the records that ADR 0139 moves to edition `0.5` marked:
+Edition `0.4` is the current preview edition, under the terms of ADR 0121. R0.4 (`v0.4.0`) ships it as a preview, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, Proposed). Its language and toolchain work, with the records that ADR 0139 moves to edition `0.5` marked:
 
 | Area | Content | Record | Decision |
 | --- | --- | --- | --- |

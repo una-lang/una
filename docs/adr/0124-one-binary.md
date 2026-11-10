@@ -690,9 +690,9 @@ project never relies on the residual:
   cannot drift; a later change that needs more raises the cap with a dated amendment stating the
   new count. ADR 0058's note of 2026-11-01 records the same.
 
-## Amendment (2026-11-09, Proposed): the handshake's window (rule 4)
+## Amendment (2026-11-09): the handshake's window (rule 4)
 
-- Status: Proposed, for the project to accept. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ. The implementation applies it now, as a reversible default (#1791): a refusal returns the window to 2 seconds and nothing else.
+- Status: Accepted (2026-11-10), by the project's decision of 2026-11-10 on issue #1791. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs. The implementation applies it since #1791.
 - Issue: #1791.
 
 **Why.** Rule 4 has the parent wait 2 seconds of wall clock for the child's handshake, counted inside the wall-clock guard, and makes a later one U5003. The window is a liveness bound: it ends a child that is not this `una` or does not start, and it is not part of the proof condition, which rule 8 states on its own. On a loaded machine (a full test run, a load average of tens) a child's start-up stretched past 2 seconds: five tests of the verifier failed together with "no handshake within 2 seconds" in one run, and a processor-time scaling test, whose measured check starts a solver child per query, had to run alone (#1776). Rule 30's target, a handshake within 5 ms as the median of 50 runs, shows how far 2 seconds already was from the normal case; the misses were the machine, not the child.

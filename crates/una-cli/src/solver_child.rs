@@ -29,9 +29,9 @@ const PROTOCOL: u32 = 1;
 /// The most bytes the parent reads for the handshake, and the time it waits for it (rule 4),
 /// counted from just before the spawn and inside the wall-clock guard: the deadline is checked
 /// first, so a guard shorter than the window ends the child as `wallclock`. The window is a
-/// liveness bound only; a late handshake is U5003, never a proof. Ten seconds, not the two of
-/// the accepted rule 4, under the Proposed amendment of 2026-11-09 to ADR 0124 (#1791): a
-/// loaded machine missed two seconds.
+/// liveness bound only; a late handshake is U5003, never a proof. Ten seconds, by ADR 0124
+/// rule 4 as amended on 2026-11-09 and accepted on 2026-11-10 (#1791): a loaded machine
+/// missed the two seconds of the rule as first written.
 const HANDSHAKE_BYTES: usize = 256;
 const HANDSHAKE_WITHIN: Duration = Duration::from_secs(10);
 /// How much of the child's stderr the parent keeps, for the reason of a crash (rule 5).

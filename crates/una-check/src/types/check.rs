@@ -373,7 +373,7 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// distinct `gives` labels of the declaration's header and rebindings, not by its body.
     pub(crate) answers: Vec<super::flow::Answer>,
     /// In pass 2, the labeled arguments of `Json` constructors in edition 0.4 (ADR 0073 J5 as
-    /// amended, Proposed): for each distinct label, the earliest in source order, which the
+    /// amended, accepted): for each distinct label, the earliest in source order, which the
     /// U4001, U4002 and U4003 a labeled `Json` causes name (#917).
     pub(crate) json_sources: Vec<super::flow::JsonSource>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
