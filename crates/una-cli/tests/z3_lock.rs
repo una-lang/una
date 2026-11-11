@@ -2,7 +2,8 @@
 //! release tag's commit, its tree, the digests of the source tarball and its mirror, and
 //! `supply-chain/z3/` holds the recipe. The pin must agree with `verification.lock`, which names
 //! the solver version a package is checked with, and the recipe must touch only the shell front
-//! end, which is what `shell-library.patch` is for. The test reads files and runs nothing.
+//! end, which is what `shell-library.patch` is for. The test reads files, and runs nothing but the
+//! reader of the shipped targets, `scripts/release-targets.sh` (#1903).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -82,9 +83,30 @@ fn the_z3_pin_agrees_with_verification_lock_and_names_its_source() {
 }
 
 /// The targets whose `una` embeds the pinned library, each of which needs a `[library]` line,
-/// since `scripts/release.sh` refuses a target without one (exit 2). Until the shipped-targets
-/// list exists (one file read by the release scripts), it is named here.
-const LIBRARY_TARGETS: [&str; 2] = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu"];
+/// since `scripts/release.sh` refuses a target without one (exit 2): the shipped targets of
+/// `scripts/release-targets.txt`, read by the one reader the release scripts use (#1903), which
+/// fails on a list that cannot be read or lists no target.
+fn library_targets() -> Vec<String> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#". "$1/scripts/release-targets.sh" && release_targets "$1/scripts/release-targets.txt""#)
+        .arg("sh")
+        .arg(root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "scripts/release-targets.txt: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let targets: Vec<String> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(!targets.is_empty(), "no shipped target");
+    targets
+}
 
 #[test]
 fn the_lock_pins_a_library_digest_for_every_target() {
@@ -127,15 +149,16 @@ fn the_lock_pins_a_library_digest_for_every_target() {
             "{target}: one line per target"
         );
     }
-    for target in LIBRARY_TARGETS {
+    let targets = library_targets();
+    for target in &targets {
         assert!(
-            pins.contains_key(target),
+            pins.contains_key(target.as_str()),
             "supply-chain/z3.lock has no [library] line for {target}"
         );
     }
     for target in pins.keys() {
         assert!(
-            LIBRARY_TARGETS.contains(target),
+            targets.iter().any(|t| t == target),
             "{target}: a pinned target that no release builds"
         );
     }

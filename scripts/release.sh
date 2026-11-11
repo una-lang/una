@@ -25,6 +25,14 @@ if [ -z "$version" ]; then
     echo "error: Cargo.toml has no [workspace.package] version" >&2
     exit 2
 fi
+# Only a shipped target is packed (scripts/release-targets.txt, #1903); an unreadable or empty
+# list refuses every target.
+. scripts/release-targets.sh
+shipped=$(release_targets scripts/release-targets.txt) || exit 2
+if ! printf '%s\n' "$shipped" | grep -qxF -- "$target"; then
+    echo "error: $target is not a shipped target; scripts/release-targets.txt lists the targets a release packs" >&2
+    exit 2
+fi
 host=$(rustc -vV | sed -n 's/^host: //p')
 if [ "$target" != "$host" ]; then
     echo "error: this machine builds $host, not $target; build each target on its own runner" >&2
