@@ -7107,16 +7107,32 @@ fn s39_quiet_first_of_blocks_do_not_move_the_paths_of_later_public_ones() {
     }
 }
 
-/// S-39 round 3 (#1507), review H1 (`exits.una` verbatim): a quiet loop that `skip` and `stop`
+/// S-39 round 3 (#1507), review H1 (after `exits.una`): a quiet loop that `skip` and `stop`
 /// leave across quiet `tasks` statements, a `within` that cuts a quiet `tasks` statement, and a
 /// quiet failing block, then the same constructs in public code.
+///
+/// Two changes keep every outcome out of the schedule's hands under the real clock (#1942),
+/// with the constructs unchanged. The started task of the failing block is `hold()`, a loop
+/// of 10^12 iterations that the failure beside it cancels long before its end, so it ends
+/// `cancelled` in both engines on every schedule; `noop()` there could end on another worker before the failure, with no
+/// event, where the interpreter writes `cancelled`. The public `within` around `blocked()` is
+/// 10 minutes, a deadline the run never reaches, as the interpreter's virtual clock never
+/// reaches 5 ms; with 5 ms, a loaded machine could let it pass before the two loops' three
+/// iterations, a `timeout` event that the interpreter never writes. The quiet `within`s keep
+/// 5 ms: whether they cut writes nothing.
 const SECRET_EXIT_PATHS: &str = r#"module leak
 
-import std.time (millisecond)
+import std.time (millisecond, minute)
 
 pub kind Bad = Boom | Other
 
 noop() -> Unit = unit
+
+hold() -> Unit
+=
+  let edit n = 0
+  for i in 0..<1000000000000
+    n = n + 1
 
 spin() -> Unit
   diverges
@@ -7134,7 +7150,7 @@ run_block() -> Unit
   fails Bad
 =
   tasks
-    start noop()
+    start hold()
     boom()
       if error pass
 
@@ -7172,7 +7188,7 @@ pub main() -> Unit
   let s: internal Int = SECRET
   loops(s)
   let p = attempt run_block()
-  let r = attempt blocked() within 5 * millisecond
+  let r = attempt blocked() within 10 * minute
   spin()
   @console.print("done")
 "#;
