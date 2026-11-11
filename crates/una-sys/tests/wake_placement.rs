@@ -64,14 +64,14 @@ fn the_wake_pipe_lands_as_high_as_the_limit_allows_and_never_on_a_standard_strea
         if !held.is_empty() {
             let null =
                 std::os::fd::IntoRawFd::into_raw_fd(std::fs::File::open("/dev/null").unwrap());
-            for fd in &held {
-                // SAFETY: `dup2` makes `fd` a duplicate of `null`, a descriptor this child just
-                // opened; no memory is touched. A descriptor already open at `fd` is replaced,
-                // as a redirection of the shell would replace it.
-                assert!(
-                    *fd == null || unsafe { libc::dup2(null, *fd) } == *fd,
-                    "dup2 {fd}"
-                );
+            for fd in held.iter().copied().filter(|fd| *fd != null) {
+                // SAFETY: `dup2` reads and writes no memory of the process: it needs `null` to
+                // be an open descriptor, which this child just opened and owns, and takes any
+                // integer as the target `fd`, refusing one out of range with -1. The child owns
+                // its descriptor table; a descriptor already open at `fd` is replaced, as a
+                // redirection of the shell would replace it. Failure is checked below.
+                let duplicate = unsafe { libc::dup2(null, fd) };
+                assert_eq!(duplicate, fd, "dup2 {fd}");
             }
             if !held.contains(&null) {
                 // SAFETY: `null` is the descriptor opened above, owned here and used no more.
