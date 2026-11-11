@@ -1368,6 +1368,101 @@ fn release_and_check_release_refuse_a_target_that_is_not_shipped() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Runs `release.sh` for the host in a scratch tree at `dir` that ships the host's target, with
+/// a fake `cargo` first on PATH that writes the Z3 variables it was started with and the command
+/// line to `dir`/cargo-env and fails, so the script stops at its first build. `z3_cache` is the
+/// cache it searches, `dev` the UNA_Z3_LIB of the caller (unset when `None`), and the caller's
+/// UNA_EMBED_Z3 and UNA_EMBED_Z3_SHA256 are a stale pair it must replace. Returns its output.
+fn release_with_fake_cargo(dir: &Path, z3_cache: &Path, dev: Option<&Path>) -> Output {
+    let host = host_target();
+    release_tree(dir, &["release.sh"], &format!("{host}\n"));
+    std::fs::create_dir_all(dir.join("supply-chain")).unwrap();
+    std::fs::write(
+        dir.join("supply-chain/z3.lock"),
+        format!("[library]\n\"{host}\" = \"{}\"\n", "ab".repeat(32)),
+    )
+    .unwrap();
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let cargo = bin.join("cargo");
+    std::fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\n{{ echo \"UNA_Z3_LIB=${{UNA_Z3_LIB-<unset>}}\"; echo \"UNA_EMBED_Z3=${{UNA_EMBED_Z3-<unset>}}\"; echo \"UNA_EMBED_Z3_SHA256=${{UNA_EMBED_Z3_SHA256-<unset>}}\"; echo \"args=$*\"; }} > '{}'\nexit 1\n",
+            dir.join("cargo-env").display()
+        ),
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(&cargo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // The test's own PATH, with the fake in front (compiler/conventions.md §1 covers libraries).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    let mut command = Command::new("sh");
+    command
+        .arg(dir.join("scripts/release.sh"))
+        .arg(&host)
+        .env("PATH", format!("{}:{inherited}", bin.display()))
+        .env("UNA_Z3_CACHE", z3_cache)
+        .env("UNA_EMBED_Z3", dir.join("stale/libz3shell.a"))
+        .env("UNA_EMBED_Z3_SHA256", "cd".repeat(32))
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_BUILD_RUSTFLAGS");
+    match dev {
+        Some(dev) => command.env("UNA_Z3_LIB", dev),
+        None => command.env_remove("UNA_Z3_LIB"),
+    };
+    command.output().unwrap()
+}
+
+#[test]
+fn release_builds_with_the_embedded_z3_alone_whatever_the_callers_environment() {
+    // scripts/local-ci.sh exports UNA_Z3_LIB, a development library, for every step, and a
+    // developer's shell holds it after `scripts/z3-library.sh --export`; una-z3's build refuses it
+    // beside UNA_EMBED_Z3. The release build has UNA_EMBED_Z3 and its digest, from the cache entry
+    // whose recorded digest the lock pins, and no UNA_Z3_LIB (#1954).
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-z3-env");
+    // The cache and the development library lie outside the scratch tree, which each run
+    // makes afresh.
+    let cache = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-z3-env-cache");
+    let _ = std::fs::remove_dir_all(&cache);
+    let entry = cache.join("key");
+    let dev = cache.join("dev/libz3shell.a");
+    for (with, digest) in [("other", "ef"), ("key", "ab")] {
+        std::fs::create_dir_all(cache.join(with).join("lib")).unwrap();
+        std::fs::write(cache.join(with).join("lib/libz3shell.a"), with).unwrap();
+        std::fs::write(cache.join(with).join("library.sha256"), digest.repeat(32)).unwrap();
+    }
+    for caller in [Some(dev.as_path()), None] {
+        let output = release_with_fake_cargo(&dir, &cache, caller);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{caller:?}: {stderr}");
+        let seen = std::fs::read_to_string(dir.join("cargo-env")).unwrap();
+        let expected = format!(
+            "UNA_Z3_LIB=<unset>\nUNA_EMBED_Z3={}\nUNA_EMBED_Z3_SHA256={}\nargs=build --release --locked --target-dir {} --package una-rt\n",
+            entry.join("lib/libz3shell.a").display(),
+            "ab".repeat(32),
+            dir.join("target/release-remapped").display()
+        );
+        assert_eq!(seen, expected, "{caller:?}");
+    }
+    // Fail-closed: with no cache entry of the pinned digest, the caller's development library
+    // is never taken instead, and nothing is built.
+    std::fs::remove_dir_all(&entry).unwrap();
+    let output = release_with_fake_cargo(&dir, &cache, Some(&dev));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("holds the Z3 library"), "{stderr}");
+    assert!(!dir.join("cargo-env").exists(), "cargo ran: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
 #[test]
 #[allow(clippy::print_stderr)]
 fn local_release_builds_exactly_the_archives_of_the_shipped_targets() {
