@@ -1,7 +1,8 @@
 //! `install.sh` (#240): it installs only what the release's validation summary vouches for, and
 //! its pins follow the repository. It downloads nothing but the archive: the solver is built
-//! into `una` (ADR 0124). The full installation is tested by hand in a clean container and a
-//! clean `HOME` (docs/release-gates.md).
+//! into `una` (ADR 0124). It offers exactly the shipped targets, and on Linux it refuses musl and
+//! a glibc below 2.39 before anything is downloaded (#1904), shown here on fake machines. The full
+//! installation is tested by hand in a clean container and a clean `HOME` (docs/release-gates.md).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -53,19 +54,18 @@ fn the_installer_pins_follow_the_repository() {
 }
 
 /// The archive's target on this machine, as the installer names it, when it has releases:
-/// macOS on arm64 only (#1819); Linux is not available in this release yet.
+/// macOS on arm64 and Linux on arm64 (#1904); Linux on x86_64 is not shipped in this release.
 fn target() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
         _ => None,
     }
 }
 
-/// Every target the installer can install is a shipped target of `scripts/release-targets.txt`
-/// (#1903), read by the one reader the release scripts use, so it never offers an archive that no
-/// release builds; and the target this test installs on this machine is one of them.
-#[test]
-fn the_installer_offers_only_shipped_targets() {
+/// The shipped targets, read from `scripts/release-targets.txt` by the one reader the release
+/// scripts use (#1903).
+fn shipped_targets() -> Vec<String> {
     let output = Command::new("sh")
         .arg("-c")
         .arg(r#". "$1/scripts/release-targets.sh" && release_targets "$1/scripts/release-targets.txt""#)
@@ -74,22 +74,33 @@ fn the_installer_offers_only_shipped_targets() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
-    let shipped = String::from_utf8(output.stdout).unwrap();
-    let shipped: Vec<&str> = shipped.lines().collect();
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The installer offers exactly the shipped targets of `scripts/release-targets.txt` (#1903):
+/// none that no release builds, and every one that a release builds; and the target this test
+/// installs on this machine is one of them.
+#[test]
+fn the_installer_offers_exactly_the_shipped_targets() {
+    let mut shipped = shipped_targets();
     let script = read("install.sh");
-    let offered: Vec<&str> = script
+    let mut offered: Vec<&str> = script
         .split_whitespace()
         .filter_map(|word| word.strip_prefix("target="))
         .collect();
     assert!(!offered.is_empty(), "install.sh names no target");
-    for target in offered {
-        assert!(
-            shipped.contains(&target),
-            "install.sh offers {target}, which scripts/release-targets.txt does not list"
-        );
-    }
+    shipped.sort();
+    offered.sort();
+    assert_eq!(
+        offered, shipped,
+        "install.sh offers {offered:?}, scripts/release-targets.txt lists {shipped:?}"
+    );
     if let Some(target) = target() {
-        assert!(shipped.contains(&target), "{target}");
+        assert!(shipped.iter().any(|t| t == target), "{target}");
     }
 }
 
@@ -176,13 +187,19 @@ fn release_holding(
 
 /// Runs the installer with `args` into `dir/home`, from the release under `dir`.
 fn install(dir: &Path, version: &str, args: &[&str]) -> Output {
+    install_with_path(dir, version, args, SYSTEM_PATH)
+}
+
+const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+fn install_with_path(dir: &Path, version: &str, args: &[&str], path: &str) -> Output {
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     Command::new("sh")
         .arg(root().join("install.sh"))
         .args(args)
         .env_clear()
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PATH", path)
         .env("HOME", &home)
         .env("UNA_VERSION", version)
         .env(
@@ -608,14 +625,384 @@ fn the_installer_refuses_a_version_before_0_4_0_comparing_numbers_not_text() {
                 "{}",
                 stderr(&output)
             );
-            if std::env::consts::OS == "linux" {
+            if (std::env::consts::OS, std::env::consts::ARCH) == ("linux", "x86_64") {
                 assert!(
-                    stderr(&output).contains("Linux is not available in this release yet"),
+                    stderr(&output).contains("Linux on x86_64 is not shipped in this release"),
                     "{}",
                     stderr(&output)
                 );
             }
         }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A machine the installer runs on, whatever machine runs the test (#1904): commands on a
+/// directory put first on `PATH`. `uname -s` and `uname -m` print `os` and `arch`;
+/// `getconf GNU_LIBC_VERSION` prints `getconf`, or fails as musl's and macOS's do when it is
+/// `None`; `ldd --version` prints `ldd` (on stderr with status 1 when it names musl, as musl's
+/// does), or is not found when it is `None`; `id -u` prints `uid`. `curl` and `wget`, when the
+/// machine has them, record every call in `dir/fetches` and then run the real ones, so that a
+/// test sees whether anything was downloaded.
+struct Host<'a> {
+    os: &'a str,
+    arch: &'a str,
+    getconf: Option<&'a str>,
+    ldd: Option<&'a str>,
+    uid: &'a str,
+}
+
+const GLIBC_239: Host<'static> = Host {
+    os: "Linux",
+    arch: "aarch64",
+    getconf: Some("glibc 2.39"),
+    ldd: Some("ldd (Ubuntu GLIBC 2.39-0ubuntu8.6) 2.39"),
+    uid: "1000",
+};
+
+fn script(path: &Path, text: &str) {
+    std::fs::write(path, format!("#!/bin/sh\n{text}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Runs the installer, as [`install`], on `host`; returns its output and the downloads it made.
+fn install_on(dir: &Path, version: &str, host: &Host) -> (Output, Vec<String>) {
+    let bin = dir.join("fake-bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fetches = dir.join("fetches");
+    let _ = std::fs::remove_file(&fetches);
+    script(
+        &bin.join("uname"),
+        &format!(
+            "case $1 in -s) echo '{}' ;; -m) echo '{}' ;; *) exit 1 ;; esac",
+            host.os, host.arch
+        ),
+    );
+    script(
+        &bin.join("getconf"),
+        &match host.getconf {
+            Some(answer) => format!("[ \"$1\" = GNU_LIBC_VERSION ] && echo '{answer}'"),
+            None => "echo \"getconf: $1: invalid argument\" >&2; exit 1".to_owned(),
+        },
+    );
+    script(
+        &bin.join("ldd"),
+        &match host.ldd {
+            Some(text) if text.contains("musl") => format!("echo '{text}' >&2; exit 1"),
+            Some(text) => format!("echo '{text}'"),
+            None => "echo 'ldd: not found' >&2; exit 127".to_owned(),
+        },
+    );
+    script(
+        &bin.join("id"),
+        &format!(
+            "[ \"$1\" = -u ] && echo '{}' || PATH={SYSTEM_PATH} exec id \"$@\"",
+            host.uid
+        ),
+    );
+    for fetcher in ["curl", "wget"] {
+        let found = Command::new("sh")
+            .arg("-c")
+            .arg(format!("PATH={SYSTEM_PATH} command -v {fetcher}"))
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if found {
+            script(
+                &bin.join(fetcher),
+                &format!(
+                    "echo \"{fetcher} $*\" >> '{}'\nPATH={SYSTEM_PATH} exec {fetcher} \"$@\"",
+                    fetches.display()
+                ),
+            );
+        }
+    }
+    let output = install_with_path(
+        dir,
+        version,
+        &[],
+        &format!("{}:{SYSTEM_PATH}", bin.display()),
+    );
+    let fetched = std::fs::read_to_string(&fetches)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    (output, fetched)
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The `uname -s` and `uname -m` of a machine each shipped target installs on; a target added to
+/// `scripts/release-targets.txt` needs its row here and its case in `install.sh`.
+fn uname_of(target: &str) -> Option<(&'static str, &'static str)> {
+    match target {
+        "aarch64-apple-darwin" => Some(("Darwin", "arm64")),
+        "aarch64-unknown-linux-gnu" => Some(("Linux", "aarch64")),
+        _ => None,
+    }
+}
+
+const CC_NOTE: &str = "una build needs a C compiler on PATH as cc";
+const ROOT_NOTE: &str = "refuse to run as root";
+
+#[test]
+fn every_shipped_target_installs_on_its_machine_with_its_notes() {
+    // Each target of scripts/release-targets.txt is the archive the installer picks on its
+    // machine; Linux on arm64 also as `uname -m` says `arm64`. On Linux the installer says that
+    // `una build` needs `cc` and that the proving commands refuse root; on macOS, whose `una`
+    // links by itself, neither, unless the user is root.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-targets");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.5";
+    let home = dir.join("home/.una");
+    let mut machines: Vec<(String, &str, &str)> = shipped_targets()
+        .into_iter()
+        .map(|target| {
+            let machine = uname_of(&target);
+            assert!(
+                machine.is_some(),
+                "no machine for {target}: add it to uname_of and to install.sh"
+            );
+            let (os, arch) = machine.unwrap();
+            (target, os, arch)
+        })
+        .collect();
+    machines.push(("aarch64-unknown-linux-gnu".to_owned(), "Linux", "arm64"));
+    for (target, os, arch) in &machines {
+        release(&dir, target, version, "PASS (every gate)", None);
+        let host = Host {
+            os,
+            arch,
+            ..GLIBC_239
+        };
+        let (output, fetched) = install_on(&dir, version, &host);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{os} {arch}: {}",
+            stderr(&output)
+        );
+        assert!(home.join("bin/una").exists(), "{os} {arch}");
+        assert!(
+            fetched
+                .iter()
+                .any(|f| f.contains(&format!("una-{version}-{target}.tar.gz"))),
+            "{os} {arch}: {fetched:?}"
+        );
+        let linux = *os == "Linux";
+        for note in [CC_NOTE, ROOT_NOTE, "link the system's glibc dynamically"] {
+            assert_eq!(
+                stdout(&output).contains(note),
+                linux,
+                "{os} {arch}: {note}: {}",
+                stdout(&output)
+            );
+        }
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+    // Root on macOS: told that the proving commands refuse it.
+    release(
+        &dir,
+        "aarch64-apple-darwin",
+        version,
+        "PASS (every gate)",
+        None,
+    );
+    let host = Host {
+        os: "Darwin",
+        arch: "arm64",
+        uid: "0",
+        ..GLIBC_239
+    };
+    let (output, _) = install_on(&dir, version, &host);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains(ROOT_NOTE), "{}", stdout(&output));
+    assert!(!stdout(&output).contains(CC_NOTE), "{}", stdout(&output));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn linux_without_a_glibc_at_the_floor_is_refused_before_anything_is_downloaded() {
+    // The Linux `una` is a dynamic glibc executable built on glibc 2.39 (#1904): musl, an older
+    // glibc and a glibc whose version cannot be read are refused, and nothing is downloaded,
+    // though a valid release for the machine is there to download.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-glibc");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.4";
+    let home = dir.join("home/.una");
+    let target = "aarch64-unknown-linux-gnu";
+    release(&dir, target, version, "PASS (every gate)", None);
+    let musl = "musl libc (aarch64)\nVersion 1.2.5\nDynamic Program Loader";
+    let refused = [
+        // Alpine: musl's ldd, and a getconf that does not know GNU_LIBC_VERSION.
+        (None, Some(musl), "this system's C library is musl"),
+        // musl with a compatibility getconf that answers like glibc's.
+        (
+            Some("glibc 2.39"),
+            Some(musl),
+            "this system's C library is musl",
+        ),
+        // No answer at all: never assumed to be glibc.
+        (None, None, "cannot read this system's glibc version"),
+        (
+            None,
+            Some("ldd (GNU libc) 2.39"),
+            "cannot read this system's glibc version",
+        ),
+        (Some(""), None, "cannot read this system's glibc version"),
+        (
+            Some("glibc 2"),
+            None,
+            "cannot read this system's glibc version",
+        ),
+        (
+            Some("glibc 2.x"),
+            None,
+            "cannot read this system's glibc version",
+        ),
+        (
+            Some("glibc 2.39-rc"),
+            None,
+            "cannot read this system's glibc version",
+        ),
+        (
+            Some("musl 1.2.5"),
+            None,
+            "cannot read this system's glibc version",
+        ),
+        // Below the floor, compared as numbers: 2.4 is before 2.39, though not as text.
+        (Some("glibc 2.38"), None, "this system has glibc 2.38"),
+        (Some("glibc 2.35"), None, "this system has glibc 2.35"),
+        (Some("glibc 2.4"), None, "this system has glibc 2.4"),
+        (Some("glibc 1.99"), None, "this system has glibc 1.99"),
+    ];
+    for (getconf, ldd, why) in refused {
+        let host = Host {
+            getconf,
+            ldd,
+            ..GLIBC_239
+        };
+        let (output, fetched) = install_on(&dir, version, &host);
+        let case = format!("{getconf:?} {ldd:?}");
+        assert_eq!(output.status.code(), Some(1), "{case}: {}", stderr(&output));
+        assert!(stderr(&output).contains(why), "{case}: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains(
+                "needs glibc 2.39 or later; Alpine and other musl systems are not supported"
+            ),
+            "{case}: {}",
+            stderr(&output)
+        );
+        assert!(fetched.is_empty(), "{case}: {fetched:?}");
+        assert!(!home.exists(), "{case}");
+    }
+    // At the floor and above, compared as numbers: installed.
+    for getconf in [
+        "glibc 2.39",
+        "glibc 2.40",
+        "glibc 2.100",
+        "glibc 2.40.9000",
+        "glibc 3.0",
+    ] {
+        let host = Host {
+            getconf: Some(getconf),
+            ..GLIBC_239
+        };
+        let (output, fetched) = install_on(&dir, version, &host);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{getconf}: {}",
+            stderr(&output)
+        );
+        assert!(!fetched.is_empty(), "{getconf}");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_machine_without_a_release_is_refused_before_anything_is_downloaded() {
+    // Linux on x86_64 is not shipped in this release (#1904), and no other system or processor
+    // has a release: refused with the reason, and nothing downloaded, though an archive under
+    // the name of each target is there.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-machines");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.3";
+    let home = dir.join("home/.una");
+    let shipped = "the releases are for macOS on arm64 and Linux on arm64 (aarch64)";
+    for (os, arch, why, target) in [
+        (
+            "Linux",
+            "x86_64",
+            "Linux on x86_64 is not shipped in this release",
+            "x86_64-unknown-linux-gnu",
+        ),
+        (
+            "Linux",
+            "amd64",
+            "Linux on x86_64 is not shipped in this release",
+            "x86_64-unknown-linux-gnu",
+        ),
+        (
+            "Linux",
+            "armv7l",
+            "no Una release for Linux armv7l",
+            "armv7-unknown-linux-gnueabihf",
+        ),
+        (
+            "Linux",
+            "riscv64",
+            "no Una release for Linux riscv64",
+            "riscv64gc-unknown-linux-gnu",
+        ),
+        (
+            "Darwin",
+            "x86_64",
+            "no Una release for Darwin x86_64",
+            "x86_64-apple-darwin",
+        ),
+        (
+            "FreeBSD",
+            "arm64",
+            "no Una release for FreeBSD arm64",
+            "aarch64-unknown-freebsd",
+        ),
+    ] {
+        release(&dir, target, version, "PASS (every gate)", None);
+        let host = Host {
+            os,
+            arch,
+            ..GLIBC_239
+        };
+        let (output, fetched) = install_on(&dir, version, &host);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{os} {arch}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(why),
+            "{os} {arch}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(shipped),
+            "{os} {arch}: {}",
+            stderr(&output)
+        );
+        assert!(fetched.is_empty(), "{os} {arch}: {fetched:?}");
+        assert!(!home.exists(), "{os} {arch}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
