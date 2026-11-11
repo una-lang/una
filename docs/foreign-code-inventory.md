@@ -2,7 +2,7 @@
 
 Issue #1098, part of epic #1097. The rule this inventory serves: Una ships no C, C++ or foreign assembly, not in the `una` binary, not in the runtime (`una-rt`), and not in any linked program. Each finding is fixed by an implementation of our own in Rust. Z3 is the one accepted exception.
 
-This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the v0.3.16 release artifacts for `aarch64-apple-darwin`. The Z3 rows are updated for ADR 0124 step 1, which built the solver into `una`.
+This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the v0.3.16 release artifacts for `aarch64-apple-darwin`. The Z3 rows are updated for ADR 0124 step 1, which built the solver into `una`, and for the Linux release `una` of 0.4.0 (#1905), from its build scripts rather than from a Linux artifact (section 1).
 
 ## Summary
 
@@ -19,6 +19,7 @@ This is a snapshot of `main` at `358ab4d1` (workspace version 0.3.16) and of the
 | System linker `cc` | `una build` links through the host C compiler driver | A host tool, not code in the artifacts; no issue yet |
 | C-emitting release backend (ADR 0106) | Accepted design; no code on `main` | Withdrawn by ADR 0106's amendment of 2026-10-31 (#1099, epic #1097); release builds become Una's own code generation (#1305) |
 | Z3 5.1.0 | The SMT solver, a C++ library built into `una` (ADR 0124 step 1), run in a confined child process of `una` itself; pinned by `supply-chain/z3.lock`, its version by `verification.lock` | Accepted exception |
+| GNU C++ runtime (`libstdc++`) and `libgcc` | Linked statically into the Linux release `una` for Z3's C++ code (`scripts/release.sh`, `-static-libstdc++ -static-libgcc`); not in `libuna_rt.a` nor in a linked program | Part of the Z3 exception: leaves only with Z3 |
 
 ## 1. Method
 
@@ -101,7 +102,8 @@ Also carried by the artifacts, outside the crate graph:
 | The unwinder | `_Unwind_*` functions for panics and backtraces | All three (`panic_unwind`, std's backtrace, `_Unwind_Resume` in every crate's landing pads) | Section 4 (libSystem on macOS, `libgcc_s` on Linux) |
 | System linker `cc` | `una build` links the program object and `libuna_rt.a` through the host C compiler driver (`crates/una-cli/src/build.rs`, ADR 0055 NB-1); on Linux it adds `-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`, after `-Wl,--as-needed` since #1103, so only the libraries the program uses get a `NEEDED` entry | Not in the artifacts; a host tool needed to build | No issue yet |
 | C-emitting release backend | ADR 0106 (accepted) chose C compiled by the system C compiler for release builds; no C emission exists in the code of `main` | None | Withdrawn by ADR 0106's amendment of 2026-10-31 (#1099, epic #1097) |
-| Z3 5.1.0 | Z3's SMT-LIB front end, built by `scripts/build-z3.sh` from the source `supply-chain/z3.lock` pins and linked into `una` by `crates/una-z3`; each query runs in a child process of `una` itself, in solver mode, confined (`crates/una-cli/src/solver_child.rs`, `crates/una-sys/src/solver/`); the version is pinned by `verification.lock`. No `z3` program is run | `una` (with the system's C++ runtime, `/usr/lib/libc++.1.dylib` on macOS); not `libuna_rt.a` nor a linked program | Accepted exception |
+| Z3 5.1.0 | Z3's SMT-LIB front end, built by `scripts/build-z3.sh` from the source `supply-chain/z3.lock` pins and linked into `una` by `crates/una-z3`; each query runs in a child process of `una` itself, in solver mode, confined (`crates/una-cli/src/solver_child.rs`, `crates/una-sys/src/solver/`); the version is pinned by `verification.lock`. No `z3` program is run | `una` (with the system's C++ runtime, `/usr/lib/libc++.1.dylib`, on macOS; on Linux with `libstdc++` and `libgcc` linked into `una` statically, below); not `libuna_rt.a` nor a linked program | Accepted exception |
+| GNU C++ runtime on Linux | `crates/una-z3/build.rs` links `stdc++` on Linux (line 123) for Z3's C++ code, and `scripts/release.sh` (line 99) adds `-static-libstdc++ -static-libgcc` to every Linux release build, so the release `una` holds the code of `libstdc++` and `libgcc` itself and asks the dynamic loader for no C++ library: `scripts/load-commands-una.txt` admits only `libm.so.6` beyond `scripts/load-commands.txt` (`libc.so.6`, `libgcc_s.so.1` and the loader), and `scripts/load-commands.sh`, a step of `scripts/local-ci.sh` (so of the `linux-arm64` gate) on the `una` that `scripts/release.sh` packed, fails on any other entry. No Linux release `una` was read for this inventory | `una` on Linux only; not `libuna_rt.a` nor a linked program | Part of the Z3 exception: it leaves with Z3 |
 
 ## 3. C library symbols of the artifacts
 
