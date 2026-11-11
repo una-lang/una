@@ -75,6 +75,9 @@ impl Poller {
     }
 
     /// Registers `fd` for one event of `interest`, which [`Poller::wait`] reports with `token`.
+    /// A registration that fired is re-armed by [`Poller::delete`] and then `add`, the same on
+    /// both platforms: `kqueue` drops a fired one-shot registration, but `epoll` keeps it,
+    /// disabled, until it is deleted, and refuses a second add of the descriptor with `EEXIST`.
     pub fn add(&self, fd: BorrowedFd<'_>, interest: Interest, token: u64) -> io::Result<()> {
         self.change(fd, interest, Some(token))
     }
