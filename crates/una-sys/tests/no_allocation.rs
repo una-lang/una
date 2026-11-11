@@ -67,8 +67,13 @@ fn the_handlers_work_allocates_nothing_keeps_errno_and_wakes_the_pipe() {
     assert_eq!(kept, 1234);
     assert!(word.changed_since(before).is_some());
     assert_eq!(una_sys::attention::stop_requests(), 2);
+    // The read end sits at `min(512, limit - 2)` or above (#1757): under a soft limit of open
+    // files below 514, as a job that launchd starts has (256 on macOS), it sits lower than
+    // 512. The test `wake_placement` checks the exact descriptor under each limit (#1932).
+    let limit = una_sys::io::descriptor_limit().unwrap();
+    let start = i32::try_from(limit.saturating_sub(2)).map_or(512, |room| room.min(512));
     let fd = una_sys::signals::wake_fd().unwrap();
-    assert!(fd >= 512);
+    assert!(fd >= start, "the read end {fd} under a limit of {limit}");
     let mut byte = [0u8; 1];
     // SAFETY: `byte` is a valid one-byte buffer; the pipe is non-blocking.
     let read = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), 1) };

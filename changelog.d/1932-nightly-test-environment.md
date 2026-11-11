@@ -1,0 +1,1 @@
+- **Two tests of the nightly suite no longer depend on its environment** (#1932). The test of the signal handlers expects the wake pipe as high as the soft limit of open files allows, as under a job that launchd starts, and the test of a limiter whose deadline comes before its refill runs on a run clock that stays still, so a late thread no longer lets a token in.
