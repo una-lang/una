@@ -519,9 +519,15 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
     );
 }
 
-/// The program of the second review of #1146: `main` computes alone for a time its `secret`
-/// key decides, with no park, then starts a long task and, in the same block, runs a short
-/// computation under a 6 ms deadline, and prints `done`.
+/// The program of the second review of #1146, with its key labeled `label`, `"secret "` or
+/// `"internal "`, and nothing else differing: `main` computes alone for a time its key decides,
+/// with no park, then starts a long task and, in the same block, runs a short computation under
+/// a 6 ms deadline, and prints `done`.
+///
+/// Since #1684 a `for` loop whose bound is above `internal`, in a program that starts tasks, is
+/// U4002 (`spec/27 §8` rule 5), so the `secret` program is refused, and the oracle runs its
+/// `internal` twin (#1947), as the serve oracles do. Labels do not reach the executable: the
+/// twin computes, starts and yields as the `secret` program would.
 ///
 /// The secret work is a call whose result is never used, kept as written: nothing between the
 /// checker and the executable drops a binding (elaboration lowers every `let`, and native code
@@ -530,9 +536,9 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
 /// block of a `tasks` statement, beside the task it started, so its timing label is `⊤`
 /// (ADR 0116 IF6, `τ_conc`) and its value could not reach `@console`; the trace records its
 /// `timeout` event, as for every `within` (`spec/27 §5`), and the test reads that.
-fn phase_program(key: u8) -> String {
+fn phase_program(label: &str, key: u8) -> String {
     format!(
-        "module phase\n\nimport std.time (millisecond)\n\nkey() -> secret Int = {key}\n\ncrunch(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(100000) within 6 * millisecond\n      if error use 0\n  @console.print(\"done\")\n"
+        "module phase\n\nimport std.time (millisecond)\n\nkey() -> {label}Int = {key}\n\ncrunch(n: {label}Int) -> {label}Int\n=\n  let edit total: {label}Int = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(100000) within 6 * millisecond\n      if error use 0\n    unit\n  @console.print(\"done\")\n"
     )
 }
 
@@ -553,11 +559,42 @@ fn time_the_root_spent_alone_never_changes_a_later_deadline_under_real_time() {
     // `start` made it yield at once to `burn`, whose turn outlasted the 6 ms deadline, and
     // every run's trace had a `timeout`. The checker labels this deadline `⊤` today; the
     // schedule must still not depend on the key, for the precise `τ_conc` of ADR 0116.
+    //
+    // Since #1684 the checker refuses the `secret` program, with U4002 at `crunch`'s loop, line
+    // 10, so the executables are those of its `internal` twin (#1947); the refusal is checked
+    // first, so that the twin stands for a program the checker no longer accepts.
+    let refused =
+        std::env::temp_dir().join(format!("una-timing-phasesecret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&refused);
+    std::fs::create_dir_all(refused.join("src")).unwrap();
+    std::fs::write(
+        refused.join("ita.una"),
+        "ita phasesecret\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry phase\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        refused.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(refused.join("src/phase.una"), phase_program("secret ", 1)).unwrap();
+    let checked = una(&refused, &["check", "."]);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert_ne!(checked.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains("[U4002]") && said.contains("src/phase.una:10:3"),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&refused);
     const RUNS: usize = 20;
     let mut timeouts = Vec::new();
     for key in [0u8, 1] {
         let name = format!("phaseleak{key}");
-        let dir = within_package(&name, "phase", &phase_program(key));
+        let dir = within_package(&name, "phase", &phase_program("internal ", key));
         let exe = dir.join(format!("target/una/{name}"));
         let trace = dir.join("trace.json");
         let mut timed_out = 0usize;
@@ -651,7 +688,9 @@ churn(n: {label}Int, run: internal Text) -> Unit
   uses @http: Http[get]
 =
   let spent = crunch(n)
-  let outcome = attempt @http.get("{silent}?r={{run}}", headers: [], key_name: None)
+  let outcome = attempt @http.get("{silent}?r={{run}}", headers: [],
+    key_name: None
+  )
   unit
 
 --- Starts `churn`, then fails its block after public work, which cancels its task.
@@ -669,11 +708,14 @@ pub main() -> Unit
   uses @http: Http[get]
 =
   let n = if key() > 0 then 2000000000 else 0
-  let run = when @env.get("UNA_RESIDUE_RUN")
+  let found = @env.get("UNA_RESIDUE_RUN")
+  let run = when found
     is Some(text) -> text
     is None -> "0"
   let tried = attempt burst(n, run)
-  let later = attempt @http.get("{fast}", headers: [], key_name: None) within 300 * millisecond
+  let later = attempt @http.get("{fast}", headers: [],
+    key_name: None
+  ) within 300 * millisecond
   unit
 "#
     )
@@ -811,17 +853,24 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
         String::from_utf8_lossy(&checked.stderr)
     );
     assert_ne!(checked.status.code(), Some(0), "{said}");
-    // U4001 at the later `within`, line 44 of the program, at its `attempt`: the diagnostic
-    // that names U4001, up to the next one, holds that position.
+    // U4001 at the later `within`, at its `attempt` (column 15 of the line that binds `later`):
+    // the diagnostic that names U4001, up to the next one, holds that position. The line is
+    // read from the program, so a change of layout above it cannot leave a stale number here.
+    let later_line = residue_program("secret ", 0, "", "")
+        .lines()
+        .position(|line| line.starts_with("  let later = attempt @http.get("))
+        .expect("the residue program binds `later`")
+        + 1;
+    let position = format!("src/residue.una:{later_line}:15");
     let at_within = said.match_indices("U4001").any(|(at, _)| {
         let rest = &said[at..];
         let end = rest
             .get(1..)
             .and_then(|tail| tail.find("[U"))
             .map_or(rest.len(), |e| e + 1);
-        rest[..end].contains("src/residue.una:44:15")
+        rest[..end].contains(&position)
     });
-    assert!(at_within, "{said}");
+    assert!(at_within, "U4001 at {position}: {said}");
     let _ = std::fs::remove_dir_all(&refused);
     let dirs = [
         residue_package("residuekey0", "", 0, port, true),
