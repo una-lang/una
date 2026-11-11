@@ -17,6 +17,13 @@ fi
 target=$1
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+# Only a shipped target's archive is checked (scripts/release-targets.txt, #1903).
+. scripts/release-targets.sh
+shipped=$(release_targets scripts/release-targets.txt) || exit 2
+if ! printf '%s\n' "$shipped" | grep -qxF -- "$target"; then
+    echo "error: $target is not a shipped target; scripts/release-targets.txt lists the targets a release checks" >&2
+    exit 2
+fi
 version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)"$/\1/p' Cargo.toml)
 name="una-$version-$target"
 out="$root/target/release-archives"

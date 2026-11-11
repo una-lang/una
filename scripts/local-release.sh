@@ -1,9 +1,10 @@
 #!/bin/sh
 # Builds the release archives of TAG on this machine while GitHub Actions is unavailable (#156,
-# ADR 0035 amendment of 2026-10-02): on a clean checkout of the tag's commit, the
-# aarch64-apple-darwin archive natively, the x86_64-unknown-linux-gnu archive in the linux/amd64
-# container of scripts/local-ci/Dockerfile and the aarch64-unknown-linux-gnu archive in its
-# linux/arm64 one (#241), each with scripts/release.sh and checked with scripts/check-release.sh. It writes the archives, their .sha256 files and the release
+# ADR 0035 amendment of 2026-10-02): on a clean checkout of the tag's commit, the archive of each
+# target that scripts/release-targets.txt lists and of no other (#1903), in its order: the
+# aarch64-apple-darwin archive natively, a Linux one in the container of scripts/local-ci/Dockerfile
+# of its architecture (linux/arm64, native here, #241; linux/amd64, emulated), each with
+# scripts/release.sh and checked with scripts/check-release.sh. It writes the archives, their .sha256 files and the release
 # notes to target/local-release/TAG/, and prints the `gh release create` command that publishes
 # them. It publishes nothing.
 #
@@ -37,6 +38,9 @@ host=$(rustc -vV | sed -n 's/^host: //p')
 [ "$host" = aarch64-apple-darwin ] \
     || fail "this machine builds $host; the macOS archive needs aarch64-apple-darwin"
 command -v docker >/dev/null 2>&1 || fail "docker not found; the Linux archive needs Docker"
+. "$root/scripts/release-targets.sh"
+targets=$(release_targets "$root/scripts/release-targets.txt") \
+    || fail "the shipped targets of scripts/release-targets.txt"
 
 # A clean checkout of the tag's commit, outside the working tree, removed at the end.
 work=$(mktemp -d "${TMPDIR:-/tmp}/una-release.XXXXXX")
@@ -70,14 +74,17 @@ volume=${UNA_LOCAL_RELEASE_VOLUME:-una-local-release-target}
 # scripts/check-release.sh runs no z3. On this machine the cache is UNA_Z3_CACHE, else
 # ~/.cache/una/z3.
 
-echo "== aarch64-apple-darwin, natively, from $commit"
-(
-    cd "$checkout" || exit 1
-    scripts/release.sh aarch64-apple-darwin && scripts/check-release.sh aarch64-apple-darwin
-) || fail "the macOS archive"
-cp "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz" \
-    "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz.sha256" "$out/" \
-    || fail "copying the macOS archive"
+# The macOS archive, natively; the host is aarch64-apple-darwin (checked above).
+mac_archive() {
+    echo "== $1, natively, from $commit"
+    (
+        cd "$checkout" || exit 1
+        scripts/release.sh "$1" && scripts/check-release.sh "$1"
+    ) || fail "the macOS archive"
+    cp "$checkout/target/release-archives/una-$version-$1.tar.gz" \
+        "$checkout/target/release-archives/una-$version-$1.tar.gz.sha256" "$out/" \
+        || fail "copying the macOS archive"
+}
 
 toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' "$checkout/rust-toolchain.toml")
 
@@ -113,11 +120,21 @@ linux_archive() {
             cp target/release-archives/$name target/release-archives/$name.sha256 /out/" \
         || fail "the Linux archive of $target"
 }
-linux_archive amd64 x86_64-unknown-linux-gnu ""
-linux_archive arm64 aarch64-unknown-linux-gnu -arm64
+for target in $targets; do
+    case $(release_target_platform "$target") in
+        macos) mac_archive "$target" ;;
+        linux/arm64) linux_archive arm64 "$target" -arm64 ;;
+        linux/amd64) linux_archive amd64 "$target" "" ;;
+        *) fail "no recipe for the archive of $target" ;;
+    esac
+done
 
 echo "== digests"
 (cd "$out" && shasum -a 256 -c ./*.sha256) || fail "a digest does not match its archive"
+# Exactly one archive per shipped target, and no other.
+expected=$(for target in $targets; do echo "una-$version-$target.tar.gz"; done | LC_ALL=C sort)
+built=$(cd "$out" && ls ./*.tar.gz 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort)
+[ "$built" = "$expected" ] || fail "the archives are not exactly those of scripts/release-targets.txt"
 
 # The notes: the version's CHANGELOG section, and where the archives come from.
 notes="$out/notes.md"
@@ -137,7 +154,9 @@ echo "local release: PASS ($tag, commit $commit)"
 echo "archives, digests and notes: $out"
 echo "publish with:"
 echo "  gh release create $tag --verify-tag --title \"Una $tag\" --notes-file $notes$prerelease \\"
-for target in aarch64-apple-darwin x86_64-unknown-linux-gnu; do
-    echo "    $out/una-$version-$target.tar.gz $out/una-$version-$target.tar.gz.sha256 \\"
+last=$(printf '%s\n' "$targets" | tail -n 1)
+for target in $targets; do
+    continued=" \\"
+    [ "$target" = "$last" ] && continued=""
+    echo "    $out/una-$version-$target.tar.gz $out/una-$version-$target.tar.gz.sha256$continued"
 done
-echo "    $out/una-$version-aarch64-unknown-linux-gnu.tar.gz $out/una-$version-aarch64-unknown-linux-gnu.tar.gz.sha256"

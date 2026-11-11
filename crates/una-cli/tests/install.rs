@@ -61,6 +61,38 @@ fn target() -> Option<&'static str> {
     }
 }
 
+/// Every target the installer can install is a shipped target of `scripts/release-targets.txt`
+/// (#1903), read by the one reader the release scripts use, so it never offers an archive that no
+/// release builds; and the target this test installs on this machine is one of them.
+#[test]
+fn the_installer_offers_only_shipped_targets() {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(r#". "$1/scripts/release-targets.sh" && release_targets "$1/scripts/release-targets.txt""#)
+        .arg("sh")
+        .arg(root())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let shipped = String::from_utf8(output.stdout).unwrap();
+    let shipped: Vec<&str> = shipped.lines().collect();
+    let script = read("install.sh");
+    let offered: Vec<&str> = script
+        .split_whitespace()
+        .filter_map(|word| word.strip_prefix("target="))
+        .collect();
+    assert!(!offered.is_empty(), "install.sh names no target");
+    for target in offered {
+        assert!(
+            shipped.contains(&target),
+            "install.sh offers {target}, which scripts/release-targets.txt does not list"
+        );
+    }
+    if let Some(target) = target() {
+        assert!(shipped.contains(&target), "{target}");
+    }
+}
+
 fn sha256(path: &Path) -> String {
     let output = Command::new("shasum")
         .args(["-a", "256"])

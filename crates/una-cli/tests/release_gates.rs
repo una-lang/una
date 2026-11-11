@@ -1203,3 +1203,80 @@ fn the_docker_gates_refuse_any_context_but_docker_desktops() {
     let _ = std::fs::remove_dir_all(&out);
     let _ = std::fs::remove_dir_all(out.with_extension("bin"));
 }
+
+/// `release_targets FILE` of `scripts/release-targets.sh` (#1903), run by `sh`.
+fn release_targets(file: &Path) -> Output {
+    Command::new("sh")
+        .arg("-c")
+        .arg(r#". "$1/scripts/release-targets.sh" && release_targets "$2""#)
+        .arg("sh")
+        .arg(root())
+        .arg(file)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn the_shipped_targets_are_one_list_that_fails_closed() {
+    let output = release_targets(&root().join("scripts/release-targets.txt"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "aarch64-apple-darwin\naarch64-unknown-linux-gnu\n"
+    );
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-targets");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Each of these refuses every target: status 2 and nothing on stdout.
+    for (name, text, says) in [
+        ("empty", "", "lists no target"),
+        ("comments", "# only a comment\n\n", "lists no target"),
+        ("crlf", "aarch64-apple-darwin\r\n", "is not a target triple"),
+        ("space", " aarch64-apple-darwin\n", "is not a target triple"),
+        (
+            "trailing",
+            "aarch64-apple-darwin # macOS\n",
+            "is not a target triple",
+        ),
+        (
+            "twice",
+            "aarch64-apple-darwin\naarch64-apple-darwin\n",
+            "twice",
+        ),
+        (
+            "unknown",
+            "aarch64-apple-darwin\nriscv64gc-unknown-linux-gnu\n",
+            "which no release script builds",
+        ),
+    ] {
+        let file = dir.join(name);
+        std::fs::write(&file, text).unwrap();
+        let output = release_targets(&file);
+        assert_eq!(output.status.code(), Some(2), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(says),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = release_targets(&dir.join("missing"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    // Each release script reads it, and holds no target list of its own.
+    for script in [
+        "scripts/release.sh",
+        "scripts/check-release.sh",
+        "scripts/local-release.sh",
+    ] {
+        let text = std::fs::read_to_string(root().join(script)).unwrap();
+        assert!(text.contains("release_targets "), "{script}");
+    }
+    let local_release = std::fs::read_to_string(root().join("scripts/local-release.sh")).unwrap();
+    assert!(!local_release.contains("linux_archive amd64 x86_64"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
