@@ -40,7 +40,8 @@ RUN = re.compile(
 # naming any other gate is refused.
 GATES = ["clone", "build", "deps", "mac", "linux", "linux-arm64", "release", "reproducible",
          "determinism", "native", "timing-channels", "owner-replay", "sanitize", "site", "formal", "hunt",
-         "hunt-linux-arm64", "solver-identity", "limits", "toolchain-free"]
+         "hunt-linux-arm64", "solver-identity", "limits", "limits-linux-arm64", "limits-linux",
+         "toolchain-free"]
 GATE_ROW = re.compile(r"\| ([a-z0-9-]+) \| (PASS|FAIL) \| ([0-9]+) \| `[0-9a-f]{64}` \|")
 ARCHIVE_ROW = re.compile(r"\| `(una-[0-9A-Za-z._-]+\.tar\.gz)` \| `([0-9a-f]{64})` \|")
 # The target part of an archive's name, after `una-<version>-`.
