@@ -51,6 +51,12 @@ cleanup() {
 }
 trap cleanup EXIT
 git worktree add --detach --quiet "$checkout" "$commit" || fail "checking out $commit"
+# The archives are the tag's commit's: its own list, which must also be this checkout's, since the
+# recipes below are this checkout's (#1903). A tag with no list, or another list, fails here.
+tag_targets=$(release_targets "$checkout/scripts/release-targets.txt") \
+    || fail "the shipped targets of $commit"
+[ "$tag_targets" = "$targets" ] \
+    || fail "the shipped targets of $commit are not those of this checkout's scripts/release-targets.txt"
 
 version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)"$/\1/p' \
     "$checkout/Cargo.toml")

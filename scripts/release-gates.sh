@@ -408,6 +408,12 @@ gate_toolchain-free() {
         }
         [ $# -gt 0 ] || { echo "no shipped target" >&2; exit 1; }
         . scripts/release-targets.sh || exit 1
+        # The archives must be exactly one per shipped target: an archive of another target would
+        # go unchecked here.
+        expected=$(for target in "$@"; do echo "una-$version-$target.tar.gz"; done | LC_ALL=C sort)
+        present=$(cd "$built" 2> /dev/null && ls -- *.tar.gz 2> /dev/null | LC_ALL=C sort)
+        [ -z "$present" ] || [ "$present" = "$expected" ] \
+            || { echo "the archives of $built are not exactly one per shipped target" >&2; exit 1; }
         for target in "$@"; do
             # The leg of each platform of scripts/release-targets.sh.
             case $(release_target_platform "$target") in
@@ -452,7 +458,9 @@ gate_reproducible() {
     local version tag
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     tag=v$version
-    # Every shipped target's archive is compared: one missing from either build fails the gate.
+    # Every archive of the first build is compared, as is every shipped target's: one missing
+    # from either build fails the gate, and so does an archive of the first build that is not a
+    # shipped target's, which no other gate checks (#1903).
     run reproducible with_clone_tag "$CLONE" "$OUT" "$tag" "$SHA" bash -c '
         set -u
         tag='"'$tag'"'
@@ -466,13 +474,15 @@ gate_reproducible() {
         UNA_LOCAL_RELEASE_VOLUME=$again scripts/local-release.sh "$tag"
         status=$?
         version=${tag#v}
-        [ $# -gt 0 ] || status=1
-        for target in "$@"; do
-            name=una-$version-$target.tar.gz
+        [ $# -gt 0 ] || { echo "no shipped target"; status=1; }
+        shipped=$(for target in "$@"; do echo "una-$version-$target.tar.gz"; done)
+        for name in $( { printf "%s\n" "$shipped"; (cd "$first" && ls -- *.tar.gz 2> /dev/null); } | LC_ALL=C sort -u); do
             one=$(shasum -a 256 "$first/$name" 2> /dev/null | cut -d" " -f1)
             two=$(shasum -a 256 "$built/$name" 2> /dev/null | cut -d" " -f1)
             echo "$name: first ${one:-missing}, second ${two:-missing}"
             [ -n "$one" ] && [ "$one" = "$two" ] || status=1
+            printf "%s\n" "$shipped" | grep -qxF -- "$name" \
+                || { echo "$name is not the archive of a shipped target"; status=1; }
         done
         docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
         rm -rf "${built:?}"
@@ -636,6 +646,7 @@ if [ $NEEDS_DOCKER = 1 ] && command -v docker > /dev/null 2>&1; then
 fi
 
 # The record.
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
 {
     echo "# Validation record"
     echo
@@ -671,6 +682,18 @@ fi
         for archive in $archives; do
             echo "| \`$(basename "$archive")\` | \`$(digest "$archive")\` |"
         done
+    fi
+    # The archives must be exactly one per shipped target (#1903): once there is any archive, or
+    # the release gate passed, a missing or an extra one fails the verdict (`archives`).
+    archives_wrong=0
+    if [ -n "$archives" ] || awk -F'\t' 'NR > 1 && $1 == "release" && $3 == "PASS" { found = 1 } END { exit !found }' "$RESULTS"; then
+        expected=$(while read -r target; do echo "una-$version-$target.tar.gz"; done <<< "$TARGETS" | LC_ALL=C sort)
+        packed=$(for archive in $archives; do basename "$archive"; done | LC_ALL=C sort)
+        if [ -z "$version" ] || [ "$packed" != "$expected" ]; then
+            archives_wrong=1
+            echo
+            echo "The archives are not exactly one per shipped target: expected $(printf '%s ' $expected)"
+        fi
     fi
     echo
     # The strip that removed the debug sections of each runtime built into una (#1359), as
@@ -732,6 +755,7 @@ print("- Findings: %s; errors: %s" % (len(s["findings"]), len(s["errors"])))
     fi
     echo
     failed=$(tail -n +2 "$RESULTS" | awk -F'\t' '$3 == "FAIL" { print $1 }' | sort -u | paste -sd ' ' - | sed 's/ /, /g')
+    [ $archives_wrong = 1 ] && failed=${failed:+$failed, }archives
     missing=()
     for gate in "${ALL[@]}"; do
         awk -F'\t' -v g="$gate" 'NR > 1 && $1 == g { found = 1 } END { exit !found }' "$RESULTS" || missing+=("$gate")
@@ -750,7 +774,6 @@ echo "record: $OUT/record.md"
 # The public summary and the release notes (#717): the summary, then the version's CHANGELOG
 # section that scripts/local-release.sh wrote. The publish command is printed only for a PASS
 # whose summary passed the privacy check (docs/release-gates.md §4).
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
 rm -f "$OUT/summary.md" "$OUT/release-notes.md" "$OUT"/una-*-validation.md
 # The privacy pattern goes to the summary step on descriptor 3; a run without the neutrality
 # pattern is unchecked too, and its summary says so.
