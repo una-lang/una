@@ -5,9 +5,12 @@
 # and the reason; an entry allows, it never requires.
 macos dylib /usr/lib/libc++.1.dylib  # the system's C++ runtime, which Z3's C++ code needs (una-z3's build script links it, ADR 0124 rule 1: on macOS `una` uses the system's libc++)
 #
-# Linux: a release `una` links libstdc++ and libgcc statically (scripts/release.sh, ADR 0124
-# rule 1), so the C++ runtime adds no NEEDED entry. The math functions Z3 imports
-# (scripts/no-libm-una.txt) are glibc's libm, a library of its own there. Not yet observed: no
-# Linux leg has linked the solver as of 2026-10-31, and anything else it finds fails the check
-# until it is reviewed and listed here.
+# Linux: `una` links libstdc++ statically (crates/una-z3/build.rs, `static:-bundle=stdc++`,
+# ADR 0124 rule 1, #1956) and GCC's libgcc.a (scripts/release.sh, -static-libgcc), so the C++
+# runtime adds no NEEDED entry. The unwinder libgcc_s.so.1 stays NEEDED, as in every Rust
+# executable of the -gnu targets (the standard library links -lgcc_s); scripts/load-commands.txt
+# allows it for every artifact. The math functions Z3 imports (scripts/no-libm-una.txt) are
+# glibc's libm, a library of its own there. Observed 2026-11-11 (aarch64, #1956): libgcc_s.so.1,
+# libm.so.6, libc.so.6, ld-linux-aarch64.so.1 and the interpreter /lib/ld-linux-aarch64.so.1.
+# Anything else fails the check until it is reviewed and listed here.
 linux needed libm.so.6  # glibc's math library, for the solver's imports of scripts/no-libm-una.txt only
