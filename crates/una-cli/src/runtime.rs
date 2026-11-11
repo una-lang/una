@@ -678,6 +678,35 @@ pub(crate) fn run_command(
         writeln!(stderr, "error: {message}")?;
         return Ok(ExitStatus::Usage);
     }
+    // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
+    // handlers of SIGINT and SIGTERM; any other keeps their default actions.
+    // The run's host stop state is made first, so a signal that comes while the handlers are
+    // installed counts for the run. They are installed before the serve threads start and
+    // before the lines of `spec/31 §6` rule 14, as the executable installs them (#1920): a
+    // peer that stops the run once it names its addresses gets a host stop and its drain,
+    // never the default action of SIGTERM. A stop that comes before the serve engine's hook
+    // is set reaches it when the hook is set (`RunStop::on_stops`).
+    let stops = takes_stops(
+        &analysis,
+        &package.sources,
+        &entry,
+        drive.is_some() || serving,
+    );
+    let stop = una_interp::stopping::RunStop::new(options.stop_grace);
+    if stops && let Err(failed) = una_sys::signals::install() {
+        // A soft limit of open files too small for the runtime is the run's configuration, a
+        // usage error, not an internal one (#1757).
+        if failed.usage {
+            writeln!(stderr, "error: {}", failed.message)?;
+            return Ok(ExitStatus::Usage);
+        }
+        writeln!(
+            stderr,
+            "internal compiler error (U8001): {}",
+            failed.message
+        )?;
+        return Ok(ExitStatus::Internal);
+    }
     // A program that serves starts its serve threads here, before `main`, over the listeners
     // bound above; they accept nothing until its first server operation (S4 amendment B.2).
     // Any other run holds its listeners until it ends.
@@ -715,17 +744,6 @@ pub(crate) fn run_command(
         drop(listeners);
         None
     };
-    // ADR 0116 rule 18: a run that can reach a `for ever` or runs a driver installs the
-    // handlers of SIGINT and SIGTERM; any other keeps their default actions.
-    // The run's host stop state is made first, so a signal that comes while the handlers are
-    // installed counts for the run.
-    let stops = takes_stops(
-        &analysis,
-        &package.sources,
-        &entry,
-        drive.is_some() || serving,
-    );
-    let stop = una_interp::stopping::RunStop::new(options.stop_grace);
     let engine = script.as_deref().and_then(|events| {
         scripted::Engine::start(options.environment, &served_grants, events, &stop)
     });
@@ -740,20 +758,6 @@ pub(crate) fn run_command(
                 live.host_stop();
             }
         }));
-    }
-    if stops && let Err(failed) = una_sys::signals::install() {
-        // A soft limit of open files too small for the runtime is the run's configuration, a
-        // usage error, not an internal one (#1757).
-        if failed.usage {
-            writeln!(stderr, "error: {}", failed.message)?;
-            return Ok(ExitStatus::Usage);
-        }
-        writeln!(
-            stderr,
-            "internal compiler error (U8001): {}",
-            failed.message
-        )?;
-        return Ok(ExitStatus::Internal);
     }
     // The run's watcher when a request can come: a signal, or the deadline (rules 14 and 16).
     // Its guard ends the watch on every way out, a panic's included.
