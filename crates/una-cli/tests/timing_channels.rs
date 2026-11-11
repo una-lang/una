@@ -546,6 +546,13 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
 /// `internal` twin (#1947), as the serve oracles do. Labels do not reach the executable: the
 /// twin computes, starts and yields as the `secret` program would.
 ///
+/// The short computation is `crunch(10000)` (#1947): measured on the release machine (Apple M1
+/// Max) at about 95 ns an iteration of this loop, it takes about 1 ms, well inside both its
+/// 6 ms deadline and a turn (`SLICE`, 10 ms), as the design asks. `crunch(100000)`, as first
+/// written, took about 9.5 ms, past the deadline on any schedule, so every run of both keys
+/// timed out and the oracle could not tell them apart. The key's alone-time (1e8 iterations,
+/// seconds) and `burn` (whose turn, a whole slice, outlasts the deadline) are unchanged.
+///
 /// The secret work is a call whose result is never used, kept as written: nothing between the
 /// checker and the executable drops a binding (elaboration lowers every `let`, and native code
 /// emits every call, Cranelift having no inliner here), and its loop's check points are calls
@@ -555,7 +562,7 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
 /// `timeout` event, as for every `within` (`spec/27 §5`), and the test reads that.
 fn phase_program(label: &str, key: u8) -> String {
     format!(
-        "module phase\n\nimport std.time (millisecond)\n\nkey() -> {label}Int = {key}\n\ncrunch(n: {label}Int) -> {label}Int\n=\n  let edit total: {label}Int = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(100000) within 6 * millisecond\n      if error use 0\n    unit\n  @console.print(\"done\")\n"
+        "module phase\n\nimport std.time (millisecond)\n\nkey() -> {label}Int = {key}\n\ncrunch(n: {label}Int) -> {label}Int\n=\n  let edit total: {label}Int = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(10000) within 6 * millisecond\n      if error use 0\n    unit\n  @console.print(\"done\")\n"
     )
 }
 
