@@ -89,9 +89,30 @@ pub fn una(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// `una check .` in `dir`, with no runtime library built first, since checking links nothing:
+/// the check of every timing oracle's program (#1947).
+pub fn una_check(dir: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(["check", "."])
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap()
+}
+
 /// A package of edition `0.4` named `name` in a fresh temporary directory, whose entry module
 /// `module` is `program`, granted `console`, built with `una build`.
 pub fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
+    let dir = write_within_package(name, module, program);
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+/// The package of [`within_package`], written and not built.
+pub fn write_within_package(name: &str, module: &str, program: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -108,7 +129,5 @@ pub fn within_package(name: &str, module: &str, program: &str) -> PathBuf {
     )
     .unwrap();
     std::fs::write(dir.join(format!("src/{module}.una")), program).unwrap();
-    let built = una(&dir, &["build", "."]);
-    assert_eq!(built.status.code(), Some(0), "{built:?}");
     dir
 }

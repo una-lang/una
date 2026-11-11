@@ -111,20 +111,10 @@ pub main() -> Unit
     )
 }
 
-/// What the outside sees of one run of the history program, interpreted or native: its exit
-/// status, its output, and how many requests the server received.
-pub fn observe_history(
-    server: &CountingServer,
-    key: u64,
-    secretly: bool,
-    native: bool,
-) -> (Option<i32>, String, usize) {
-    let port = server.port;
-    let limited = format!("http:http://127.0.0.1:{port}:get;1/second");
-    let dir = std::env::temp_dir().join(format!(
-        "una-limits-history-{key}-{secretly}-{native}-{}",
-        std::process::id()
-    ));
+/// The package of the history program for a server on `port`, written in a fresh temporary
+/// directory whose name ends in `tag`, and not built.
+pub fn history_package(tag: &str, port: u16, key: u64, secretly: bool) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-limits-history-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
@@ -144,6 +134,20 @@ pub fn observe_history(
         history_program(port, key, secretly),
     )
     .unwrap();
+    dir
+}
+
+/// What the outside sees of one run of the history program, interpreted or native: its exit
+/// status, its output, and how many requests the server received.
+pub fn observe_history(
+    server: &CountingServer,
+    key: u64,
+    secretly: bool,
+    native: bool,
+) -> (Option<i32>, String, usize) {
+    let port = server.port;
+    let limited = format!("http:http://127.0.0.1:{port}:get;1/second");
+    let dir = history_package(&format!("{key}-{secretly}-{native}"), port, key, secretly);
     server.take();
     let output = if native {
         let built = una(&dir, &["build", "."]);
