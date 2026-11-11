@@ -136,6 +136,12 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
         "{record}"
     );
     assert!(record.contains(&format!("| clone | PASS | {} | `{}` |", row[3], row[4])));
+    assert!(
+        record.contains(
+            "- Shipped targets (`scripts/release-targets.txt`): `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`\n"
+        ),
+        "{record}"
+    );
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
@@ -1272,11 +1278,510 @@ fn the_shipped_targets_are_one_list_that_fails_closed() {
         "scripts/release.sh",
         "scripts/check-release.sh",
         "scripts/local-release.sh",
+        "scripts/release-gates.sh",
     ] {
         let text = std::fs::read_to_string(root().join(script)).unwrap();
         assert!(text.contains("release_targets "), "{script}");
     }
     let local_release = std::fs::read_to_string(root().join("scripts/local-release.sh")).unwrap();
     assert!(!local_release.contains("linux_archive amd64 x86_64"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// This machine's target, as `rustc -vV` names it and the release scripts read it.
+fn host_target() -> String {
+    let output = Command::new("rustc").arg("-vV").output().unwrap();
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .unwrap()
+        .to_owned()
+}
+
+/// A scratch tree at `dir` with the scripts `files` of this repository, the shipped-targets
+/// reader, `list` as its list and a workspace version, 9.9.9.
+fn release_tree(dir: &Path, files: &[&str], list: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    for file in files.iter().chain(&["release-targets.sh"]) {
+        std::fs::copy(
+            root().join("scripts").join(file),
+            dir.join("scripts").join(file),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("scripts/release-targets.txt"), list).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[workspace.package]\nversion = \"9.9.9\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn release_and_check_release_refuse_a_target_that_is_not_shipped() {
+    // The host's own target, which every other check of the scripts accepts, is refused once the
+    // list does not name it, before anything is read or built (#1903).
+    let host = host_target();
+    let other = if host == "x86_64-unknown-linux-gnu" {
+        "aarch64-apple-darwin\n"
+    } else {
+        "x86_64-unknown-linux-gnu\n"
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-refuses");
+    release_tree(&dir, &["release.sh", "check-release.sh"], other);
+    for (script, says) in [
+        ("release.sh", "the targets a release packs"),
+        ("check-release.sh", "the targets a release checks"),
+    ] {
+        let output = Command::new("sh")
+            .arg(dir.join("scripts").join(script))
+            .arg(&host)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{script}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "error: {host} is not a shipped target; scripts/release-targets.txt lists {says}"
+            )),
+            "{script}: {stderr}"
+        );
+        assert!(!dir.join("target").exists(), "{script} wrote target/");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[allow(clippy::print_stderr)]
+fn local_release_builds_exactly_the_archives_of_the_shipped_targets() {
+    if head().is_none() {
+        return;
+    }
+    if host_target() != "aarch64-apple-darwin" {
+        eprintln!("skipped: scripts/local-release.sh runs on aarch64-apple-darwin only");
+        return;
+    }
+    // A scratch repository with the real local-release.sh and stubs for what it calls: release.sh
+    // packs a one-line archive, check-release.sh and the volume handover pass, and a fake docker
+    // stands for the Linux container, copying an archive of the target into /out, and with
+    // EXTRA=1 one more of a target that is not listed.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("local-release-exact");
+    release_tree(
+        &dir,
+        &["local-release.sh"],
+        "aarch64-apple-darwin\naarch64-unknown-linux-gnu\n",
+    );
+    let stubs = [
+        (
+            "scripts/release.sh",
+            "#!/bin/sh\nmkdir -p target/release-archives && cd target/release-archives && echo \"$1\" > una-9.9.9-$1.tar.gz && shasum -a 256 una-9.9.9-$1.tar.gz > una-9.9.9-$1.tar.gz.sha256\n",
+        ),
+        ("scripts/check-release.sh", "#!/bin/sh\nexit 0\n"),
+        ("scripts/container-volumes.sh", "#!/bin/sh\nexit 0\n"),
+        ("scripts/local-ci/Dockerfile", "FROM scratch\n"),
+        ("rust-toolchain.toml", "[toolchain]\nchannel = \"1.0.0\"\n"),
+        // The host the script reads, from a stub, so that no toolchain is looked up for the
+        // stub channel whatever environment runs the test.
+        (
+            "bin/rustc",
+            "#!/bin/sh\necho 'host: aarch64-apple-darwin'\n",
+        ),
+        ("CHANGELOG.md", "# Changelog\n\n## v9.9.9\n\n- A change.\n"),
+        (
+            "bin/docker",
+            "#!/bin/sh\n[ \"$1\" = run ] || exit 0\nfor a; do case $a in *:/out) out=${a%:/out} ;; esac; done\ntarget=$(printf '%s\\n' \"$@\" | sed -n 's/.*scripts\\/release.sh \\([a-z0-9_-]*\\).*/\\1/p' | head -n 1)\ncd \"$out\" || exit 1\nfor t in $target ${EXTRA:+x86_64-unknown-linux-gnu}; do echo \"$t\" > una-9.9.9-$t.tar.gz && shasum -a 256 una-9.9.9-$t.tar.gz > una-9.9.9-$t.tar.gz.sha256; done\n",
+        ),
+    ];
+    for (path, text) in stubs {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    let status = Command::new("chmod")
+        .args(["-R", "755", "scripts", "bin"])
+        .current_dir(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git(&["init", "--quiet"]);
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "a release"]);
+    git(&["tag", "v9.9.9"]);
+    // The test's own PATH, with the fake docker in front (compiler/conventions.md §1).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    let run = |extra: bool| {
+        let mut command = Command::new("sh");
+        command
+            .arg(dir.join("scripts/local-release.sh"))
+            .arg("v9.9.9")
+            .current_dir(&dir)
+            .env("PATH", format!("{}:{inherited}", dir.join("bin").display()));
+        if extra {
+            command.env("EXTRA", "1");
+        }
+        command.output().unwrap()
+    };
+    let output = run(false);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let built = dir.join("target/local-release/v9.9.9");
+    for target in ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu"] {
+        assert!(
+            built.join(format!("una-9.9.9-{target}.tar.gz")).exists(),
+            "{target}"
+        );
+    }
+    // An archive of a target that is not listed fails the release, its digest correct or not.
+    let output = run(true);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("local release: FAIL (the archives are not exactly those of scripts/release-targets.txt)"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The tag's commit must ship what this checkout's list says: another list fails first.
+    std::fs::write(
+        dir.join("scripts/release-targets.txt"),
+        "aarch64-apple-darwin\n",
+    )
+    .unwrap();
+    std::fs::remove_dir_all(&built).unwrap();
+    let output = run(false);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("are not those of this checkout's"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!built.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A copy of the gate script and what it sources into `dir`, with `targets` as its list.
+fn gates_copy(dir: &Path, targets: &str) -> PathBuf {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    for file in [
+        "release-gates.sh",
+        "release-gates-tag.sh",
+        "release-targets.sh",
+        "release-summary.py",
+    ] {
+        std::fs::copy(
+            root().join("scripts").join(file),
+            dir.join("scripts").join(file),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("scripts/release-targets.txt"), targets).unwrap();
+    dir.join("scripts/release-gates.sh")
+}
+
+/// Runs `script` as `gates_again` runs the repository's, unchecked, with no Keychain, cloning
+/// from `source`, with `env` set, and a fake `docker` whose context is Docker Desktop's.
+fn gates_of(
+    script: &Path,
+    sha: &str,
+    out: &Path,
+    gates: &[&str],
+    source: &Path,
+    env: &[(&str, &str)],
+) -> Output {
+    let bin = out.with_extension("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("security"), "#!/bin/sh\nexit 44\n").unwrap();
+    std::fs::write(
+        bin.join("docker"),
+        "#!/bin/sh\ncase \"$1 $2\" in 'context show') echo desktop-linux ;; esac\nexit 0\n",
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(bin.join("security"))
+        .arg(bin.join("docker"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // The test's own PATH, with the fakes in front (compiler/conventions.md §1 covers libraries).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    Command::new("bash")
+        .arg(script)
+        .arg(sha)
+        .arg(out)
+        .args(gates)
+        .env("PATH", format!("{}:{inherited}", bin.display()))
+        .env("UNA_GATES_SOURCE", source)
+        .env("DOCKER_CONTEXT", "desktop-linux")
+        .env_remove("DOCKER_HOST")
+        .env_remove("UNA_PRIVACY_PATTERN")
+        .env_remove("UNA_NEUTRALITY_PATTERN")
+        .env("UNA_GATES_UNCHECKED", "1")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap()
+}
+
+/// A scratch repository at `dir/source` for the gates that read the archives, committed: the
+/// workspace version 9.9.9, a target/ that git ignores, the shipped-targets reader with one
+/// change (x86_64-unknown-linux-gnu is a platform no gate knows), and stubs: local-release.sh
+/// packs the second build of `STUB_SECOND` (a target ending in `!` gets other bytes), and
+/// toolchain-free.sh logs each leg to `STUB_LOG` and fails the leg named by `STUB_FAIL`. Then a
+/// copy of the gate script with `list`, and a run of its clone gate into `dir/out`. Gives the
+/// script, the commit and `out`.
+fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
+    let source = dir.join("source");
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(source.join("scripts")).unwrap();
+    let reader = std::fs::read_to_string(root().join("scripts/release-targets.sh")).unwrap()
+        + "release_target_platform() { case $1 in aarch64-apple-darwin) echo macos ;; aarch64-unknown-linux-gnu) echo linux/arm64 ;; x86_64-unknown-linux-gnu) echo plan9 ;; *) return 1 ;; esac; }\n";
+    for (path, text) in [
+        (".gitignore", "target/\n".to_owned()),
+        ("Cargo.toml", "version = \"9.9.9\"\n".to_owned()),
+        ("scripts/release-targets.sh", reader),
+        (
+            "scripts/local-release.sh",
+            "#!/bin/sh\nout=target/local-release/$1\nrm -rf \"$out\" && mkdir -p \"$out\" || exit 1\nfor t in ${STUB_SECOND:-}; do echo \"$t\" > \"$out/una-9.9.9-${t%!}.tar.gz\"; done\n".to_owned(),
+        ),
+        (
+            "scripts/toolchain-free.sh",
+            "#!/bin/sh\necho \"${3:-macos} $1\" >> \"$STUB_LOG\"\n[ \"${3:-macos}\" != \"${STUB_FAIL:-}\" ]\n".to_owned(),
+        ),
+    ] {
+        std::fs::write(source.join(path), text).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let status = Command::new("chmod")
+        .args([
+            "755",
+            "scripts/local-release.sh",
+            "scripts/toolchain-free.sh",
+        ])
+        .current_dir(&source)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git(&["init", "--quiet"]);
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "a release"]);
+    let sha = git(&["rev-parse", "HEAD"]);
+    let script = gates_copy(&dir.join("gates"), list);
+    let out = dir.join("out");
+    let output = gates_of(&script, &sha, &out, &["clone"], &source, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (script, sha, out)
+}
+
+/// Writes the first build's archive of each of `targets` into the fixture's clone: a tarball of
+/// `una-9.9.9-<target>/una` with its .sha256 file when `packed`, else the bytes the stub
+/// local-release.sh writes.
+fn plant(out: &Path, targets: &[&str], packed: bool) {
+    let built = out.join("clone/target/local-release/v9.9.9");
+    let _ = std::fs::remove_dir_all(&built);
+    std::fs::create_dir_all(&built).unwrap();
+    for target in targets {
+        let name = format!("una-9.9.9-{target}");
+        if !packed {
+            std::fs::write(built.join(format!("{name}.tar.gz")), format!("{target}\n")).unwrap();
+            continue;
+        }
+        let script = format!(
+            "mkdir -p x/{name} && echo una > x/{name}/una && tar -czf {name}.tar.gz -C x {name} && rm -rf x && shasum -a 256 {name}.tar.gz > {name}.tar.gz.sha256"
+        );
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .current_dir(&built)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+/// The result of `gate` in the results of the fixture's last run.
+fn result_of(out: &Path, gate: &str) -> String {
+    rows(out)
+        .into_iter()
+        .find(|row| row[0] == gate)
+        .map(|row| row[2].clone())
+        .unwrap()
+}
+
+const SHIPPED: &str = "aarch64-apple-darwin\naarch64-unknown-linux-gnu\n";
+
+#[test]
+fn a_list_the_run_cannot_read_stops_it_before_any_gate() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-bad-list");
+    let out = tmp.join("out");
+    for list in [
+        "",
+        "# none\n",
+        "aarch64-apple-darwin\naarch64-apple-darwin\n",
+    ] {
+        let script = gates_copy(&tmp.join("gates"), list);
+        let _ = std::fs::remove_dir_all(&out);
+        let output = gates_of(&script, &sha, &out, &["clone"], &root(), &[]);
+        assert_eq!(output.status.code(), Some(2), "{list:?}");
+        assert!(!out.exists(), "{list:?}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn reproducible_compares_every_archive_and_refuses_one_not_shipped() {
+    if head().is_none() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-reproducible");
+    let (script, sha, out) = gate_fixture(&dir, SHIPPED);
+    let (darwin, linux, x86) = (
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    );
+    for (first, second, result) in [
+        (&[darwin, linux][..], format!("{darwin} {linux}"), "PASS"),
+        // A shipped target's archive missing from both builds.
+        (&[darwin][..], darwin.to_owned(), "FAIL"),
+        // An archive that is not a shipped target's: differing, or even equal.
+        (
+            &[darwin, linux, x86][..],
+            format!("{darwin} {linux} {x86}!"),
+            "FAIL",
+        ),
+        (
+            &[darwin, linux, x86][..],
+            format!("{darwin} {linux} {x86}"),
+            "FAIL",
+        ),
+    ] {
+        plant(&out, first, false);
+        gates_of(
+            &script,
+            &sha,
+            &out,
+            &["reproducible"],
+            &dir.join("source"),
+            &[("STUB_SECOND", &second)],
+        );
+        let log = std::fs::read_to_string(out.join("logs/reproducible.log")).unwrap();
+        assert_eq!(
+            result_of(&out, "reproducible"),
+            result,
+            "{first:?} {second}: {log}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn toolchain_free_takes_each_shipped_archive_in_order() {
+    if head().is_none() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-toolchain-free");
+    let log = dir.join("legs.log");
+    let all = "aarch64-apple-darwin\naarch64-unknown-linux-gnu\nx86_64-unknown-linux-gnu\n";
+    for (list, archives, fail, result, legs) in [
+        (SHIPPED, SHIPPED, "", "PASS", "macos,--linux-arm64"),
+        // A failing leg fails the gate, and the next leg does not run.
+        (SHIPPED, SHIPPED, "macos", "FAIL", "macos"),
+        // A platform that has no leg fails the gate, after the legs before it.
+        (all, all, "", "FAIL", "macos,--linux-arm64"),
+        // An archive of a target that is not shipped fails the gate before any leg.
+        (SHIPPED, all, "", "FAIL", ""),
+    ] {
+        let (script, sha, out) = gate_fixture(&dir, list);
+        plant(&out, &archives.lines().collect::<Vec<_>>(), true);
+        let log_path = log.display().to_string();
+        gates_of(
+            &script,
+            &sha,
+            &out,
+            &["toolchain-free"],
+            &dir.join("source"),
+            &[("STUB_LOG", &log_path), ("STUB_FAIL", fail)],
+        );
+        let ran = std::fs::read_to_string(&log).unwrap_or_default();
+        let ran: Vec<&str> = ran
+            .lines()
+            .filter_map(|line| line.split(' ').next())
+            .collect();
+        assert_eq!(result_of(&out, "toolchain-free"), result, "{list:?} {fail}");
+        assert_eq!(ran.join(","), legs, "{list:?} {fail}");
+        let _ = std::fs::remove_file(&log);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_verdict_fails_unless_the_archives_are_exactly_the_shipped_targets() {
+    if head().is_none() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-archives");
+    let (script, sha, out) = gate_fixture(&dir, SHIPPED);
+    // An untracked file makes the clone inexact, so the next gate fails at once and runs nothing.
+    std::fs::write(out.join("clone/untracked"), "").unwrap();
+    let darwin = "aarch64-apple-darwin";
+    let linux = "aarch64-unknown-linux-gnu";
+    for (targets, verdict) in [
+        (&[darwin, linux][..], "Verdict: FAIL (deps)\n"),
+        (&[darwin][..], "Verdict: FAIL (deps, archives)\n"),
+        (
+            &[darwin, linux, "x86_64-unknown-linux-gnu"][..],
+            "Verdict: FAIL (deps, archives)\n",
+        ),
+    ] {
+        plant(&out, targets, false);
+        gates_of(&script, &sha, &out, &["deps"], &dir.join("source"), &[]);
+        let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+        assert!(record.contains(verdict), "{targets:?}: {record}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
