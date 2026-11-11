@@ -59,7 +59,10 @@
 //! executable that `una build` made, and `<oracle>_interpreter`, `una run`, since the serve
 //! engine's waiting and waking is separate code in each; one harness, parameterized by
 //! [`Engine`], with the same assertions and sample sizes.
-//! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute.
+//! `crates/una-cli/tests/release_gates.rs` checks that every test here carries the attribute,
+//! but one: `every_timing_oracle_program_checks` (#1947) reads no clock and only runs `una
+//! check` on every program the oracles build, run or check, so that the ordinary test run, and
+//! the check of each pull request, fails on a program a change of the language made stale.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 #[path = "common/history.rs"]
@@ -136,12 +139,17 @@ fn holding_server(spans: Arc<Mutex<Vec<u128>>>) -> u16 {
 /// The oracle's package, with `key` as its `secret` input and `deadline` in milliseconds,
 /// built in a directory named by `name`.
 fn placement_package(name: &str, key: u8, deadline: u64, port: u16) -> PathBuf {
+    build_flip(name, port, &placement_program(key, deadline, port))
+}
+
+/// The program of [`placement_package`].
+fn placement_program(key: u8, deadline: u64, port: u16) -> String {
     let get = |path: &str| {
         let url = format!("http://127.0.0.1:{port}/{path}");
         format!(r#"attempt @http.get("{url}", headers: [], key_name: None)"#)
     };
     let (mark, hold) = (get("mark"), get("hold"));
-    let program = format!(
+    format!(
         r#"module flip
 
 import std.time (millisecond)
@@ -162,13 +170,20 @@ pub main() -> Unit
     stop
   unit
 "#
-    );
-    build_flip(name, port, &program)
+    )
 }
 
 /// Writes the package `flip`, whose module `flip` is `program` and whose run may `get` from
 /// the server on `port`, in a directory named by `name`, and builds it.
 fn build_flip(name: &str, port: u16, program: &str) -> PathBuf {
+    let dir = write_flip(name, port, program);
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+/// The package of [`build_flip`], written and not built.
+fn write_flip(name: &str, port: u16, program: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -185,8 +200,6 @@ fn build_flip(name: &str, port: u16, program: &str) -> PathBuf {
     )
     .unwrap();
     std::fs::write(dir.join("src/flip.una"), program).unwrap();
-    let built = una(&dir, &["build", "."]);
-    assert_eq!(built.status.code(), Some(0), "{built:?}");
     dir
 }
 
@@ -324,12 +337,17 @@ fn a_public_block_s_timing_never_depends_on_how_many_tasks_secret_code_started()
 /// The oracle's package of the lazy timer, with `key` as its `secret` input, built in a
 /// directory named by `name`.
 fn lazy_timer_package(name: &str, key: u8, port: u16) -> PathBuf {
+    build_flip(name, port, &lazy_timer_program(key, port))
+}
+
+/// The program of [`lazy_timer_package`].
+fn lazy_timer_program(key: u8, port: u16) -> String {
     let get = |path: &str| {
         let url = format!("http://127.0.0.1:{port}/{path}");
         format!(r#"attempt @http.get("{url}", headers: [], key_name: None)"#)
     };
     let (mark, hold) = (get("mark"), get("hold"));
-    let program = format!(
+    format!(
         r#"module flip
 
 import std.time (second)
@@ -352,8 +370,7 @@ pub main() -> Unit
   let at_hold = {hold}
   unit
 "#
-    );
-    build_flip(name, port, &program)
+    )
 }
 
 /// The time of one run of the lazy timer's oracle from `/mark` to `/hold`, which follows the
@@ -519,9 +536,22 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
     );
 }
 
-/// The program of the second review of #1146: `main` computes alone for a time its `secret`
-/// key decides, with no park, then starts a long task and, in the same block, runs a short
-/// computation under a 6 ms deadline, and prints `done`.
+/// The program of the second review of #1146, with its key labeled `label`, `"secret "` or
+/// `"internal "`, and nothing else differing: `main` computes alone for a time its key decides,
+/// with no park, then starts a long task and, in the same block, runs a short computation under
+/// a 6 ms deadline, and prints `done`.
+///
+/// Since #1684 a `for` loop whose bound is above `internal`, in a program that starts tasks, is
+/// U4002 (`spec/27 §8` rule 5), so the `secret` program is refused, and the oracle runs its
+/// `internal` twin (#1947), as the serve oracles do. Labels do not reach the executable: the
+/// twin computes, starts and yields as the `secret` program would.
+///
+/// The short computation is `crunch(10000)` (#1947): measured on the release machine (Apple M1
+/// Max) at about 95 ns an iteration of this loop, it takes about 1 ms, well inside both its
+/// 6 ms deadline and a turn (`SLICE`, 10 ms), as the design asks. `crunch(100000)`, as first
+/// written, took about 9.5 ms, past the deadline on any schedule, so every run of both keys
+/// timed out and the oracle could not tell them apart. The key's alone-time (1e8 iterations,
+/// seconds) and `burn` (whose turn, a whole slice, outlasts the deadline) are unchanged.
 ///
 /// The secret work is a call whose result is never used, kept as written: nothing between the
 /// checker and the executable drops a binding (elaboration lowers every `let`, and native code
@@ -530,9 +560,9 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
 /// block of a `tasks` statement, beside the task it started, so its timing label is `⊤`
 /// (ADR 0116 IF6, `τ_conc`) and its value could not reach `@console`; the trace records its
 /// `timeout` event, as for every `within` (`spec/27 §5`), and the test reads that.
-fn phase_program(key: u8) -> String {
+fn phase_program(label: &str, key: u8) -> String {
     format!(
-        "module phase\n\nimport std.time (millisecond)\n\nkey() -> secret Int = {key}\n\ncrunch(n: Int) -> Int\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(100000) within 6 * millisecond\n      if error use 0\n  @console.print(\"done\")\n"
+        "module phase\n\nimport std.time (millisecond)\n\nkey() -> {label}Int = {key}\n\ncrunch(n: {label}Int) -> {label}Int\n=\n  let edit total: {label}Int = 0\n  for i in 1..n\n    total = total + 1\n  total\n\nburn(n: Int) -> Unit\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + 1\n  unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let spent = crunch(if key() > 0 then 100000000 else 0)\n  tasks\n    start burn(30000000)\n    let v = crunch(10000) within 6 * millisecond\n      if error use 0\n    unit\n  @console.print(\"done\")\n"
     )
 }
 
@@ -553,11 +583,42 @@ fn time_the_root_spent_alone_never_changes_a_later_deadline_under_real_time() {
     // `start` made it yield at once to `burn`, whose turn outlasted the 6 ms deadline, and
     // every run's trace had a `timeout`. The checker labels this deadline `⊤` today; the
     // schedule must still not depend on the key, for the precise `τ_conc` of ADR 0116.
+    //
+    // Since #1684 the checker refuses the `secret` program, with U4002 at `crunch`'s loop, line
+    // 10, so the executables are those of its `internal` twin (#1947); the refusal is checked
+    // first, so that the twin stands for a program the checker no longer accepts.
+    let refused =
+        std::env::temp_dir().join(format!("una-timing-phasesecret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&refused);
+    std::fs::create_dir_all(refused.join("src")).unwrap();
+    std::fs::write(
+        refused.join("ita.una"),
+        "ita phasesecret\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry phase\n  grants\n    console\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/conformance/runtime/within_runs/ita.lock"),
+        refused.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(refused.join("src/phase.una"), phase_program("secret ", 1)).unwrap();
+    let checked = una(&refused, &["check", "."]);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert_ne!(checked.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains("[U4002]") && said.contains("src/phase.una:10:3"),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&refused);
     const RUNS: usize = 20;
     let mut timeouts = Vec::new();
     for key in [0u8, 1] {
         let name = format!("phaseleak{key}");
-        let dir = within_package(&name, "phase", &phase_program(key));
+        let dir = within_package(&name, "phase", &phase_program("internal ", key));
         let exe = dir.join(format!("target/una/{name}"));
         let trace = dir.join("trace.json");
         let mut timed_out = 0usize;
@@ -651,7 +712,9 @@ churn(n: {label}Int, run: internal Text) -> Unit
   uses @http: Http[get]
 =
   let spent = crunch(n)
-  let outcome = attempt @http.get("{silent}?r={{run}}", headers: [], key_name: None)
+  let outcome = attempt @http.get("{silent}?r={{run}}", headers: [],
+    key_name: None
+  )
   unit
 
 --- Starts `churn`, then fails its block after public work, which cancels its task.
@@ -669,11 +732,14 @@ pub main() -> Unit
   uses @http: Http[get]
 =
   let n = if key() > 0 then 2000000000 else 0
-  let run = when @env.get("UNA_RESIDUE_RUN")
+  let found = @env.get("UNA_RESIDUE_RUN")
+  let run = when found
     is Some(text) -> text
     is None -> "0"
   let tried = attempt burst(n, run)
-  let later = attempt @http.get("{fast}", headers: [], key_name: None) within 300 * millisecond
+  let later = attempt @http.get("{fast}", headers: [],
+    key_name: None
+  ) within 300 * millisecond
   unit
 "#
     )
@@ -811,17 +877,24 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
         String::from_utf8_lossy(&checked.stderr)
     );
     assert_ne!(checked.status.code(), Some(0), "{said}");
-    // U4001 at the later `within`, line 44 of the program, at its `attempt`: the diagnostic
-    // that names U4001, up to the next one, holds that position.
+    // U4001 at the later `within`, at its `attempt` (column 15 of the line that binds `later`):
+    // the diagnostic that names U4001, up to the next one, holds that position. The line is
+    // read from the program, so a change of layout above it cannot leave a stale number here.
+    let later_line = residue_program("secret ", 0, "", "")
+        .lines()
+        .position(|line| line.starts_with("  let later = attempt @http.get("))
+        .expect("the residue program binds `later`")
+        + 1;
+    let position = format!("src/residue.una:{later_line}:15");
     let at_within = said.match_indices("U4001").any(|(at, _)| {
         let rest = &said[at..];
         let end = rest
             .get(1..)
             .and_then(|tail| tail.find("[U"))
             .map_or(rest.len(), |e| e + 1);
-        rest[..end].contains("src/residue.una:44:15")
+        rest[..end].contains(&position)
     });
-    assert!(at_within, "{said}");
+    assert!(at_within, "U4001 at {position}: {said}");
     let _ = std::fs::remove_dir_all(&refused);
     let dirs = [
         residue_package("residuekey0", "", 0, port, true),
@@ -1063,23 +1136,7 @@ fn serve_package_linked(
     engine: Engine,
     hooked: bool,
 ) -> Package {
-    let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let dir = Package(dir);
-    std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("ita.una"),
-        format!(
-            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n{grants}    serve \"http://127.0.0.1:{port}\"\n{limits}      peer none\n      peer_buffers none\n      peer_replies none\n"
-        ),
-    )
-    .unwrap();
-    std::fs::copy(
-        root().join("tests/serve_runs/language_form/ita.lock"),
-        dir.join("ita.lock"),
-    )
-    .unwrap();
-    std::fs::write(dir.join("src/srv.una"), program).unwrap();
+    let dir = write_serve_package(name, port, program, grants, limits);
     let verb = match engine {
         Engine::Native => {
             native_build::runtime();
@@ -1099,6 +1156,34 @@ fn serve_package_linked(
         .output()
         .unwrap();
     assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
+    dir
+}
+
+/// The package of [`serve_package_linked`], written and neither built nor checked.
+fn write_serve_package(
+    name: &str,
+    port: u16,
+    program: &str,
+    grants: &str,
+    limits: &str,
+) -> Package {
+    let dir = std::env::temp_dir().join(format!("una-timing-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Package(dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {name}\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry srv\n  grants\n    console\n{grants}    serve \"http://127.0.0.1:{port}\"\n{limits}      peer none\n      peer_buffers none\n      peer_replies none\n"
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        root().join("tests/serve_runs/language_form/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/srv.una"), program).unwrap();
     dir
 }
 
@@ -2215,5 +2300,235 @@ fn serve_owner_spread(engine: Engine) {
         problems.is_empty(),
         "{engine_name}: the placement of connections over the serve threads:\n{}",
         problems.join("\n")
+    );
+}
+
+/// What `una check` must say of one oracle's program.
+enum Expected {
+    /// Accepted: the oracle builds or runs it.
+    Accepted,
+    /// Refused, with this diagnostic code at this position (`src/<module>.una:<line>:<column>`):
+    /// the `secret` twin whose refusal the oracle checks before it runs the accepted one.
+    Refused(&'static str, String),
+}
+
+/// The check of every program the oracles of this file build, run or check, in each variant
+/// they use (#1947): the one test of this file that is not a timing oracle and not ignored.
+/// It reads no clock, so its verdict does not depend on the load, and the ordinary test run
+/// and the check of a pull request run it: an oracle's program that a change of the language
+/// makes stale fails here, at once, rather than as a compile error in the timing step of a
+/// release candidate, where it measures nothing. The serve oracles' `secret` twins are the
+/// conformance cases whose refusal the conformance suite checks; here, that each case is still
+/// its oracle's program, as each oracle checks before it runs.
+#[test]
+fn every_timing_oracle_program_checks() {
+    // Ports as the oracles' servers get them, from the ephemeral range: canonical form wraps a
+    // line by its width, so the programs, which hold a server's URL, must hold one as long as
+    // in an oracle run (five digits, in the ephemeral ranges of macOS and Linux).
+    let http = serve_port();
+    let serve = serve_port();
+    let engines = [Engine::Native, Engine::Interpreter];
+    let mut packages: Vec<(String, PathBuf, Expected)> = Vec::new();
+    let mut add = |what: String, dir: PathBuf, expected: Expected| {
+        packages.push((what, dir, expected));
+    };
+    for key in [0u8, 1] {
+        for deadline in [60_000, 181] {
+            add(
+                format!("placement key {key} deadline {deadline}"),
+                write_flip(
+                    &format!("checkplacement{key}-{deadline}"),
+                    http,
+                    &placement_program(key, deadline, http),
+                ),
+                Expected::Accepted,
+            );
+        }
+        add(
+            format!("lazy timer key {key}"),
+            write_flip(
+                &format!("checklazy{key}"),
+                http,
+                &lazy_timer_program(key, http),
+            ),
+            Expected::Accepted,
+        );
+        add(
+            format!("slicer key {key}"),
+            native_build::write_within_package(
+                &format!("checkslicer{key}"),
+                "leak",
+                &slicer_program(key),
+            ),
+            Expected::Accepted,
+        );
+        add(
+            format!("phase internal key {key}"),
+            native_build::write_within_package(
+                &format!("checkphase{key}"),
+                "phase",
+                &phase_program("internal ", key),
+            ),
+            Expected::Accepted,
+        );
+        add(
+            format!("residue key {key}"),
+            residue_package(&format!("checkresidue{key}"), "", key, http, false),
+            Expected::Accepted,
+        );
+    }
+    add(
+        "phase secret key 1".to_owned(),
+        native_build::write_within_package(
+            "checkphasesecret",
+            "phase",
+            &phase_program("secret ", 1),
+        ),
+        Expected::Refused("U4002", "src/phase.una:10:3".to_owned()),
+    );
+    let later_line = residue_program("secret ", 0, "", "")
+        .lines()
+        .position(|line| line.starts_with("  let later = attempt @http.get("))
+        .expect("the residue program binds `later`")
+        + 1;
+    add(
+        "residue secret key 0".to_owned(),
+        residue_package("checkresiduesecret", "secret ", 0, http, false),
+        Expected::Refused("U4001", format!("src/residue.una:{later_line}:15")),
+    );
+    for engine in engines {
+        let large = history::large_key(matches!(engine, Engine::Native));
+        for key in [0, large] {
+            add(
+                format!("history {} key {key}", engine.name()),
+                history::history_package(
+                    &format!("check-{}-{key}", engine.name()),
+                    http,
+                    key,
+                    false,
+                ),
+                Expected::Accepted,
+            );
+        }
+    }
+    // The serve packages are removed when dropped, at the end of the test.
+    let mut serves = Vec::new();
+    for engine in engines {
+        let name = engine.name();
+        let (work, setup) = (engine.iterations(200_000), engine.iterations(3_000_000));
+        for key in [0u8, 1] {
+            let programs = [
+                (
+                    "prefix",
+                    prefix_program(key, work, setup),
+                    "      connections at most 4096\n",
+                ),
+                (
+                    "spread",
+                    spread_program(key, setup),
+                    "      connections at most 4096\n      replies at most 256 MiB\n",
+                ),
+                (
+                    "handoff",
+                    handoff_program("", key),
+                    "      connections at most 2\n      replies at most 32 MiB\n",
+                ),
+                (
+                    "delivery",
+                    delivery_program("", key),
+                    "      connections at most 64\n      at most 1 per second\n",
+                ),
+            ];
+            for (what, program, limits) in programs {
+                let dir = write_serve_package(
+                    &format!("check{what}{name}{key}"),
+                    serve,
+                    &program,
+                    "",
+                    limits,
+                );
+                packages.push((
+                    format!("{what} {name} key {key}"),
+                    dir.to_path_buf(),
+                    Expected::Accepted,
+                ));
+                serves.push(dir);
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    for (case, program) in [
+        (
+            "serve_handoff_residue_secret",
+            handoff_program("secret ", 1),
+        ),
+        (
+            "serve_delivery_history_secret",
+            delivery_program("secret ", 1),
+        ),
+    ] {
+        let source = std::fs::read_to_string(
+            root().join(format!("tests/conformance/security/{case}/src/srv.una")),
+        )
+        .unwrap();
+        let module = source.find("module srv").unwrap_or(0);
+        if source[module..] != program {
+            failures.push(format!(
+                "the conformance case {case} is not its oracle's program with a `secret` key"
+            ));
+        }
+    }
+    // Each check is a process of its own; a few at a time keep the test short.
+    let verdicts: Vec<String> = std::thread::scope(|scope| {
+        let chunks: Vec<_> = packages
+            .chunks(packages.len().div_ceil(4))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|(what, dir, expected)| {
+                            let checked = native_build::una_check(dir);
+                            let said = format!(
+                                "{}{}",
+                                String::from_utf8_lossy(&checked.stdout),
+                                String::from_utf8_lossy(&checked.stderr)
+                            );
+                            let fine = match expected {
+                                Expected::Accepted => checked.status.code() == Some(0),
+                                Expected::Refused(code, at) => {
+                                    checked.status.code() != Some(0)
+                                        && said.match_indices(&format!("[{code}]")).any(
+                                            |(at_code, _)| {
+                                                let rest = &said[at_code..];
+                                                let end = rest
+                                                    .get(1..)
+                                                    .and_then(|tail| tail.find("[U"))
+                                                    .map_or(rest.len(), |e| e + 1);
+                                                rest[..end].contains(at.as_str())
+                                            },
+                                        )
+                                }
+                            };
+                            (!fine).then(|| format!("{what} ({}): {said}", dir.display()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        chunks
+            .into_iter()
+            .flat_map(|chunk| chunk.join().unwrap())
+            .collect()
+    });
+    failures.extend(verdicts);
+    for (_, dir, _) in &packages {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    drop(serves);
+    assert!(
+        failures.is_empty(),
+        "{} of the timing oracles' programs no longer check as their oracles need:\n{}",
+        failures.len(),
+        failures.join("\n")
     );
 }
