@@ -95,6 +95,11 @@ done
 UNA_EMBED_Z3=$z3_lib
 UNA_EMBED_Z3_SHA256=$z3_digest
 export UNA_EMBED_Z3 UNA_EMBED_Z3_SHA256
+# A development library that the caller's environment names (UNA_Z3_LIB, which
+# scripts/local-ci.sh and scripts/z3-library.sh --export set) never reaches the release build:
+# una-z3's build refuses both variables at once, and the release embeds only the library above,
+# by its digest (#1954).
+unset UNA_Z3_LIB
 case $target in
     *-linux-*) RUSTFLAGS="$RUSTFLAGS -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" ;;
 esac
