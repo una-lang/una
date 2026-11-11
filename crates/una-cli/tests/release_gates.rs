@@ -136,6 +136,12 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
         "{record}"
     );
     assert!(record.contains(&format!("| clone | PASS | {} | `{}` |", row[3], row[4])));
+    assert!(
+        record.contains(
+            "- Shipped targets (`scripts/release-targets.txt`): `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`\n"
+        ),
+        "{record}"
+    );
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
@@ -1272,11 +1278,183 @@ fn the_shipped_targets_are_one_list_that_fails_closed() {
         "scripts/release.sh",
         "scripts/check-release.sh",
         "scripts/local-release.sh",
+        "scripts/release-gates.sh",
     ] {
         let text = std::fs::read_to_string(root().join(script)).unwrap();
         assert!(text.contains("release_targets "), "{script}");
     }
     let local_release = std::fs::read_to_string(root().join("scripts/local-release.sh")).unwrap();
     assert!(!local_release.contains("linux_archive amd64 x86_64"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// This machine's target, as `rustc -vV` names it and the release scripts read it.
+fn host_target() -> String {
+    let output = Command::new("rustc").arg("-vV").output().unwrap();
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .unwrap()
+        .to_owned()
+}
+
+/// A scratch tree at `dir` with the scripts `files` of this repository, the shipped-targets
+/// reader, `list` as its list and a workspace version, 9.9.9.
+fn release_tree(dir: &Path, files: &[&str], list: &str) {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    for file in files.iter().chain(&["release-targets.sh"]) {
+        std::fs::copy(
+            root().join("scripts").join(file),
+            dir.join("scripts").join(file),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("scripts/release-targets.txt"), list).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[workspace.package]\nversion = \"9.9.9\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn release_and_check_release_refuse_a_target_that_is_not_shipped() {
+    // The host's own target, which every other check of the scripts accepts, is refused once the
+    // list does not name it, before anything is read or built (#1903).
+    let host = host_target();
+    let other = if host == "x86_64-unknown-linux-gnu" {
+        "aarch64-apple-darwin\n"
+    } else {
+        "x86_64-unknown-linux-gnu\n"
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-refuses");
+    release_tree(&dir, &["release.sh", "check-release.sh"], other);
+    for (script, says) in [
+        ("release.sh", "the targets a release packs"),
+        ("check-release.sh", "the targets a release checks"),
+    ] {
+        let output = Command::new("sh")
+            .arg(dir.join("scripts").join(script))
+            .arg(&host)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{script}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "error: {host} is not a shipped target; scripts/release-targets.txt lists {says}"
+            )),
+            "{script}: {stderr}"
+        );
+        assert!(!dir.join("target").exists(), "{script} wrote target/");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[allow(clippy::print_stderr)]
+fn local_release_builds_exactly_the_archives_of_the_shipped_targets() {
+    if head().is_none() {
+        return;
+    }
+    if host_target() != "aarch64-apple-darwin" {
+        eprintln!("skipped: scripts/local-release.sh runs on aarch64-apple-darwin only");
+        return;
+    }
+    // A scratch repository with the real local-release.sh and stubs for what it calls: release.sh
+    // packs a one-line archive, check-release.sh and the volume handover pass, and a fake docker
+    // stands for the Linux container, copying an archive of the target into /out, and with
+    // EXTRA=1 one more of a target that is not listed.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("local-release-exact");
+    release_tree(
+        &dir,
+        &["local-release.sh"],
+        "aarch64-apple-darwin\naarch64-unknown-linux-gnu\n",
+    );
+    let stubs = [
+        (
+            "scripts/release.sh",
+            "#!/bin/sh\nmkdir -p target/release-archives && cd target/release-archives && echo \"$1\" > una-9.9.9-$1.tar.gz && shasum -a 256 una-9.9.9-$1.tar.gz > una-9.9.9-$1.tar.gz.sha256\n",
+        ),
+        ("scripts/check-release.sh", "#!/bin/sh\nexit 0\n"),
+        ("scripts/container-volumes.sh", "#!/bin/sh\nexit 0\n"),
+        ("scripts/local-ci/Dockerfile", "FROM scratch\n"),
+        ("rust-toolchain.toml", "[toolchain]\nchannel = \"1.0.0\"\n"),
+        ("CHANGELOG.md", "# Changelog\n\n## v9.9.9\n\n- A change.\n"),
+        (
+            "bin/docker",
+            "#!/bin/sh\n[ \"$1\" = run ] || exit 0\nfor a; do case $a in *:/out) out=${a%:/out} ;; esac; done\ntarget=$(printf '%s\\n' \"$@\" | sed -n 's/.*scripts\\/release.sh \\([a-z0-9_-]*\\).*/\\1/p' | head -n 1)\ncd \"$out\" || exit 1\nfor t in $target ${EXTRA:+x86_64-unknown-linux-gnu}; do echo \"$t\" > una-9.9.9-$t.tar.gz && shasum -a 256 una-9.9.9-$t.tar.gz > una-9.9.9-$t.tar.gz.sha256; done\n",
+        ),
+    ];
+    for (path, text) in stubs {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    let status = Command::new("chmod")
+        .args(["-R", "755", "scripts", "bin"])
+        .current_dir(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git(&["init", "--quiet"]);
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "a release"]);
+    git(&["tag", "v9.9.9"]);
+    // The test's own PATH, with the fake docker in front (compiler/conventions.md §1).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    let run = |extra: bool| {
+        let mut command = Command::new("sh");
+        command
+            .arg(dir.join("scripts/local-release.sh"))
+            .arg("v9.9.9")
+            .current_dir(&dir)
+            .env("PATH", format!("{}:{inherited}", dir.join("bin").display()));
+        if extra {
+            command.env("EXTRA", "1");
+        }
+        command.output().unwrap()
+    };
+    let output = run(false);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let built = dir.join("target/local-release/v9.9.9");
+    for target in ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu"] {
+        assert!(
+            built.join(format!("una-9.9.9-{target}.tar.gz")).exists(),
+            "{target}"
+        );
+    }
+    // An archive of a target that is not listed fails the release, its digest correct or not.
+    let output = run(true);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("local release: FAIL (the archives are not exactly those of scripts/release-targets.txt)"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

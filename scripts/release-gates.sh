@@ -22,8 +22,9 @@
 #   mac          scripts/local-ci.sh
 #   linux        scripts/local-ci.sh --linux (Docker, linux/amd64)
 #   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
-#   release      scripts/local-release.sh for the three archives, each checked with
-#                scripts/check-release.sh (Docker for the Linux ones)
+#   release      scripts/local-release.sh for the archive of each shipped target
+#                (scripts/release-targets.txt, #1903), each checked with scripts/check-release.sh
+#                (Docker for the Linux ones)
 #   reproducible scripts/local-release.sh a second time, from cold, in a new checkout and new
 #                Docker volumes, and each archive's digest compared with the release gate's (#679)
 #   determinism  the conformance suite twice, and `una --json check` of every case and example
@@ -122,6 +123,10 @@ for gate in "${GATES[@]}"; do
 done
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# The shipped targets (scripts/release-targets.txt, #1903), whose archives the reproducible and
+# toolchain-free gates take; a list that cannot be read or lists no target stops the run here.
+. "$REPO/scripts/release-targets.sh"
+TARGETS=$(release_targets "$REPO/scripts/release-targets.txt") || exit 2
 # The release tag of the clone, made and undone by the release and reproducible gates (#1017).
 . "$REPO/scripts/release-gates-tag.sh"
 # Git reads the repository it is run in, never one an exported variable names, and no
@@ -377,17 +382,18 @@ gate_limits() {
 
 gate_toolchain-free() {
     # ADR 0124 rule 31, the build phase for `una check` and `una test`: the release una alone,
-    # under a sandbox that execs nothing but una (macOS) and in a bare container (linux/arm64).
+    # under a sandbox that execs nothing but una (macOS) and in a bare container (Linux).
     # The una under test is the one each archive of the release gate holds, which
     # scripts/release.sh built with the solver and the runtime inside it (ADR 0124 step 2,
-    # #1357): the aarch64-apple-darwin archive's on macOS, the aarch64-unknown-linux-gnu
-    # archive's in the container. Each archive is checked against its .sha256 file and unpacked
-    # in OUT/toolchain-free, outside the clone; without the release gate's archives the gate
-    # fails and says so.
+    # #1357): for each shipped target, in its order, the aarch64-apple-darwin archive's on macOS
+    # and a Linux archive's in the container of its architecture. Each archive is checked against
+    # its .sha256 file and unpacked in OUT/toolchain-free, outside the clone; without the release
+    # gate's archives the gate fails and says so.
     local version
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     run toolchain-free sh -c '
         version=$1 unpacked=$2
+        shift 2
         built=target/local-release/v$version
         rm -rf "${unpacked:?}"
         mkdir -p "$unpacked" || exit 1
@@ -400,11 +406,20 @@ gate_toolchain-free() {
             mkdir -p "$unpacked/$1" && tar -xzf "$built/$name.tar.gz" -C "$unpacked/$1" || return 1
             echo "$unpacked/$1/$name/una"
         }
-        una=$(unpacked_una aarch64-apple-darwin) \
-            && scripts/toolchain-free.sh "$una" examples/events \
-            && una=$(unpacked_una aarch64-unknown-linux-gnu) \
-            && scripts/toolchain-free.sh "$una" examples/events --linux-arm64' \
-        sh "$version" "$OUT/toolchain-free"
+        [ $# -gt 0 ] || { echo "no shipped target" >&2; exit 1; }
+        . scripts/release-targets.sh || exit 1
+        for target in "$@"; do
+            # The leg of each platform of scripts/release-targets.sh.
+            case $(release_target_platform "$target") in
+                macos) leg="" ;;
+                linux/arm64) leg=--linux-arm64 ;;
+                linux/amd64) leg=--linux ;;
+                *) echo "no toolchain-free leg for $target" >&2; exit 1 ;;
+            esac
+            una=$(unpacked_una "$target") || exit 1
+            scripts/toolchain-free.sh "$una" examples/events $leg || exit 1
+        done' \
+        sh "$version" "$OUT/toolchain-free" $TARGETS
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }
@@ -437,6 +452,7 @@ gate_reproducible() {
     local version tag
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     tag=v$version
+    # Every shipped target's archive is compared: one missing from either build fails the gate.
     run reproducible with_clone_tag "$CLONE" "$OUT" "$tag" "$SHA" bash -c '
         set -u
         tag='"'$tag'"'
@@ -449,19 +465,21 @@ gate_reproducible() {
         docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
         UNA_LOCAL_RELEASE_VOLUME=$again scripts/local-release.sh "$tag"
         status=$?
-        for archive in "$first"/*.tar.gz; do
-            name=$(basename "$archive")
-            one=$(shasum -a 256 "$archive" | cut -d" " -f1)
+        version=${tag#v}
+        [ $# -gt 0 ] || status=1
+        for target in "$@"; do
+            name=una-$version-$target.tar.gz
+            one=$(shasum -a 256 "$first/$name" 2> /dev/null | cut -d" " -f1)
             two=$(shasum -a 256 "$built/$name" 2> /dev/null | cut -d" " -f1)
-            echo "$name: first $one, second ${two:-missing}"
-            [ "$one" = "$two" ] || status=1
+            echo "$name: first ${one:-missing}, second ${two:-missing}"
+            [ -n "$one" ] && [ "$one" = "$two" ] || status=1
         done
         docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
         rm -rf "${built:?}"
         cp -R "$first" "$built"
         rm -rf "${first:?}"
         [ $status -eq 0 ] && echo "the archives are reproducible"
-        exit $status'
+        exit $status' bash $TARGETS
 }
 
 gate_determinism() {
@@ -634,6 +652,7 @@ fi
     [ $NEEDS_DOCKER = 1 ] || line="$line (no Docker gate ran)"
     echo "- Docker: $line"
     echo "- Script: \`scripts/release-gates.sh\` at \`$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)\`"
+    echo "- Shipped targets (\`scripts/release-targets.txt\`): $(printf '`%s`, ' $TARGETS | sed 's/, $//')"
     echo
     echo "| Gate | Result | Seconds | Log sha256 |"
     echo "| --- | --- | --- | --- |"

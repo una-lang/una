@@ -36,7 +36,10 @@ fail() {
     exit 1
 }
 
-# The target of this host's release archive.
+# The target of this host's release archive. It is not scripts/release-targets.txt (#1903): that
+# list is what the release being built ships, and this names the archive of a release already
+# published, which may ship other targets (0.3.x shipped x86_64-unknown-linux-gnu). A host whose
+# archive that release does not have fails below, since its validation record gives no digest.
 host_target() {
     case "$(uname -s) $(uname -m)" in
         "Darwin arm64") echo aarch64-apple-darwin ;;
