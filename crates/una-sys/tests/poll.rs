@@ -134,5 +134,36 @@ fn a_wait_with_a_huge_timeout_still_returns_the_ready_events() {
             "{timeout:?}"
         );
         assert_eq!(events.tokens().collect::<Vec<_>>(), [7], "{timeout:?}");
+        // The registration fired. `kqueue` drops a fired one-shot registration, while `epoll`
+        // keeps it, disabled, until it is deleted, and refuses a second add of the same
+        // descriptor with `EEXIST` (#1920): the next round re-arms it as the reactors do
+        // (`Poller::add`), a delete and then an add, the same on both platforms.
+        poller.delete(b.as_fd(), Interest::Read).unwrap();
+    }
+}
+
+#[test]
+fn a_fired_registration_is_re_armed_by_a_delete_then_an_add_on_both_platforms() {
+    // #1920: the contract of `Poller::add` on `kqueue` and `epoll` alike. A fired one-shot
+    // registration reports nothing more until it is re-armed, and a delete then an add re-arms
+    // it, however many times.
+    let poller = Poller::new().unwrap();
+    let (mut a, b) = UnixStream::pair().unwrap();
+    a.write_all(b"x").unwrap();
+    let mut events = Events::with_capacity(4);
+    for round in 0..3 {
+        poller.add(b.as_fd(), Interest::Read, 5).unwrap();
+        assert_eq!(
+            tokens(&poller, &mut events, Duration::from_secs(5)),
+            [5],
+            "{round}"
+        );
+        // One-shot: still readable, but reported once.
+        assert_eq!(
+            tokens(&poller, &mut events, Duration::from_millis(50)),
+            Vec::<u64>::new(),
+            "{round}"
+        );
+        poller.delete(b.as_fd(), Interest::Read).unwrap();
     }
 }

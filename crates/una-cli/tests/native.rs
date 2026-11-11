@@ -904,6 +904,9 @@ fn timeless(mut trace: Value) -> Value {
 }
 
 /// A package in a fresh temporary directory, with `una.toml` and the files `(path, text)`.
+/// The directory is named from `name` and the process, so each test of this binary passes a
+/// name of its own (as for [`tasks_package`], [`ita_package`] and [`within_package`]): two
+/// tests with one name, run in parallel, would remove each other's package (#1920).
 fn package(name: &str, manifest_extra: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2985,8 +2988,8 @@ fn a_task_stack_holds_every_level_its_depth_allows() {
     // function value, each holding values live across its call. Native only: the interpreter's
     // stack is capped at 1 GiB, below what a million of its levels take.
     let program = "module deep\n\nwalk(n: Int) -> Int\n=\n  let a = n + 1\n  let b = a * 2\n  let c = b + a\n  let d = c * 3\n  let next = fn(x: Int) -> walk(x) + (a + b + c + d) * 0\n  if n == 0 then 0 else next(n - 1) + 1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = walk(499990)\n    let b = walk(3)\n  @console.print(\"done {a} {b}\")\n";
-    let dir = tasks_package("deep", "deep", program);
-    let exe = dir.join("target/una/deep");
+    let dir = tasks_package("deepstack", "deep", program);
+    let exe = dir.join("target/una/deepstack");
     let run = |depth: &str| {
         Command::new(&exe)
             .args(["--max-depth", depth])
@@ -3427,7 +3430,7 @@ fn the_executable_denies_a_directory_past_the_host_path_limit_as_una_run_does_13
     use std::os::unix::fs::symlink;
     runtime();
     let dir = package(
-        "deep",
+        "deeppath",
         "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
         &[("src/files.una", &confined_program(&[]))],
     );
@@ -3467,7 +3470,7 @@ fn the_executable_denies_a_directory_past_the_host_path_limit_as_una_run_does_13
     std::fs::write(dir.join("src/files.una"), confined_program(&cases)).unwrap();
     let built = una(&dir, &["build"]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
-    let native = Command::new(dir.join("target/una/deep"))
+    let native = Command::new(dir.join("target/una/deeppath"))
         .current_dir(&dir)
         .output()
         .unwrap();
@@ -4610,7 +4613,7 @@ fn a_failing_init_of_a_driven_module_is_named_in_both_engines() {
     // `spec/26 §2` rule 2, #1809: the failure of `init` is U6001 at the name of `init`, exit
     // code 1, before any step; the message names `init` of the driven module, not `main`.
     runtime();
-    let dir = ita_package("counter", DRIVE, &[("src/counter.una", STUCK)]);
+    let dir = ita_package("stuckcounter", DRIVE, &[("src/counter.una", STUCK)]);
     let message = "[U6001] Error: `init` of the driven module `counter` failed with `Stuck`\n";
     let run = una(&dir, &["run"]);
     assert_eq!(run.status.code(), Some(1), "{run:?}");
@@ -4620,7 +4623,7 @@ fn a_failing_init_of_a_driven_module_is_named_in_both_engines() {
     assert!(!run_stderr.contains("`main`"), "{run_stderr}");
     let built = una(&dir, &["build"]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
-    let native = Command::new(dir.join("target/una/counter"))
+    let native = Command::new(dir.join("target/una/stuckcounter"))
         .current_dir(&dir)
         .output()
         .unwrap();
@@ -5106,9 +5109,13 @@ fn a_deadline_and_its_grace_period_end_in_u6007_or_a_clean_stop_in_both_engines(
     // ADR 0116 rules 14 and 16, `spec/26 §6`: `--deadline 1` is a host stop request; an
     // `on stop` that outlasts `--stop-grace 1` is cancelled with U6007, exit code 1, and a short
     // one ends the run normally.
-    let dir = ita_package("slow", &ever_run("slow"), &[("src/slow.una", SLOW_STOP)]);
+    let dir = ita_package(
+        "slowabort",
+        &ever_run("slow"),
+        &[("src/slow.una", SLOW_STOP)],
+    );
     let trace = dir.join("trace.json");
-    for (n, mut command) in engines(&dir, "slow", &["--deadline", "1", "--stop-grace", "1"])
+    for (n, mut command) in engines(&dir, "slowabort", &["--deadline", "1", "--stop-grace", "1"])
         .into_iter()
         .enumerate()
     {
