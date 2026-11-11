@@ -1,0 +1,1 @@
+- **Docs samples check on the site** (#1923). The edition 0.4 example of the agent guide is a package with its `ita.una` and `ita.lock`, and the failing example of U7010 vendors a release of a name without an owner, so the site's check of the samples reads each as one package.

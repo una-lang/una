@@ -1269,10 +1269,33 @@ What changes:
 - **Offline.** `una check`, `una run`, `una build` and `una test` never read a registry: `una ita fetch` fills Itaoca, `una ita vendor` writes `vendor/ita/` to commit, and `una ita bundle` and `una ita unbundle` carry the packages to a machine with no network. A locked package that is not there is U7011; one whose files changed is U7010.
 - **Never by hand.** `ita.lock` is written by `una ita lock`; `una fix` never edits `ita.una` or `ita.lock`. CI runs `una ita lock --check --fresh` and `una ita audit`.
 
-A block of edition `0.4` is checked as a package of `ita.una`:
+A package of edition `0.4`, with its manifest, its lock and one module:
+
+`ita.una`
 
 ```una
--- edition 0.4
+ita demo
+  version 0.1.0
+  edition 0.4
+```
+
+`ita.lock`
+
+```una
+lock 1
+
+solver
+  encoding "una-smt-1"
+  name "z3"
+  version "5.1.0"
+  logic "QF_UFLIA"
+  steps 5000000
+  seed 0
+```
+
+`src/demo.una`
+
+```una
 module demo
 
 pub total(xs: List[Int]) -> Int
