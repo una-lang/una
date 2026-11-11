@@ -1324,6 +1324,32 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "asks for 2^59 bytes, which Miri cannot refuse")]
     fn a_bit_set_the_allocator_cannot_give_is_refused_and_the_runtime_stays_usable() {
+        // The scenario below runs in a process of its own (#1920): its step announces 2^59
+        // bytes in the process-wide `RESERVED` until the allocator refuses them, and a test of
+        // this binary that runs a program at the same time, on another thread, would see its
+        // own step over its budget and end the whole binary with U6003.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "values::collections::tests::a_bit_set_the_allocator_cannot_give_scenario",
+                "--test-threads",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
+    }
+
+    #[test]
+    #[ignore = "run by `a_bit_set_the_allocator_cannot_give_is_refused_and_the_runtime_stays_usable`, in a process of its own"]
+    fn a_bit_set_the_allocator_cannot_give_scenario() {
         // #1700: outside a run no memory budget bounds the reservation, so `empty_bit_set(size:
         // 2^62)` asks the allocator for 2^59 bytes, and only its refusal, through the fallible
         // `try_reserve_exact`, stops the call. Natively malloc returns null; under
