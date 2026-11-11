@@ -101,8 +101,12 @@ fn main() -> Result<(), String> {
 }
 
 /// The link directives for the static library at `path` (`lib<name>.a`) and the C++ runtime
-/// the front end needs: the system's `libc++` on macOS, `libstdc++` on Linux. A release build
-/// on Linux links the latter statically through `scripts/release.sh`'s linker flags (rule 1).
+/// the front end needs: the system's `libc++` on macOS, dynamically; on Linux `libstdc++`,
+/// statically, so that `una` asks the dynamic loader for no C++ library (ADR 0124 rule 1,
+/// `scripts/load-commands-una.txt`, #1956). The driver flag `-static-libstdc++` of
+/// `scripts/release.sh` does not reach an explicit `-lstdc++`, so the kind is given here:
+/// `static`, without `bundle`, so that rustc does not copy the archive into this crate's rlib
+/// and the final link takes the toolchain's `libstdc++.a` from the C compiler's own search path.
 fn link(path: &Path) -> Result<(), String> {
     let file = path
         .file_name()
@@ -120,7 +124,7 @@ fn link(path: &Path) -> Result<(), String> {
     println!("cargo:rustc-link-lib=static={name}");
     match env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") => println!("cargo:rustc-link-lib=c++"),
-        Ok("linux") => println!("cargo:rustc-link-lib=stdc++"),
+        Ok("linux") => println!("cargo:rustc-link-lib=static:-bundle=stdc++"),
         other => {
             return Err(format!(
                 "una-z3 links on macOS and Linux only, not {other:?}"

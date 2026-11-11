@@ -5,7 +5,12 @@
 # scripts/load-commands-una.txt (on macOS the C++ runtime, `/usr/lib/libc++.1.dylib`) is allowed
 # in `una` alone, never in an executable that `una build` links, and a library on neither list
 # fails everywhere. The library on neither list is a dynamic library built here (`cdylib`), so
-# the canary needs nothing of the system. The real artifacts are never changed.
+# the canary needs nothing of the system. On Linux two more executables call one function of
+# GCC's C++ runtime (`__cxa_demangle`), linked with the flags of scripts/release.sh
+# (`-static-libstdc++ -static-libgcc`): one with `-l stdc++`, which the driver flag does not make
+# static, must fail as `una` with `needed libstdc++.so.6`, and one with `-l static:-bundle=stdc++`,
+# the directive of crates/una-z3/build.rs, must pass, with no NEEDED entry for the C++ runtime
+# (#1956). The real artifacts are never changed.
 #
 # Usage: scripts/load-commands-test.sh
 set -eu
@@ -48,6 +53,20 @@ if [ "$os" = macos ]; then
         echo "error: the canary linked with -lc++ has no load command for /usr/lib/libc++.1.dylib" >&2
         exit 1
     }
+else
+    printf 'use std::ffi::c_char;\nextern "C" {\n    fn __cxa_demangle(name: *const c_char, out: *mut c_char, len: *mut usize, status: *mut i32) -> *mut c_char;\n}\nfn main() {\n    let mut status = 0i32;\n    let out = unsafe { __cxa_demangle(c"_Z1fv".as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), &mut status) };\n    println!("{} {}", status, !out.is_null());\n}\n' > "$work/cxx.rs"
+    for kind in dylib static:-bundle; do
+        compile -o "$work/cxx-${kind%%:*}" -l "$kind=stdc++" \
+            -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc "$work/cxx.rs"
+    done
+    readelf -d "$work/cxx-dylib" | grep -q 'NEEDED.*\[libstdc++\.so\.6\]' || {
+        echo "error: the canary linked with -l stdc++ has no NEEDED entry for libstdc++.so.6" >&2
+        exit 1
+    }
+    if readelf -d "$work/cxx-static" | grep -q 'NEEDED.*libstdc++'; then
+        echo "error: the canary linked with -l static:-bundle=stdc++ still needs libstdc++" >&2
+        exit 1
+    fi
 fi
 
 # A directory holding the executable $1 alone.
@@ -96,6 +115,10 @@ count=2
 if [ "$os" = macos ]; then
     pass una-cxx "$work/cxx" "$(dir_of clean)"
     reject executable-cxx "cxx: not allowed: dylib /usr/lib/libc++.1.dylib" "$work/clean" "$(dir_of cxx)"
+    count=3
+else
+    reject una-cxx-dynamic "cxx-dylib: not allowed: needed libstdc++.so.6" "$work/cxx-dylib" "$(dir_of clean)"
+    pass una-cxx-static "$work/cxx-static" "$(dir_of clean)"
     count=3
 fi
 

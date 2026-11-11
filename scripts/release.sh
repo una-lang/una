@@ -74,8 +74,11 @@ done
 RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$root=/una --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rust"
 # The Z3 built into the release una (ADR 0124 rules 1 and 18): the library whose digest
 # supply-chain/z3.lock records for this target, taken from the cache by that digest, never
-# rebuilt here; una-cli's build checks the digest again. On Linux, libstdc++ and libgcc are
-# linked statically into una, so it depends on glibc alone (rule 1).
+# rebuilt here; una-cli's build checks the digest again. On Linux, libstdc++ is linked
+# statically into una by una-z3's build script (`static:-bundle=stdc++`: the driver flag
+# -static-libstdc++ below does not reach an explicit -lstdc++, #1956), and GCC's libgcc.a by
+# -static-libgcc, so the C++ runtime adds no shared library (rule 1); the unwinder
+# libgcc_s.so.1, which Rust's standard library links, stays (scripts/load-commands.txt).
 z3_digest=$(sed -n '/^\[library\]$/,$s/^"'"$target"'" *= *"\([0-9a-f]*\)"$/\1/p' supply-chain/z3.lock | head -n 1)
 if [ -z "$z3_digest" ]; then
     echo "error: supply-chain/z3.lock records no library digest for $target; build it with scripts/build-z3.sh --reproducible and record its digest in the [library] table" >&2
