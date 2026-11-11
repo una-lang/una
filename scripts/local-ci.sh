@@ -13,7 +13,11 @@
 # the step that failed, and a non-zero exit on any failure. While GitHub Actions is unavailable,
 # this is the check before a merge (#156).
 #
-# Usage: scripts/local-ci.sh [--linux | --linux-arm64]
+# With --limits after --linux or --linux-arm64 (#1903), the container runs scripts/limits.sh alone,
+# the release gates' limits leg of that architecture, and none of the steps above; alone, --limits
+# runs scripts/limits.sh here.
+#
+# Usage: scripts/local-ci.sh [--linux | --linux-arm64] [--limits]
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -24,30 +28,46 @@ fail() {
     exit 1
 }
 
+if [ "$*" = --limits ]; then
+    exec scripts/limits.sh
+fi
 if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
     case $1 in
         --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 retry=1 ;;
         *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" retry="" ;;
     esac
-    command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
+    leg=$1 mode=""
+    case "${2:-}" in
+        "") [ "$#" -eq 1 ] || mode=usage ;;
+        --limits) [ "$#" -eq 2 ] && mode=--limits || mode=usage ;;
+        *) mode=usage ;;
+    esac
+    if [ "$mode" = usage ]; then
+        echo "usage: scripts/local-ci.sh [--linux | --linux-arm64] [--limits]" >&2
+        exit 2
+    fi
+    command -v docker >/dev/null 2>&1 || fail "docker not found; $leg needs Docker"
     # The released sections of CHANGELOG.md need the repository's tags, which a worktree
     # mounted alone into the container cannot reach: the check runs here, on the host, and the
     # container's run skips it, visibly (#645).
-    echo "== Released sections of CHANGELOG.md (on the host)"
-    env -u UNA_SKIP_RELEASED_SECTIONS scripts/check-released-sections.sh \
-        || fail "Released sections of CHANGELOG.md"
-    # The security advisories' releases (#649) need the same tags and history: their test runs
-    # here, on the host, and only once it passes is the container told so, in
-    # UNA_LOCAL_CI_ADVISORIES_ON_HOST; the container's run then checks the page alone (#715).
-    echo "== Security advisories' releases (on the host)"
-    cargo test --locked -p una-cli --test advisories the_advisories_match_the_releases -- --exact \
-        || fail "Security advisories' releases (on the host)"
-    # The documents' links (#708) need the files git tracks, which git cannot list there either:
-    # they are checked here too, and only once they pass is the container told so, in
-    # UNA_LOCAL_CI_DOC_LINKS_ON_HOST.
-    echo "== Document links (on the host)"
-    scripts/doc-links.py --self-test && scripts/doc-links.py || fail "Document links (on the host)"
+    # The limits leg runs none of the steps, so none of their host parts either.
+    if [ -z "$mode" ]; then
+        echo "== Released sections of CHANGELOG.md (on the host)"
+        env -u UNA_SKIP_RELEASED_SECTIONS scripts/check-released-sections.sh \
+            || fail "Released sections of CHANGELOG.md"
+        # The security advisories' releases (#649) need the same tags and history: their test runs
+        # here, on the host, and only once it passes is the container told so, in
+        # UNA_LOCAL_CI_ADVISORIES_ON_HOST; the container's run then checks the page alone (#715).
+        echo "== Security advisories' releases (on the host)"
+        cargo test --locked -p una-cli --test advisories the_advisories_match_the_releases -- --exact \
+            || fail "Security advisories' releases (on the host)"
+        # The documents' links (#708) need the files git tracks, which git cannot list there either:
+        # they are checked here too, and only once they pass is the container told so, in
+        # UNA_LOCAL_CI_DOC_LINKS_ON_HOST.
+        echo "== Document links (on the host)"
+        scripts/doc-links.py --self-test && scripts/doc-links.py || fail "Document links (on the host)"
+    fi
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
     image="una-local-ci:$toolchain$suffix"
     echo "== building the image $image (linux/$arch)"
@@ -125,12 +145,12 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env UNA_LOCAL_CI_ADVISORIES_ON_HOST=1 \
         --env UNA_LOCAL_CI_DOC_LINKS_ON_HOST=1 \
         --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
-        "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
-    echo "local CI: PASS ($target, in the container)"
+        "$image" scripts/local-ci.sh $mode || fail "the Linux run failed; its output is above"
+    echo "local CI: PASS ($target${mode:+, $mode}, in the container)"
     exit 0
 fi
 if [ "$#" -ne 0 ]; then
-    echo "usage: scripts/local-ci.sh [--linux | --linux-arm64]" >&2
+    echo "usage: scripts/local-ci.sh [--linux | --linux-arm64] [--limits]" >&2
     exit 2
 fi
 

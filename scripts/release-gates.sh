@@ -4,7 +4,8 @@
 # clone made for this run, and checks before every gate that the clone is still that commit
 # with no change. A failing gate does not stop the next one.
 #
-# Gates, in order (all of them when none is named):
+# Gates, in order (the required ones when none is named: every gate of the gate machine, and the
+# gates of each target that scripts/release-targets.txt lists, below):
 #   clone        a fresh clone of the commit, from the repository's remote
 #   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
 #                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
@@ -20,7 +21,8 @@
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
 #   mac          scripts/local-ci.sh
-#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64)
+#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64, emulated); required only when
+#                x86_64-unknown-linux-gnu is shipped (#1903)
 #   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
 #   release      scripts/local-release.sh for the archive of each shipped target
 #                (scripts/release-targets.txt, #1903), each checked with scripts/check-release.sh
@@ -69,6 +71,9 @@
 #                the same fixed run on linux/arm64 (scripts/hunt-linux.sh, #793): the container
 #                is the gate's sandbox (no network, read-only root, no capability, not root) and
 #                Landlock confines each run. Its summary is OUT/hunt-linux-arm64/summary.json
+#   solver-identity, limits, toolchain-free
+#                ADR 0124 rule 31 (docs/release-gates.md); limits-linux-arm64 and limits-linux are
+#                the limits gate natively in the Linux container of that architecture (Docker)
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, record.md, the full validation record, and, when the record names its
@@ -80,8 +85,10 @@
 # UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
 # The Docker gates run on Docker Desktop's context only: run them with
 # DOCKER_CONTEXT=desktop-linux (#1082, below).
-# Exit code: 0 when no gate failed, 1 when one did, 129 or 143 after a HUP or TERM once the
-# gate in progress has ended, 2 for a usage error, a refused Docker
+# Exit code: the record's verdict (#1933): 0 for PASS (every gate), 1 for FAIL (a gate failed, or
+# the archives are not exactly one per shipped target), 3 for INCOMPLETE (a required gate did not
+# run); 129 or 143 after a HUP or TERM once the gate in progress has ended, 2 for a usage error,
+# a list of shipped targets that cannot be read, a refused Docker
 # context, an OUT that another run holds, or a release tag of an earlier run that cannot be
 # undone in the clone (#1017).
 #
@@ -104,12 +111,39 @@ esac
 unset BASH_ENV ENV
 ulimit -c 0
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64 solver-identity limits toolchain-free)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64 solver-identity limits limits-linux-arm64 limits-linux toolchain-free)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
     exit 2
 }
+
+REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# The shipped targets (scripts/release-targets.txt, #1903), whose archives the reproducible and
+# toolchain-free gates take; a list that cannot be read or lists no target stops the run here.
+. "$REPO/scripts/release-targets.sh"
+TARGETS=$(release_targets "$REPO/scripts/release-targets.txt") || exit 2
+# The required gates (#1903): those of the gate machine, an arm64 Mac, and those of each shipped
+# target; a target with no gates here stops the run before any gate. Adding
+# x86_64-unknown-linux-gnu to the list makes `linux` and `limits-linux` required, and the latter
+# refuses to run under emulation (ADR 0124 rule 31).
+HOST_GATES="clone build deps mac release reproducible determinism native timing-channels owner-replay sanitize site formal hunt solver-identity limits toolchain-free"
+TARGET_GATES=""
+while read -r target; do
+    case $target in
+        aarch64-apple-darwin) ;;
+        aarch64-unknown-linux-gnu) TARGET_GATES="$TARGET_GATES linux-arm64 hunt-linux-arm64 limits-linux-arm64" ;;
+        x86_64-unknown-linux-gnu) TARGET_GATES="$TARGET_GATES linux limits-linux" ;;
+        *)
+            echo "release gates: no gates for the shipped target $target" >&2
+            exit 2
+            ;;
+    esac
+done <<< "$TARGETS"
+REQUIRED=()
+for gate in "${ALL[@]}"; do
+    case " $HOST_GATES $TARGET_GATES " in *" $gate "*) REQUIRED+=("$gate") ;; esac
+done
 
 [ $# -ge 2 ] || usage
 SHA=$1
@@ -117,16 +151,11 @@ OUT=$2
 shift 2
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || usage
 GATES=("$@")
-[ ${#GATES[@]} -eq 0 ] && GATES=("${ALL[@]}")
+[ ${#GATES[@]} -eq 0 ] && GATES=("${REQUIRED[@]}")
 for gate in "${GATES[@]}"; do
     case " ${ALL[*]} " in *" $gate "*) ;; *) usage ;; esac
 done
 
-REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-# The shipped targets (scripts/release-targets.txt, #1903), whose archives the reproducible and
-# toolchain-free gates take; a list that cannot be read or lists no target stops the run here.
-. "$REPO/scripts/release-targets.sh"
-TARGETS=$(release_targets "$REPO/scripts/release-targets.txt") || exit 2
 # The release tag of the clone, made and undone by the release and reproducible gates (#1017).
 . "$REPO/scripts/release-gates-tag.sh"
 # Git reads the repository it is run in, never one an exported variable names, and no
@@ -143,7 +172,7 @@ git_environment_unset
 # override the context, is unset. The context is then exported, so that every gate and its
 # children use it even if the active context changes during the run. The record names the
 # context and the server's version.
-DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 toolchain-free "
+DOCKER_GATES=" linux linux-arm64 release reproducible hunt-linux-arm64 limits-linux-arm64 limits-linux toolchain-free "
 DOCKER_REQUIRED=desktop-linux
 NEEDS_DOCKER=0
 for gate in "${GATES[@]}"; do
@@ -373,12 +402,17 @@ gate_solver-identity() {
 }
 
 gate_limits() {
-    # ADR 0124 rule 31: memout, cpu and wallclock each end as their reason with the parent intact.
-    run limits sh -c '
-        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
-        export UNA_Z3_LIB
-        cargo test --release --locked -p una-cli --test solver_limits -- --ignored --nocapture'
+    # ADR 0124 rule 31, natively on each target: memout, cpu and wallclock each end as their
+    # reason with the parent intact, and the confinement cases (scripts/limits.sh); here on macOS,
+    # and in the Linux container of each architecture below.
+    run limits scripts/limits.sh
 }
+
+gate_limits-linux-arm64() { run limits-linux-arm64 scripts/local-ci.sh --linux-arm64 --limits; }
+
+# Emulated on the gate machine, where scripts/limits.sh refuses to run: it passes only on a native
+# x86-64 Linux host (ADR 0124 rule 31, #1442).
+gate_limits-linux() { run limits-linux scripts/local-ci.sh --linux --limits; }
 
 gate_toolchain-free() {
     # ADR 0124 rule 31, the build phase for `una check` and `una test`: the release una alone,
@@ -757,7 +791,7 @@ print("- Findings: %s; errors: %s" % (len(s["findings"]), len(s["errors"])))
     failed=$(tail -n +2 "$RESULTS" | awk -F'\t' '$3 == "FAIL" { print $1 }' | sort -u | paste -sd ' ' - | sed 's/ /, /g')
     [ $archives_wrong = 1 ] && failed=${failed:+$failed, }archives
     missing=()
-    for gate in "${ALL[@]}"; do
+    for gate in "${REQUIRED[@]}"; do
         awk -F'\t' -v g="$gate" 'NR > 1 && $1 == g { found = 1 } END { exit !found }' "$RESULTS" || missing+=("$gate")
     done
     if [ -n "$failed" ]; then
@@ -797,5 +831,10 @@ if [ -n "$version" ] && summary "$version" "$OUT/record.md" "$OUT/summary.md"; t
         fi
     fi
 fi
+# The exit status follows the verdict (#1933): a FAIL row fails the run whatever the record says.
 grep -q $'\tFAIL\t' "$RESULTS" && exit 1
-exit 0
+case $(sed -n 's/^Verdict: \([A-Z]*\) .*$/\1/p' "$OUT/record.md") in
+    PASS) exit 0 ;;
+    INCOMPLETE) exit 3 ;;
+    *) exit 1 ;;
+esac

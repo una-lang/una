@@ -4,9 +4,10 @@
 # documentation by hand (una-lang/website, docs/site-map.md §4.2).
 #
 # OUT/una-docs-<version>/
-#   manifest.json   schema una.site-bundle/1: the version, the commit, the editions, and every
-#                   file with its kind, title, sha256, the `spec/NN §M` references it makes,
-#                   and whether it is neutral
+#   manifest.json   schema una.site-bundle/1: the version, the commit, the editions, the
+#                   shipped targets (`targets`, the triples of scripts/release-targets.txt, #1903),
+#                   and every file with its kind, title, sha256, the `spec/NN §M` references it
+#                   makes, and whether it is neutral
 #   files/<path>    each document at its repository path
 #   help/<cmd>.txt  `una --help` (una.txt) and `una <cmd> --help`, as the built binary prints them
 #   version.txt     `una --version`
@@ -54,6 +55,9 @@ out=$(CDPATH='' cd -- "$1" && pwd)
 
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 [ -n "$version" ] || fail "no workspace version in Cargo.toml"
+# The shipped targets, through the one reader of the list, which fails closed (#1903).
+. scripts/release-targets.sh
+targets=$(release_targets scripts/release-targets.txt) || fail "the shipped targets of scripts/release-targets.txt"
 una=${UNA_BIN:-}
 if [ -z "$una" ]; then
     for candidate in target/release/una target/debug/una; do
@@ -167,9 +171,10 @@ done
 count=$(wc -l <"$entries" | tr -d ' ')
 not_neutral=$(grep -c '"neutral":false' "$entries" || true)
 {
-    printf '{"schema":"una.site-bundle/1","version":"%s","commit":"%s","editions":[%s],"neutrality":"%s","commands":[%s],"feature_catalog":%s,"files":[\n' \
+    printf '{"schema":"una.site-bundle/1","version":"%s","commit":"%s","editions":[%s],"targets":[%s],"neutrality":"%s","commands":[%s],"feature_catalog":%s,"files":[\n' \
         "$version" "$commit" \
         "$(echo "$editions" | tr ',' '\n' | sed 's/^ *//' | while read -r e; do printf '"%s",' "$e"; done | sed 's/,$//')" \
+        "$(for t in $targets; do printf '"%s",' "$t"; done | sed 's/,$//')" \
         "$neutrality" \
         "$(for c in $commands; do printf '"%s",' "$c"; done | sed 's/,$//')" \
         "$(cat "$bundle/.features")"

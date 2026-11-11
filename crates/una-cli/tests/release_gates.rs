@@ -91,7 +91,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-head");
     let output = gates(&sha, &out, &["clone"]);
     assert!(
-        output.status.success(),
+        output.status.code() == Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -145,7 +145,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64, solver-identity, limits, toolchain-free)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, toolchain-free)"
         ),
         "{record}"
     );
@@ -287,7 +287,7 @@ fn a_tag_left_by_a_killed_release_gate_is_undone_before_any_gate() {
         return;
     };
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-tag-left");
-    assert!(gates(&sha, &out, &["clone"]).status.success());
+    assert!(gates(&sha, &out, &["clone"]).status.code() == Some(3));
     plant_tag(&sha, &out, None);
     assert!(has_tag(&out));
     // An untracked file makes the clone inexact, so the mac gate fails at once without running
@@ -319,7 +319,7 @@ fn a_tag_left_by_a_killed_release_gate_is_undone_before_any_gate() {
         String::from_utf8_lossy(&output.stderr)
     );
     // A run that starts with the clone gate makes the clone again instead.
-    assert!(gates_again(&sha, &out, &["clone"]).status.success());
+    assert!(gates_again(&sha, &out, &["clone"]).status.code() == Some(3));
     assert!(!has_tag(&out));
     let _ = std::fs::remove_dir_all(&out);
 }
@@ -330,7 +330,7 @@ fn a_second_run_on_one_out_is_refused() {
         return;
     };
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-lock");
-    assert!(gates(&sha, &out, &["clone"]).status.success());
+    assert!(gates(&sha, &out, &["clone"]).status.code() == Some(3));
     assert!(
         !out.join("release-gates.lock").exists(),
         "a run releases its lock"
@@ -737,7 +737,7 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
     let output = gates_with_keychain(&sha, &out, held(&answer), held(&neutral));
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -777,7 +777,7 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
     let output = gates_with_keychain(&sha, &out, absent(Some(&exported_answer)), held(&neutral));
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -831,7 +831,7 @@ fn the_neutrality_pattern_comes_from_the_keychain_and_is_never_printed_or_writte
     let output = gates_with_keychain(&sha, &out, held(&private), held(&answer));
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -864,7 +864,7 @@ fn the_neutrality_pattern_comes_from_the_keychain_and_is_never_printed_or_writte
     let output = gates_with_keychain(&sha, &out, held(&private), absent(Some(&exported_answer)));
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1002,7 +1002,7 @@ fn a_run_without_the_neutrality_pattern_is_unchecked_and_never_published() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
     assert!(
         stderr.contains("no neutrality pattern; UNA_GATES_UNCHECKED=1"),
         "{stderr}"
@@ -1150,6 +1150,8 @@ fn the_docker_gates_refuse_any_context_but_docker_desktops() {
         "release",
         "reproducible",
         "hunt-linux-arm64",
+        "limits-linux-arm64",
+        "limits-linux",
         "toolchain-free",
     ] {
         let output = gates_with_docker(&sha, &out, &["clone", gate], "other-runtime", None, None);
@@ -1197,7 +1199,7 @@ fn the_docker_gates_refuse_any_context_but_docker_desktops() {
     let output = gates_with_docker(&sha, &out, &["clone"], "other-runtime", None, None);
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1462,21 +1464,24 @@ fn local_release_builds_exactly_the_archives_of_the_shipped_targets() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // The tag's commit must ship what this checkout's list says: another list fails first.
-    std::fs::write(
-        dir.join("scripts/release-targets.txt"),
+    // The tag's commit must ship what this checkout's list says: another list fails first,
+    // shorter, of the same length with another target, or in another order (#1933).
+    for list in [
         "aarch64-apple-darwin\n",
-    )
-    .unwrap();
-    std::fs::remove_dir_all(&built).unwrap();
-    let output = run(false);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("are not those of this checkout's"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(!built.exists());
+        "aarch64-apple-darwin\nx86_64-unknown-linux-gnu\n",
+        "aarch64-unknown-linux-gnu\naarch64-apple-darwin\n",
+    ] {
+        std::fs::write(dir.join("scripts/release-targets.txt"), list).unwrap();
+        let _ = std::fs::remove_dir_all(&built);
+        let output = run(false);
+        assert_eq!(output.status.code(), Some(1), "{list:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("are not those of this checkout's"),
+            "{list:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!built.exists(), "{list:?}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1571,6 +1576,8 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
             "scripts/toolchain-free.sh",
             "#!/bin/sh\necho \"${3:-macos} $1\" >> \"$STUB_LOG\"\n[ \"${3:-macos}\" != \"${STUB_FAIL:-}\" ]\n".to_owned(),
         ),
+        // A gate that passes and touches no archive.
+        ("scripts/deps-audit.sh", "#!/bin/sh\nexit 0\n".to_owned()),
     ] {
         std::fs::write(source.join(path), text).unwrap();
     }
@@ -1594,6 +1601,7 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
             "755",
             "scripts/local-release.sh",
             "scripts/toolchain-free.sh",
+            "scripts/deps-audit.sh",
         ])
         .current_dir(&source)
         .status()
@@ -1607,7 +1615,7 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
     let out = dir.join("out");
     let output = gates_of(&script, &sha, &out, &["clone"], &source, &[]);
     assert!(
-        output.status.success(),
+        output.status.code() == Some(3),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -1686,6 +1694,8 @@ fn reproducible_compares_every_archive_and_refuses_one_not_shipped() {
     );
     for (first, second, result) in [
         (&[darwin, linux][..], format!("{darwin} {linux}"), "PASS"),
+        // A shipped target's archive that differs between the builds (#1933).
+        (&[darwin, linux][..], format!("{darwin} {linux}!"), "FAIL"),
         // A shipped target's archive missing from both builds.
         (&[darwin][..], darwin.to_owned(), "FAIL"),
         // An archive that is not a shipped target's: differing, or even equal.
@@ -1766,22 +1776,106 @@ fn the_verdict_fails_unless_the_archives_are_exactly_the_shipped_targets() {
     }
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-archives");
     let (script, sha, out) = gate_fixture(&dir, SHIPPED);
-    // An untracked file makes the clone inexact, so the next gate fails at once and runs nothing.
-    std::fs::write(out.join("clone/untracked"), "").unwrap();
+    let source = dir.join("source");
     let darwin = "aarch64-apple-darwin";
     let linux = "aarch64-unknown-linux-gnu";
-    for (targets, verdict) in [
-        (&[darwin, linux][..], "Verdict: FAIL (deps)\n"),
-        (&[darwin][..], "Verdict: FAIL (deps, archives)\n"),
-        (
-            &[darwin, linux, "x86_64-unknown-linux-gnu"][..],
-            "Verdict: FAIL (deps, archives)\n",
-        ),
+    let x86 = "x86_64-unknown-linux-gnu";
+    // The deps gate of the fixture passes, so the archive check is the only check that can fail
+    // the record, and the exit status follows the verdict (#1933): 1 for FAIL, 3 for INCOMPLETE.
+    for (targets, verdict, code) in [
+        (&[darwin, linux][..], "Verdict: INCOMPLETE (not run:", 3),
+        (&[darwin][..], "Verdict: FAIL (archives)\n", 1),
+        (&[darwin, linux, x86][..], "Verdict: FAIL (archives)\n", 1),
+        // The right number of archives, one of the wrong target.
+        (&[darwin, x86][..], "Verdict: FAIL (archives)\n", 1),
     ] {
         plant(&out, targets, false);
-        gates_of(&script, &sha, &out, &["deps"], &dir.join("source"), &[]);
+        let output = gates_of(&script, &sha, &out, &["deps"], &source, &[]);
         let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+        assert_eq!(result_of(&out, "deps"), "PASS", "{record}");
         assert!(record.contains(verdict), "{targets:?}: {record}");
+        assert_eq!(output.status.code(), Some(code), "{targets:?}");
     }
+    // The release gate passing with no archive at all (its stub packs none) fails the record.
+    let output = gates_of(
+        &script,
+        &sha,
+        &out,
+        &["release"],
+        &source,
+        &[("STUB_SECOND", "")],
+    );
+    let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+    assert_eq!(result_of(&out, "release"), "PASS", "{record}");
+    assert!(record.contains("Verdict: FAIL (archives)\n"), "{record}");
+    assert_eq!(output.status.code(), Some(1));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_required_gates_follow_the_shipped_targets() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-required");
+    let out = tmp.join("out");
+    // With x86_64 shipped, `linux` and `limits-linux` are required again; with macOS alone, no
+    // Linux gate is (#1903).
+    for (list, missing) in [
+        (
+            "aarch64-apple-darwin\naarch64-unknown-linux-gnu\nx86_64-unknown-linux-gnu\n",
+            "build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, limits-linux, toolchain-free",
+        ),
+        (
+            "aarch64-apple-darwin\n",
+            "build, deps, mac, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, solver-identity, limits, toolchain-free",
+        ),
+    ] {
+        let script = gates_copy(&tmp.join("gates"), list);
+        let _ = std::fs::remove_dir_all(&out);
+        let output = gates_of(&script, &sha, &out, &["clone"], &root(), &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+        assert!(
+            record.contains(&format!("Verdict: INCOMPLETE (not run: {missing})\n")),
+            "{list:?}: {record}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn the_manifest_of_the_docs_bundle_names_the_shipped_targets() {
+    // The bundle reads the list through its one reader and fails closed before anything else
+    // (#1903): a copy with an empty list fails at once.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("site-bundle-targets");
+    release_tree(&dir, &["site-bundle.sh"], "");
+    let output = Command::new("sh")
+        .arg(dir.join("scripts/site-bundle.sh"))
+        .arg(dir.join("out"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("site-bundle: FAIL (the shipped targets of scripts/release-targets.txt)"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The manifest's `targets` is that list, as an array of strings.
+    let script = std::fs::read_to_string(root().join("scripts/site-bundle.sh")).unwrap();
+    assert!(
+        script.contains(r#""editions":[%s],"targets":[%s],"#),
+        "the manifest's targets key"
+    );
+    assert!(
+        script.contains(r#"$(for t in $targets; do printf '"%s",' "$t"; done | sed 's/,$//')"#)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
