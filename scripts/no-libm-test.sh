@@ -4,7 +4,9 @@
 # name, and the clean ones must pass. They cover the scopes: a name of scripts/no-libm-una.txt
 # is allowed in `una` alone and only when the Z3 library imports it, never in `una` built
 # without the solver, in `libuna_rt.a` or in an executable that `una build` links, and any
-# other name of scripts/no-libm.txt fails everywhere. The canaries declare the C function
+# other name of scripts/no-libm.txt fails everywhere. Every name of scripts/no-libm-una.txt is
+# then checked on its own in each of those scopes, the tie to the Z3 library by name (#1951).
+# The canaries declare the C function
 # themselves (`extern "C"`), so that each artifact imports exactly the names it is meant to. The
 # real artifacts are never changed.
 #
@@ -161,6 +163,37 @@ reject executable-solver-name "allowed_exe: $allowed" \
 reject executable-denied "denied_exe: $denied" \
     "$work/z3.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of denied_exe)"
 
+# Every name of the solver's list, each on its own (#1951): allowed in `una` when the stand-in Z3
+# library imports that very name, and rejected in `una` when the Z3 library imports only another
+# name of the list, in `una` without the solver, in `libuna_rt.a` and in an executable. The
+# canaries are linked, never run, so each C function is declared `f64 -> f64` whatever its real
+# signature (`frexp` takes a pointer too).
+names=$(sed 's/#.*//' "$root/scripts/no-libm-una.txt" | awk 'NF { print $1 }')
+first=$(printf '%s\n' "$names" | sed -n 1p)
+second=$(printf '%s\n' "$names" | sed -n 2p)
+[ -n "$second" ] || { echo "error: scripts/no-libm-una.txt lists fewer than two names" >&2; exit 1; }
+named=0
+for listed in $names; do
+    named=$((named + 1))
+    if [ "$listed" = "$first" ]; then other=$second; else other=$first; fi
+    exe "una_$listed" "$listed"
+    exe "exe_$listed" "$listed"
+    archive "rt_$listed" "$listed"
+    archive "z3_$listed" "$listed"
+    archive "z3_not_$listed" "$other"
+    pass "solver-$listed" "$work/z3_$listed.a" "$work/una_$listed" "$work/clean_rt.a" "$(dir_of clean_exe)"
+    reject "una-not-from-z3-$listed" "$listed, which the Z3 library $work/z3_not_$listed.a does not import" \
+        "$work/z3_not_$listed.a" "$work/una_$listed" "$work/clean_rt.a" "$(dir_of clean_exe)"
+    rust=$work/una_$listed
+    reject "rust-$listed" "$work/una_$listed: $listed" \
+        "$work/z3_$listed.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
+    rust=
+    reject "runtime-$listed" "$work/rt_$listed.a(rt_$listed.o): $listed" \
+        "$work/z3_$listed.a" "$work/clean_una" "$work/rt_$listed.a" "$(dir_of clean_exe)"
+    reject "executable-$listed" "exe_$listed: $listed" \
+        "$work/z3_$listed.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of "exe_$listed")"
+done
+
 # The release graph check. expect_verdict NAME EXPECT COMMAND...: the verdict of COMMAND, a
 # function of scripts/no-libm-graph.sh, must be EXPECT (absent or finding).
 . "$root/scripts/no-libm-graph.sh"
@@ -223,4 +256,4 @@ if [ "$status" -ne 0 ]; then
     echo "no-libm-test: FAIL" >&2
     exit 1
 fi
-echo "no-libm-test: PASS (2 clean runs pass, 8 canaries fail as they must, $graph_cases graph canaries)"
+echo "no-libm-test: PASS (2 clean runs pass, 8 canaries fail as they must, $named names of the solver's list each allowed in una when Z3 imports it and rejected in 4 scopes, $graph_cases graph canaries)"
