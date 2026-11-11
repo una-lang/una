@@ -26,14 +26,17 @@
 # una-rt`): it holds none of num-bigint, num-integer and num-traits, whose `std` code called the
 # C math library (`log2` while parsing, `ln`, `exp` and `cbrt` in their roots); Una's own big
 # integer in una-core replaced them (#1093). The graph holds normal dependencies only: a test
-# build unifies dev-dependencies in and is not what ships.
+# build unifies dev-dependencies in and is not what ships. How a run of
+# `cargo tree -i` is judged is scripts/no-libm-graph.sh (#1949): a tree it prints is a finding,
+# and only cargo's own report of a crate it has nothing to print for, or of a package ID
+# specification that matches no package, is not.
 #
 # The tool is, on macOS, the `llvm-nm` of the pinned Rust toolchain (the `llvm-tools` component),
 # whose LLVM reads the bitcode that Rust's objects carry, else `llvm-nm`, else `nm`; on Linux,
 # `nm` (binutils), else `llvm-nm`, else the toolchain's. It fails closed: a `cargo tree` that
-# fails or prints nothing, a missing artifact or list, an empty executable directory, no tool,
-# or a tool that exits non-zero or reports anything but an object without symbols is a failure,
-# never a skip.
+# fails, or prints nothing without saying so, a missing artifact or list, an empty executable
+# directory, no tool, or a tool that exits non-zero or reports anything but an object without
+# symbols is a failure, never a skip.
 #
 # Usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES UNA_WITHOUT_SOLVER
 set -u
@@ -41,6 +44,7 @@ set -u
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 deny=$root/scripts/no-libm.txt
 solver=$root/scripts/no-libm-una.txt
+graph=$root/scripts/no-libm-graph.sh
 
 if [ "$#" -ne 4 ]; then
     echo "usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES UNA_WITHOUT_SOLVER" >&2
@@ -58,6 +62,9 @@ fail() {
 
 [ -f "$deny" ] && [ -r "$deny" ] || fail "no denylist at $deny"
 [ -f "$solver" ] && [ -r "$solver" ] || fail "no list of the solver's imports at $solver"
+[ -f "$graph" ] && [ -r "$graph" ] || fail "no graph check at $graph"
+# shellcheck source=scripts/no-libm-graph.sh
+. "$graph"
 [ -f "$una" ] && [ -r "$una" ] || fail "no una binary at $una"
 [ -f "$rust_una" ] && [ -r "$rust_una" ] || fail "no una without the solver at $rust_una"
 [ -f "$archive" ] && [ -r "$archive" ] || fail "no runtime library at $archive"
@@ -173,21 +180,9 @@ for name in $(sed 's/#.*//' "$solver"); do
     fi
 done
 # The release dependency graph holds none of the crates whose `std` code called the C math
-# library (#1093). Cargo reports a package the graph does not hold as an ID specification that
-# matches no package; a graph that holds one, or any other failure of `cargo tree`, is a finding.
+# library (#1093); scripts/no-libm-graph.sh judges each run of `cargo tree`.
 for crate in num-bigint num-integer num-traits; do
-    if (cd "$root" && cargo tree --locked -e normal -p una-cli -p una-rt -i "$crate") \
-        > "$tmp/tree" 2> "$tmp/err"; then
-        cat "$tmp/tree" "$tmp/err" >&2
-        echo "no-libm: the release graph holds $crate"
-        findings=1
-    elif grep -qF "package ID specification \`$crate\` did not match any packages" "$tmp/err"; then
-        echo "no-libm: $crate is not in the release graph"
-    else
-        cat "$tmp/err" >&2
-        echo "no-libm: cargo tree of $crate failed"
-        findings=1
-    fi
+    no_libm_graph_check "$root" "$tmp" "$crate" || findings=1
 done
 
 : > "$tmp/out"

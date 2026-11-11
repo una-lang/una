@@ -4,8 +4,14 @@
 # name, and the clean ones must pass. They cover the scopes: a name of scripts/no-libm-una.txt
 # is allowed in `una` alone and only when the Z3 library imports it, never in `una` built
 # without the solver, in `libuna_rt.a` or in an executable that `una build` links, and any
-# other name of scripts/no-libm.txt fails everywhere. The canaries declare the C function themselves (`extern "C"`), so that each
-# artifact imports exactly the names it is meant to. The real artifacts are never changed.
+# other name of scripts/no-libm.txt fails everywhere. The canaries declare the C function
+# themselves (`extern "C"`), so that each artifact imports exactly the names it is meant to. The
+# real artifacts are never changed.
+#
+# The release graph check (scripts/no-libm-graph.sh, #1949) has canaries of its own: its verdict
+# on each kind of `cargo tree` result, given as files, and on the real graph of this repository,
+# where una-core is held (a finding), num-bigint is in Cargo.lock but not in the graph, and a
+# name that no package has is not in Cargo.lock (neither is a finding).
 #
 # Usage: scripts/no-libm-test.sh
 set -eu
@@ -155,8 +161,66 @@ reject executable-solver-name "allowed_exe: $allowed" \
 reject executable-denied "denied_exe: $denied" \
     "$work/z3.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of denied_exe)"
 
+# The release graph check. expect_verdict NAME EXPECT COMMAND...: the verdict of COMMAND, a
+# function of scripts/no-libm-graph.sh, must be EXPECT (absent or finding).
+. "$root/scripts/no-libm-graph.sh"
+graph_cases=0
+expect_verdict() {
+    name=$1 expect=$2
+    shift 2
+    graph_cases=$((graph_cases + 1))
+    if "$@" > "$work/graph-$name.log" 2>&1; then got=absent; else got=finding; fi
+    if [ "$got" != "$expect" ]; then
+        echo "error: graph canary $name is $got, not $expect:" >&2
+        cat "$work/graph-$name.log" >&2
+        status=1
+    fi
+}
+# graph_case NAME EXPECT STATUS TREE ERR: the verdict on a `cargo tree -i num-bigint` that exited
+# with STATUS and printed TREE and ERR.
+graph_case() {
+    name=$1 expect=$2 code=$3
+    printf '%s' "$4" > "$work/graph-$name.tree"
+    printf '%s' "$5" > "$work/graph-$name.err"
+    expect_verdict "$name" "$expect" \
+        no_libm_graph_verdict num-bigint "$code" "$work/graph-$name.tree" "$work/graph-$name.err"
+}
+nothing='warning: nothing to print.
+
+To find dependencies that require specific target platforms, try to use option `--target all` first, and then narrow your search scope accordingly.
+'
+held='num-bigint v0.4.8
+└── una-core v0.3.16
+'
+graph_case nothing-to-print absent 0 "" "$nothing"
+graph_case no-match absent 101 "" \
+    'error: package ID specification `num-bigint` did not match any packages
+'
+graph_case held finding 0 "$held" ""
+graph_case held-and-warned finding 0 "$held" "$nothing"
+graph_case silent finding 0 "" ""
+graph_case other-warning finding 0 "" 'warning: something else
+'
+graph_case nothing-and-error finding 0 "" "${nothing}error: failed to load the lock file
+"
+graph_case nothing-but-failed finding 101 "" "$nothing"
+graph_case no-match-other-crate finding 101 "" \
+    'error: package ID specification `num-traits` did not match any packages
+'
+graph_case other-failure finding 101 "" 'error: the lock file needs to be updated
+'
+mkdir "$work/graph"
+expect_verdict real-held finding no_libm_graph_check "$root" "$work/graph" una-core
+expect_verdict real-not-in-graph absent no_libm_graph_check "$root" "$work/graph" num-bigint
+expect_verdict real-not-locked absent no_libm_graph_check "$root" "$work/graph" una-no-such-crate
+if ! grep -qF 'the release graph holds una-core' "$work/graph-real-held.log"; then
+    echo "error: graph canary real-held fails for another reason than holding una-core:" >&2
+    cat "$work/graph-real-held.log" >&2
+    status=1
+fi
+
 if [ "$status" -ne 0 ]; then
     echo "no-libm-test: FAIL" >&2
     exit 1
 fi
-echo "no-libm-test: PASS (2 clean runs pass, 8 canaries fail as they must)"
+echo "no-libm-test: PASS (2 clean runs pass, 8 canaries fail as they must, $graph_cases graph canaries)"
