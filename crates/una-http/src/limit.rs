@@ -1066,8 +1066,8 @@ mod tests {
 
     #[test]
     fn a_limiter_lets_its_burst_through_then_waits_for_its_refill() {
-        // Two per 100 ms: two at once, the third once a token comes, within 50 ms; a fourth
-        // whose deadline comes first fails with `TimedOut`, unsent.
+        // Two per 100 ms on the monotonic clock: two at once, the third once a token comes,
+        // within 50 ms.
         let limiter = Limiter::new(2, 100, 8, Arc::new(Monotonic::new()));
         let until = (soon(1_000), u64::MAX);
         limiter.acquire(until, &Never, &Abandon::new()).unwrap();
@@ -1077,8 +1077,17 @@ mod tests {
             .acquire((soon(1_000), u64::MAX), &Never, &Abandon::new())
             .unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
-        let late = limiter.acquire((soon(5), u64::MAX), &Never, &Abandon::new());
+        // A call whose deadline comes before its refill fails with `TimedOut` at its deadline,
+        // unsent. On a run clock that stays still the refill never comes, so the outcome does
+        // not depend on how late the thread runs: on the monotonic clock above, a stall of
+        // 50 ms before the call let a token in and the call through (#1932).
+        let still = Limiter::new(2, 100, 8, Arc::new(Still(0)));
+        still.acquire(until, &Never, &Abandon::new()).unwrap();
+        still.acquire(until, &Never, &Abandon::new()).unwrap();
+        let started = Instant::now();
+        let late = still.acquire((soon(5), u64::MAX), &Never, &Abandon::new());
         assert_eq!(late.err(), Some(Error::TimedOut));
+        assert!(started.elapsed() >= Duration::from_millis(5));
     }
 
     #[test]
