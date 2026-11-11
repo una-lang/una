@@ -21,6 +21,11 @@
 #   accepted only as docs/validation/repacked.md pairs it with the summary's digest.
 # Nothing else is downloaded: the Z3 solver is built into `una` (ADR 0124), so no separate Z3
 # is installed and none is looked for on PATH.
+# The platform is checked before anything is downloaded. The releases are for macOS on arm64 and
+# Linux on arm64 (aarch64). The Linux `una` is a dynamic glibc executable that needs glibc 2.39 or
+# later, so a musl system (Alpine and others), an older glibc, or a system whose glibc version
+# cannot be read is refused; so are Linux on x86_64, which this release does not ship, and every
+# other system.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -42,7 +47,7 @@
 #                     with <ref> the tag v<version>, then main
 #                     (default: https://raw.githubusercontent.com/una-lang/una)
 #
-# Needs: curl or wget, tar, and shasum or sha256sum.
+# Needs: curl or wget, tar, and shasum or sha256sum; on Linux, getconf.
 set -eu
 
 # The release this script installs by default; a test keeps it equal to the workspace version.
@@ -115,14 +120,49 @@ if [ "$major" -eq 0 ] && [ "$minor" -lt 4 ]; then
     fail "this installer installs 0.4.0 and later; $version needs a separate Z3 that it no longer installs"
 fi
 
-# The platform: the target of the archive. This release ships for macOS on arm64 only.
+# The platform: the target of the archive, one of scripts/release-targets.txt (a test keeps the
+# two equal). Linux on x86_64 is not shipped: its confinement has no native test run yet.
 platform="$(uname -s) $(uname -m)"
+shipped="the releases are for macOS on arm64 and Linux on arm64 (aarch64)"
 case $platform in
     "Darwin arm64")
         target=aarch64-apple-darwin ;;
-    Linux\ *) fail "Linux is not available in this release yet: its build of the solver built into una is not yet pinned; the releases are for macOS on arm64" ;;
-    *) fail "no Una release for $platform; the releases are for macOS on arm64" ;;
+    "Linux aarch64" | "Linux arm64")
+        target=aarch64-unknown-linux-gnu ;;
+    "Linux x86_64" | "Linux amd64")
+        fail "Linux on x86_64 is not shipped in this release; $shipped" ;;
+    *) fail "no Una release for $platform; $shipped" ;;
 esac
+
+# On Linux, the C library, before anything is downloaded. `una` is a dynamic glibc executable
+# built on glibc 2.39 (the build image's, ADR 0124 rule 1), so it does not start on musl or on an
+# older glibc. glibc is shown, never assumed: `getconf GNU_LIBC_VERSION` must print
+# `glibc MAJOR.MINOR` at or above the floor, compared as numbers (2.4 is before 2.39). A musl
+# system is refused even when that answer looks like glibc's: its `ldd --version` names musl, or
+# its loader is /lib/ld-musl-*.
+glibc_floor=2.39
+if [ "${platform%% *}" = Linux ]; then
+    needs="this release's una needs glibc $glibc_floor or later; Alpine and other musl systems are not supported"
+    musl=
+    if ldd --version 2>&1 | grep -qi musl; then musl=1; fi
+    for loader in /lib/ld-musl-*; do
+        [ -e "$loader" ] && musl=1
+    done
+    [ -z "$musl" ] || fail "this system's C library is musl; $needs"
+    libc=$(getconf GNU_LIBC_VERSION 2> /dev/null) || libc=
+    glibc=${libc#glibc }
+    case $libc in
+        "glibc "[0-9]*.[0-9]*) ;;
+        *) glibc= ;;
+    esac
+    case $glibc in
+        "" | *[!0-9.]* | *..* | *.) fail "cannot read this system's glibc version (getconf GNU_LIBC_VERSION); $needs" ;;
+    esac
+    awk -v have="$glibc" -v floor="$glibc_floor" 'BEGIN {
+        split(have, h, "."); split(floor, f, ".")
+        exit !(h[1] + 0 > f[1] + 0 || (h[1] + 0 == f[1] + 0 && h[2] + 0 >= f[2] + 0))
+    }' || fail "this system has glibc $glibc; $needs"
+fi
 
 if command -v curl > /dev/null 2>&1; then
     fetch() { curl --fail --location --silent --show-error --retry 3 --output "$2" "$1"; }
@@ -286,4 +326,13 @@ case ":$PATH:" in
     *) say "add $home/bin to PATH, for example with this line in your shell's profile:"
        printf '\n    export PATH="%s/bin:$PATH"\n\n' "$home" ;;
 esac
+# On Linux, `una build` links through the system's C compiler (macOS's `una` links by itself).
+if [ "${platform%% *}" = Linux ]; then
+    say "una build needs a C compiler on PATH as cc (gcc or clang, with the C library's development files, such as build-essential); una check, test and run do not"
+    say "the executables una build writes link the system's glibc dynamically: they run where the same or a newer glibc is installed"
+fi
+# The solver refuses to run as root on every platform, whatever installed `una`.
+if [ "${platform%% *}" = Linux ] || [ "$(id -u 2> /dev/null)" = 0 ]; then
+    say "una check and every command that proves refuse to run as root: run them as an ordinary user"
+fi
 say "uninstall with: sh install.sh --uninstall"
