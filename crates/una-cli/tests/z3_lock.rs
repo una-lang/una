@@ -81,6 +81,71 @@ fn the_z3_pin_agrees_with_verification_lock_and_names_its_source() {
     );
 }
 
+/// The targets whose `una` embeds the pinned library, each of which needs a `[library]` line,
+/// since `scripts/release.sh` refuses a target without one (exit 2). Until the shipped-targets
+/// list exists (one file read by the release scripts), it is named here.
+const LIBRARY_TARGETS: [&str; 2] = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu"];
+
+#[test]
+fn the_lock_pins_a_library_digest_for_every_target() {
+    let lock = read("supply-chain/z3.lock");
+    let table = lock
+        .split("\n[library]\n")
+        .nth(1)
+        .expect("a [library] table");
+    let mut pins: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut described: Vec<&str> = Vec::new();
+    for line in table.lines().take_while(|line| !line.starts_with('[')) {
+        if let Some(comment) = line.strip_prefix("# ") {
+            if let Some((target, _)) = comment.split_once(": ") {
+                described.push(target);
+            }
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        // The exact form `scripts/release.sh` reads: `"<triple>" = "<sha256>"`.
+        let (target, sha) = line
+            .split_once(" = ")
+            .unwrap_or_else(|| panic!("not a library line: {line}"));
+        let target = target
+            .strip_prefix('"')
+            .and_then(|t| t.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("a quoted target: {line}"));
+        let sha = sha
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("a quoted digest: {line}"));
+        assert!(is_hex(sha, 64), "{target}: a SHA-256 digest");
+        assert!(
+            described.contains(&target),
+            "{target}: its line follows a comment naming the toolchain and the two cold builds"
+        );
+        assert!(
+            pins.insert(target, sha).is_none(),
+            "{target}: one line per target"
+        );
+    }
+    for target in LIBRARY_TARGETS {
+        assert!(
+            pins.contains_key(target),
+            "supply-chain/z3.lock has no [library] line for {target}"
+        );
+    }
+    for target in pins.keys() {
+        assert!(
+            LIBRARY_TARGETS.contains(target),
+            "{target}: a pinned target that no release builds"
+        );
+    }
+    // Two toolchains never give the same archive; equal digests would mean a copied line.
+    let mut digests: Vec<&str> = pins.values().copied().collect();
+    digests.sort_unstable();
+    digests.dedup();
+    assert_eq!(digests.len(), pins.len(), "a digest per target");
+}
+
 #[test]
 fn the_recipe_builds_a_static_library_without_gmp_and_patches_only_the_shell() {
     let options: Vec<String> = read("supply-chain/z3/cmake-options.txt")

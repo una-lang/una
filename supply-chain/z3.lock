@@ -55,3 +55,11 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # with ZERO_AR_DATE=1, #1277). The digests before it differed only in the archive's member
 # headers: the objects were byte for byte equal.
 "aarch64-apple-darwin" = "4fcda925f158098beb0edb0650cd98caa0b66215c387f6d165ccf39bd33f0baa"
+# aarch64-unknown-linux-gnu: c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, cmake version 3.28.3,
+# GNU ar (GNU Binutils for Ubuntu) 2.42, glibc 2.39, in the linux/arm64 image of
+# scripts/local-ci/Dockerfile (ubuntu:24.04@sha256:534baea6...) as uid 1000, built 2026-11-11
+# from the tarball by its digest (UNA_Z3_SOURCE), shown reproducible by three cold builds with
+# equal digests: scripts/build-z3.sh --reproducible in one fresh cache volume, and one more
+# build in another fresh volume and container. GNU ar's deterministic mode, the distribution's
+# default, writes zero owners and times in the member headers with no flag of ours (#1901).
+"aarch64-unknown-linux-gnu" = "0ddec1a9cf5f01e23c96c4c98ad8b6dc7a787f0ecc4ecb975cfb2bf7200e11f7"
