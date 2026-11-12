@@ -23,9 +23,16 @@
 # is installed and none is looked for on PATH.
 # The platform is checked before anything is downloaded. The releases are for macOS on arm64 and
 # Linux on arm64 (aarch64). The Linux `una` is a dynamic glibc executable that needs glibc 2.39 or
-# later, so a musl system (Alpine and others), an older glibc, or a system whose glibc version
-# cannot be read is refused; so are Linux on x86_64, which this release does not ship, and every
-# other system.
+# later and a 64-bit userland, so a musl system (Alpine and others), an older glibc, a system
+# whose glibc version cannot be read, a 32-bit userland on a 64-bit kernel and a system whose
+# aarch64 glibc loader does not answer are refused; so are Linux on x86_64, which this release
+# does not ship, and every other system.
+#
+# As root, UNA_HOME must be a place that only root can change (#1938): UNA_HOME and the
+# directories the installer writes in are not symbolic links, and they and every directory above
+# them are owned by root and writable by no one else (a directory above them may be writable by
+# others only when it is sticky, as /tmp is). Otherwise the installer refuses before anything is
+# downloaded or removed, and it never runs the installed `una` as root.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -62,6 +69,94 @@ fail() {
 
 home=${UNA_HOME:-$HOME/.una}
 
+# As root (#1938), every path the installer writes in or removes from must be one only root can
+# change, or another user could redirect root's writes outside UNA_HOME, through a symbolic link
+# or by replacing a directory. `only_root DIR [above]` refuses DIR when it is a link, is not a
+# directory, is owned by another user than root, or is writable by its group or by others; a
+# directory `above` UNA_HOME may be writable by others when it is sticky. The owner is root by
+# number, or this process's own user ([ -O ]), which is root whenever this check runs.
+uid=$(id -u 2> /dev/null) || uid=
+only_root() {
+    [ ! -L "$1" ] || fail "as root, the installer does not follow the symbolic link $1; UNA_HOME must be a directory only root can change"
+    [ -d "$1" ] || fail "as root, $1 must be a directory"
+    listing=$(ls -ldn "$1") || fail "as root, cannot read the owner and mode of $1"
+    mode=$(printf '%s\n' "$listing" | awk 'NR == 1 { print $1 }')
+    owner=$(printf '%s\n' "$listing" | awk 'NR == 1 { print $3 }')
+    [ "$owner" = 0 ] || [ -O "$1" ] \
+        || fail "as root, $1 must be owned by root, not by uid $owner; UNA_HOME must be a directory only root can change"
+    case $mode in
+        ?????w* | ????????w*)
+            if [ "${2:-}" = above ]; then
+                case $mode in ?????????[tT]*) return 0 ;; esac
+            fi
+            fail "as root, $1 must be writable only by its owner, root (its mode is $mode); UNA_HOME must be a directory only root can change"
+            ;;
+        d?????????*) ;;
+        *) fail "as root, cannot read the mode of $1 ($mode)" ;;
+    esac
+}
+# `only_root_on REL`: every directory on the way from UNA_HOME to REL, as far as it exists.
+only_root_on() {
+    rest=$1
+    on=$home
+    while :; do
+        case $rest in
+            */*) on=$on/${rest%%/*}; rest=${rest#*/} ;;
+            *) return 0 ;;
+        esac
+        [ -e "$on" ] || [ -L "$on" ] || return 0
+        only_root "$on"
+    done
+}
+if [ "$uid" = 0 ]; then
+    umask 022
+    case $home in
+        /*) ;;
+        *) fail "as root, UNA_HOME must be an absolute path, not '$home'" ;;
+    esac
+    case /$home/ in
+        */./* | */../*) fail "as root, UNA_HOME must have no '.' or '..' component: '$home'" ;;
+    esac
+    while :; do
+        case $home in
+            */) home=${home%/} ;;
+            *) break ;;
+        esac
+    done
+    [ -n "$home" ] || fail "as root, UNA_HOME must not be /"
+    [ ! -L "$home" ] || fail "as root, the installer does not follow the symbolic link $home; UNA_HOME must be a directory only root can change"
+    # The deepest directory of UNA_HOME that exists, as its physical path: the installer then
+    # works on that path, so no link above it can be moved afterwards. What is missing below it,
+    # the installer creates, as root.
+    base=$home
+    missing=
+    while [ ! -e "$base" ] && [ ! -L "$base" ]; do
+        missing=/${base##*/}$missing
+        base=$(dirname "$base")
+    done
+    [ -d "$base" ] || fail "as root, $base must be a directory"
+    physical=$(cd "$base" && pwd -P) || fail "as root, cannot resolve $base"
+    only_root "$physical"
+    above=$physical
+    while [ "$above" != / ]; do
+        above=$(dirname "$above")
+        only_root "$above" above
+    done
+    home=${physical%/}$missing
+    # The directories the installer writes in (a trailing / checks the directory itself), then
+    # the files it writes, which `cp` and `>` would follow if they were links.
+    for path in bin/ lib/ docs/guide/; do
+        only_root_on "$path"
+    done
+    for path in bin/una bin/una.new lib/libuna_rt.a README.md LICENSE .una-install; do
+        [ ! -L "$home/$path" ] || fail "as root, the installer does not follow the symbolic link $home/$path"
+    done
+    if [ -d "$home/docs/guide" ]; then
+        [ -z "$(find "$home/docs/guide" -type l | head -n 1)" ] \
+            || fail "as root, $home/docs/guide holds a symbolic link, which the installer does not follow"
+    fi
+fi
+
 marker=$home/.una-install
 
 if [ "${1:-}" = --uninstall ]; then
@@ -73,7 +168,14 @@ if [ "${1:-}" = --uninstall ]; then
     while read -r kind path; do
         case $kind in
             file | dir)
-                case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac ;;
+                case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac
+                # As root, every directory on the way to the path (and a recorded directory
+                # itself) must be one only root can change, or `rm` could reach outside.
+                if [ "$uid" = 0 ]; then
+                    only_root_on "$path"
+                    [ "$kind" = file ] || only_root_on "$path/"
+                fi
+                ;;
         esac
     done < "$marker"
     while read -r kind path; do
@@ -137,18 +239,23 @@ esac
 # On Linux, the C library, before anything is downloaded. `una` is a dynamic glibc executable
 # built on glibc 2.39 (the build image's, ADR 0124 rule 1), so it does not start on musl or on an
 # older glibc. glibc is shown, never assumed: `getconf GNU_LIBC_VERSION` must print
-# `glibc MAJOR.MINOR` at or above the floor, compared as numbers (2.4 is before 2.39). A musl
-# system is refused even when that answer looks like glibc's: its `ldd --version` names musl, or
-# its loader is /lib/ld-musl-*.
+# `glibc MAJOR.MINOR` at or above the floor, compared as numbers (2.4 is before 2.39). The C
+# library is the one the running system reports and loads (#1938), never inferred from a file
+# being there: a glibc system that also has musl's loader installed (Debian's `musl` package) is
+# glibc. A musl system is refused even when getconf's answer looks like glibc's: its
+# `ldd --version` names musl, or the aarch64 loader that `una` needs, /lib/ld-linux-aarch64.so.1,
+# is missing, is musl's (as with gcompat), or does not say it is glibc's when asked its version.
+# musl's own loader, /lib/ld-musl-*, only names the reason when getconf shows no glibc. The
+# userland must be 64-bit (`getconf LONG_BIT`): a 32-bit Arm userland on a 64-bit kernel reports
+# aarch64, but cannot start the aarch64 `una`.
 glibc_floor=2.39
+# Where the loaders are; a test points this one line at a fake machine's.
+loaders=/lib
 if [ "${platform%% *}" = Linux ]; then
     needs="this release's una needs glibc $glibc_floor or later; Alpine and other musl systems are not supported"
-    musl=
-    if ldd --version 2>&1 | grep -qi musl; then musl=1; fi
-    for loader in /lib/ld-musl-*; do
-        [ -e "$loader" ] && musl=1
-    done
-    [ -z "$musl" ] || fail "this system's C library is musl; $needs"
+    if ldd --version 2>&1 | grep -qi musl; then
+        fail "this system's C library is musl (ldd --version); $needs"
+    fi
     libc=$(getconf GNU_LIBC_VERSION 2> /dev/null) || libc=
     glibc=${libc#glibc }
     case $libc in
@@ -156,12 +263,29 @@ if [ "${platform%% *}" = Linux ]; then
         *) glibc= ;;
     esac
     case $glibc in
-        "" | *[!0-9.]* | *..* | *.) fail "cannot read this system's glibc version (getconf GNU_LIBC_VERSION); $needs" ;;
+        "" | *[!0-9.]* | *..* | *.)
+            for loader in "$loaders"/ld-musl-*; do
+                [ -e "$loader" ] && fail "this system's C library is musl: getconf GNU_LIBC_VERSION shows no glibc, and musl's loader is $loader; $needs"
+            done
+            fail "cannot read this system's glibc version (getconf GNU_LIBC_VERSION); $needs"
+            ;;
     esac
     awk -v have="$glibc" -v floor="$glibc_floor" 'BEGIN {
         split(have, h, "."); split(floor, f, ".")
         exit !(h[1] + 0 > f[1] + 0 || (h[1] + 0 == f[1] + 0 && h[2] + 0 >= f[2] + 0))
     }' || fail "this system has glibc $glibc; $needs"
+    bits=$(getconf LONG_BIT 2> /dev/null) || bits=
+    [ "$bits" = 64 ] \
+        || fail "this system's userland is not 64-bit (getconf LONG_BIT: '$bits'): a 32-bit userland on a 64-bit kernel cannot start the aarch64 una; the Linux release needs a 64-bit Arm userland"
+    aarch64_loader=$loaders/ld-linux-aarch64.so.1
+    if answer=$("$aarch64_loader" --version 2>&1); then ran=1; else ran=; fi
+    case $answer in
+        *musl*) fail "this system's C library is musl: $aarch64_loader is musl's loader; $needs" ;;
+    esac
+    case $ran$answer in
+        1*GLIBC* | 1*"GNU libc"*) ;;
+        *) fail "glibc's aarch64 loader $aarch64_loader does not answer as glibc's ($aarch64_loader --version); $needs" ;;
+    esac
 fi
 
 if command -v curl > /dev/null 2>&1; then
@@ -320,7 +444,12 @@ fi
 # The version is the one the validation summary vouched for. From 0.3.0 `una --version` also
 # names the editions it serves (#305); an older `una` has no such flag, and prints nothing here.
 say "installed una $version in $home"
-"$home/bin/una" --version 2>/dev/null | sed 's/^/    /' || true
+# As root, the installed `una` is not run (#1938): `una --version` as an ordinary user shows it.
+if [ "$uid" = 0 ]; then
+    say "as root, the installer does not run the installed una; run una --version as an ordinary user"
+else
+    "$home/bin/una" --version 2>/dev/null | sed 's/^/    /' || true
+fi
 case ":$PATH:" in
     *":$home/bin:"*) ;;
     *) say "add $home/bin to PATH, for example with this line in your shell's profile:"
@@ -332,7 +461,7 @@ if [ "${platform%% *}" = Linux ]; then
     say "the executables una build writes link the system's glibc dynamically: they run where the same or a newer glibc is installed"
 fi
 # The solver refuses to run as root on every platform, whatever installed `una`.
-if [ "${platform%% *}" = Linux ] || [ "$(id -u 2> /dev/null)" = 0 ]; then
+if [ "${platform%% *}" = Linux ] || [ "$uid" = 0 ]; then
     say "una check and every command that proves refuse to run as root: run them as an ordinary user"
 fi
 say "uninstall with: sh install.sh --uninstall"
