@@ -84,6 +84,7 @@ edition 0.2 -> 0.4: 1 diagnostic
 - **Refused.** An invalid `una.toml` or `verification.lock` is refused, and nothing is written.
 - **Comments.** A comment of `una.toml` that precedes no key or table is listed in the output, with its line.
 - **The new edition's words.** A function named `within`, a word edition `0.4` reserves, is reported, not renamed.
+- **`example` tests.** The test declaration is written `test` from edition `0.3` (ADR 0105). A package of edition `0.1` or `0.2` keeps its `example "..."` declarations through `una migrate`, and each is reported as U0101 in edition `0.4`, at its text literal, with no repair, so `una fix` does not change it. Move such a package to edition `0.3` first: set `edition = "0.3"` in its `una.toml`, run `una fix`, which rewrites each `example` to `test` (U0103), then run `una migrate`. Or write `test` by hand.
 
 ## Diagnostics
 
