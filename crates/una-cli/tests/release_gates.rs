@@ -1686,6 +1686,16 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
         ),
         // A gate that passes and touches no archive.
         ("scripts/deps-audit.sh", "#!/bin/sh\nexit 0\n".to_owned()),
+        // The limits legs' commands (#1939): each logs its arguments to `STUB_LOG` and fails
+        // when `STUB_LIMITS_FAIL` is set.
+        (
+            "scripts/limits.sh",
+            "#!/bin/sh\necho \"limits.sh $*\" >> \"$STUB_LOG\"\n[ -z \"${STUB_LIMITS_FAIL:-}\" ]\n".to_owned(),
+        ),
+        (
+            "scripts/local-ci.sh",
+            "#!/bin/sh\necho \"local-ci.sh $*\" >> \"$STUB_LOG\"\n[ -z \"${STUB_LIMITS_FAIL:-}\" ]\n".to_owned(),
+        ),
     ] {
         std::fs::write(source.join(path), text).unwrap();
     }
@@ -1710,6 +1720,8 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
             "scripts/local-release.sh",
             "scripts/toolchain-free.sh",
             "scripts/deps-audit.sh",
+            "scripts/limits.sh",
+            "scripts/local-ci.sh",
         ])
         .current_dir(&source)
         .status()
@@ -1774,17 +1786,58 @@ fn a_list_the_run_cannot_read_stops_it_before_any_gate() {
     };
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-bad-list");
     let out = tmp.join("out");
+    // `None`: no list at all. The reader's own refusal stops the run (#1939): the run never
+    // goes on to the next check with an empty list, which would refuse it too, for another
+    // reason, and hide that the read was not fail-closed.
     for list in [
-        "",
-        "# none\n",
-        "aarch64-apple-darwin\naarch64-apple-darwin\n",
+        Some(""),
+        Some("# none\n"),
+        Some("aarch64-apple-darwin\naarch64-apple-darwin\n"),
+        Some("aarch64-apple-darwin\nsparc-sun-solaris\n"),
+        None,
     ] {
-        let script = gates_copy(&tmp.join("gates"), list);
+        let script = gates_copy(&tmp.join("gates"), list.unwrap_or(""));
+        if list.is_none() {
+            std::fs::remove_file(tmp.join("gates/scripts/release-targets.txt")).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&out);
         let output = gates_of(&script, &sha, &out, &["clone"], &root(), &[]);
-        assert_eq!(output.status.code(), Some(2), "{list:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{list:?}: {stderr}");
+        assert!(stderr.contains("release targets: "), "{list:?}: {stderr}");
+        assert!(!stderr.contains("no gates for"), "{list:?}: {stderr}");
         assert!(!out.exists(), "{list:?}");
     }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn a_target_with_no_gates_stops_the_run_before_any_gate() {
+    let Some(sha) = head() else {
+        return;
+    };
+    // A reader that knows one more target than the gate script (#1939): the script's own guard,
+    // a second one behind the reader's, stops the run before any gate.
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-no-gates");
+    let out = tmp.join("out");
+    let script = gates_copy(
+        &tmp.join("gates"),
+        "aarch64-apple-darwin\nriscv64gc-unknown-linux-gnu\n",
+    );
+    let reader = tmp.join("gates/scripts/release-targets.sh");
+    let text = std::fs::read_to_string(&reader).unwrap()
+        + "release_target_platform() { case $1 in aarch64-apple-darwin) echo macos ;; riscv64gc-unknown-linux-gnu) echo linux/riscv64 ;; *) return 1 ;; esac; }\n";
+    std::fs::write(&reader, text).unwrap();
+    let _ = std::fs::remove_dir_all(&out);
+    let output = gates_of(&script, &sha, &out, &["clone"], &root(), &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr
+            .contains("release gates: no gates for the shipped target riscv64gc-unknown-linux-gnu"),
+        "{stderr}"
+    );
+    assert!(!out.exists());
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -1985,5 +2038,370 @@ fn the_manifest_of_the_docs_bundle_names_the_shipped_targets() {
     assert!(
         script.contains(r#"$(for t in $targets; do printf '"%s",' "$t"; done | sed 's/,$//')"#)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_limits_gates_run_their_legs_and_follow_them() {
+    if head().is_none() {
+        return;
+    }
+    // Each limits gate runs its own leg, and its result is that leg's (#1939): a gate turned into
+    // a no-op logs nothing, and one that ignores its leg passes when the leg fails.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-limits");
+    let (script, sha, out) = gate_fixture(&dir, SHIPPED);
+    let log = dir.join("limits.log");
+    let log_path = log.display().to_string();
+    let legs = ["limits", "limits-linux-arm64", "limits-linux"];
+    for (fail, result) in [("", "PASS"), ("1", "FAIL")] {
+        let _ = std::fs::remove_file(&log);
+        gates_of(
+            &script,
+            &sha,
+            &out,
+            &legs,
+            &dir.join("source"),
+            &[("STUB_LOG", &log_path), ("STUB_LIMITS_FAIL", fail)],
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap_or_default(),
+            "limits.sh \nlocal-ci.sh --linux-arm64 --limits\nlocal-ci.sh --linux --limits\n",
+            "{fail:?}"
+        );
+        for gate in legs {
+            assert_eq!(result_of(&out, gate), result, "{gate} {fail:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writes each `(name, script)` into `bin` as an executable stand-in.
+fn stand_ins(bin: &Path, tools: &[(&str, &str)]) {
+    let _ = std::fs::remove_dir_all(bin);
+    std::fs::create_dir_all(bin).unwrap();
+    for (name, script) in tools {
+        std::fs::write(bin.join(name), script).unwrap();
+        let status = Command::new("chmod")
+            .arg("755")
+            .arg(bin.join(name))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+/// The test's own PATH with `bin` in front (compiler/conventions.md §1 covers libraries).
+fn path_with(bin: &Path) -> String {
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    format!("{}:{inherited}", bin.display())
+}
+
+/// `uname` answering `STUB_SYSTEM` and `STUB_MACHINE`, and `sysctl` answering
+/// `STUB_TRANSLATED`, or failing when it is empty, as on a system without the key.
+const UNAME: &str = "#!/bin/sh\ncase $1 in -s) echo \"$STUB_SYSTEM\" ;; -m) echo \"$STUB_MACHINE\" ;; -sm) echo \"$STUB_SYSTEM $STUB_MACHINE\" ;; *) exit 1 ;; esac\n";
+const SYSCTL: &str =
+    "#!/bin/sh\n[ -n \"${STUB_TRANSLATED:-}\" ] || exit 1\necho \"$STUB_TRANSLATED\"\n";
+
+#[test]
+fn the_emulation_check_reads_the_executable_of_its_shell() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("emulation");
+    let bin = dir.join("bin");
+    stand_ins(&bin, &[("uname", UNAME), ("sysctl", SYSCTL)]);
+    // An ELF header of `machine`, little-endian unless `big`.
+    let elf = |name: &str, machine: u16, big: bool| {
+        let mut header = vec![0x7f, b'E', b'L', b'F', 2, if big { 2 } else { 1 }, 1, 0];
+        header.extend([0; 8]);
+        header.extend([2, 0]);
+        header.extend(machine.to_le_bytes());
+        header.extend([1, 0, 0, 0]);
+        let path = dir.join(name);
+        std::fs::write(&path, header).unwrap();
+        path.display().to_string()
+    };
+    let x86 = elf("x86", 62, false);
+    let arm = elf("arm", 183, false);
+    let big = elf("big", 62, true);
+    let short = dir.join("short");
+    std::fs::write(&short, [0x7f, b'E', b'L', b'F', 2, 1]).unwrap();
+    let text = dir.join("text");
+    std::fs::write(&text, "#!/bin/sh\necho not an ELF file at all\n").unwrap();
+    let missing = dir.join("missing").display().to_string();
+    let (short, text) = (short.display().to_string(), text.display().to_string());
+    // (system, machine, translated, marker, exe, exit status)
+    let cases: &[(&str, &str, &str, &str, &str, i32)] = &[
+        // Native Linux, either machine.
+        ("Linux", "x86_64", "", "", &x86, 0),
+        ("Linux", "aarch64", "", "", &arm, 0),
+        // Rosetta for Linux (an x86-64 container on an arm64 Mac), and QEMU's user mode on an
+        // x86-64 host running an arm64 container: the shell's executable is the emulator.
+        ("Linux", "x86_64", "", "", &arm, 1),
+        ("Linux", "aarch64", "", "", &x86, 1),
+        // The marker of scripts/local-ci.sh wins over a native-looking executable.
+        ("Linux", "x86_64", "", "1", &x86, 1),
+        ("Darwin", "arm64", "0", "1", &x86, 1),
+        // What it cannot read or does not know is not native.
+        ("Linux", "x86_64", "", "", &missing, 2),
+        ("Linux", "x86_64", "", "", &short, 2),
+        ("Linux", "x86_64", "", "", &text, 2),
+        ("Linux", "x86_64", "", "", &big, 2),
+        ("Linux", "riscv64", "", "", &x86, 2),
+        ("FreeBSD", "amd64", "", "", &x86, 2),
+        // macOS: Rosetta is sysctl.proc_translated 1; an arm64 Mac that does not answer is not
+        // native; an Intel Mac without the key predates Rosetta 2.
+        ("Darwin", "arm64", "0", "", &x86, 0),
+        ("Darwin", "x86_64", "1", "", &x86, 1),
+        ("Darwin", "arm64", "1", "", &x86, 1),
+        ("Darwin", "arm64", "", "", &x86, 2),
+        ("Darwin", "arm64", "yes", "", &x86, 2),
+        ("Darwin", "x86_64", "", "", &x86, 0),
+    ];
+    for (system, machine, translated, marker, exe, code) in cases {
+        let output = Command::new("sh")
+            .arg(root().join("scripts/emulation.sh"))
+            .arg(exe)
+            .env("PATH", path_with(&bin))
+            .env("STUB_SYSTEM", system)
+            .env("STUB_MACHINE", machine)
+            .env("STUB_TRANSLATED", translated)
+            .env("UNA_LOCAL_CI_SERIAL", marker)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(*code),
+            "{system} {machine} {translated:?} {marker:?} {exe}: {stderr}"
+        );
+        assert_eq!(stderr.is_empty(), *code == 0, "{stderr}");
+    }
+    // On this host, with its own tools and its own /proc: native, unless scripts/local-ci.sh
+    // marked this container as emulated.
+    #[allow(clippy::disallowed_methods)]
+    let marked = std::env::var("UNA_LOCAL_CI_SERIAL").is_ok_and(|value| !value.is_empty());
+    let output = Command::new("sh")
+        .arg(root().join("scripts/emulation.sh"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(if marked { 1 } else { 0 }),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_limits_leg_refuses_emulation_and_counts_its_cases() {
+    // scripts/limits.sh and scripts/emulation.sh in a scratch tree, with a stand-in Z3 library
+    // and a stand-in `cargo` that logs its arguments and prints libtest's result line with
+    // `STUB_LIMITS` or `STUB_CONFINEMENT` cases, exiting with `STUB_EXIT` (#1939).
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("limits-leg");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    for file in ["limits.sh", "emulation.sh"] {
+        std::fs::copy(
+            root().join("scripts").join(file),
+            dir.join("scripts").join(file),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join("scripts/z3-library.sh"),
+        "#!/bin/sh\necho /nowhere/libz3shell.a\n",
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(dir.join("scripts/limits.sh"))
+        .arg(dir.join("scripts/emulation.sh"))
+        .arg(dir.join("scripts/z3-library.sh"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let cargo = "#!/bin/sh\necho \"$UNA_Z3_LIB $*\" >> \"$STUB_LOG\"\ncase $* in *solver_limits*) n=$STUB_LIMITS ;; *) n=$STUB_CONFINEMENT ;; esac\necho \"test result: ok. $n passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\"\n[ -n \"${STUB_EXTRA:-}\" ] && echo \"test result: ok. $n passed; 0 failed;\"\nexit \"${STUB_EXIT:-0}\"\n";
+    let bin = dir.join("bin");
+    stand_ins(
+        &bin,
+        &[("uname", UNAME), ("sysctl", SYSCTL), ("cargo", cargo)],
+    );
+    let log = dir.join("cargo.log");
+    let limits = "/nowhere/libz3shell.a test --release --locked -p una-cli --test solver_limits -- --ignored --nocapture\n";
+    let confinement = "/nowhere/libz3shell.a test --locked -p una-sys --features solver --test solver_confinement -- --nocapture\n";
+    let both = format!("{limits}{confinement}");
+    // (translated, marker, limits cases, confinement cases, cargo's status, a second result line,
+    // exit status, cargo's log)
+    type Case<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        i32,
+        &'a str,
+    );
+    let cases: &[Case] = &[
+        // Native, with the counts of macOS: both runs, in order.
+        ("0", "", "3", "12", "0", "", 0, &both),
+        // Under emulation, or when it cannot tell, no case runs.
+        ("0", "1", "3", "12", "0", "", 1, ""),
+        ("1", "", "3", "12", "0", "", 1, ""),
+        ("", "", "3", "12", "0", "", 1, ""),
+        // A case missing, or one more than counted, fails the gate.
+        ("0", "", "2", "12", "0", "", 1, limits),
+        ("0", "", "3", "11", "0", "", 1, &both),
+        ("0", "", "4", "12", "0", "", 1, limits),
+        ("0", "", "3", "13", "0", "", 1, &both),
+        // A failing run fails the gate, and so does output with two result lines.
+        ("0", "", "3", "12", "101", "", 1, limits),
+        ("0", "", "3", "12", "0", "1", 1, limits),
+    ];
+    for (translated, marker, n_limits, n_confinement, exit, extra, code, ran) in cases {
+        let _ = std::fs::remove_file(&log);
+        let output = Command::new("sh")
+            .arg(dir.join("scripts/limits.sh"))
+            .env("PATH", path_with(&bin))
+            .env("STUB_SYSTEM", "Darwin")
+            .env("STUB_MACHINE", "arm64")
+            .env("STUB_TRANSLATED", translated)
+            .env("UNA_LOCAL_CI_SERIAL", marker)
+            .env("STUB_LIMITS", n_limits)
+            .env("STUB_CONFINEMENT", n_confinement)
+            .env("STUB_EXIT", exit)
+            .env("STUB_EXTRA", extra)
+            .env("STUB_LOG", &log)
+            .output()
+            .unwrap();
+        let what = format!(
+            "{translated:?} {marker:?} {n_limits} {n_confinement} {exit} {extra:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(*code), "{what}");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap_or_default(),
+            *ran,
+            "{what}"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.contains("limits: PASS"), *code == 0, "{what}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_limits_counts_are_the_cases_of_the_test_files() {
+    // scripts/limits.sh requires each run to pass exactly its count of cases (#1939); the counts
+    // are those of the test files: the ignored tests of solver_limits.rs, and the tests of
+    // solver_confinement.rs that each system compiles.
+    let script = std::fs::read_to_string(root().join("scripts/limits.sh")).unwrap();
+    let count = |prefix: &str| -> usize {
+        let line = script
+            .lines()
+            .find(|line| line.trim_start().starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix}"));
+        let value = line.split('=').nth(1).unwrap();
+        value.trim_end_matches(" ;;").trim().parse().unwrap()
+    };
+    let limits =
+        std::fs::read_to_string(root().join("crates/una-cli/tests/solver_limits.rs")).unwrap();
+    let lines: Vec<&str> = limits.lines().collect();
+    let tests: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i] == "#[test]")
+        .collect();
+    assert!(
+        tests
+            .iter()
+            .all(|&i| lines[i + 1].starts_with("#[ignore = ") && !lines[i - 1].starts_with("#[cfg")),
+        "every test of solver_limits.rs is ignored, with no cfg"
+    );
+    assert_eq!(count("LIMITS_CASES="), tests.len());
+    let confinement =
+        std::fs::read_to_string(root().join("crates/una-sys/tests/solver_confinement.rs")).unwrap();
+    let lines: Vec<&str> = confinement.lines().collect();
+    let (mut common, mut linux, mut macos) = (0, 0, 0);
+    for i in (0..lines.len()).filter(|&i| lines[i] == "#[test]") {
+        assert!(!lines[i + 1].starts_with("#["), "{}", lines[i + 1]);
+        match lines[i - 1] {
+            "#[cfg(target_os = \"linux\")]" => linux += 1,
+            "#[cfg(target_os = \"macos\")]" => macos += 1,
+            other => {
+                assert!(!other.starts_with("#["), "{other}");
+                common += 1;
+            }
+        }
+    }
+    assert!(common > 0 && linux > 0 && macos > 0);
+    assert_eq!(count("Darwin) CONFINEMENT_CASES="), common + macos);
+    assert_eq!(count("Linux) CONFINEMENT_CASES="), common + linux);
+    // The run's command is the one the counts are for, and the leg runs the emulation check with
+    // no argument, so it reads this shell's own executable.
+    assert!(script.contains("\nscripts/emulation.sh \\\n"), "{script}");
+    assert!(script.contains("\n    cargo test --release --locked -p una-cli --test solver_limits -- --ignored --nocapture\n"));
+    assert!(script.contains("\n    cargo test --locked -p una-sys --features solver --test solver_confinement -- --nocapture\n"));
+}
+
+#[test]
+fn the_amd64_leg_is_native_only_on_an_x86_64_engine() {
+    // scripts/local-ci.sh --linux --limits with a stand-in `docker` that logs its arguments and
+    // gives `STUB_ENGINE` as the engine's architecture, exiting with `STUB_INFO_EXIT` (#1939):
+    // the container is marked emulated unless the engine is exactly x86_64 and the shell is not
+    // translated.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("local-ci-native");
+    let bin = dir.join("bin");
+    let docker = "#!/bin/sh\necho \"$*\" >> \"$STUB_LOG\"\ncase $* in\n*Architecture*) [ -n \"$STUB_ENGINE\" ] && echo \"$STUB_ENGINE\"; exit \"${STUB_INFO_EXIT:-0}\" ;;\n*MemTotal*) echo 17179869184 ;;\n*NCPU*) echo 8 ;;\nesac\nexit 0\n";
+    stand_ins(&bin, &[("docker", docker), ("sysctl", SYSCTL)]);
+    let log = dir.join("docker.log");
+    let emulated = "--env UNA_LOCAL_CI_SERIAL=1 --env UNA_RELEASE_CHECK_RETRY=1 ";
+    let native = "--env UNA_LOCAL_CI_SERIAL= --env UNA_RELEASE_CHECK_RETRY= ";
+    // (leg, engine, docker info's status, translated, the container's marks)
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        ("--linux", "x86_64", "0", "", native),
+        ("--linux", "x86_64", "0", "0", native),
+        ("--linux", "aarch64", "0", "", emulated),
+        ("--linux", "amd64", "0", "", emulated),
+        ("--linux", "", "0", "", emulated),
+        ("--linux", "x86_64", "1", "", emulated),
+        ("--linux", "x86_64", "0", "1", emulated),
+        // The arm64 leg is unchanged: never marked; its limits leg relies on scripts/emulation.sh.
+        ("--linux-arm64", "aarch64", "0", "", native),
+    ];
+    for (leg, engine, info, translated, marks) in cases {
+        let _ = std::fs::remove_file(&log);
+        let output = Command::new("sh")
+            .arg(root().join("scripts/local-ci.sh"))
+            .arg(leg)
+            .arg("--limits")
+            .env("PATH", path_with(&bin))
+            .env("STUB_LOG", &log)
+            .env("STUB_ENGINE", engine)
+            .env("STUB_INFO_EXIT", info)
+            .env("STUB_TRANSLATED", translated)
+            .env_remove("CARGO_BUILD_JOBS")
+            .env_remove("UNA_Z3_SOURCE")
+            .output()
+            .unwrap();
+        let what = format!(
+            "{leg} {engine:?} {info} {translated:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(0), "{what}");
+        let ran = std::fs::read_to_string(&log).unwrap();
+        let run: Vec<&str> = ran
+            .lines()
+            .filter(|line| {
+                line.starts_with("run ") && line.ends_with(" scripts/local-ci.sh --limits")
+            })
+            .collect();
+        assert_eq!(run.len(), 1, "{what}\n{ran}");
+        assert!(run[0].contains(marks), "{what}\n{}", run[0]);
+        let platform = if *leg == "--linux" { "amd64" } else { "arm64" };
+        assert!(
+            run[0].contains(&format!("--platform linux/{platform} --user 1000:1000 ")),
+            "{}",
+            run[0]
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
