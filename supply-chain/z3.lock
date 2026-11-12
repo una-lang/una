@@ -58,8 +58,58 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # aarch64-unknown-linux-gnu: c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, cmake version 3.28.3,
 # GNU ar (GNU Binutils for Ubuntu) 2.42, glibc 2.39, in the linux/arm64 image of
 # scripts/local-ci/Dockerfile (ubuntu:24.04@sha256:534baea6...) as uid 1000, built 2026-11-11
-# from the tarball by its digest (UNA_Z3_SOURCE), shown reproducible by three cold builds with
-# equal digests: scripts/build-z3.sh --reproducible in one fresh cache volume, and one more
-# build in another fresh volume and container. GNU ar's deterministic mode, the distribution's
-# default, writes zero owners and times in the member headers with no flag of ours (#1901).
+# from the tarball, checked by its digest, given with scripts/build-z3.sh --source; shown
+# reproducible by three cold builds with equal digests: scripts/build-z3.sh --reproducible in
+# one fresh cache volume, and one more build in another fresh volume and container. GNU ar's
+# deterministic mode, the distribution's default, writes zero owners and times in the member
+# headers with no flag of ours (#1901). Reproducible in that image: its apt packages are not
+# pinned by the Dockerfile, so the versions it had are recorded in the table
+# toolchain.aarch64-unknown-linux-gnu below, which scripts/release.sh checks (#1926).
 "aarch64-unknown-linux-gnu" = "0ddec1a9cf5f01e23c96c4c98ad8b6dc7a787f0ecc4ecb975cfb2bf7200e11f7"
+
+# The Debian packages of the Linux image that built the library above and that links the release
+# `una` (#1926), as `"package" = "version"` from `dpkg-query -W` in the image
+# una-local-ci:1.98.1-arm64 (image ID
+# sha256:9df416abe4a0980d58da44e93da60a782991f0b60577ea94de89075a43b4876d), recorded 2026-11-11.
+# The Dockerfile pins its base by digest but installs these with no version, so a rebuild of the
+# image after an Ubuntu update may give others: scripts/release.sh then refuses to build, through
+# scripts/check-toolchain.sh (exit 2), when an installed version differs from this table or a
+# package is missing, and a new image needs a deliberate update of this table, and a new
+# [library] line when the library's digest changes. The table names no target triple, so the
+# [library] reader of scripts/release.sh never matches it.
+[toolchain.aarch64-unknown-linux-gnu]
+"binutils" = "2.42-4ubuntu2.10"
+"binutils-aarch64-linux-gnu" = "2.42-4ubuntu2.10"
+"libbinutils" = "2.42-4ubuntu2.10"
+"cmake" = "3.28.3-1build7"
+"make" = "4.3-4.1build2"
+"gcc" = "4:13.2.0-7ubuntu1"
+"g++" = "4:13.2.0-7ubuntu1"
+"cpp-13" = "13.3.0-6ubuntu2~24.04.1"
+"gcc-13" = "13.3.0-6ubuntu2~24.04.1"
+"g++-13" = "13.3.0-6ubuntu2~24.04.1"
+"libgcc-13-dev" = "13.3.0-6ubuntu2~24.04.1"
+"libstdc++-13-dev" = "13.3.0-6ubuntu2~24.04.1"
+"libgcc-s1" = "14.2.0-4ubuntu2~24.04.1"
+"libc6" = "2.39-0ubuntu8.9"
+"libc6-dev" = "2.39-0ubuntu8.9"
+
+# The files of those packages that the linker copies, whole or the members it needs, into the
+# release `una` on this target (#1958, review L2 of #1957), with their SHA-256: GNU's C++ runtime
+# and GCC's runtime, linked statically (`-static-libstdc++ -static-libgcc` and una-z3's
+# `static:-bundle=stdc++`), and the start-up objects and libc_nonshared.a of every glibc
+# executable, as `ld --trace` lists them for a C++ program linked that way in the image.
+# scripts/check-toolchain.sh, which scripts/release.sh runs before `una` is built, finds each by
+# `cc -print-file-name=<file>` (`cc` is the driver that links `una`) and refuses (exit 2) a file
+# that is missing or whose digest differs; it prints a line
+# `toolchain: <target>: <file> sha256 <digest>` for each.
+[toolchain-files.aarch64-unknown-linux-gnu]
+"libstdc++.a" = "9704d2aa1d2231e3c66e730a34fc75de02393c10125565b67d933d93b6937a42"
+"libgcc.a" = "4bc354241987926aa0489ba1d925e8b10356556323307944f08209f370a28ad6"
+"libgcc_eh.a" = "ba85797b21e8eb241afccce977b0b2ca607a9764e3ae15bb966415824a8ee8a4"
+"crtbeginS.o" = "2d0881b2018ca7b1c7a7af19ef91b9f42739d8f51c214f0faf22a2dc49c4c002"
+"crtendS.o" = "3da9c42040eca63e3432014ee4b0a98a24ea1f7c4a33e1b40c2b02cc7a15c208"
+"Scrt1.o" = "d03fc7a1a0b7cdbc1fb0a5c25425d3e1d2971a193c52f0ccdc40049234b7daae"
+"crti.o" = "93bb05d2d87f3464fd89a70d26d8ed29f0797e4b97a60786a2724a7e3ffbeba5"
+"crtn.o" = "1c741c1f9499461b6f1e531e21fc5f86a216cc5d0c49d18bdcf97d7d922342d5"
+"libc_nonshared.a" = "7a0595e07a7542493525a2fe4947272ab1840509d86d480ed6d239447c06d1ac"

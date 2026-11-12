@@ -291,3 +291,287 @@ fn the_build_script_reads_the_lock_and_the_recipe() {
         );
     }
 }
+
+/// The `"key" = "value"` lines of the lock's table `[name]`, in order, up to the next header.
+fn table<'a>(lock: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
+    let header = format!("\n[{name}]\n");
+    let Some(body) = lock.split(header.as_str()).nth(1) else {
+        return Vec::new();
+    };
+    body.lines()
+        .take_while(|line| !line.starts_with('['))
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            // The exact form scripts/check-toolchain.sh reads: `"<name>" = "<value>"`.
+            let (key, value) = line
+                .split_once(" = ")
+                .unwrap_or_else(|| panic!("[{name}]: not a `\"key\" = \"value\"` line: {line}"));
+            let key = key
+                .strip_prefix('"')
+                .and_then(|k| k.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("[{name}]: a quoted key: {line}"));
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("[{name}]: a quoted value: {line}"));
+            assert!(
+                !key.contains('"') && !value.contains('"') && !value.contains(char::is_whitespace),
+                "[{name}]: {line}"
+            );
+            (key, value)
+        })
+        .collect()
+}
+
+/// The static inputs that the linker takes from the image into a Linux `una`: GNU's C++ runtime
+/// and GCC's runtime (`-static-libstdc++ -static-libgcc`), and glibc's start-up objects and
+/// libc_nonshared.a, as `ld --trace` lists them in the image (#1958).
+const TOOLCHAIN_FILES: [&str; 9] = [
+    "libstdc++.a",
+    "libgcc.a",
+    "libgcc_eh.a",
+    "crtbeginS.o",
+    "crtendS.o",
+    "Scrt1.o",
+    "crti.o",
+    "crtn.o",
+    "libc_nonshared.a",
+];
+
+#[test]
+fn the_lock_records_the_linux_toolchain_of_every_linux_target() {
+    // A Linux target's library was built in an image whose apt packages the Dockerfile does not
+    // pin, and its `una` embeds that image's libstdc++.a and libgcc.a, so the lock records the
+    // packages' versions and those files' digests, which scripts/check-toolchain.sh checks
+    // before the release builds `una` (#1926, #1958).
+    let lock = read("supply-chain/z3.lock");
+    let targets = library_targets();
+    for target in &targets {
+        let packages = table(&lock, &format!("toolchain.{target}"));
+        let files = table(&lock, &format!("toolchain-files.{target}"));
+        if !target.contains("-linux-") {
+            assert!(
+                packages.is_empty() && files.is_empty(),
+                "{target}: not Linux"
+            );
+            continue;
+        }
+        let names: Vec<&str> = packages.iter().map(|(name, _)| *name).collect();
+        for needed in [
+            "binutils",
+            "cmake",
+            "make",
+            "gcc-13",
+            "g++-13",
+            "libgcc-13-dev",
+            "libstdc++-13-dev",
+            "libc6-dev",
+        ] {
+            assert!(
+                names.contains(&needed),
+                "{target}: the lock records no version of {needed}"
+            );
+        }
+        for (name, version) in &packages {
+            assert!(!version.is_empty(), "{target}: {name} has a version");
+        }
+        let pinned: Vec<&str> = files.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            pinned, TOOLCHAIN_FILES,
+            "{target}: the linked toolchain files"
+        );
+        for (name, sha) in &files {
+            assert!(is_hex(sha, 64), "{target}: {name} has a SHA-256 digest");
+        }
+        for (name, _) in packages.iter().chain(&files) {
+            // scripts/release.sh reads the [library] table to the end of the file, matching a
+            // line by its target triple, so no later key may be one.
+            assert!(
+                !targets.iter().any(|t| t == name),
+                "{target}: {name} is a target triple"
+            );
+        }
+    }
+    // scripts/build-z3.sh reads `key = "value"` anywhere in the file; every line of the new
+    // tables starts with a quote, so none can be read as one of its settings.
+    let top = settings(&lock);
+    for key in [
+        "version",
+        "tag",
+        "commit",
+        "tree",
+        "source",
+        "source_sha256",
+        "source_tar_sha256",
+        "mirror",
+    ] {
+        let unquoted = lock
+            .lines()
+            .filter(|line| line.split_once('=').is_some_and(|(k, _)| k.trim() == key))
+            .count();
+        assert_eq!(unquoted, 1, "{key}: one setting line");
+        assert!(top.contains_key(key), "{key}: before the first table");
+    }
+}
+
+#[test]
+fn the_release_checks_the_linux_toolchain_before_it_builds_una() {
+    let script = read("scripts/release.sh");
+    let musl = script.find("UNA_EMBED_MUSL_SHA256S=$musl_digests").unwrap();
+    let check = script
+        .find("*-linux-*) scripts/check-toolchain.sh \"$target\" || exit 2 ;;")
+        .expect("release.sh runs scripts/check-toolchain.sh for a Linux target");
+    let una = script
+        .find("--package una-cli")
+        .expect("release.sh builds una-cli");
+    assert!(
+        musl < check && check < una,
+        "the check comes before `una` is built"
+    );
+}
+
+/// Runs scripts/check-toolchain.sh for `target` in a scratch tree at `dir` with `lock` as its
+/// lock, and fakes of `dpkg-query` (the versions of `installed`, `<package> <version>` lines)
+/// and `cc` (`-print-file-name=<file>` names `dir`/files/<file> when it exists, else the bare
+/// name, as GCC does) first on PATH, with `files` (name, bytes) in `dir`/files.
+fn check_toolchain(
+    dir: &Path,
+    target: &str,
+    lock: &str,
+    installed: &str,
+    files: &[(&str, &[u8])],
+) -> std::process::Output {
+    let _ = fs::remove_dir_all(dir);
+    for sub in ["scripts", "supply-chain", "bin", "files"] {
+        fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    fs::copy(
+        root().join("scripts/check-toolchain.sh"),
+        dir.join("scripts/check-toolchain.sh"),
+    )
+    .unwrap();
+    fs::write(dir.join("supply-chain/z3.lock"), lock).unwrap();
+    fs::write(dir.join("installed"), installed).unwrap();
+    for (name, bytes) in files {
+        fs::write(dir.join("files").join(name), bytes).unwrap();
+    }
+    let dpkg = format!(
+        "#!/bin/sh\nfor last; do :; done\nv=$(sed -n \"s/^$last //p\" '{}')\n[ -n \"$v\" ] || exit 1\nprintf '%s' \"$v\"\n",
+        dir.join("installed").display()
+    );
+    let cc = format!(
+        "#!/bin/sh\nf=${{1#-print-file-name=}}\nif [ -f '{0}'/\"$f\" ]; then printf '%s\\n' '{0}'/\"$f\"; else printf '%s\\n' \"$f\"; fi\n",
+        dir.join("files").display()
+    );
+    for (name, body) in [("dpkg-query", dpkg), ("cc", cc)] {
+        fs::write(dir.join("bin").join(name), body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                dir.join("bin").join(name),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+    }
+    // The test's own PATH, with the fakes in front (compiler/conventions.md §1 covers libraries).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    std::process::Command::new("sh")
+        .arg(dir.join("scripts/check-toolchain.sh"))
+        .arg(target)
+        .env("PATH", format!("{}:{inherited}", dir.join("bin").display()))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn check_toolchain_accepts_the_recorded_image_and_refuses_any_drift() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("check-toolchain");
+    let target = "aarch64-unknown-linux-gnu";
+    let a = b"libstdc++ bytes".as_slice();
+    let b = b"crt1 bytes".as_slice();
+    let sha = |bytes: &[u8]| format!("{:x}", sha2::Sha256::digest(bytes));
+    let lock = |version: &str, digest: &str| {
+        format!(
+            "version = \"5.1.0\"\n[library]\n\"{target}\" = \"{}\"\n\n# packages\n[toolchain.{target}]\n\"g++-13\" = \"13.3.0-6ubuntu2~24.04.1\"\n\"libc6-dev\" = \"{version}\"\n\n[toolchain-files.{target}]\n\"libstdc++.a\" = \"{digest}\"\n\"Scrt1.o\" = \"{}\"\n",
+            "ab".repeat(32),
+            sha(b)
+        )
+    };
+    let installed = "g++-13 13.3.0-6ubuntu2~24.04.1\nlibc6-dev 2.39-0ubuntu8.9\n";
+    let run = |lock: &str, installed: &str, files: &[(&str, &[u8])]| {
+        let output = check_toolchain(&dir, target, lock, installed, files);
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let both: [(&str, &[u8]); 2] = [("libstdc++.a", a), ("Scrt1.o", b)];
+    let good = lock("2.39-0ubuntu8.9", &sha(a));
+
+    // The image as recorded: every package and file is printed for the record.
+    let (code, stdout, stderr) = run(&good, installed, &both);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains(&format!("toolchain: {target}: libc6-dev 2.39-0ubuntu8.9\n")));
+    assert!(stdout.contains(&format!(
+        "toolchain: {target}: libstdc++.a sha256 {}\n",
+        sha(a)
+    )));
+    assert!(stdout.contains(&format!("toolchain: {target}: Scrt1.o sha256 {}\n", sha(b))));
+
+    // An Ubuntu point update of a package.
+    let (code, _, stderr) = run(&lock("2.39-0ubuntu8.10", &sha(a)), installed, &both);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the package libc6-dev is 2.39-0ubuntu8.9 installed, but supply-chain/z3.lock records 2.39-0ubuntu8.10"),
+        "{stderr}"
+    );
+
+    // A package that the image lacks.
+    let (code, _, stderr) = run(&good, "g++-13 13.3.0-6ubuntu2~24.04.1\n", &both);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the package libc6-dev is not installed"),
+        "{stderr}"
+    );
+
+    // A linked file whose bytes differ.
+    let (code, _, stderr) = run(&lock("2.39-0ubuntu8.9", &"cd".repeat(32)), installed, &both);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "has SHA-256 {}, but supply-chain/z3.lock pins",
+            sha(a)
+        )),
+        "{stderr}"
+    );
+
+    // A linked file that `cc` cannot find.
+    let (code, _, stderr) = run(&good, installed, &both[..1]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("cc finds no Scrt1.o"), "{stderr}");
+
+    // No table for the target, or a digest table with no digest line.
+    for broken in [
+        good.replace(&format!("[toolchain.{target}]"), "[toolchain.other]"),
+        good.replace(
+            &format!("[toolchain-files.{target}]"),
+            "[toolchain-files.other]",
+        ),
+    ] {
+        let (code, _, stderr) = run(&broken, installed, &both);
+        assert_eq!(code, Some(2), "{stderr}");
+        assert!(
+            stderr.contains("supply-chain/z3.lock records no [toolchain"),
+            "{stderr}"
+        );
+    }
+
+    // A target that is not a triple never reaches the lock's patterns.
+    let output = check_toolchain(&dir, "a.*", &good, installed, &both);
+    assert_eq!(output.status.code(), Some(2));
+    let _ = fs::remove_dir_all(&dir);
+}
