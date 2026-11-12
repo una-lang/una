@@ -201,6 +201,13 @@ case $target in
         export UNA_EMBED_MUSL_DIR UNA_EMBED_MUSL_SHA256S
         ;;
 esac
+# The Linux toolchain that links `una` (#1926, #1958): scripts/check-toolchain.sh refuses
+# (exit 2) an image whose Debian packages or whose files that the linker puts into `una`
+# (libstdc++.a, libgcc.a, the start-up objects) differ from supply-chain/z3.lock, before `una`
+# is built, and prints a line `toolchain: <target>: ...` for each, for the validation record.
+case $target in
+    *-linux-*) scripts/check-toolchain.sh "$target" || exit 2 ;;
+esac
 cargo build --release --locked --target-dir "$built" --package una-cli
 name="una-$version-$target"
 out="$root/target/release-archives"
