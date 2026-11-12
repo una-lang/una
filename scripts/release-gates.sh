@@ -21,7 +21,8 @@
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
 #   mac          scripts/local-ci.sh
-#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64, emulated); required only when
+#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64, emulated unless the Docker
+#                engine is x86-64); required only when
 #                x86_64-unknown-linux-gnu is shipped (#1903)
 #   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
 #   release      scripts/local-release.sh for the archive of each shipped target
@@ -410,8 +411,9 @@ gate_limits() {
 
 gate_limits-linux-arm64() { run limits-linux-arm64 scripts/local-ci.sh --linux-arm64 --limits; }
 
-# Emulated on the gate machine, where scripts/limits.sh refuses to run: it passes only on a native
-# x86-64 Linux host (ADR 0124 rule 31, #1442).
+# Emulated on the gate machine, where scripts/limits.sh refuses to run: it can pass only where the
+# Docker engine is x86-64 (the native-host mode of scripts/local-ci.sh --linux, #1939) and
+# scripts/emulation.sh finds the container native (ADR 0124 rule 31, #1442).
 gate_limits-linux() { run limits-linux scripts/local-ci.sh --linux --limits; }
 
 gate_toolchain-free() {

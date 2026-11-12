@@ -6,7 +6,8 @@
 # (#1103), and checking the archive. With --linux,
 # it runs the same inside a linux/amd64 container of CI's Ubuntu image
 # (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
-# at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
+# at a time (#286), unless the Docker engine is x86-64, where the container is native and runs
+# as --linux-arm64 does (#1939); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
 # with the tests in parallel. The target directory (one volume per checkout), the cargo registry,
 # Z3 and the cache of the Z3 library built into una (ADR 0124, one volume per architecture,
 # kept across fresh target volumes) live in named volumes, so later runs are incremental. It ends with PASS, or FAIL and
@@ -34,6 +35,7 @@ fi
 if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
     case $1 in
+        # Emulated unless the native-host check below says otherwise (#1939).
         --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 retry=1 ;;
         *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" retry="" ;;
     esac
@@ -48,6 +50,22 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         exit 2
     fi
     command -v docker >/dev/null 2>&1 || fail "docker not found; $leg needs Docker"
+    # The native-host mode of --linux (#1939): the amd64 container is emulated, and marked so
+    # (UNA_LOCAL_CI_SERIAL, which makes scripts/limits.sh refuse and the tests run one at a
+    # time), unless the Docker engine itself is x86-64 (`docker info`, its Architecture exactly
+    # x86_64) and this shell is not translated by Rosetta; a failed or empty answer keeps the
+    # mark. Inside the container scripts/limits.sh checks again, on its own (scripts/emulation.sh),
+    # so both must say native before the limits gate runs.
+    if [ "$arch" = amd64 ]; then
+        engine=$(docker info --format '{{.Architecture}}' 2>/dev/null) || engine=""
+        translated=$( (sysctl -n sysctl.proc_translated 2>/dev/null) || echo 0)
+        if [ "$engine" = x86_64 ] && [ "$translated" != 1 ]; then
+            serial="" retry=""
+            echo "== linux/amd64 runs natively here (Docker engine $engine)"
+        else
+            echo "== linux/amd64 is emulated here (Docker engine ${engine:-unknown}${translated:+, sysctl.proc_translated $translated}): tests one at a time, and the limits leg refuses"
+        fi
+    fi
     # The released sections of CHANGELOG.md need the repository's tags, which a worktree
     # mounted alone into the container cannot reach: the check runs here, on the host, and the
     # container's run skips it, visibly (#645).
