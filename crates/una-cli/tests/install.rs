@@ -213,15 +213,24 @@ fn run_installer(
 ) -> Output {
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    // In `dir`, so that a relative UNA_HOME stays there.
+    // In `dir`, so that a relative UNA_HOME stays there, under the umask that `envs` names as
+    // `UMASK` (022 by default), which is not passed on as a setting.
+    let umask = envs
+        .iter()
+        .find(|(name, _)| *name == "UMASK")
+        .map_or("022", |(_, value)| value);
     Command::new("sh")
         .current_dir(dir)
+        .arg("-c")
+        .arg(r#"umask "$1" && shift && exec sh "$@""#)
+        .arg("sh")
+        .arg(umask)
         .arg(script)
         .args(args)
         .env_clear()
         .env("PATH", path)
         .env("HOME", &home)
-        .envs(envs.iter().copied())
+        .envs(envs.iter().copied().filter(|(name, _)| *name != "UMASK"))
         .env("UNA_VERSION", version)
         .env(
             "UNA_RELEASES",
@@ -663,7 +672,7 @@ fn the_installer_refuses_a_version_before_0_4_0_comparing_numbers_not_text() {
 /// `getconf GNU_LIBC_VERSION` prints `getconf`, or fails as musl's and macOS's do when it is
 /// `None`; `getconf LONG_BIT` prints `long_bit`, or fails when it is `None`; `ldd --version`
 /// prints `ldd` (on stderr with status 1 when it names musl, as musl's does), or is not found
-/// when it is `None`; `id -u` prints `uid`. `curl` and `wget`, when the machine has them, record
+/// when it is `None`; `id -u` prints `uid`, or fails when it is empty. `curl` and `wget`, when the machine has them, record
 /// every call in `dir/fetches` and then run the real ones, so that a test sees whether anything
 /// was downloaded.
 ///
@@ -789,10 +798,14 @@ fn install_on_with(
     );
     script(
         &bin.join("id"),
-        &format!(
-            "[ \"$1\" = -u ] && echo '{}' || PATH={SYSTEM_PATH} exec id \"$@\"",
-            host.uid
-        ),
+        &if host.uid.is_empty() {
+            "echo 'id: cannot find name for user ID' >&2; exit 1".to_owned()
+        } else {
+            format!(
+                "[ \"$1\" = -u ] && echo '{}' || PATH={SYSTEM_PATH} exec id \"$@\"",
+                host.uid
+            )
+        },
     );
     for fetcher in ["curl", "wget"] {
         let found = Command::new("sh")
@@ -1368,6 +1381,41 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
             link,
         ),
         (
+            "bin/una.new is a link",
+            Box::new(|| {
+                std::fs::create_dir_all(home.join("bin")).unwrap();
+                symlink(elsewhere.join("una.new"), home.join("bin/una.new")).unwrap();
+            }),
+            link,
+        ),
+        (
+            "a leftover bin/una.new writable by others",
+            Box::new(|| {
+                std::fs::create_dir_all(home.join("bin")).unwrap();
+                std::fs::write(home.join("bin/una.new"), "theirs").unwrap();
+                mode(&home.join("bin/una.new"), 0o666);
+            }),
+            writable,
+        ),
+        (
+            "LICENSE writable by its group",
+            Box::new(|| {
+                std::fs::create_dir_all(&home).unwrap();
+                std::fs::write(home.join("LICENSE"), "theirs").unwrap();
+                mode(&home.join("LICENSE"), 0o664);
+            }),
+            writable,
+        ),
+        (
+            "a guide writable by others",
+            Box::new(|| {
+                std::fs::create_dir_all(home.join("docs/guide")).unwrap();
+                std::fs::write(home.join("docs/guide/getting-started.md"), "theirs").unwrap();
+                mode(&home.join("docs/guide/getting-started.md"), 0o666);
+            }),
+            writable,
+        ),
+        (
             "the record is a link",
             Box::new(|| {
                 std::fs::create_dir_all(&home).unwrap();
@@ -1431,6 +1479,78 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
             "{case}: written outside UNA_HOME"
         );
     }
+    // TMPDIR, where the archive is checked and unpacked: writable by others and not sticky,
+    // another user could replace the archive after its check, so it is refused before any
+    // download; sticky, as /tmp is, it is accepted.
+    reset();
+    let tmp = dir.join("home/tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    mode(&tmp, 0o777);
+    let tmpdir = tmp.to_str().unwrap();
+    let (output, fetched) = install_on_with(&dir, version, &root, &[], &[("TMPDIR", tmpdir)]);
+    assert_refused("TMPDIR not sticky", &output, &fetched, writable, &home);
+    assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0);
+    mode(&tmp, 0o1777);
+    let (output, _) = install_on_with(&dir, version, &root, &[], &[("TMPDIR", tmpdir)]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(home.join("bin/una").exists());
+    // A TMPDIR only root can write, below a directory that others can write and is not sticky:
+    // refused, as another user could replace it.
+    reset();
+    let open = dir.join("home/open");
+    std::fs::create_dir_all(open.join("tmp")).unwrap();
+    mode(&open, 0o777);
+    let below = open.join("tmp");
+    let (output, fetched) = install_on_with(
+        &dir,
+        version,
+        &root,
+        &[],
+        &[("TMPDIR", below.to_str().unwrap())],
+    );
+    assert_refused(
+        "TMPDIR below an open directory",
+        &output,
+        &fetched,
+        writable,
+        &home,
+    );
+    // Under a umask of 000, root's installation is still writable only by root.
+    reset();
+    let (output, _) = install_on_with(&dir, version, &root, &[], &[("UMASK", "000")]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    for path in [
+        &home,
+        &home.join("bin"),
+        &home.join("bin/una"),
+        &home.join(".una-install"),
+    ] {
+        let bits = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(bits & 0o022, 0, "{} has mode {bits:o}", path.display());
+    }
+    // The umask seam is live: an ordinary user's installation under 000 has a writable bin.
+    reset();
+    let (output, _) = install_on_with(&dir, version, &GLIBC_239, &[], &[("UMASK", "000")]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let bits = std::fs::metadata(home.join("bin"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(bits & 0o022, 0o022, "bin has mode {bits:o}");
+    // `id -u` that fails, or prints something else than a number: refused, never taken as an
+    // ordinary user, whose installation skips the root checks.
+    reset();
+    for uid in ["", "root", "0 "] {
+        let host = Host { uid, ..GLIBC_239 };
+        let (output, fetched) = install_on(&dir, version, &host);
+        assert_refused(
+            &format!("id -u {uid:?}"),
+            &output,
+            &fetched,
+            "cannot read this process's user id",
+            &home,
+        );
+    }
     // A sticky directory above the one UNA_HOME is created in, as /tmp is: installed.
     reset();
     let shared = dir.join("home/shared");
@@ -1489,8 +1609,12 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
     symlink(elsewhere.join("z3"), home.join("z3")).unwrap();
     let record = home.join(".una-install");
     let text = std::fs::read_to_string(&record).unwrap();
-    // Recorded as a file only, and as directories with the file.
-    for extra in ["file z3/bin/z3\n", "dir z3\ndir z3/bin\nfile z3/bin/z3\n"] {
+    // Recorded as a file only, as a directory only, and as directories with the file.
+    for extra in [
+        "file z3/bin/z3\n",
+        "dir z3\n",
+        "dir z3\ndir z3/bin\nfile z3/bin/z3\n",
+    ] {
         std::fs::write(&record, format!("{text}{extra}")).unwrap();
         let (output, _) = install_on_with(&dir, version, &root, &["--uninstall"], &[]);
         assert_eq!(

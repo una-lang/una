@@ -28,11 +28,15 @@
 # aarch64 glibc loader does not answer are refused; so are Linux on x86_64, which this release
 # does not ship, and every other system.
 #
-# As root, UNA_HOME must be a place that only root can change (#1938): UNA_HOME and the
-# directories the installer writes in are not symbolic links, and they and every directory above
-# them are owned by root and writable by no one else (a directory above them may be writable by
-# others only when it is sticky, as /tmp is). Otherwise the installer refuses before anything is
-# downloaded or removed, and it never runs the installed `una` as root.
+# As root, UNA_HOME must be a place that only root can change (#1938): UNA_HOME, the
+# directories the installer writes in and the files there are not symbolic links, and they are
+# owned by root and writable by no one else, and so is every directory above them, except that a
+# directory above an existing, root-owned one may be writable by others when it is sticky, as
+# /tmp is (so UNA_HOME=/tmp/una is refused unless /tmp/una already exists and is root's). The
+# same holds for TMPDIR (default /tmp), where the archive is checked and unpacked, which may
+# itself be sticky. Otherwise the installer refuses before anything is downloaded or removed, and
+# it never runs the installed `una` as root. Only owners and mode bits are read: write access
+# granted by an ACL is not seen.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -54,7 +58,7 @@
 #                     with <ref> the tag v<version>, then main
 #                     (default: https://raw.githubusercontent.com/una-lang/una)
 #
-# Needs: curl or wget, tar, and shasum or sha256sum; on Linux, getconf.
+# Needs: curl or wget, tar, shasum or sha256sum, and id; on Linux, getconf.
 set -eu
 
 # The release this script installs by default; a test keeps it equal to the workspace version.
@@ -71,27 +75,37 @@ home=${UNA_HOME:-$HOME/.una}
 
 # As root (#1938), every path the installer writes in or removes from must be one only root can
 # change, or another user could redirect root's writes outside UNA_HOME, through a symbolic link
-# or by replacing a directory. `only_root DIR [above]` refuses DIR when it is a link, is not a
-# directory, is owned by another user than root, or is writable by its group or by others; a
-# directory `above` UNA_HOME may be writable by others when it is sticky. The owner is root by
-# number, or this process's own user ([ -O ]), which is root whenever this check runs.
-uid=$(id -u 2> /dev/null) || uid=
+# or by replacing a directory or a file. `only_root PATH [above|file]` refuses PATH when it is a
+# link, is not a directory (a regular file with `file`), is owned by another user than root, or
+# is writable by its group or by others; a directory `above` may be writable by others when it is
+# sticky. The owner is root by number, or this process's own user ([ -O ]), which is root
+# whenever this check runs. Only the mode bits and the owner are read: an ACL that grants write
+# (macOS shows it as a `+` after the mode) is not seen.
+# The user is shown, never assumed: without `id -u`, the root checks could not tell whether to run.
+uid=$(id -u 2> /dev/null) || fail "cannot read this process's user id (id -u)"
+case $uid in
+    "" | *[!0-9]*) fail "cannot read this process's user id (id -u printed '$uid')" ;;
+esac
 only_root() {
-    [ ! -L "$1" ] || fail "as root, the installer does not follow the symbolic link $1; UNA_HOME must be a directory only root can change"
-    [ -d "$1" ] || fail "as root, $1 must be a directory"
+    [ ! -L "$1" ] || fail "as root, the installer does not follow the symbolic link $1; as root, the installer writes only where only root can change"
+    if [ "${2:-}" = file ]; then
+        [ -f "$1" ] || fail "as root, $1 must be a regular file"
+    else
+        [ -d "$1" ] || fail "as root, $1 must be a directory"
+    fi
     listing=$(ls -ldn "$1") || fail "as root, cannot read the owner and mode of $1"
     mode=$(printf '%s\n' "$listing" | awk 'NR == 1 { print $1 }')
     owner=$(printf '%s\n' "$listing" | awk 'NR == 1 { print $3 }')
     [ "$owner" = 0 ] || [ -O "$1" ] \
-        || fail "as root, $1 must be owned by root, not by uid $owner; UNA_HOME must be a directory only root can change"
+        || fail "as root, $1 must be owned by root, not by uid $owner; as root, the installer writes only where only root can change"
     case $mode in
         ?????w* | ????????w*)
             if [ "${2:-}" = above ]; then
                 case $mode in ?????????[tT]*) return 0 ;; esac
             fi
-            fail "as root, $1 must be writable only by its owner, root (its mode is $mode); UNA_HOME must be a directory only root can change"
+            fail "as root, $1 must be writable only by its owner, root (its mode is $mode); as root, the installer writes only where only root can change"
             ;;
-        d?????????*) ;;
+        [-d]?????????*) ;;
         *) fail "as root, cannot read the mode of $1 ($mode)" ;;
     esac
 }
@@ -108,6 +122,8 @@ only_root_on() {
         only_root "$on"
     done
 }
+# Where the work directory is made; as root, checked below.
+tmp=${TMPDIR:-/tmp}
 if [ "$uid" = 0 ]; then
     umask 022
     case $home in
@@ -124,7 +140,7 @@ if [ "$uid" = 0 ]; then
         esac
     done
     [ -n "$home" ] || fail "as root, UNA_HOME must not be /"
-    [ ! -L "$home" ] || fail "as root, the installer does not follow the symbolic link $home; UNA_HOME must be a directory only root can change"
+    [ ! -L "$home" ] || fail "as root, the installer does not follow the symbolic link $home; as root, the installer writes only where only root can change"
     # The deepest directory of UNA_HOME that exists, as its physical path: the installer then
     # works on that path, so no link above it can be moved afterwards. What is missing below it,
     # the installer creates, as root.
@@ -144,17 +160,35 @@ if [ "$uid" = 0 ]; then
     done
     home=${physical%/}$missing
     # The directories the installer writes in (a trailing / checks the directory itself), then
-    # the files it writes, which `cp` and `>` would follow if they were links.
+    # the files it writes, when they exist: `cp` and `>` would follow a link, and would keep the
+    # owner and mode of a file that another user owns or can write.
     for path in bin/ lib/ docs/guide/; do
         only_root_on "$path"
     done
     for path in bin/una bin/una.new lib/libuna_rt.a README.md LICENSE .una-install; do
-        [ ! -L "$home/$path" ] || fail "as root, the installer does not follow the symbolic link $home/$path"
+        [ -e "$home/$path" ] || [ -L "$home/$path" ] || continue
+        only_root "$home/$path" file
     done
     if [ -d "$home/docs/guide" ]; then
         [ -z "$(find "$home/docs/guide" -type l | head -n 1)" ] \
             || fail "as root, $home/docs/guide holds a symbolic link, which the installer does not follow"
+        for path in "$home"/docs/guide/*; do
+            [ -e "$path" ] || continue
+            [ -d "$path" ] || only_root "$path" file
+        done
     fi
+    # The work directory, where the archive is checked and unpacked: in TMPDIR (default /tmp),
+    # which must be one only root can change as well, though it may be sticky, as /tmp is (an
+    # entry root makes there cannot be renamed by another user). Otherwise another user could
+    # replace the checked archive before it is unpacked.
+    [ -d "$tmp" ] || fail "as root, TMPDIR ($tmp) must be a directory"
+    tmp=$(cd "$tmp" && pwd -P) || fail "as root, cannot resolve TMPDIR ($tmp)"
+    only_root "$tmp" above
+    above=$tmp
+    while [ "$above" != / ]; do
+        above=$(dirname "$above")
+        only_root "$above" above
+    done
 fi
 
 marker=$home/.una-install
@@ -306,8 +340,9 @@ for tool in tar; do
     command -v "$tool" > /dev/null 2>&1 || fail "$tool is not installed"
 done
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/una-install.XXXXXX")
+work=$(mktemp -d "$tmp/una-install.XXXXXX")
 trap 'rm -rf "${work:?}"' EXIT
+[ "$uid" != 0 ] || only_root "$work"
 
 # The validation summary of the release: its verdict, and the archive's digest. It comes from
 # the repository's tree, never from the release's own assets, so that the archive is checked
