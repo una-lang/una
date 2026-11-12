@@ -73,7 +73,7 @@ Ranked by the worst class, then by what guards it today:
 
 - **A bug can cause:** memory safety, at the boundary with generated code, and in `una-sys`: a stack overrun past a guard page, a register corrupted by a switch, or a signal handler that is not async-signal-safe. Elsewhere, a wrong result.
 - **Guards:**
-  - `unsafe` is forbidden in the workspace (`unsafe_code = "forbid"`). Three crates set `unsafe_code = "deny"` instead, and only the modules below opt in with `#[allow(unsafe_code)]`, and the integration tests of `una-sys` (`crates/una-sys/tests/`: 20 `unsafe` blocks, 11 in `solver_confinement.rs`, 6 in `no_allocation.rs`, whose counting allocator is an `unsafe impl GlobalAlloc`, and one each in `coroutine.rs`, `escalation.rs` and `poll.rs`), which build no artifact (ADR 0058 and its amendments by ADRs 0116, 0117 and 0124). Every `unsafe` block carries a `// SAFETY:` comment. The counts are those of commit `0516fba0`:
+  - `unsafe` is forbidden in the workspace (`unsafe_code = "forbid"`). Three crates set `unsafe_code = "deny"` instead, and only the modules below opt in with `#[allow(unsafe_code)]`, and the integration tests of `una-sys` (`crates/una-sys/tests/`: 30 `unsafe` blocks at commit `689d53a0`, 18 in `solver_confinement.rs`, 6 in `no_allocation.rs`, whose counting allocator is an `unsafe impl GlobalAlloc`, 3 in `wake_placement.rs`, and one each in `coroutine.rs`, `escalation.rs` and `poll.rs`), which build no artifact (ADR 0058 and its amendments by ADRs 0116, 0117 and 0124). Every `unsafe` block carries a `// SAFETY:` comment. The counts are those of commit `0516fba0`:
 
     | Module | `unsafe` blocks | Other `unsafe` items |
     | --- | --- | --- |

@@ -1,1 +1,0 @@
-- **Known limits** (#1768): a guide page, `docs/guide/known-limits.md`, that states what this release does not do, or does only with limits, for edition `0.4`: servers (`spec/31`), tasks and timing (`spec/26`, `spec/27`), the editions of collections and numerics (ADR 0139) and the platforms of the installer, each item with the rule or record that states it.

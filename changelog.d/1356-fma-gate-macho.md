@@ -1,1 +1,0 @@
-- **Release check: the FMA gate reads Mach-O** (#1356): `scripts/check-fma.sh` takes the architecture of a Mach-O file or archive from `otool -hv`, since the `objdump -f` of LLVM refuses Mach-O, refuses a universal file, and gains Mach-O canaries, so `scripts/check-release.sh` passes on macOS.

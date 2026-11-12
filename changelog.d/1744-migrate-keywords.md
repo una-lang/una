@@ -1,1 +1,0 @@
-- **`una migrate` reads an edition 0.5 package with the keywords of 0.5** (#1744). A `una.toml` that names edition 0.5 migrates to `edition 0.5`, and its modules are now put in the canonical form read with the keywords of that edition, so a module that uses `simd` as a name or the `with:` and `and:` labels is rewritten, not left as it was.

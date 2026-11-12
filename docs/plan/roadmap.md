@@ -15,11 +15,11 @@ Each version starts only after the previous gate passes, with one exception: v0.
 
 ### Releases and editions
 
-Release R0.N ships compiler version `v0.N.0`, and edition `0.N` is named by the release that closes it, as a stable edition (ADR 0139). Only releases that change syntax create an edition, so there is no edition `0.7` or `0.9`. `main` serves at most two editions, the stable one and the current preview; an older edition leaves `main` by a plan accepted for it (#1585 for editions `0.1` and `0.2`) and stays served by its release line. Editions `0.1` to `0.3` already carry the number of the release that introduced them.
+Release R0.N ships compiler version `v0.N.0`, and edition `0.N` is named by the release that closes it, as a stable edition (ADR 0139); R0.4 ships edition `0.4` as a preview instead (ADR 0139, amendment of 2026-11-10, Proposed). Only releases that change syntax create an edition, so there is no edition `0.7` or `0.9`. `main` serves at most two editions, the stable one and the current preview; an older edition leaves `main` by a plan accepted for it (#1585 for editions `0.1` and `0.2`) and stays served by its release line. Editions `0.1` to `0.3` already carry the number of the release that introduced them.
 
 | Release | Compiler | Edition it closes | Contents |
 | --- | --- | --- | --- |
-| R0.4 | `v0.4.0` | `0.4` | Long-running programs (ADR 0116), tasks, `within` and `first of` (ADR 0117), HTTP servers (ADR 0123), the core of Itá (ADR 0122) |
+| R0.4 | `v0.4.0` | `0.4`, as a preview (amendment of 2026-11-10, Proposed) | Long-running programs (ADR 0116), tasks, `within` and `first of` (ADR 0117), HTTP servers (ADR 0123), the core of Itá (ADR 0122) |
 | R0.5 | `v0.5.0` | `0.5` | Collections (ADR 0119) and the numeric foundation (ADR 0120), moved from `0.4`; module constants (ADR 0126); `const` and `var` (ADR 0137) |
 | R0.6 | `v0.6.0` | `0.6` | Data-driven and multi-step tests (the testing family, #1590 to #1594) |
 | R0.7 | `v0.7.0` | none | A toolchain release |
@@ -40,7 +40,7 @@ Edition `0.4` is the current preview edition, under the terms of ADR 0121. R0.4 
 | The numeric foundation | `F32`, `Decimal`, `Complex`, dense arrays and SIMD | ADR 0120 | Accepted; moves to edition `0.5` (ADR 0139, #1621), `F64` stays in `0.3` |
 | Packages | Itá: the package manager, `ita.una` and `ita.lock`, and its registry. In `0.4.0` the registry is designed but not served: there is no https transport, registry packages are read only from a mirror directory, and `publish` and `yank` send nothing | ADR 0122 | Accepted |
 | HTTP servers | `HttpServer`, granted by address; a `Listener` of raw connections waits for a later record (ADR 0123 Question 1) | ADR 0123 | Accepted |
-| One binary | `una` checks, proves and builds with nothing else installed | ADR 0124 | Accepted (2026-10-27) |
+| One binary | `una` checks, proves and builds with nothing else installed on macOS arm64; on Linux arm64, `una build` links through the system `cc` until the internal Linux linker is wired in (#1209) | ADR 0124 | Accepted (2026-10-27) |
 | Optimized release builds | `una build --release` through Una's own optimizing code generation over Core IR; the C-emitting route of ADR 0106 is withdrawn | ADR 0106, amendment of 2026-10-31 | Design open (#1305) |
 
 Una admits no foreign code: no foreign function interface, in any form, in any edition.

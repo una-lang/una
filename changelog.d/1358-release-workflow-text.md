@@ -1,1 +1,0 @@
-- **The unused release workflow matches ADR 0124 step 2** (#1358): `.github/workflows/release.yml` says at its top that GitHub Actions is not used, and no longer names `lib/libuna_rt.a` or a Z3 on PATH.
