@@ -1,1 +1,0 @@
-- **Release gates: the toolchain-free gate runs the released una** (#1357): it unpacks the `una` of the release gate's macOS and Linux arm64 archives, checked against their digests, instead of a development build that `scripts/toolchain-free.sh` refuses.

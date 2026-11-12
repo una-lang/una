@@ -1,1 +1,0 @@
-- **Assurance in this release** (#1899): the known-limits page says what v0.4.0 proves, tests, trusts and assumes, and what moved to R0.5; the TCB, README, SECURITY and guide pages say what the formal re-check refuses, that engine equivalence is tested, and which release lines get fixes.

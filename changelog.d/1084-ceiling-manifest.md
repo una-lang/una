@@ -1,1 +1,0 @@
-- **A ceiling message names the package's manifest** (#1084). U3021 and U3024 named "the ceiling in `una.toml`" in every edition. In edition `0.4` a boundary's or a dependency's ceiling is written in `ita.una`, which the messages now name.

@@ -1,1 +1,0 @@
-- **The name map and per-name chains** (#998, ADR 0122 rule 36.1, `spec/30 §11`). The client's check that it sees every entry about a name: proofs of a name's head, or its absence, in a sparse Merkle map whose root each checkpoint carries, and the walk of the name's chain, whose length must match the map's count, so an omitted yank or advisory is caught.

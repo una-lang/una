@@ -1,1 +1,0 @@
-- **U0103 messages no longer promise versions that shipped nothing** (#1899, `spec/01 §5`, `spec/17 §9`). `law`, `all`, `costs`, `traced`, `service`, `table`, `query`, `observe` and `commit`, and `shared`, `iso` and `weak` from edition 0.2, now say "reserved for a later edition (<area>)" instead of naming v0.3 or v0.4. The words stay reserved and the code is unchanged.

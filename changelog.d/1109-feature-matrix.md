@@ -1,1 +1,0 @@
-- **Validate feature availability in documentation bundles** (#1109). Add a deterministic reviewed catalog tied to conformance packages and reject document editions absent from the bundling compiler.

@@ -1,1 +1,0 @@
-- **The installer: 0.4.0 or later** (#1819). The installer refuses a `UNA_VERSION` before 0.4.0, compared as numbers (0.10.0 is after 0.4.0), and anything but MAJOR.MINOR.PATCH: a release before 0.4.0 needs a separate Z3, which the installer no longer installs, so its `una check` could prove nothing. The README, Getting started and the known limits say so.

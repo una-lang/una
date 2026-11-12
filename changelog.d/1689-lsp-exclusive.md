@@ -1,1 +1,0 @@
-- **The language-server tests run alone under nextest** (#1689). The tests of the `lsp` binary wait for a solver handshake within two seconds, which failed once in a gate on a busy machine (`a_newer_change_cancels_tier_1_and_leaves_no_solver_behind`); like the timing tests, they now take every slot. No test is skipped or changed.
