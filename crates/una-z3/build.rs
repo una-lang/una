@@ -14,6 +14,11 @@
 //! The pin of `supply-chain/z3.lock` (version, commit, tree, source digest) goes into the crate
 //! as environment constants. This script runs no program, downloads nothing and compiles
 //! nothing: the library is built once per pin by `scripts/build-z3.sh`.
+//!
+//! The library is linked from a verified copy (#1925, `stage.rs`): it is copied into a directory
+//! of `OUT_DIR` that holds the copy alone, the copy is hashed (and, in a release build, checked),
+//! and the link names only that directory. The linker reads the checked bytes, never the given
+//! file again, and searches no directory beside it, so no other library there is linked.
 
 // A build script reads Cargo's and the build's variables; the library crates' rule against
 // reading the environment (compiler/conventions.md §1) does not apply to it.
@@ -21,9 +26,12 @@
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use sha2::{Digest, Sha256};
+// The verified copy and its link directives, shared with tests/stage.rs; the test uses an
+// accessor that the build does not.
+#[allow(dead_code)]
+mod stage;
 
 /// A quoted string value of the lock, by key, up to the first table header.
 fn setting(lock: &str, key: &str) -> Result<String, String> {
@@ -80,56 +88,18 @@ fn main() -> Result<(), String> {
     let mut library_sha256 = String::new();
     if let Some((path, want)) = library {
         println!("cargo:rerun-if-changed={}", path.display());
-        let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        library_sha256 = format!("{:x}", Sha256::digest(&bytes));
-        if let Some(want) = want
-            && want != library_sha256
-        {
-            return Err(format!(
-                "SHA-256 mismatch for {}: UNA_EMBED_Z3_SHA256 is {want}, the file is {library_sha256}",
-                path.display()
-            ));
+        let out = PathBuf::from(env::var("OUT_DIR").map_err(|e| e.to_string())?);
+        let staged = stage::stage(&path, &out.join("z3-link"), want.as_deref())?;
+        let target_os = env::var("CARGO_CFG_TARGET_OS").ok();
+        for directive in stage::directives(&staged, target_os.as_deref())? {
+            println!("{directive}");
         }
-        link(&path)?;
+        library_sha256 = staged.sha256;
         println!("cargo:rustc-cfg=una_z3_linked");
         if release {
             println!("cargo:rustc-cfg=una_z3_release");
         }
     }
     println!("cargo:rustc-env=UNA_Z3_LIBRARY_SHA256={library_sha256}");
-    Ok(())
-}
-
-/// The link directives for the static library at `path` (`lib<name>.a`) and the C++ runtime
-/// the front end needs: the system's `libc++` on macOS, dynamically; on Linux `libstdc++`,
-/// statically, so that `una` asks the dynamic loader for no C++ library (ADR 0124 rule 1,
-/// `scripts/load-commands-una.txt`, #1956). The driver flag `-static-libstdc++` of
-/// `scripts/release.sh` does not reach an explicit `-lstdc++`, so the kind is given here:
-/// `static`, without `bundle`, so that rustc does not copy the archive into this crate's rlib
-/// and the final link takes the toolchain's `libstdc++.a` from the C compiler's own search path.
-fn link(path: &Path) -> Result<(), String> {
-    let file = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("{}: not a file name", path.display()))?;
-    let name = file
-        .strip_prefix("lib")
-        .and_then(|rest| rest.strip_suffix(".a"))
-        .ok_or_else(|| format!("{file}: the library must be named lib<name>.a"))?;
-    let dir = path
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .ok_or_else(|| format!("{}: no directory", path.display()))?;
-    println!("cargo:rustc-link-search=native={}", dir.display());
-    println!("cargo:rustc-link-lib=static={name}");
-    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
-        Ok("macos") => println!("cargo:rustc-link-lib=c++"),
-        Ok("linux") => println!("cargo:rustc-link-lib=static:-bundle=stdc++"),
-        other => {
-            return Err(format!(
-                "una-z3 links on macOS and Linux only, not {other:?}"
-            ));
-        }
-    }
     Ok(())
 }

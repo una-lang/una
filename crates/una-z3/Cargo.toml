@@ -16,6 +16,10 @@ una-sys = { workspace = true, features = ["solver"] }
 # in every build (ADR 0124 rules 18 to 20).
 sha2.workspace = true
 
+[dev-dependencies]
+# tests/stage.rs includes the build script's verified copy (stage.rs), which hashes with it.
+sha2.workspace = true
+
 # The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADR 0124) allows `unsafe` in this
 # crate for one thing, the call of Z3's front-end entry through its C interface. The crate holds at
 # most 150 lines under crates/una-z3/src/, depends on no crate of the repository but `una-sys`, and
