@@ -961,7 +961,9 @@ type Claim = ([u8; 32], u64);
 ///
 /// O(C · P · E · K) for C claims (at most [`MAX_CLAIMS`] times one more than the resets), P passes of a settled replay (at
 /// most 2 C + 2), E entries and K keys held at once (at most 32): one settled replay of the
-/// chain and one up to each claim, and one forward pass per group, linear in E. Each
+/// chain and one up to each claim, and one forward pass per group, linear in E; and, once per
+/// replay, one pass up to each claim with that claim alone assumed, which finds the claims that
+/// void their own signers ([`self_voiding`]), O(C · E · K). Each
 /// signature of an entry by a key is verified once across all of them ([`History::checks`]
 /// counts every check asked). The mutual case costs O(R · K log(R · K)) per pass for R
 /// revocations; the keys the chain names are checked only when an entry is not signed as
@@ -1136,13 +1138,82 @@ fn replay_unsealed(
             effect,
             &mut verifier,
             sealed,
+            &Lone::default(),
+            &Before::new(),
+            None,
             0..entries.len(),
-        )?;
+        )?
+        .0;
         history.checks = verifier.asked;
         return Ok(history);
     };
+    // In log order, each claim is judged alone on the chain as it stood at its logging, and the
+    // chain up to and including it is settled: the claims that stood then, which the entries
+    // logged after it knew. Both are made once and shared by every settled replay below.
+    let all = assumed(entries, &mut verifier, sealed);
+    let mut lone = Lone::default();
+    let mut before: Before = BTreeMap::new();
+    let mut prefixes: BTreeMap<usize, Result<BTreeMap<[u8; 32], u64>, ReplayError>> =
+        BTreeMap::new();
+    // The claims settled in log order: those standing after a claim are settled from those
+    // that stood before it and the claim itself, so a claim once dropped is never assumed
+    // again. `None` after a prefix that is refused or does not settle: the next prefix is
+    // settled from every claim it holds.
+    let mut standing_now: Option<BTreeSet<u64>> = Some(BTreeSet::new());
+    for &at in &claims {
+        let Some(logged) = entries.get(at) else {
+            continue;
+        };
+        let through = entries.get(..=at).unwrap_or(entries);
+        if let Some((claim, stated)) = all.get(&logged.index) {
+            self_voiding(
+                owner,
+                source,
+                through,
+                log,
+                effects,
+                effect,
+                &mut verifier,
+                sealed,
+                &before,
+                (logged.index, *claim, *stated),
+                &mut lone,
+            )
+            .map_err(ReplayError::from)?;
+        }
+        let start = standing_now.take().map(|mut start| {
+            start.insert(logged.index);
+            start
+        });
+        match settle(
+            owner,
+            source,
+            through,
+            log,
+            effects,
+            effect,
+            &mut verifier,
+            sealed,
+            &lone,
+            &before,
+            start.as_ref(),
+            0..0,
+        ) {
+            Ok((settled, standing)) => {
+                before.insert(logged.index, standing.clone());
+                standing_now = Some(standing);
+                prefixes.insert(at, Ok(settled.compromised));
+            }
+            Err(ReplayError::Effect(why)) => return Err(ReplayError::Effect(why)),
+            // A prefix that is refused or does not settle: no claim of it is known to stand.
+            Err(other) => {
+                before.insert(logged.index, BTreeSet::new());
+                prefixes.insert(at, Err(other));
+            }
+        }
+    }
     // The chain's own claims, settled: its history, whatever each entry's stated threshold.
-    let mut history = settle(
+    let (mut history, _) = settle(
         owner,
         source,
         entries,
@@ -1151,6 +1222,9 @@ fn replay_unsealed(
         effect,
         &mut verifier,
         sealed,
+        &lone,
+        &before,
+        standing_now.as_ref(),
         0..0,
     )?;
     // The entries before the first claim were logged with no claim known; from each later
@@ -1168,25 +1242,13 @@ fn replay_unsealed(
         let known = if k == 0 {
             Some(BTreeMap::new())
         } else {
-            let through = entries.get(..=from).unwrap_or(entries);
-            match settle(
-                owner,
-                source,
-                through,
-                log,
-                effects,
-                effect,
-                &mut verifier,
-                sealed,
-                0..0,
-            ) {
-                Ok(settled) => Some(settled.compromised),
-                Err(ReplayError::Effect(why)) => return Err(ReplayError::Effect(why)),
-                Err(ReplayError::Unsettled(unsettled)) => {
+            match prefixes.remove(&from) {
+                Some(Ok(compromised)) => Some(compromised),
+                Some(Err(ReplayError::Unsettled(unsettled))) => {
                     evidence.push(unsettled);
                     None
                 }
-                Err(ReplayError::Refused(_) | ReplayError::TooManyClaims(_)) => None,
+                Some(Err(_)) | None => None,
             }
         };
         // The first entry of the group whose own prefix is refused: it and the entries after it
@@ -1205,6 +1267,7 @@ fn replay_unsealed(
                 effect,
                 &mut verifier,
                 sealed,
+                &before,
                 &checked,
             ) {
                 Ok(_) => fallback = to,
@@ -1230,6 +1293,7 @@ fn replay_unsealed(
                 effect,
                 &mut verifier,
                 sealed,
+                &before,
                 &checked,
             )?;
         }
@@ -1239,22 +1303,15 @@ fn replay_unsealed(
     Ok(history)
 }
 
-/// The greatest fixpoint of the claims of `entries` ([`replay`]): each pass checks the stated
-/// `threshold` of the entries at the positions `checked` against the state it reaches, and of
-/// no other entry, so a claim assumed in a pass never refuses an entry for a state that only
-/// the claim rewrote.
-#[allow(clippy::too_many_arguments)]
-fn settle(
-    owner: &str,
-    source: &str,
+/// Every claim of `entries` outside `sealed`, as the fixpoint first assumes it: by the index of
+/// its revocation, the key it names and its `since`, raised to that key's introduction, and to
+/// the revocation's own index when the named key signs it (a key's own word); with the `since`
+/// it states, raised to the key's introduction only.
+fn assumed(
     entries: &[Logged<'_>],
-    log: &Key,
-    effects: &mut BTreeMap<u64, Option<u64>>,
-    effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     verifier: &mut Verifier,
     sealed: &BTreeSet<u64>,
-    checked: std::ops::Range<usize>,
-) -> Result<History, ReplayError> {
+) -> BTreeMap<u64, (Claim, u64)> {
     // The owner key each name brought in, and the index that brought it: registrations,
     // additions, recoveries and disputes, never cosigners.
     let mut introduced: BTreeMap<&str, Claim> = BTreeMap::new();
@@ -1288,7 +1345,7 @@ fn settle(
     // a thief's self-claim never reaches back before it. A later pass gives it back its stated
     // `since` only when its other sound signers, or the cosigners, meet the requirement without
     // the named key.
-    let mut claims: BTreeMap<u64, Claim> = BTreeMap::new();
+    let mut claims: BTreeMap<u64, (Claim, u64)> = BTreeMap::new();
     for logged in entries
         .iter()
         .filter(|logged| !sealed.contains(&logged.index))
@@ -1314,8 +1371,157 @@ fn settle(
         } else {
             0
         };
-        claims.insert(logged.index, (*public, (*since).max(*at).max(floor)));
+        let stated = (*since).max(*at);
+        claims.insert(logged.index, ((*public, stated.max(floor)), stated));
     }
+    claims
+}
+
+/// Whether the claim `index` voids its own signers: alone assumed on `through`, the chain up to
+/// and including its revocation, it does not stand there (its revocation is void and not
+/// mutual). Such a claim is dropped before the claims are assumed together, so its assumed
+/// effect never voids another claim's signers; and a claim of a key's own word is held at its
+/// floor, or first assumed from its stated `since`, by the same test from that `since`. At most
+/// two one-pass replays of a prefix per claim, O(C · E · K) for C claims: made once per
+/// [`replay`] and shared by every settled replay, never once per claim group.
+#[allow(clippy::too_many_arguments)]
+fn self_voiding(
+    owner: &str,
+    source: &str,
+    through: &[Logged<'_>],
+    log: &Key,
+    effects: &mut BTreeMap<u64, Option<u64>>,
+    effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
+    verifier: &mut Verifier,
+    sealed: &BTreeSet<u64>,
+    before: &Before,
+    (index, (public, since), stated): (u64, Claim, u64),
+    lone: &mut Lone,
+) -> Result<(), PassError> {
+    // A claim of its key's own word is tried first at the `since` it states, which is its first
+    // assumption when it stands there on other signers (decision 6), and then at its floor;
+    // any other claim at its first assumption. A claim never gets back a `since` from which it
+    // voids its own signers, and is dropped only when it fails at its first assumption.
+    let mut tries = Vec::new();
+    if stated < since {
+        tries.push((stated, true));
+    }
+    tries.push((since, false));
+    for (from, floored) in tries {
+        let alone: BTreeMap<[u8; 32], u64> = BTreeMap::from([(public, from)]);
+        match replay_once(
+            owner,
+            source,
+            through,
+            log,
+            &alone,
+            effects,
+            effect,
+            verifier,
+            sealed,
+            before,
+            &(0..0),
+        ) {
+            Ok((_, standing, _)) => match standing.get(&index) {
+                None if floored => {
+                    lone.floored.insert(index);
+                }
+                None => {
+                    lone.dropped.insert(index);
+                    break;
+                }
+                // From the `since` it states, the claim stands on other sound signers: it is
+                // not its key's own word there, and is first assumed from that `since`, never
+                // dropped for failing at its floor.
+                Some((_, false)) if floored => {
+                    lone.stated.insert(index);
+                    break;
+                }
+                // From that `since` it stands only as its key's own word: it keeps the floor of
+                // its own index.
+                Some((_, true)) if floored => {
+                    lone.floored.insert(index);
+                }
+                Some(_) => {}
+            },
+            Err(PassError::Effect(why)) => return Err(PassError::Effect(why)),
+            // A prefix that the claim makes refused says nothing of the claim: kept.
+            Err(PassError::Rule { .. }) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The claims that stood, settled, on the chain up to and including each claim, by the index of
+/// that claim: what a registry and every client knew when the entries after it were logged.
+type Before = BTreeMap<u64, BTreeSet<u64>>;
+
+/// Whether the claim logged at `claim` stood on the chain as known just before `partner` was
+/// logged: settled up to and including the last claim before `partner`.
+fn stood_before(before: &Before, claim: u64, partner: u64) -> bool {
+    before
+        .range(..partner)
+        .next_back()
+        .is_some_and(|(_, standing)| standing.contains(&claim))
+}
+
+/// The claims that void their own signers ([`self_voiding`]).
+#[derive(Default)]
+struct Lone {
+    /// Claims that do not stand when assumed alone: dropped before the claims are assumed
+    /// together.
+    dropped: BTreeSet<u64>,
+    /// Claims of a key's own word that, assumed alone from the `since` they state, do not stand,
+    /// or stand only as that key's own word: they keep the floor of their own index in every
+    /// pass.
+    floored: BTreeSet<u64>,
+    /// Claims that the key they name signs, and that, assumed alone from the `since` they state,
+    /// stand on their other sound signers: first assumed from that `since`, never from the
+    /// floor that an assumption of their own later effect would give them.
+    stated: BTreeSet<u64>,
+}
+
+/// The greatest fixpoint of the claims of `entries` ([`replay`]): each pass checks the stated
+/// `threshold` of the entries at the positions `checked` against the state it reaches, and of
+/// no other entry, so a claim assumed in a pass never refuses an entry for a state that only
+/// the claim rewrote.
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    owner: &str,
+    source: &str,
+    entries: &[Logged<'_>],
+    log: &Key,
+    effects: &mut BTreeMap<u64, Option<u64>>,
+    effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
+    verifier: &mut Verifier,
+    sealed: &BTreeSet<u64>,
+    lone: &Lone,
+    before: &Before,
+    start: Option<&BTreeSet<u64>>,
+    checked: std::ops::Range<usize>,
+) -> Result<(History, BTreeSet<u64>), ReplayError> {
+    let mut claims: BTreeMap<u64, Claim> = assumed(entries, verifier, sealed)
+        .into_iter()
+        .filter(|(index, _)| !lone.dropped.contains(index))
+        .filter(|(index, _)| start.is_none_or(|start| start.contains(index)))
+        .map(|(index, ((public, since), stated))| {
+            if lone.stated.contains(&index) {
+                (index, (public, stated))
+            } else {
+                (index, (public, since))
+            }
+        })
+        .collect();
+    // The `since` of each revocation that states one, by its index.
+    let sinces: BTreeMap<u64, u64> = entries
+        .iter()
+        .filter_map(|logged| match &logged.entry.event {
+            Event::Revoke {
+                since: Some(since), ..
+            } => Some((logged.index, *since)),
+            _ => None,
+        })
+        .collect();
     // Each pass keeps the claims by the index of their revocation, drops some, or only
     // re-resolves their keys; a key a claim names changes at most once per claim dropped, so a
     // valid chain settles within twice the number of claims plus two passes. A chain that does
@@ -1329,7 +1535,7 @@ fn settle(
             let slot = compromised.entry(*public).or_insert(u64::MAX);
             *slot = (*slot).min(*since);
         }
-        let (mut history, standing) = replay_once(
+        let (mut history, standing, signer_void) = replay_once(
             owner,
             source,
             entries,
@@ -1339,23 +1545,45 @@ fn settle(
             effect,
             verifier,
             sealed,
+            before,
             &checked,
         )?;
         history.checks = verifier.asked;
         // The claims that stand, each resolved in this pass to the key its revocation removed
         // and that key's own introduction; one that counts only with the signature of the key
         // it names starts no earlier than its own index.
-        let next: BTreeMap<u64, Claim> = claims
+        let mut next: BTreeMap<u64, Claim> = claims
             .keys()
             .filter_map(|index| {
                 let ((public, at), own) = standing.get(index)?;
                 let since = sinces.get(index)?;
-                let floor = if *own { *index } else { 0 };
+                let floor = if *own || lone.floored.contains(index) {
+                    *index
+                } else {
+                    0
+                };
                 Some((*index, (*public, (*since).max(*at).max(floor))))
             })
             .collect();
+        // The order of dropping: a claim void only because keys of the owner's that signed it
+        // are compromised is kept one more pass while another claim is dropped, one whose
+        // signers are no key of the owner's or that no key signed as required, since the
+        // compromise that voids its signers may rest on the claim dropped. Only when every
+        // claim that does not stand is of the first kind are they dropped together.
+        let dropped: Vec<u64> = claims
+            .keys()
+            .filter(|index| !next.contains_key(index))
+            .copied()
+            .collect();
+        if dropped.iter().any(|index| !signer_void.contains(index)) {
+            for index in dropped.iter().filter(|index| signer_void.contains(index)) {
+                if let Some(claim) = claims.get(index) {
+                    next.insert(*index, *claim);
+                }
+            }
+        }
         if next == claims {
-            return Ok(history);
+            return Ok((history, claims.keys().copied().collect()));
         }
         last_change = claims
             .keys()
@@ -1422,11 +1650,25 @@ struct Revocation {
     /// key's own word, which a thief holding it can give, so its claim states nothing of the
     /// past.
     own: bool,
+    /// How many of its sound signers other than the named key sign it, and its owner
+    /// threshold then.
+    others: usize,
+    threshold: usize,
+    /// The owner keys through which it accuses the key it names, for the mutual case: when it
+    /// applies, its sound signers that its requirement needs, none when more sign than it needs
+    /// or the cosigners meet it; when it is void, every owner key that signed it.
+    backing: Vec<[u8; 32]>,
+    /// Its signers, other than the named key, compromised before it: a claim that the named key
+    /// signed against one of them is that key's word too, and it never makes this claim the
+    /// named key's own word.
+    compromised_others: Vec<[u8; 32]>,
 }
 
 /// The result of one replay pass: the history, and for each standing revocation its claim and
 /// whether only the named key's own signature met the requirement.
-type Replayed = (History, BTreeMap<u64, (Claim, bool)>);
+/// The third element: the claims whose revocation is void only because owner keys that signed
+/// it are compromised, and that do not stand.
+type Replayed = (History, BTreeMap<u64, (Claim, bool)>, BTreeSet<u64>);
 
 /// One replay of the chain with the keys `compromised` taken as compromised since their
 /// positions. Returns the history and, for each revocation with `since` that stands in this
@@ -1444,6 +1686,7 @@ fn replay_once(
     effect: &mut dyn FnMut(u64) -> Result<Option<u64>, String>,
     verifier: &mut Verifier,
     sealed: &BTreeSet<u64>,
+    before: &Before,
     checked: &std::ops::Range<usize>,
 ) -> Result<Replayed, PassError> {
     let mut state = Owner {
@@ -1541,21 +1784,39 @@ fn replay_once(
         let threshold = state.threshold;
         // A revocation with `since` that meets its requirement only with the signature of the
         // key it names: without it, the other sound signers and the cosigners fall short.
-        let own = match &entry.event {
+        let backing: Vec<[u8; 32]> = if owners_sound >= threshold || by_cosigners {
+            if by_cosigners || owners_sound > threshold {
+                Vec::new()
+            } else {
+                sound_signing.iter().map(|k| k.public).collect()
+            }
+        } else {
+            signing.iter().map(|k| k.public).collect()
+        };
+        let (own, others, compromised_others) = match &entry.event {
             Event::Revoke {
                 name,
                 since: Some(_),
-            } => target(&state, name).is_some_and(|(named, _)| {
+            } => target(&state, name).map_or((false, 0, Vec::new()), |(named, _)| {
                 let others: Vec<Key> = sound_signing
                     .iter()
                     .filter(|key| key.public != named)
                     .cloned()
                     .collect();
-                signing.iter().any(|key| key.public == named)
-                    && count_distinct(&others) < threshold
-                    && !by_cosigners
+                let mut compromised_others: Vec<[u8; 32]> = signing
+                    .iter()
+                    .filter(|key| key.public != named && !sound(key))
+                    .map(|key| key.public)
+                    .collect();
+                compromised_others.sort_unstable();
+                compromised_others.dedup();
+                let count = count_distinct(&others);
+                let own = signing.iter().any(|key| key.public == named)
+                    && count < threshold
+                    && !by_cosigners;
+                (own, count, compromised_others)
             }),
-            _ => false,
+            _ => (false, 0, Vec::new()),
         };
         let decision = match &entry.event {
             Event::Register {
@@ -1628,10 +1889,12 @@ fn replay_once(
             }
         };
         // Not signed as required: void when an earlier entry was void and some key the chain
-        // names signs it, since it may depend on that entry; refused otherwise. The keys the
-        // chain names are checked only here.
+        // names signs it, since it may depend on that entry, or when this pass does not check
+        // the entry against the chain as known at its logging, since an assumed claim may have
+        // brought back the earlier entry that raised its requirement; refused otherwise. The
+        // keys the chain names are checked only here.
         let decision = match decision {
-            Verdict::Refuse if !voided.is_empty() || state.overflowed => {
+            Verdict::Refuse if !voided.is_empty() || state.overflowed || !checked.contains(&at) => {
                 // A key that a recovery or a dispute not yet in effect names makes nothing void:
                 // what only it signs is refused, and the client's comparison of timings makes
                 // the name unavailable when the request may be in effect earlier.
@@ -1688,6 +1951,10 @@ fn replay_once(
                         target: target(&state, name),
                         signers: signing.iter().map(|k| k.public).collect(),
                         own,
+                        others,
+                        threshold,
+                        compromised_others: compromised_others.clone(),
+                        backing: backing.clone(),
                     });
                 }
                 continue;
@@ -1709,6 +1976,10 @@ fn replay_once(
                     target: target(&state, name),
                     signers: signing.iter().map(|k| k.public).collect(),
                     own,
+                    others,
+                    threshold,
+                    compromised_others: compromised_others.clone(),
+                    backing: backing.clone(),
                 }),
                 Event::Add(key) | Event::Recover(key) | Event::Dispute(key) => state.know([key]),
                 Event::Cosigners(Some((_, list))) => state.know(list.iter()),
@@ -1793,6 +2064,10 @@ fn replay_once(
                     target: target(&state, name),
                     signers: signing.iter().map(|k| k.public).collect(),
                     own,
+                    others,
+                    threshold,
+                    compromised_others: compromised_others.clone(),
+                    backing: backing.clone(),
                 };
                 // The cosigners' claim on the owner's last key: a claim only, since an owner
                 // keeps at least one key; what that key signed after `p` no longer counts.
@@ -1992,15 +2267,32 @@ fn replay_once(
     // lone claim, signed by a key the owner claimed, does not stand.
     // Each revocation's named key and each of its signers, so a claim's mutual case is found
     // by its own signers: O(R · K log(R · K)) per pass for R revocations and K signers each.
-    let mut named_by: BTreeSet<([u8; 32], [u8; 32])> = BTreeSet::new();
+    // Each pair of a key named and a key backing that revocation, with the revocations that
+    // make it: a claim's mutual partner is another revocation, never the claim itself.
+    let mut named_by: BTreeMap<([u8; 32], [u8; 32]), BTreeSet<u64>> = BTreeMap::new();
     for other in &revocations {
         if let Some((target, _)) = other.target {
-            for signer in &other.signers {
-                named_by.insert((target, *signer));
+            for signer in &other.backing {
+                named_by
+                    .entry((target, *signer))
+                    .or_default()
+                    .insert(other.index);
             }
         }
     }
+    // Two keys that accuse each other: a key never cancels a claim on itself, and a revocation
+    // logged after a claim accuses it only if the claim stood when that revocation was logged,
+    // so a claim already dropped never comes back as the partner of a later one.
+    let accused = |named: [u8; 32], by: [u8; 32], except: u64| {
+        named != by
+            && named_by.get(&(named, by)).is_some_and(|indices| {
+                indices.iter().any(|index| {
+                    *index != except && (*index < except || stood_before(before, except, *index))
+                })
+            })
+    };
     let mut standing: BTreeMap<u64, (Claim, bool)> = BTreeMap::new();
+    let mut signer_void: BTreeSet<u64> = BTreeSet::new();
     for record in revocations.iter().filter(|r| r.claims) {
         let Some(claim) = record.target else {
             continue;
@@ -2009,9 +2301,20 @@ fn replay_once(
             || record
                 .signers
                 .iter()
-                .any(|signer| named_by.contains(&(*signer, claim.0)));
+                .any(|signer| accused(*signer, claim.0, record.index));
+        // The named key's own word, unless a signer it falls short without is compromised only
+        // on that key's word: one the named key itself signed a revocation of, so the claim and
+        // that revocation cancel each other and neither is a key's word about itself alone.
+        let cancelled = record
+            .compromised_others
+            .iter()
+            .filter(|signer| accused(**signer, claim.0, record.index))
+            .count();
+        let own = record.own && record.others + cancelled < record.threshold;
         if stands {
-            standing.insert(record.index, (claim, record.own));
+            standing.insert(record.index, (claim, own));
+        } else {
+            signer_void.insert(record.index);
         }
     }
     let pending = requests
@@ -2056,6 +2359,7 @@ fn replay_once(
             sealed: Vec::new(),
         },
         standing,
+        signer_void,
     ))
 }
 

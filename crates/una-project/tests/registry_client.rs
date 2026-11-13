@@ -2106,13 +2106,13 @@ fn a_thiefs_self_claim_with_its_own_key_never_reaches_back() {
     assert!(releases[0].compromised && releases[1].compromised && !releases[2].compromised);
 }
 
-/// A chain that does not settle, which a registry must never log, fed directly: `A` adds `C`,
-/// then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since 0. Assuming both
-/// claims voids the addition of `C`; both revocations are then void, stand as revocations that
-/// cancel each other, and are each their key's own word, so each claim starts at its own index.
-/// From there both apply with another sound signer, so each reaches back to the registration
-/// again: the claims alternate. The replay stops at its pass cap, the same on every run,
-/// refuses the owner's names, and records the registry's misbehavior.
+/// A chain that does not settle, which a registry must never log, fed directly: `A`, `B` and
+/// `D` registered at threshold two; `A` and `B` claim `A` since 0; `A`, `D` and `C` add `C`;
+/// `A`, `B` and `C` claim `B` since 0. Whether the second claim is its key's own word depends
+/// on whether `C`'s addition stands, which the first claim's reach decides, and the first
+/// claim's standing depends on the second's: the claims alternate. The replay stops at its pass
+/// cap, the same on every run, refuses the owner's names, and records the registry's
+/// misbehavior.
 #[test]
 fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
     let a = keypair(60, "acme.a");
@@ -2120,11 +2120,11 @@ fn a_chain_that_does_not_settle_is_refused_as_registry_misbehavior() {
     let c = keypair(62, "acme.c");
     let d = keypair(64, "acme.d");
     let mut registry = TestRegistry::new("acme");
-    registry.register_keys("acme", &[&a, &b, &d], 1, &[], 0);
-    registry.owner_event("acme", &format!("add {}", key_text(&c.1)), 1, &[&a, &c]);
-    let claim = registry.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
-    registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
-    registry.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
+    registry.register_keys("acme", &[&a, &b, &d], 2, &[], 0);
+    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
+    registry.owner_event("acme", &format!("add {}", key_text(&c.1)), 1, &[&a, &d, &c]);
+    let claim = registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&b, &d]);
     registry.checkpoint(NOW);
     let memory = Memory {
         files: registry.files.clone(),

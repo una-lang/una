@@ -167,7 +167,15 @@ fn prepare(
                 .to_owned(),
         ));
     };
-    let keys = keyfile::owner_keys(keys, owner, &snapshot.keys, snapshot.threshold)
+    // The owner's earlier keys sign too: one that a later claim of compromise makes a key
+    // again keeps the release counting there (`spec/30 §14` rule 4 of the owner's keys).
+    let mut former: Vec<una_project::tlog::note::Key> = Vec::new();
+    for key in history.snapshots.iter().flat_map(|s| &s.keys) {
+        if !snapshot.keys.contains(key) && !former.contains(key) {
+            former.push(key.clone());
+        }
+    }
+    let keys = keyfile::owner_keys(keys, owner, &snapshot.keys, &former, snapshot.threshold)
         .map_err(|why| at(Code::U7013, why))?;
     let earlier = match version {
         Some(version) => {

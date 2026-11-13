@@ -43,9 +43,12 @@
 #                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
 #                --release --locked -p una-project --lib -- --ignored --exact
 #                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
-#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
-#                the ordinary test run checks both to depth 3, and the gate passes only when both
-#                pass
+#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five,
+#                the owner model's wide alphabet to depth 4
+#                (owner_replay_holds_its_contract_on_the_wide_alphabet_to_depth_four) and its
+#                random walks to depth 8 (owner_replay_holds_its_contract_on_random_deep_walks);
+#                the ordinary test run checks both models to depth 3, and the gate passes only
+#                when all four pass
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -698,13 +701,15 @@ gate_timing-channels() {
 gate_owner-replay() {
     # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the
     # model of yanks against it (spec/30 §15 rule 6): both ignored in the ordinary run, which
-    # checks each to depth 3, and both run here to depth 5; the gate passes only when both
-    # pass. They are unit tests of una-project, since the model of signatures that stands in
+    # checks each to depth 3, and both run here to depth 5; then the owner model's wide
+    # alphabet to depth 4 and its random walks to depth 8. The gate passes only when all pass. They are unit tests of una-project, since the model of signatures that stands in
     # for Ed25519 exists only in that crate's test build; `--release`, for their millions of
     # replays; `--nocapture`, so the log holds their counts.
     run owner-replay sh -c '
         cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
-        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
+        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_on_the_wide_alphabet_to_depth_four --nocapture &&
+        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_on_random_deep_walks --nocapture
     '
 }
 

@@ -459,17 +459,25 @@ fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
     let (dir, mirror, itaoca) = project("unsettled", &registry);
     let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
-    // `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since
-    // 0: two claims whose own-word floors alternate, so the chain never settles.
+    // Every key adds `E` and sets the threshold to two; then `A` and `B` claim `A` since 0,
+    // `A`, `D` and `C` add `C`, and `A`, `B` and `C` claim `B` since 0: two claims whose
+    // standing and own-word floors depend on each other's reach, so the chain never settles.
     let a = keypair(60, "acme.laptop");
+    let e = keypair(65, "acme.e");
+    registry.owner_event(
+        "acme",
+        &format!("add {}", support::key_text(&e.1)),
+        2,
+        &[&a, &b, &d, &e],
+    );
+    registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&a, &b]);
     registry.owner_event(
         "acme",
         &format!("add {}", support::key_text(&c.1)),
         1,
-        &[&a, &c],
+        &[&a, &d, &c],
     );
-    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&a, &b]);
-    registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
+    let claim = registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);

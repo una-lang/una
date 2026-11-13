@@ -123,20 +123,24 @@ fn check(end: &Final<'_>, counts: &mut Counts) -> Vec<String> {
     let logged = end.trail.len();
     let frozen = history.frozen.is_some();
     // As the model's check reads it: the owner below its threshold of honest keys before its
-    // response.
-    let below = end
-        .trail
-        .last()
-        .and_then(|pre| pre.snapshots.last())
-        .is_some_and(|snapshot| {
+    // response, those compromised by no claim that stands then (a frozen chain's key that a
+    // standing claim compromised signs nothing a registry logs).
+    let below = end.trail.last().is_some_and(|pre| {
+        pre.snapshots.last().is_some_and(|snapshot| {
             snapshot
                 .keys
                 .iter()
+                .filter(|key| {
+                    pre.compromised
+                        .get(&key.public)
+                        .is_none_or(|since| *since >= logged as u64)
+                })
                 .map(|key| keys.of(key))
                 .filter(|k| OWNER.contains(k) && *k != K::A)
                 .count()
                 < snapshot.threshold
-        });
+        })
+    });
     let exempt = end.account && frozen && below;
     // An over-cautious response claims `A` since 0 though the theft was later.
     let theft = end.oracle.theft;
@@ -256,6 +260,7 @@ fn check_yanks(depth: usize, stride: u64, sample_cap: u64) -> Counts {
         registrations: registrations(),
         extra: None,
         checker: Some(&mut checker),
+        wide: false,
     });
     assert!(
         failures.is_empty(),

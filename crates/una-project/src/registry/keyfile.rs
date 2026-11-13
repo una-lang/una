@@ -214,8 +214,11 @@ fn read_key_file_on(path: &Path) -> Result<(SigningKey, u64), String> {
 ///   ([`read_key_file`]): one that is a link, can be read by others, is encrypted or does not
 ///   parse refuses the whole choice, so no key is silently left out or taken;
 /// - a key signs only when its name and public key are those of a key of `registered`, the
-///   owner's keys valid at the head of its chain, so its signature line carries the name and
-///   key hash a client looks for (`spec/30 §11` rule 3); the others are not used;
+///   owner's keys valid at the head of its chain, or of `former`, the owner's earlier keys, so
+///   its signature line carries the name and key hash a client looks for (`spec/30 §11` rule
+///   3); the others are not used. A former key's signature counts only where a claim of
+///   compromise makes it a key again, which the chain as read does not show (`spec/30 §14`
+///   rule 4 of the owner's keys);
 /// - at least `threshold` distinct registered keys must be found, and every one found signs.
 ///
 /// The directory is checked as a best-effort bound on a local attacker who can already write
@@ -227,6 +230,7 @@ pub fn owner_keys(
     dir: &Path,
     owner: &str,
     registered: &[Key],
+    former: &[Key],
     threshold: usize,
 ) -> Result<Vec<SigningKey>, String> {
     let prefix = format!("{owner}-");
@@ -262,6 +266,7 @@ pub fn owner_keys(
         .collect();
     names.sort();
     let mut chosen: Vec<SigningKey> = Vec::new();
+    let mut earlier: Vec<SigningKey> = Vec::new();
     for name in names {
         let (key, device) = read_key_file_on(&dir.join(&name))?;
         if cfg!(unix) && device != before.0 {
@@ -271,9 +276,14 @@ pub fn owner_keys(
             ));
         }
         let is_registered = registered.contains(key.key());
-        let seen = chosen.iter().any(|c| c.key().public == key.key().public);
+        let seen = chosen
+            .iter()
+            .chain(&earlier)
+            .any(|c| c.key().public == key.key().public);
         if is_registered && !seen {
             chosen.push(key);
+        } else if former.contains(key.key()) && !seen {
+            earlier.push(key);
         }
     }
     if crate::tree::private_dir_identity(dir)? != before {
@@ -289,5 +299,6 @@ pub fn owner_keys(
             chosen.len()
         ));
     }
+    chosen.extend(earlier);
     Ok(chosen)
 }

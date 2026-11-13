@@ -1384,7 +1384,7 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
         // A directory others can enter is refused first.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(
-            owner_keys(&dir, "acme", &[], 1)
+            owner_keys(&dir, "acme", &[], &[], 1)
                 .unwrap_err()
                 .contains("0700")
         );
@@ -1401,14 +1401,25 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
     // A file that is not named as a key file of the owner is not read.
     write_key(&dir, "acme-notes.txt", "not a key");
     let registered = [a.key().clone(), b.key().clone()];
-    let chosen = owner_keys(&dir, "acme", &registered, 2).unwrap();
+    let chosen = owner_keys(&dir, "acme", &registered, &[], 2).unwrap();
     let names: Vec<&str> = chosen.iter().map(|k| k.key().name.as_str()).collect();
     assert_eq!(
         names,
         ["acme.b", "acme.a"],
         "by file name, registered keys only"
     );
-    let refusal = owner_keys(&dir, "acme", &registered, 3).unwrap_err();
+    // A former key of the owner's signs too, after the registered ones, and never counts
+    // towards the threshold.
+    let former = [unregistered.key().clone()];
+    let chosen = owner_keys(&dir, "acme", &registered, &former, 2).unwrap();
+    let names: Vec<&str> = chosen.iter().map(|k| k.key().name.as_str()).collect();
+    assert_eq!(names, ["acme.b", "acme.a", "acme.c"]);
+    let refusal = owner_keys(&dir, "acme", &[a.key().clone()], &former, 2).unwrap_err();
+    assert!(
+        refusal.contains("fewer than its threshold of 2"),
+        "{refusal}"
+    );
+    let refusal = owner_keys(&dir, "acme", &registered, &[], 3).unwrap_err();
     assert!(
         refusal.contains("fewer than its threshold of 3"),
         "{refusal}"
@@ -1418,10 +1429,10 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
         name: "acme.renamed".to_owned(),
         public: a.key().public,
     }];
-    assert!(owner_keys(&dir, "acme", &renamed, 1).is_err());
+    assert!(owner_keys(&dir, "acme", &renamed, &[], 1).is_err());
     // An encrypted key file of the owner refuses the whole choice, never skipped.
     write_key(&dir, "acme-1.key", "ita-keyfile-encrypted/1\nopaque\n");
-    let refusal = owner_keys(&dir, "acme", &registered, 1).unwrap_err();
+    let refusal = owner_keys(&dir, "acme", &registered, &[], 1).unwrap_err();
     assert!(refusal.contains("not implemented yet"), "{refusal}");
     std::fs::remove_file(dir.join("acme-1.key")).unwrap();
     // So does one that others can read.
@@ -1433,10 +1444,10 @@ fn the_owners_registered_keys_sign_at_least_its_threshold() {
             std::fs::Permissions::from_mode(0o644),
         )
         .unwrap();
-        let refusal = owner_keys(&dir, "acme", &registered, 1).unwrap_err();
+        let refusal = owner_keys(&dir, "acme", &registered, &[], 1).unwrap_err();
         assert!(refusal.contains("readable by its owner only"), "{refusal}");
     }
-    assert!(owner_keys(&dir.join("none"), "acme", &registered, 1).is_err());
+    assert!(owner_keys(&dir.join("none"), "acme", &registered, &[], 1).is_err());
 }
 
 #[test]
@@ -2177,18 +2188,20 @@ fn the_audit_reports_an_unsettled_chain_as_evidence() {
     let b = keypair(61, "acme.b");
     let c = keypair(62, "acme.c");
     let d = keypair(64, "acme.d");
-    test.register_keys("acme", &[&a, &b, &d], 1, &[], 0);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
+    test.register_keys("acme", &[&a, &b, &d], 2, &[], 0);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&b, &d]);
     test.checkpoint(NOW - 100);
     let resolution = test.entries.len() as u64;
+    // A chain that does not settle (as in `registry_client.rs`): two claims whose standing
+    // and own-word floors depend on each other's reach.
+    test.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
     test.owner_event(
         "acme",
         &format!("add {}", support::key_text(&c.1)),
         1,
-        &[&a, &c],
+        &[&a, &d, &c],
     );
-    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
-    test.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
+    let claim = test.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),

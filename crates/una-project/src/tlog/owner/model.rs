@@ -10,7 +10,8 @@
 //! pruned. Before the theft, the owner adds `B` or `C`, revokes a key, changes its co-signers,
 //! or asks a recovery or a dispute naming `N1` or `N2` while none of its own waits, each with or
 //! without a week passing first while something waits. From a chosen position on, a thief
-//! holds `A`: it adds its own key `T`, revokes any key with or without `since 0`, claims a
+//! holds `A`: it adds its own key `T`, revokes any key with no `since` or with `since` the registration, the theft or `T`'s
+//! introduction, claims a
 //! former key, designates its co-signer `Z` or removes the co-signers, and cancels the owner's
 //! pending requests, each entry signed in turn by every non-empty subset of the keys it holds
 //! that may sign it; the owner, unaware, may still add a key or designate `X` with its other
@@ -20,8 +21,18 @@
 //! every key it holds; the symmetric keys `B` and `C`, and `N1` and `N2`, are used in order,
 //! never swapped. The depth counts the entries before the response, the registration included.
 //!
+//! **The wide alphabet** ([`Search::wide`], run to depth 4) adds: three keys registered at
+//! threshold one or three; additions and revocations at every threshold they may state, for
+//! the owner and the thief; a fourth owner key, `N2`, that an owner of three keys adds; the
+//! owner's own claim, before the theft, on a key it holds; and the thief's claims since any
+//! key's introduction or their own position. Random walks to depth 8 sample it with every
+//! `since` and every stated threshold. What neither covers: a fifth owner key, other
+//! co-signers, the owner revoking a key after the theft, and longer chains than walked.
+//!
 //! **The owner's response.** With an honest threshold of current keys, those it holds but `A`:
-//! it claims `revoke A since <theft>`, with and without its own copy of `A` among the signers,
+//! it claims `revoke A since <theft>`, signed by every key it holds but `A` (the current ones,
+//! and those its entries brought in that it did not revoke), with and without its own copy of
+//! `A` among the signers,
 //! cancels the thief's recoveries and, against a thief's dispute, asks its own, which freezes
 //! the chain. Below it: its co-signers overrule the thief's cancellations of its own recovery,
 //! and it relies on its own request still pending, or else asks a recovery of its honest
@@ -62,7 +73,8 @@
 //! ground-truth [`Oracle`], to judge package-chain events at any position ([`counts`],
 //! [`History::judge`]). [`set_modeled`] is the stub-verifier switch, [`build`] and [`run`]
 //! replay a chain, and [`set_race_fixed`] turns off the rules that end the race of a
-//! last-moment cancellation, to show that the model finds it. Everything here is
+//! last-moment cancellation, to show that invariant (3), the owner's guarded recovery taking
+//! effect before its claim, finds it. Everything here is
 //! `pub(crate)` in a module that exists only in this crate's test build.
 
 #![allow(
@@ -555,6 +567,8 @@ pub(crate) struct Options<'e> {
     pub(crate) registrations: Vec<Step>,
     pub(crate) extra: Option<Extra<'e>>,
     pub(crate) checker: Option<Checker<'e>>,
+    /// The wide alphabet ([`Search::wide`]).
+    pub(crate) wide: bool,
 }
 
 /// A response of the owner's: the chain with it, the entries the registry refused, and what
@@ -577,8 +591,42 @@ struct Search<'k, 'e> {
     adversarial_cap: u64,
     extra: Option<Extra<'e>>,
     checker: Option<Checker<'e>>,
+    /// The wide alphabet: every threshold an addition or a revocation may state, for the owner
+    /// and the thief; a fourth owner key, `N2`, that an owner of three keys may add; the
+    /// owner's own claims before the theft, since its last entry, on a key it holds; and the
+    /// thief's claims since any key's introduction or its own position too.
+    wide: bool,
     stats: Stats,
     failures: Vec<String>,
+    tally: Tally,
+}
+
+/// Every failure of a run, uncapped: how many by kind, and the distinct chains that fail, so a
+/// gate log shows the whole scope while it keeps only the first examples in full.
+#[derive(Default, Debug)]
+pub(crate) struct Tally {
+    /// Failures found, every response and every check counted.
+    pub(crate) total: u64,
+    /// Failures by kind.
+    pub(crate) by_kind: std::collections::BTreeMap<String, u64>,
+    /// The distinct chains that fail, each with the kinds it fails.
+    pub(crate) chains: std::collections::BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Tally {
+    /// One line per kind, the totals and the distinct chains.
+    pub(crate) fn summary(&self) -> String {
+        let mut out = format!(
+            "{} failures in {} distinct failing chains",
+            self.total,
+            self.chains.len()
+        );
+        for (kind, count) in &self.by_kind {
+            let distinct = self.chains.values().filter(|k| k.contains(kind)).count();
+            out.push_str(&format!("\n  {kind}: {count} ({distinct} distinct chains)"));
+        }
+        out
+    }
 }
 
 impl Search<'_, '_> {
@@ -589,7 +637,19 @@ impl Search<'_, '_> {
     }
 
     fn fail(&mut self, what: &str, steps: &[Step], detail: &str) {
-        if self.failures.len() < 20 {
+        self.tally.total += 1;
+        *self.tally.by_kind.entry(what.to_owned()).or_insert(0) += 1;
+        let chain: Vec<(&Act, &[K], bool)> = steps
+            .iter()
+            .map(|s| (&s.act, s.signers.as_slice(), s.thief))
+            .collect();
+        self.tally
+            .chains
+            .entry(format!("{chain:?}"))
+            .or_default()
+            .insert(what.to_owned());
+        // The first 20, and the first two of every kind.
+        if self.failures.len() < 20 || self.tally.by_kind.get(what).is_some_and(|n| *n <= 2) {
             self.failures
                 .push(format!("{what}: {detail}\n  chain: {steps:#?}"));
         }
@@ -623,8 +683,8 @@ impl Search<'_, '_> {
         }
         let mut candidates = match theft {
             None => self.owner_steps(steps, &history, true),
-            Some(_) => {
-                let mut thief = self.thief_steps(steps, &history);
+            Some(theft) => {
+                let mut thief = self.thief_steps(steps, &history, theft);
                 thief.extend(self.owner_steps(steps, &history, false));
                 thief
             }
@@ -658,18 +718,51 @@ impl Search<'_, '_> {
         let n = v.keys.len();
         let mut acts: Vec<(Act, Vec<K>)> = Vec::new();
         if held.len() >= threshold {
-            if let Some(k) = [K::B, K::C].into_iter().find(|k| !ever.contains(k)) {
+            let added: &[K] = if self.wide {
+                &[K::B, K::C, K::N2]
+            } else {
+                &[K::B, K::C]
+            };
+            if let Some(k) = added.iter().copied().find(|k| !ever.contains(k)) {
                 let mut signers = held.clone();
                 signers.push(k);
-                acts.push((Act::Add(k, threshold), signers));
+                let stated: Vec<usize> = if self.wide {
+                    (1..=n + 1).collect()
+                } else {
+                    vec![threshold]
+                };
+                for t in stated {
+                    acts.push((Act::Add(k, t), signers.clone()));
+                }
             }
             let mut targets: Vec<Set> = vec![Some((1, vec![K::X]))];
             if before {
                 targets.push(None);
                 targets.push(Some((2, vec![K::X, K::Y])));
                 if n >= 2 {
+                    let stated: Vec<usize> = if self.wide {
+                        (1..n).collect()
+                    } else {
+                        vec![threshold.min(n - 1)]
+                    };
                     for k in &v.keys {
-                        acts.push((Act::Revoke(*k, threshold.min(n - 1), None), held.clone()));
+                        for t in &stated {
+                            acts.push((Act::Revoke(*k, *t, None), held.clone()));
+                        }
+                    }
+                    // The owner's own claim, since its last entry, on a key it holds, signed
+                    // with its other keys.
+                    if self.wide {
+                        let last = steps.len() as u64 - 1;
+                        for k in v.keys.iter().filter(|k| **k != K::A) {
+                            let others: Vec<K> = held.iter().copied().filter(|x| x != k).collect();
+                            if others.len() >= threshold {
+                                acts.push((
+                                    Act::Revoke(*k, threshold.min(n - 1), Some(last)),
+                                    others,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -715,9 +808,32 @@ impl Search<'_, '_> {
 
     /// The thief's entries: what `A`, and its own key once added, may sign, by every subset of
     /// them; with an account takeover, a dispute or a recovery too.
-    fn thief_steps(&self, steps: &[Step], history: &History) -> Vec<Step> {
+    fn thief_steps(&self, steps: &[Step], history: &History, theft: u64) -> Vec<Step> {
         let v = view(self.keys, history);
         let ever = named(steps);
+        // The `since` a thief's claim states: none, the registration, and the positions that
+        // matter to a replay, the theft and the introduction of the thief's own key: targeted
+        // values, not every index, so the depths stay tractable.
+        let mut sinces: Vec<Option<u64>> = vec![None, Some(0)];
+        let introduced = steps
+            .iter()
+            .position(|s| matches!(s.act, Act::Add(K::T, _)))
+            .map(|at| at as u64);
+        let mut points = vec![Some(theft), introduced];
+        if self.wide {
+            // Every key's introduction, and the claim's own position.
+            for (at, step) in steps.iter().enumerate() {
+                if matches!(step.act, Act::Add(..) | Act::Recover(_) | Act::Dispute(_)) {
+                    points.push(Some(at as u64));
+                }
+            }
+            points.push(Some(steps.len() as u64));
+        }
+        for since in points {
+            if since.is_some_and(|p| p > 0) && !sinces.contains(&since) {
+                sinces.push(since);
+            }
+        }
         let held = thief_held(&v);
         let threshold = v.threshold;
         let n = v.keys.len();
@@ -730,24 +846,46 @@ impl Search<'_, '_> {
             .cloned()
             .collect();
         let mut acts: Vec<(Act, Vec<K>)> = Vec::new();
+        let added: Vec<usize> = if self.wide {
+            (1..=n + 1).collect()
+        } else {
+            vec![threshold, threshold + 1]
+        };
+        let revoked: Vec<usize> = if self.wide {
+            (1..n.max(2)).collect()
+        } else {
+            vec![threshold.min(n.max(2) - 1)]
+        };
         for set in &enough {
             if !ever.contains(&K::T) {
                 let mut signers = set.clone();
                 signers.push(K::T);
-                acts.push((Act::Add(K::T, threshold), signers.clone()));
-                acts.push((Act::Add(K::T, threshold + 1), signers));
+                for t in &added {
+                    acts.push((Act::Add(K::T, *t), signers.clone()));
+                }
             }
             if n >= 2 {
                 for k in &v.keys {
-                    for since in [None, Some(0)] {
-                        acts.push((Act::Revoke(*k, threshold.min(n - 1), since), set.clone()));
+                    for t in &revoked {
+                        for since in &sinces {
+                            acts.push((Act::Revoke(*k, *t, *since), set.clone()));
+                        }
                     }
                 }
             }
             // A claim on a key the owner held before.
+            let former: Vec<usize> = if self.wide {
+                (1..=n).collect()
+            } else {
+                vec![threshold]
+            };
             for k in OWNER {
                 if ever.contains(&k) && !v.keys.contains(&k) && k != K::A {
-                    acts.push((Act::Revoke(k, threshold, Some(0)), set.clone()));
+                    for t in &former {
+                        for since in sinces.iter().flatten() {
+                            acts.push((Act::Revoke(k, *t, Some(*since)), set.clone()));
+                        }
+                    }
                 }
             }
             let designation = Some((1, vec![K::Z]));
@@ -862,7 +1000,7 @@ impl Search<'_, '_> {
                     }
                     let mut chain = steps.to_vec();
                     let mut refused = Vec::new();
-                    let mut signers = honest.clone();
+                    let mut signers = held_by_owner(steps, &honest);
                     if with_a {
                         signers.push(K::A);
                     }
@@ -1031,15 +1169,16 @@ impl Search<'_, '_> {
                 {
                     continue;
                 }
+                // A recovery logged with co-signers in effect, which they can overrule.
+                let guarded = recovery
+                    && start.get(..=request as usize).is_some_and(|logged| {
+                        self.at_end(logged).is_ok_and(|h| h.cosigners.is_some())
+                    });
                 if adaptive {
                     // The week passes, past the request's seven days, and the co-signers
                     // overrule each cancellation of it that stands; a recovery logged with no
                     // co-signers in effect has none to overrule it, and its cancellation is
                     // final.
-                    let guarded = recovery
-                        && start.get(..=request as usize).is_some_and(|logged| {
-                            self.at_end(logged).is_ok_and(|h| h.cosigners.is_some())
-                        });
                     let cancels: Vec<u64> = self
                         .at_end(&chain)
                         .ok()
@@ -1061,6 +1200,47 @@ impl Search<'_, '_> {
                         if self.log(&mut chain, step).is_none() {
                             continue;
                         }
+                    }
+                }
+                // (3) against a key-only thief: the owner's recovery that its co-signers guard
+                // takes effect, whatever the thief cancels inside the week, before the owner's
+                // claim: on the chain without that claim, a week on. The claim itself voids the
+                // thief's cancellations, so the final verdicts would not show a recovery the
+                // rules let the thief cancel at the last moment.
+                let account = steps
+                    .iter()
+                    .any(|s| s.thief && matches!(s.act, Act::Recover(_) | Act::Dispute(_)));
+                // A co-signer change pending when the recovery was logged may replace its
+                // guards at its deadline, which ends a cancelled recovery (no one who may
+                // overrule it is left): the owner then answers with a dispute, as item (3)
+                // allows, so the check is for recoveries whose guards stay.
+                let steady = !now
+                    .pending
+                    .iter()
+                    .any(|(_, change)| matches!(change, Change::Cosigners(_)));
+                if adaptive && guarded && steady && !account {
+                    let end = run(self.keys, &build(self.keys, &chain, true, false, false));
+                    let took = end
+                        .as_ref()
+                        .is_ok_and(|h| h.took_effect.contains_key(&request));
+                    // The same holds of a co-signer change that a later claim makes pending
+                    // there again: one void as the chain was known at the recovery, which the
+                    // final chain does not void.
+                    let revived = end.as_ref().is_ok_and(|h| {
+                        chain
+                            .iter()
+                            .enumerate()
+                            .take(request as usize)
+                            .any(|(at, s)| {
+                                let at = at as u64;
+                                matches!(s.act, Act::Cosigners(..))
+                                    && !h.voided.contains(&at)
+                                    && h.cancellations.get(&at).is_none_or(BTreeSet::is_empty)
+                                    && h.took_effect.get(&at).is_none_or(|from| *from > request)
+                            })
+                    });
+                    if !took && !revived {
+                        self.fail("(3) the owner's recovery does not take effect", &chain, "");
                     }
                 }
                 let variants: &[u64] = if adaptive { &sinces[..1] } else { &sinces };
@@ -1106,11 +1286,22 @@ impl Search<'_, '_> {
             self.stats.cosigner_cancels += 1;
         }
         let pre = trail.last().expect("the registration's history");
+        // Below the threshold: the owner's current keys but `A` that are sound at the response,
+        // compromised by no claim that stands, fall short of it. On a frozen chain a key of the
+        // owner's that the thief's standing claim compromised signs nothing the registry logs,
+        // so it can claim nothing (`spec/30 §14` rule 5: a registry never logs an entry void at
+        // its position, and a frozen chain takes no recovery or dispute).
         let below = {
             let v = view(self.keys, pre);
+            let now = steps.len() as u64;
             v.keys
                 .iter()
                 .filter(|k| OWNER.contains(*k) && **k != K::A)
+                .filter(|k| {
+                    pre.compromised
+                        .get(&self.keys.key(**k).public)
+                        .is_none_or(|since| *since >= now)
+                })
                 .count()
                 < v.threshold
         };
@@ -1621,17 +1812,39 @@ impl Search<'_, '_> {
         oracle: Oracle,
         cautious: bool,
     ) {
+        // A key other than `A` that the owner itself claims (the wide alphabet) is one whose
+        // releases the owner chose to void.
+        let disowned: BTreeSet<K> = steps
+            .iter()
+            .filter_map(|s| match s.act {
+                Act::Revoke(k, _, Some(_)) if !s.thief && k != K::A => Some(k),
+                _ => None,
+            })
+            .collect();
         for p in 1..=steps.len() as u64 {
             let then = &trail[p as usize - 1];
             let Some(at) = then.at(p) else {
                 continue;
             };
+            // The owner signs a release with every key it holds that is a current or a former
+            // key of its chain as known then (`spec/30 §14` rule 4 of the owner's keys).
+            let former: Vec<K> = then
+                .snapshots
+                .iter()
+                .filter(|s| s.from <= p)
+                .flat_map(|s| s.keys.iter().map(|key| self.keys.of(key)))
+                .collect();
+            let held = held_by_owner(&steps[..p as usize], &[]);
             let signers: Vec<K> = at
                 .keys
                 .iter()
                 .map(|key| self.keys.of(key))
+                .chain(former.into_iter().filter(|k| held.contains(k)))
                 .filter(|k| OWNER.contains(k) && !oracle.compromised(*k, p))
+                .filter(|k| !disowned.contains(k))
                 .filter(|k| !cautious || *k != K::A)
+                .collect::<BTreeSet<K>>()
+                .into_iter()
                 .collect();
             if !counts(self.keys, then, &signers, p, false) {
                 continue;
@@ -1645,6 +1858,36 @@ impl Search<'_, '_> {
             }
         }
     }
+}
+
+/// The keys the owner signs its claim with: every key it holds but `A`, the current ones and
+/// those its own entries brought in that it did not revoke itself, among them keys the chain
+/// shows revoked by the thief or brought in by an entry the chain shows void (`spec/30 §14`
+/// rule 5, the owner response window).
+fn held_by_owner(steps: &[Step], current: &[K]) -> Vec<K> {
+    let mut held: Vec<K> = current.to_vec();
+    for step in steps.iter().filter(|s| !s.thief) {
+        let brought: Vec<K> = match &step.act {
+            Act::Register { keys, .. } => keys.clone(),
+            Act::Add(k, _) => vec![*k],
+            _ => Vec::new(),
+        };
+        for k in brought {
+            if k != K::A && !held.contains(&k) {
+                held.push(k);
+            }
+        }
+    }
+    let revoked: BTreeSet<K> = steps
+        .iter()
+        .filter(|s| !s.thief)
+        .filter_map(|s| match s.act {
+            Act::Revoke(k, _, _) => Some(k),
+            _ => None,
+        })
+        .collect();
+    held.retain(|k| !revoked.contains(k) || current.contains(k));
+    held
 }
 
 /// The owner keys the thief holds and that are current: `A`, and `T` once added.
@@ -1932,8 +2175,10 @@ pub(crate) fn explore(options: Options<'_>) -> (Stats, Vec<String>) {
         adversarial_cap: options.adversarial_cap,
         extra: options.extra,
         checker: options.checker,
+        wide: options.wide,
         stats: Stats::default(),
         failures: Vec::new(),
+        tally: Tally::default(),
     };
     for registration in options.registrations {
         let mut steps = Vec::new();
@@ -1946,7 +2191,17 @@ pub(crate) fn explore(options: Options<'_>) -> (Stats, Vec<String>) {
     }
     set_modeled(false);
     println!("owner-replay model: {:?}", search.stats);
-    (search.stats, search.failures)
+    if search.tally.total > 0 {
+        println!("owner-replay model: {}", search.tally.summary());
+        for (chain, kinds) in &search.tally.chains {
+            println!("owner-replay model: failing chain {kinds:?}: {chain}");
+        }
+    }
+    let mut failures = search.failures;
+    if search.tally.total > failures.len() as u64 {
+        failures.push(search.tally.summary());
+    }
+    (search.stats, failures)
 }
 
 /// Every chain to `depth`, with no extension, which must break no invariant.
@@ -1959,14 +2214,326 @@ fn check_all(depth: usize, stride: u64, sample_cap: u64, adversarial_cap: u64) -
         registrations: registrations(),
         extra: None,
         checker: None,
+        wide: false,
     });
     assert!(
         failures.is_empty(),
-        "{} failures, the first ones:\n{}",
+        "{} failures shown, the first ones and the tally last:\n{}",
         failures.len(),
         failures.join("\n\n")
     );
     stats
+}
+
+/// The registrations of the wide alphabet: the model's, and three keys at thresholds one and
+/// three with each set of co-signers.
+pub(crate) fn wide_registrations() -> Vec<Step> {
+    let mut out = registrations();
+    for threshold in [1, 3] {
+        for cosigners in [None, Some((1, vec![K::X])), Some((2, vec![K::X, K::Y]))] {
+            let register = Act::Register {
+                keys: vec![K::A, K::B, K::C],
+                threshold,
+                cosigners,
+            };
+            out.push(Step::owner(register, vec![K::A, K::B, K::C], 0));
+        }
+    }
+    out
+}
+
+/// Every chain of the wide alphabet to `depth`: the counts, and the failures.
+fn explore_wide(depth: usize, stride: u64, sample_cap: u64) -> (Stats, Vec<String>) {
+    explore(Options {
+        depth,
+        stride,
+        sample_cap,
+        adversarial_cap: 0,
+        registrations: wide_registrations(),
+        extra: None,
+        checker: None,
+        wide: true,
+    })
+}
+
+/// The owner's contract on random walks deeper than the exhaustive depths: each walk picks a
+/// registration of the wide alphabet, a theft position and, entry by entry, one of the wide
+/// alphabet's candidates the registry logs, among which, for each signer set of the thief's,
+/// claims on its current and former keys at random thresholds and `since` values from 0 to the
+/// claim's own position or none; then every response is checked as in the exhaustive model.
+/// 160,000 walks of depths 6 to 8 on 8 threads, from seed 11; deterministic for a seed and a
+/// number of threads. The bounds are constants, since a library crate reads no environment
+/// variable (`docs/compiler/conventions.md` §1).
+#[test]
+#[ignore = "randomized deep walks of the owner-chain model: run in a release build"]
+fn owner_replay_holds_its_contract_on_random_deep_walks() {
+    let walks: u64 = 160_000;
+    let threads: u64 = 8;
+    let seed: u64 = 11;
+    let min_depth: usize = 6;
+    let max_depth: usize = 8;
+    let handles: Vec<_> = (0..threads)
+        .map(|t| {
+            std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn(move || walk(walks / threads, min_depth, max_depth, seed * 1000 + t))
+                .expect("a walk thread")
+        })
+        .collect();
+    let mut total = 0;
+    let mut chains = BTreeSet::new();
+    for handle in handles {
+        let (failures, distinct, lines) = handle.join().expect("a walk");
+        total += failures;
+        chains.extend(distinct);
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    println!(
+        "owner-replay walks: {walks} walks, depths {min_depth} to {max_depth}, seed {seed}: \
+         {total} failures in {} distinct failing chains",
+        chains.len()
+    );
+    for chain in &chains {
+        println!("owner-replay walks: failing chain {chain}");
+    }
+    assert_eq!(total, 0);
+
+    fn walk(
+        walks: u64,
+        min_depth: usize,
+        max_depth: usize,
+        seed: u64,
+    ) -> (u64, BTreeSet<String>, Vec<String>) {
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let keys = Keys::new();
+        set_modeled(true);
+        let mut search = Search {
+            keys: &keys,
+            depth: max_depth,
+            stride: 1_000_000_007,
+            sample_cap: 0,
+            adversarial_cap: 0,
+            extra: None,
+            checker: None,
+            wide: true,
+            stats: Stats::default(),
+            failures: Vec::new(),
+            tally: Tally::default(),
+        };
+        let regs = wide_registrations();
+        for _ in 0..walks {
+            let target = min_depth + (next() as usize) % (max_depth - min_depth + 1);
+            let registration = regs[(next() as usize) % regs.len()].clone();
+            let mut steps = Vec::new();
+            let Some(history) = search.log(&mut steps, registration) else {
+                continue;
+            };
+            let mut trail = vec![history];
+            let theft_at = (next() as usize) % (target - 1);
+            let mut theft: Option<u64> = (theft_at == 0).then_some(0);
+            while steps.len() < target {
+                let history = trail.last().expect("a history").clone();
+                let mut candidates = match theft {
+                    None => search.owner_steps(&steps, &history, true),
+                    Some(theft) => {
+                        let v = view(&keys, &history);
+                        let ever = named(&steps);
+                        let len = steps.len() as u64;
+                        let mut out = search.thief_steps(&steps, &history, theft);
+                        let held = thief_held(&v);
+                        let mut targets: Vec<K> = v.keys.clone();
+                        targets.extend(
+                            OWNER
+                                .into_iter()
+                                .filter(|k| ever.contains(k) && !v.keys.contains(k)),
+                        );
+                        for set in subsets(&held) {
+                            for _ in 0..6 {
+                                let k = targets[(next() as usize) % targets.len()];
+                                let t = 1 + (next() % 3) as usize;
+                                let since = (next() % 5 != 0).then(|| next() % (len + 1));
+                                out.push(thief_step(
+                                    Act::Revoke(k, t, since),
+                                    set.clone(),
+                                    &held,
+                                    0,
+                                    false,
+                                ));
+                            }
+                        }
+                        out.extend(search.owner_steps(&steps, &history, false));
+                        out
+                    }
+                };
+                for i in (1..candidates.len()).rev() {
+                    let j = (next() as usize) % (i + 1);
+                    candidates.swap(i, j);
+                }
+                // Claims first, most of the time: they are what the walks are after.
+                if next() % 4 != 0 {
+                    candidates.sort_by_key(|s| !matches!(s.act, Act::Revoke(_, _, Some(_))));
+                }
+                let requests = |s: &Step| {
+                    matches!(
+                        s.act,
+                        Act::Recover(_) | Act::Dispute(_) | Act::Cosigners(..)
+                    )
+                };
+                if steps.iter().filter(|s| requests(s)).count() >= 3 {
+                    candidates.retain(|s| !requests(s));
+                }
+                let mut logged = false;
+                for step in candidates.into_iter().take(40) {
+                    if let Some(history) = search.log(&mut steps, step) {
+                        trail.push(history);
+                        logged = true;
+                        break;
+                    }
+                }
+                if !logged {
+                    break;
+                }
+                if theft.is_none() && steps.len() - 1 == theft_at {
+                    theft = Some(theft_at as u64);
+                }
+            }
+            let theft = theft.unwrap_or(steps.len() as u64 - 1);
+            search.check(&steps, &trail, theft);
+        }
+        set_modeled(false);
+        let mut lines = vec![
+            format!("owner-replay walks [{seed}]: {:?}", search.stats),
+            format!("owner-replay walks [{seed}]: {}", search.tally.summary()),
+        ];
+        lines.extend(
+            search
+                .failures
+                .iter()
+                .take(2)
+                .map(|f| format!("owner-replay walks [{seed}] example: {f}")),
+        );
+        (
+            search.tally.total,
+            search.tally.chains.keys().cloned().collect(),
+            lines,
+        )
+    }
+}
+
+/// The model to depth 4 with the wide alphabet ([`Search::wide`]): about five minutes in a
+/// release build, run by hand and by the owner-replay release gate.
+#[test]
+#[ignore = "exhaustive model of the owner-chain replay, wide alphabet, depth 4: run in a release build"]
+fn owner_replay_holds_its_contract_on_the_wide_alphabet_to_depth_four() {
+    let (stats, failures) = explore_wide(4, 997, 100);
+    assert!(
+        failures.is_empty(),
+        "{} failures shown, the first ones and the tally last:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+    assert!(stats.chains >= 100_000, "{stats:?}");
+    assert_eq!(stats.delay_refusals, 0, "{stats:?}");
+}
+
+/// Two chains the claims settle in log order, and the owner's claim signed with every key it
+/// holds. First: an owner of `{A, B, C}` at threshold two adds `N2` at threshold one; with `A`,
+/// two claims each harmless alone, on `C` and on `B` since the registration, together void that
+/// addition, so they do not stand together and are dropped; the owner's claim on `A`, signed
+/// by `N2`, then stands, and `A` alone signs nothing that counts. Second: an owner of `{A, B}`
+/// adds `C` at threshold two after `A`, with the key `T` it added, revoked `B`; the owner's
+/// claim brings back `B` and the threshold two, so it is signed by `B` and `C`.
+#[test]
+fn the_claims_settle_in_log_order_and_the_owner_signs_with_every_key() {
+    let keys = Keys::new();
+    set_modeled(true);
+    let t = |act: Act, signers: Vec<K>| Step {
+        act,
+        signers,
+        wait: 0,
+        thief: true,
+        partial: false,
+        adaptive: false,
+    };
+    let o = |act: Act, signers: Vec<K>| Step::owner(act, signers, 0);
+    let register = |list: Vec<K>, threshold: usize| {
+        o(
+            Act::Register {
+                keys: list.clone(),
+                threshold,
+                cosigners: None,
+            },
+            list,
+        )
+    };
+    let first = vec![
+        register(vec![K::A, K::B, K::C], 2),
+        o(Act::Add(K::N2, 1), vec![K::A, K::B, K::C, K::N2]),
+        t(Act::Revoke(K::C, 1, Some(0)), vec![K::A]),
+        t(Act::Revoke(K::B, 1, Some(0)), vec![K::A]),
+    ];
+    for signers in [vec![K::N2], vec![K::N2, K::A]] {
+        let mut chain = first.clone();
+        chain.push(o(Act::Revoke(K::A, 1, Some(1)), signers));
+        let history = run(&keys, &build(&keys, &chain, false, false, false)).expect("replayed");
+        assert_eq!(history.voided, vec![2, 3], "{history:?}");
+        for position in 2..=5 {
+            assert!(!counts(&keys, &history, &[K::A], position, false));
+        }
+        assert!(counts(&keys, &history, &[K::N2], 5, false));
+    }
+    let second = vec![
+        register(vec![K::A, K::B], 1),
+        t(Act::Add(K::T, 1), vec![K::A, K::T]),
+        o(Act::Add(K::C, 2), vec![K::B, K::C]),
+        t(Act::Revoke(K::B, 1, Some(2)), vec![K::A, K::T]),
+    ];
+    for (signers, holds) in [(vec![K::C], false), (vec![K::B, K::C], true)] {
+        let mut chain = second.clone();
+        chain.push(o(Act::Revoke(K::A, 1, Some(0)), signers));
+        let history = run(&keys, &build(&keys, &chain, false, false, false)).expect("replayed");
+        assert_eq!(!counts(&keys, &history, &[K::T], 5, false), holds);
+        if holds {
+            assert_eq!(history.voided, vec![1, 3], "{history:?}");
+            assert!(counts(&keys, &history, &[K::B, K::C], 5, false));
+        }
+    }
+    // Third: the owner's claim signed by the key it names, which stands from the `p` it states
+    // on its other keys, is first assumed from that `p`, even though it would not stand from
+    // its own index, where the thief's raised threshold stays.
+    let third = vec![
+        o(
+            Act::Register {
+                keys: vec![K::A, K::B],
+                threshold: 2,
+                cosigners: Some((1, vec![K::X])),
+            },
+            vec![K::A, K::B],
+        ),
+        o(Act::Recover(K::N1), vec![K::Log, K::X]),
+        o(Act::Add(K::C, 1), vec![K::A, K::B, K::C]),
+        t(Act::Add(K::T, 1), vec![K::A, K::T]),
+        t(Act::Revoke(K::C, 3, Some(1)), vec![K::T]),
+        t(Act::Revoke(K::T, 1, Some(3)), vec![K::A]),
+        o(Act::Revoke(K::A, 1, Some(2)), vec![K::B, K::C, K::A]),
+    ];
+    let history = run(&keys, &build(&keys, &third, false, false, false)).expect("replayed");
+    for position in 3..=7 {
+        assert!(
+            !counts(&keys, &history, &[K::A], position, false),
+            "{history:?}"
+        );
+    }
+    assert!(counts(&keys, &history, &[K::B, K::C], 7, false));
+    set_modeled(false);
 }
 
 /// The paths the model must take, each with its count: every one that the depth reaches.
@@ -2011,9 +2578,7 @@ fn owner_replay_holds_its_contract_to_depth_three() {
         stats.sampled_subset >= 1_u64.min(stats.subset_chains / 23),
         "{stats:?}"
     );
-    // Reported, not asserted: claims standing by the mutual rule, which the thief's entries
-    // cannot reach in this model (a revocation removes the key that would sign the other), and
-    // the entries pruned.
+    // Reported, not asserted: claims standing by the mutual rule, and the entries pruned.
     println!(
         "mutual claims {}, frozen unclaimed {}, refused on frozen chains {}, pruned {}, \
          refused under some timing {}",
@@ -2060,6 +2625,7 @@ fn the_extension_point_sees_every_final_chain() {
         registrations: registrations(),
         extra: Some(&mut extra),
         checker: Some(&mut checker),
+        wide: false,
     });
     assert!(failures.is_empty(), "{failures:#?}");
     assert!(
@@ -2069,14 +2635,20 @@ fn the_extension_point_sees_every_final_chain() {
     assert!(offered > 0);
 }
 
-/// The model finds the last-moment cancellation when the rules that end it are off. With a
-/// thief's lone cancellation, the owner's claim on `A` voids it and the recovery takes effect at
-/// its seven days, rules or not, so the race shows from depth 3: an owner of `{A, B}` at
+/// The rules that end the race of a last-moment cancellation decide whether the owner's
+/// recovery takes effect, and the model holds its contract with them on. An owner of `{A, B}` at
 /// threshold two with the co-signers `X` and `Y` designates `X` alone and drops `B`; once below
-/// its threshold, it asks a recovery, the thief cancels it with `A` six and a half days in, the
-/// seven days pass, and without the rules the co-signers' overruling comes too late.
+/// its threshold, it asks a recovery naming `R`, the thief cancels it with `A` six and a half
+/// days in, the seven days pass, and the co-signers overrule the cancellation. With the rules,
+/// the overruling counts after the seven days, so `R` is the owner's key from the entry after it
+/// (a cancellation by `A` there is refused: `A` is no key of the owner's); without them, the
+/// overruling comes too late and the recovery never takes effect.
+/// The model's final verdicts do not show the race, since the owner's claim on `A`, made with
+/// `R`, voids the thief's cancellations whichever way the race goes (`spec/30 §14` rule 5, a
+/// greatest fixpoint); its invariant (3) checks the recovery on the chain before that claim, and
+/// finds the race with the rules off.
 #[test]
-fn the_model_finds_the_last_moment_cancellation_without_its_rules() {
+fn the_rules_of_the_last_moment_cancellation_decide_the_recovery() {
     let registration = Step::owner(
         Act::Register {
             keys: vec![K::A, K::B],
@@ -2086,35 +2658,91 @@ fn the_model_finds_the_last_moment_cancellation_without_its_rules() {
         vec![K::A, K::B],
         0,
     );
-    let run_with = |fixed: bool| {
-        set_race_fixed(fixed);
-        let outcome = explore(Options {
-            depth: 3,
-            stride: 1_000_000,
-            sample_cap: 0,
-            adversarial_cap: 0,
-            registrations: vec![registration.clone()],
-            extra: None,
-            checker: None,
-        });
-        set_race_fixed(true);
-        outcome
+    let thief = |act: Act, wait: u64| Step {
+        act,
+        signers: vec![K::A],
+        wait,
+        thief: true,
+        partial: false,
+        adaptive: true,
     };
-    let (_, failures) = run_with(false);
+    let chain = vec![
+        registration.clone(),
+        Step::owner(
+            Act::Cosigners(Some((1, vec![K::X])), 2),
+            vec![K::A, K::B],
+            0,
+        ),
+        Step::owner(Act::Revoke(K::B, 1, None), vec![K::A, K::B], WEEK),
+        Step::owner(Act::Recover(K::R), vec![K::Log, K::X], 0),
+        thief(Act::Cancel(3, 1), LATE),
+        Step::owner(Act::Overrule(4, 1), vec![K::X, K::Y], DAY),
+    ];
+    let keys = Keys::new();
+    set_modeled(true);
+    let held = |fixed: bool| {
+        set_race_fixed(fixed);
+        let history = run(&keys, &build(&keys, &chain, true, false, false));
+        set_race_fixed(true);
+        let history = history.expect("the chain is replayed");
+        history
+            .snapshots
+            .last()
+            .map(|s| s.keys.iter().map(|k| keys.of(k)).collect::<Vec<K>>())
+    };
+    assert_eq!(held(true), Some(vec![K::R]));
+    assert_eq!(held(false), Some(vec![K::A]));
+    set_modeled(false);
+    // The model's invariants find the race with the rules off.
+    set_race_fixed(false);
+    let (_, failures) = explore(Options {
+        depth: 3,
+        stride: 1_000_000,
+        sample_cap: 0,
+        adversarial_cap: 0,
+        registrations: vec![registration.clone()],
+        extra: None,
+        checker: None,
+        wide: false,
+    });
+    set_race_fixed(true);
     assert!(
         failures
             .iter()
-            .any(|f| f.starts_with("(3)") || f.starts_with("(2)")),
+            .any(|f| f.starts_with("(3) the owner's recovery does not take effect")),
         "{failures:#?}"
     );
-    let (stats, failures) = run_with(true);
+    let (stats, failures) = explore(Options {
+        depth: 3,
+        stride: 1_000_000,
+        sample_cap: 0,
+        adversarial_cap: 0,
+        registrations: vec![registration],
+        extra: None,
+        checker: None,
+        wide: false,
+    });
     assert!(failures.is_empty(), "{failures:#?}");
     assert!(stats.adaptive > 0 && stats.overrules > 0, "{stats:?}");
 }
 
+/// The model to depth 4, the first depth at which an owner's response follows four entries,
+/// enough for a thief's claim signed by a key the stolen one added: about half a minute in a
+/// release build, run by hand and by the owner-replay release gate before depth 5.
+#[test]
+#[ignore = "exhaustive model of the owner-chain replay to depth 4: run in a release build"]
+fn owner_replay_holds_its_contract_to_depth_four() {
+    let stats = check_all(4, 997, 200, 50);
+    assert!(stats.chains >= 5_000, "{stats:?}");
+    assert_eq!(stats.delay_refusals, 0, "{stats:?}");
+    for (path, count) in paths_taken(&stats) {
+        assert!(count > 0, "no {path}: {stats:?}");
+    }
+}
+
 /// The model to depth 5: the release gate `owner-replay` runs it (`docs/release-gates.md`),
 /// every path asserted, frozen chains left unclaimed and the responses refused on them
-/// included; the mutual rule is reported, since the thief's entries cannot reach it. Depth 5,
+/// included; the claims standing by the mutual rule are reported. Depth 5,
 /// not 6: with the thief signing with every subset of its keys, depth 6 was estimated at well
 /// over half an hour in a release build.
 #[test]
