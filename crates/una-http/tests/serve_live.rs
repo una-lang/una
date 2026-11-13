@@ -214,9 +214,17 @@ fn a_stop_closes_the_listener_and_drains_the_request_in_flight() {
     // The idle keep-alive connection is closed by the host.
     let mut rest = Vec::new();
     assert_eq!(idle.read_to_end(&mut rest).unwrap(), 0);
-    // The listener is closed: a new connection is refused.
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(TcpStream::connect(("127.0.0.1", live.port)).is_err());
+    // The listener closes: a new connection is refused. A serve thread closes it at its next
+    // pass, so the test waits for the refusal, bounded, rather than for a fixed time (#1995);
+    // a probe that connects before the close is dropped and closes like any idle connection.
+    let started = Instant::now();
+    while TcpStream::connect(("127.0.0.1", live.port)).is_ok() {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the listener still accepts 30 s after the stop"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     // The exchange in flight drains: its reply carries Connection: close.
     exchange.reply(&ok("late")).unwrap();
     let text = response(&mut slow);
