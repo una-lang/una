@@ -154,10 +154,19 @@ DIFFER_CANARIES = {
 DIFFER_CONTROL = "S-27.interpolated_record.fixed.json"
 # Floors on what the oracle compares, against a run that sets most programs aside or compares
 # literals that decide nothing: about 90% of the measured run's 481 programs and 1,889
-# complete-against-complete comparisons, and of its 117 live programs (#818, docs/release-gates.md).
+# complete-against-complete comparisons (#818, docs/release-gates.md).
 MIN_ORACLE_COMPARED = 432
 MIN_VARIANTS_COMPARED = 1700
-MIN_LIVE = 105
+# The floor on live programs, pinned again from measurement on 2026-11-13 (decision D-37, #1916):
+# exactly the 66 live programs the fixed run finds, in two runs at 788424e8a with the same 66
+# names (59 of `H3:reach-under-pc`, 7 of `C6:secret-fan-out`), with no slack, since the count is
+# deterministic. The earlier floor of 105 was about 90% of the 117 live programs of 2026-10-16,
+# live through the trace channel that S-42 closed (#1515); since then at most the programs of the
+# two live forms can be live, through the example probe (#1911), so 105 could not be met by any
+# run. The floor's job, that the oracle is not blind, is also shown directly: every canary is
+# caught, and `LIVE_FORMS` fails the loss of either form above the floor. Adding live forms to the
+# generators, and raising this floor with them, is a follow-up card.
+MIN_LIVE = 66
 # The same floors per family for the families whose oracle programs are few beside the others'
 # (B, C and Q), about 90% of the measured run's compared programs and comparisons: 36 and 180 of
 # B, 39 and 195 of C, 38 and 190 of Q (#818). Above the global floors, these families could lose
