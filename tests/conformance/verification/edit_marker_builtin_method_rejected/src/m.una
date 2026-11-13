@@ -1,0 +1,10 @@
+-- test: an `edit` marker on a call of a built-in method does not elaborate, and the package is rejected rather than its overflow going unverified: U8001
+-- spec: spec/09 §3
+-- expect: error U8001 at src/m.una:6:1
+module m
+
+pub h(n: U8) -> U8
+=
+  let edit x = n
+  let y = edit x.wrapping_add(by: 1)
+  n + 255

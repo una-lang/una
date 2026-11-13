@@ -1,0 +1,10 @@
+-- test: a division by `result` in a test's `expect` line is refuted
+-- spec: spec/12 §3
+-- expect: error U5001 at src/m.una:10:10
+module m
+
+pub zero() -> Int = 0
+
+test "divides by the result"
+  do zero()
+  expect 5 / result == 1

@@ -5142,14 +5142,29 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 _ => Atom::Unit,
             },
-            ExprKind::Result => self.result.clone().map_or(Atom::Unit, Atom::Var),
-            ExprKind::It => self.it.clone().map_or(Atom::Unit, Atom::Var),
-            ExprKind::Error => self.error.clone().map_or(Atom::Unit, Atom::Var),
+            // A placeholder with no binder here, as inside a lambda, which takes the binders
+            // away, has no value in Core IR: the declaration is not elaborated, so the final
+            // cross-check rejects it (U8001) instead of a `unit` standing in for it.
+            ExprKind::Result => self.binder(self.result.clone()),
+            ExprKind::It => self.binder(self.it.clone()),
+            ExprKind::Error => self.binder(self.error.clone()),
             ExprKind::CapRef(_) => {
                 self.broken.set(true);
                 Atom::Unit
             }
         }
+    }
+
+    /// The binder of `result`, `it` or `error` where one is in scope. Without one the form has
+    /// no value to elaborate to: the declaration is broken, and `unit` only fills the hole.
+    fn binder(&self, binder: Option<Name>) -> Atom {
+        binder.map_or_else(
+            || {
+                self.broken.set(true);
+                Atom::Unit
+            },
+            Atom::Var,
+        )
     }
 
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {

@@ -1,0 +1,4 @@
+[package]
+name = "cap_in_opaque_predicate_rejected"
+version = "0.1.0"
+edition = "0.3"

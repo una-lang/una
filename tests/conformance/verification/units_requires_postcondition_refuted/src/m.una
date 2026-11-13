@@ -1,0 +1,12 @@
+-- test: a false `ensures` of a function with a measured `requires` in the refinement language is refuted
+-- spec: spec/12 §3
+-- expect: error U5001 at src/m.una:12:3
+module m
+
+pub measure Meter
+
+pub f(a: I32 of Meter, b: I32 of Meter) -> I32 of Meter
+  requires a > b
+  ensures result == b
+=
+  a
