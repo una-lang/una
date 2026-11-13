@@ -15,11 +15,11 @@ Each version starts only after the previous gate passes, with one exception: v0.
 
 ### Releases and editions
 
-Release R0.N ships compiler version `v0.N.0`, and edition `0.N` is named by the release that closes it, as a stable edition (ADR 0139); R0.4 ships edition `0.4` as a preview instead (ADR 0139, amendment of 2026-11-10, Proposed). Only releases that change syntax create an edition, so there is no edition `0.7` or `0.9`. `main` serves at most two editions, the stable one and the current preview; an older edition leaves `main` by a plan accepted for it (#1585 for editions `0.1` and `0.2`) and stays served by its release line. Editions `0.1` to `0.3` already carry the number of the release that introduced them.
+Release R0.N ships compiler version `v0.N.0`, and edition `0.N` is named by the release that closes it, as a stable edition (ADR 0139); R0.4 ships edition `0.4` as a preview instead (ADR 0139, amendment of 2026-11-10, accepted). Only releases that change syntax create an edition, so there is no edition `0.7` or `0.9`. `main` serves at most two editions, the stable one and the current preview; an older edition leaves `main` by a plan accepted for it (#1585 for editions `0.1` and `0.2`) and stays served by its release line. Editions `0.1` to `0.3` already carry the number of the release that introduced them.
 
 | Release | Compiler | Edition it closes | Contents |
 | --- | --- | --- | --- |
-| R0.4 | `v0.4.0` | `0.4`, as a preview (amendment of 2026-11-10, Proposed) | Long-running programs (ADR 0116), tasks, `within` and `first of` (ADR 0117), HTTP servers (ADR 0123), the core of Itá (ADR 0122) |
+| R0.4 | `v0.4.0` | `0.4`, as a preview (amendment of 2026-11-10, accepted) | Long-running programs (ADR 0116), tasks, `within` and `first of` (ADR 0117), HTTP servers (ADR 0123), the core of Itá (ADR 0122) |
 | R0.5 | `v0.5.0` | `0.5` | Collections (ADR 0119) and the numeric foundation (ADR 0120), moved from `0.4`; module constants (ADR 0126); `const` and `var` (ADR 0137) |
 | R0.6 | `v0.6.0` | `0.6` | Data-driven and multi-step tests (the testing family, #1590 to #1594) |
 | R0.7 | `v0.7.0` | none | A toolchain release |
@@ -29,7 +29,7 @@ Release R0.N ships compiler version `v0.N.0`, and edition `0.N` is named by the 
 
 ### Edition `0.4`
 
-Edition `0.4` is the current preview edition, under the terms of ADR 0121. R0.4 (`v0.4.0`) ships it as a preview, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, Proposed). Its language and toolchain work, with the records that ADR 0139 moves to edition `0.5` marked:
+Edition `0.4` is the current preview edition, under the terms of ADR 0121. R0.4 (`v0.4.0`) ships it as a preview, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Its language and toolchain work, with the records that ADR 0139 moves to edition `0.5` marked:
 
 | Area | Content | Record | Decision |
 | --- | --- | --- | --- |

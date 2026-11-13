@@ -75,3 +75,7 @@ Rule 5's arbitrary-precision integers are Una's own big integer, `una_core::bigi
 ## Amendment (2026-11-01, #1208): the internal linker (NB-1)
 
 ADR 0124 rule 22 replaces the system linker of this record's rule NB-1 on `aarch64-apple-darwin`: `una build` links the object of rule NB-1 with the runtime through `una-link`, inside `una`, and runs no other program (`spec/16 §1` rule 1 and §6). On `x86_64-unknown-linux-gnu` the system `cc` stays until ADR 0124 step 4. Every other rule of this record stands; the differential test of NB-4 runs on the internal linker's output, and a second test compares each program linked by both linkers.
+
+## Amendment (2026-11-13, #1903): the targets a release ships (NB-1)
+
+Rule NB-1's "the release ships `una` for both" reads: a release ships `una` for the targets that `scripts/release-targets.txt` lists, the one list of them (`docs/release-gates.md` §2, "The shipped targets"). Release `v0.4.0` ships `aarch64-apple-darwin` and `aarch64-unknown-linux-gnu`; it ships no `x86_64-unknown-linux-gnu` archive, since that target needs a native x86-64 Linux host for the evidence of ADR 0124 rule 31 (#1442). Shipping `x86_64-unknown-linux-gnu` again is a one-line change in that file plus a native run of rule 31's gates for it. Every other rule of this record stands.

@@ -96,9 +96,9 @@ Each amendment below is appended, with the same text, to the record it amends. T
 
 **ADR 0130, Amendment of 2026-11-06: the target is edition `0.8` (ADR 0139).** The Target line reads: edition `0.8`, closed by release R0.8, as a preview under the terms of ADR 0121 as its amendment of 2026-11-06 extends them. Editions `0.1` to `0.6` do not change. No other rule changes.
 
-## Amendment (2026-11-10, Proposed): release R0.4 ships edition `0.4` as a preview
+## Amendment (2026-11-10): release R0.4 ships edition `0.4` as a preview
 
-- Status: Proposed, for the project to accept. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ. It records the project's decision of 2026-11-10 on the version of release R0.4. No code changes with it: the compiler already serves edition `0.4` as a preview (`Edition::is_preview` in `crates/una-project`, the `preview:` line of `una --version`), and the documents that said `v0.4.0` makes edition `0.4` stable say "preview" with it (#1897).
+- Status: Accepted (2026-11-13), by the project's decision of 2026-11-13 on issue #1897. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs. It records the project's decision of 2026-11-10 on the version of release R0.4. No code changes with it: the compiler already serves edition `0.4` as a preview (`Edition::is_preview` in `crates/una-project`, the `preview:` line of `una --version`), and the documents that said `v0.4.0` makes edition `0.4` stable say "preview" with it (#1897).
 - Issue: #1897.
 
 **Why.** Rule 2 makes `v0.N.0` the release at which edition `0.N` stops being a preview, "by the stabilizing record and the gates of ADR 0121 rules 14 to 16". For edition `0.4` the two cannot both hold at `v0.4.0`. ADR 0121 rule 15 asks, among its checks, for a quiet period of at least four weeks and at least one release from the release that landed the last construct of `0.4`, and release R0.4 is the release that lands the last of them (HTTP servers, the core of Itá); no stabilizing record exists. A release numbered `v0.4.0` that promised a frozen edition `0.4` would contradict ADR 0121, and one numbered otherwise would contradict rule 1. The project decided on 2026-11-10 that release R0.4 is `v0.4.0` and that it ships edition `0.4` as a preview.

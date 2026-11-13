@@ -710,3 +710,11 @@ project never relies on the residual:
 **Cost.** O(1) per query: the same polling loop, with a larger bound. A run with no stalled child takes the same time.
 
 **Note for `spec/12 §5` rule 6.** Its sentence "the parent reads at most 256 bytes for it within 2 seconds of the guard" reads "within 10 seconds of the guard" once this amendment is accepted; until then the spec carries a Proposed note at that rule.
+
+## Amendment (2026-11-13): the unwinder library on Linux (rule 1)
+
+Rule 1's "What is linked" says that on Linux `una` depends dynamically only on glibc. The Rust standard library of the `-gnu` targets links the unwinder of panics and backtraces (`_Unwind_*`) as a shared library, `libgcc_s.so.1`, which stays a NEEDED entry of `una` although `libgcc` itself is linked statically (`-static-libgcc`). The rule reads: on Linux, `una` depends dynamically on glibc (`libc.so.6`, `libm.so.6` for the solver's math imports, and the dynamic loader) and on `libgcc_s.so.1`, and on nothing else. This amendment concerns `una` itself; what an executable that `una build` writes may load is unchanged.
+
+- **Where it is checked.** `scripts/load-commands.txt` lists what a released `una` and an executable that `una build` links may ask the dynamic loader for, and `scripts/load-commands-una.txt` what `una` alone may add (`libm.so.6` on Linux); `scripts/load-commands.sh` fails on anything else. Besides glibc's own libraries (`libc.so.6`, `libm.so.6`, `ld-linux-x86-64.so.2`, `ld-linux-aarch64.so.1`), `libgcc_s.so.1` is the only library those lists allow on Linux.
+- **What does not change.** `una` still does not run on musl distributions, and needs glibc from the gate image's version on. No C++ runtime is a NEEDED entry (`libstdc++` is linked statically, #1956). No foreign code enters a Una program, and nothing is added to what `una` loads: `libgcc_s.so.1` was already a NEEDED entry of every Linux `una`, allowed by `scripts/load-commands.txt` and listed in `docs/foreign-code-inventory.md` (the unwinder, sections 2 to 4).
+- **Cost.** None: no algorithm, build step or run-time work changes.
