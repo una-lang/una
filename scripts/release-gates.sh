@@ -89,7 +89,7 @@
 # Exit code: the record's verdict (#1933): 0 for PASS (every gate), 1 for FAIL (a gate failed, or
 # the archives are not exactly one per shipped target), 3 for INCOMPLETE (a required gate did not
 # run); 129 or 143 after a HUP or TERM once the gate in progress has ended, 2 for a usage error,
-# a list of shipped targets that cannot be read, a refused Docker
+# a gate in neither or both of the solver lists (SOLVER_GATES, #1996), a list of shipped targets that cannot be read, a refused Docker
 # context, an OUT that another run holds, or a release tag of an earlier run that cannot be
 # undone in the clone (#1017).
 #
@@ -113,6 +113,40 @@ unset BASH_ENV ENV
 ulimit -c 0
 
 ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64 solver-identity limits limits-linux-arm64 limits-linux toolchain-free)
+
+# The Z3 library built into una (ADR 0124, #1996). A development `una` that cargo builds without
+# UNA_Z3_LIB has no solver, and every check of it is U5003: each gate that runs cargo or a
+# cargo-built una on this machine is a solver gate, and `run` gives it UNA_Z3_LIB from
+# scripts/z3-library.sh in the clone (the cache entry, verified against its recorded digest, or
+# built once) before its command, or fails the gate, loudly, before any cargo step. The other
+# gates build in a container that finds its own library (the Linux legs and hunt-linux-arm64),
+# build with the embedded library alone (release and reproducible: scripts/release.sh unsets
+# UNA_Z3_LIB), run the release archives' una (toolchain-free) or the build gate's (site), or run
+# no cargo at all (clone, formal). Every gate is in exactly one of the two lists, or the run
+# stops before any gate: a new gate cannot run cargo without the library by omission.
+SOLVER_GATES=" build deps mac determinism native timing-channels owner-replay sanitize hunt solver-identity limits "
+NO_SOLVER_GATES=" clone linux linux-arm64 release reproducible site formal hunt-linux-arm64 limits-linux-arm64 limits-linux toolchain-free "
+for gate in "${ALL[@]}"; do
+    in_solver=0 in_other=0
+    case "$SOLVER_GATES" in *" $gate "*) in_solver=1 ;; esac
+    case "$NO_SOLVER_GATES" in *" $gate "*) in_other=1 ;; esac
+    if [ $((in_solver + in_other)) != 1 ]; then
+        echo "release gates: the gate $gate must be in exactly one of SOLVER_GATES and NO_SOLVER_GATES (#1996)" >&2
+        exit 2
+    fi
+done
+for gate in $SOLVER_GATES $NO_SOLVER_GATES; do
+    case " ${ALL[*]} " in
+        *" $gate "*) ;;
+        *)
+            echo "release gates: $gate of SOLVER_GATES or NO_SOLVER_GATES is not a gate (#1996)" >&2
+            exit 2
+            ;;
+    esac
+done
+# No solver library of the caller's shell reaches a gate: a solver gate gets the verified one, and
+# the others none (a release build refuses UNA_Z3_LIB beside UNA_EMBED_Z3).
+unset UNA_Z3_LIB UNA_Z3_STANDALONE UNA_EMBED_Z3 UNA_EMBED_Z3_SHA256
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -329,6 +363,18 @@ run() {
         echo "the clone is not exactly $SHA with no change; run the clone gate first" > "$log"
     elif (
         cd "$CLONE" || exit 1
+        # A solver gate's library (#1996, above): a path to a regular, non-empty file, or the
+        # gate fails here, before its command.
+        case "$SOLVER_GATES" in
+            *" $gate "*)
+                UNA_Z3_LIB=$(scripts/z3-library.sh) && [ -f "$UNA_Z3_LIB" ] && [ -s "$UNA_Z3_LIB" ] || {
+                    echo "release gates: FAIL: the $gate gate runs cargo, and scripts/z3-library.sh gave no Z3 library (${UNA_Z3_LIB:-none}); without UNA_Z3_LIB its una would have no solver and fail with U5003 (ADR 0124, #1996)"
+                    exit 1
+                }
+                export UNA_Z3_LIB
+                echo "release gates: UNA_Z3_LIB=$UNA_Z3_LIB"
+                ;;
+        esac
         # Only the site gate's command gets the neutrality pattern, on file descriptor 3 (a
         # pipe), and UNA_NEUTRALITY_PATTERN_FD says so; no other gate has that descriptor.
         if [ "$gate" = site ] && [ -n "$NEUTRALITY" ]; then
@@ -362,9 +408,9 @@ gate_clone() {
 }
 
 gate_build() {
-    # The Z3 library built into una (ADR 0124): from the cache, verified, or built once; every
+    # The Z3 library built into una (ADR 0124) comes from `run`, as for every solver gate: every
     # cargo step of the clone gets it by UNA_Z3_LIB. The standalone z3 of scripts/install-z3.sh
-    # serves the hunt gate alone.
+    # serves the hunt and solver-identity gates alone.
     # Then no C math library symbol (#1092), in what ships: the release `una` just built links
     # every runnable program of tests/conformance/runtime that the native backend compiles
     # (scripts/no-libm-build.sh, into target/no-libm; target/ is ignored, so the clone stays
@@ -373,8 +419,6 @@ gate_build() {
     # holds the solver, against scripts/no-libm-una.txt too (#1277). Each symbol and load
     # command check first runs its canaries, which must fail it.
     run build sh -c '
-        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
-        export UNA_Z3_LIB
         no_libm=$(pwd)/target/no-libm
         rm -rf "${no_libm:?}"
         cargo build --locked --release -p una-cli -p una-rt \
@@ -392,8 +436,6 @@ gate_solver-identity() {
     # Z3 project's own release (UNA_GATES_Z3_UPSTREAM, else the one scripts/install-z3.sh
     # installs) by status, listed for review. The log keeps the counts.
     run solver-identity sh -c '
-        UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
-        export UNA_Z3_LIB
         UNA_Z3_STANDALONE=$(dirname "$(dirname "$UNA_Z3_LIB")")/bin/z3
         export UNA_Z3_STANDALONE
         if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
@@ -589,8 +631,11 @@ gate_hunt() {
     # The output directory and the commit go in as positional arguments, never spliced into the
     # script's text.
     # The re-check's executable comes from the pinned Lean, as scripts/formal.sh finds it; a
-    # missing executable fails the gate.
+    # missing executable fails the gate. The pinned standalone z3 that the hunt compares with is
+    # installed as the solver-identity gate installs it, when it is not there yet (#1996), and
+    # a release `una` that the hunt has to build gets the library from `run`.
     run hunt sh -c '
+        if [ ! -x "$3/bin/z3" ]; then scripts/install-z3.sh "$3" || exit 1; fi
         scripts/check-solver.sh || exit 1
         [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
         una=$(pwd)/target/release/una
