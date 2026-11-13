@@ -1684,8 +1684,18 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
             "scripts/toolchain-free.sh",
             "#!/bin/sh\necho \"${3:-macos} $1\" >> \"$STUB_LOG\"\n[ \"${3:-macos}\" != \"${STUB_FAIL:-}\" ]\n".to_owned(),
         ),
-        // A gate that passes and touches no archive.
-        ("scripts/deps-audit.sh", "#!/bin/sh\nexit 0\n".to_owned()),
+        // A gate that passes and touches no archive; it logs the solver library it was given
+        // to `STUB_Z3_LOG` when that is set (#1996).
+        (
+            "scripts/deps-audit.sh",
+            "#!/bin/sh\n[ -z \"${STUB_Z3_LOG:-}\" ] || echo \"deps-audit.sh ${UNA_Z3_LIB-<unset>}\" >> \"$STUB_Z3_LOG\"\nexit 0\n".to_owned(),
+        ),
+        // The solver library of the solver gates (#1996): a file under target/, which git
+        // ignores, or a failure when `STUB_Z3_FAIL` is set.
+        (
+            "scripts/z3-library.sh",
+            "#!/bin/sh\n[ -z \"${STUB_Z3_FAIL:-}\" ] || { echo \"stub: no library\" >&2; exit 1; }\nlib=$(pwd)/target/stub-z3/libz3shell.a\nmkdir -p \"${lib%/*}\" && echo z3 > \"$lib\" && echo \"$lib\"\n".to_owned(),
+        ),
         // The limits legs' commands (#1939): each logs its arguments to `STUB_LOG` and fails
         // when `STUB_LIMITS_FAIL` is set.
         (
@@ -1694,7 +1704,7 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
         ),
         (
             "scripts/local-ci.sh",
-            "#!/bin/sh\necho \"local-ci.sh $*\" >> \"$STUB_LOG\"\n[ -z \"${STUB_LIMITS_FAIL:-}\" ]\n".to_owned(),
+            "#!/bin/sh\n[ -z \"${STUB_Z3_LOG:-}\" ] || echo \"local-ci.sh $* ${UNA_Z3_LIB-<unset>}\" >> \"$STUB_Z3_LOG\"\n[ -z \"${STUB_LOG:-}\" ] || echo \"local-ci.sh $*\" >> \"$STUB_LOG\"\n[ -z \"${STUB_LIMITS_FAIL:-}\" ]\n".to_owned(),
         ),
     ] {
         std::fs::write(source.join(path), text).unwrap();
@@ -1722,6 +1732,7 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
             "scripts/deps-audit.sh",
             "scripts/limits.sh",
             "scripts/local-ci.sh",
+            "scripts/z3-library.sh",
         ])
         .current_dir(&source)
         .status()
@@ -2404,4 +2415,191 @@ fn the_amd64_leg_is_native_only_on_an_x86_64_engine() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn every_gate_that_runs_cargo_gets_the_solver_library() {
+    if head().is_none() {
+        return;
+    }
+    // ADR 0124, #1996: a development una built without UNA_Z3_LIB has no solver, and every
+    // check of it is U5003. A solver gate gets the clone's verified library before its command,
+    // whatever the caller exported; a gate that is not one gets none; and a solver gate whose
+    // library cannot be had fails before its command runs, saying why.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-solver-library");
+    let (script, sha, out) = gate_fixture(&dir, SHIPPED);
+    let log = dir.join("z3.log");
+    let log_path = log.display().to_string();
+    let lib = out.join("clone/target/stub-z3/libz3shell.a");
+    let caller = dir.join("caller/libz3shell.a").display().to_string();
+    let gates = ["deps", "mac", "limits-linux-arm64"];
+    gates_of(
+        &script,
+        &sha,
+        &out,
+        &gates,
+        &dir.join("source"),
+        &[
+            ("STUB_Z3_LOG", &log_path),
+            ("UNA_Z3_LIB", &caller),
+            ("UNA_EMBED_Z3", &caller),
+        ],
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap_or_default(),
+        format!(
+            "deps-audit.sh {0}\nlocal-ci.sh  {0}\nlocal-ci.sh --linux-arm64 --limits <unset>\n",
+            lib.display()
+        )
+    );
+    for gate in gates {
+        assert_eq!(result_of(&out, gate), "PASS", "{gate}");
+    }
+    let _ = std::fs::remove_file(&log);
+    gates_of(
+        &script,
+        &sha,
+        &out,
+        &gates,
+        &dir.join("source"),
+        &[
+            ("STUB_Z3_LOG", &log_path),
+            ("STUB_Z3_FAIL", "1"),
+            ("UNA_Z3_LIB", &caller),
+        ],
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap_or_default(),
+        "local-ci.sh --linux-arm64 --limits <unset>\n",
+        "a solver gate ran its command without the library"
+    );
+    for (gate, result) in [
+        ("deps", "FAIL"),
+        ("mac", "FAIL"),
+        ("limits-linux-arm64", "PASS"),
+    ] {
+        assert_eq!(result_of(&out, gate), result, "{gate}");
+    }
+    let deps = std::fs::read_to_string(out.join("logs/deps.log")).unwrap();
+    assert!(
+        deps.contains("release gates: FAIL: the deps gate runs cargo") && deps.contains("U5003"),
+        "{deps}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The gates of `list` (a `NAME=" a b "` line of `scripts/release-gates.sh`).
+fn gate_list(text: &str, list: &str) -> Vec<String> {
+    let prefix = format!("{list}=\"");
+    let line = text
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .expect("the list is a line of scripts/release-gates.sh");
+    line[prefix.len()..]
+        .trim_end_matches('"')
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn every_gate_that_reaches_cargo_is_a_solver_gate_or_a_known_exception() {
+    // Read as text (#1996): each `gate_<name>()` function's body, and each `scripts/<file>` it
+    // names; one that runs `cargo` must be a solver gate, unless it is one of these, which never
+    // build a una with the development library on the gate machine.
+    const EXCEPTIONS: [&str; 8] = [
+        // scripts/local-ci.sh in a container that finds its own library.
+        "linux",
+        "linux-arm64",
+        "limits-linux-arm64",
+        "limits-linux",
+        // scripts/hunt-linux.sh builds in the container with the library of its cache volume.
+        "hunt-linux-arm64",
+        // scripts/local-release.sh: scripts/release.sh builds with UNA_EMBED_Z3 alone.
+        "release",
+        "reproducible",
+        // scripts/toolchain-free.sh runs the archives' una, and names cargo only as a tool that
+        // must be absent from its container.
+        "toolchain-free",
+    ];
+    let text = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let solver = gate_list(&text, "SOLVER_GATES");
+    let others = gate_list(&text, "NO_SOLVER_GATES");
+    let lines: Vec<&str> = text.lines().collect();
+    let mut seen = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let Some(rest) = line.strip_prefix("gate_") else {
+            continue;
+        };
+        let Some((name, after)) = rest.split_once("() {") else {
+            continue;
+        };
+        // A one-line function, or the lines up to the closing brace at column 0.
+        let body = if after.trim_end().ends_with('}') {
+            after.to_owned()
+        } else {
+            lines[at + 1..]
+                .iter()
+                .take_while(|line| **line != "}")
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut texts = vec![body.clone()];
+        for (index, _) in body.match_indices("scripts/") {
+            let file: String = body[index..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || "/._-".contains(*c))
+                .collect();
+            if let Ok(script) = std::fs::read_to_string(root().join(&file)) {
+                texts.push(script);
+            }
+        }
+        let cargo = texts.iter().any(|text| {
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .any(|line| line.contains("cargo "))
+        });
+        let is_solver = solver.iter().any(|gate| gate == name);
+        assert!(
+            is_solver != others.iter().any(|gate| gate == name),
+            "{name} must be in exactly one of SOLVER_GATES and NO_SOLVER_GATES"
+        );
+        if cargo && !is_solver {
+            assert!(
+                EXCEPTIONS.contains(&name),
+                "the gate {name} runs cargo, so it must be in SOLVER_GATES (#1996)"
+            );
+        }
+        seen.push(name.to_owned());
+    }
+    // The clone gate has its own function, and runs no cargo.
+    assert_eq!(seen.len(), solver.len() + others.len(), "{seen:?}");
+    // The script refuses a gate in neither list before any gate.
+    let copy = gates_copy(
+        &PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-solver-lists"),
+        SHIPPED,
+    );
+    let edited = std::fs::read_to_string(&copy).unwrap().replacen(
+        "SOLVER_GATES=\" build ",
+        "SOLVER_GATES=\" ",
+        1,
+    );
+    std::fs::write(&copy, edited).unwrap();
+    let output = Command::new("bash")
+        .arg(&copy)
+        .arg("0".repeat(40))
+        .arg(PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-solver-lists-out"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr
+            .contains("the gate build must be in exactly one of SOLVER_GATES and NO_SOLVER_GATES"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-solver-lists"),
+    );
 }
