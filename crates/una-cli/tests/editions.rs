@@ -654,6 +654,35 @@ const OBLIGATIONS: &[u8] = b"{\"schema\":\"una.obligations/1\"";
 /// `0.1`: the positive control that the copied manifest is the one read.
 const CONTROL: &str = "types/fixed_width_methods";
 
+/// The conformance packages whose expected result is U8001: a declaration that type-checked but
+/// did not elaborate rejects the package with exit code 3 (`spec/09 §3`). Each of them may, and
+/// must, exit 3 here; its diagnostics are still compared across editions. Every other package
+/// exits 0 or 1.
+const REJECTED_AS_INTERNAL: &[&str] = &[
+    "verification/assign_list_len_rejected",
+    "verification/assign_nonlocal_root_rejected",
+    "verification/cap_in_opaque_predicate_rejected",
+    "verification/edit_marker_builtin_method_rejected",
+    "verification/error_in_lambda_rejected",
+    "verification/result_in_lambda_rejected",
+];
+
+/// Whether `package` is one of [`REJECTED_AS_INTERNAL`].
+fn rejected_as_internal(package: &Path) -> bool {
+    package
+        .strip_prefix(conformance())
+        .is_ok_and(|name| REJECTED_AS_INTERNAL.contains(&name.to_string_lossy().as_ref()))
+}
+
+/// Whether `status` is an exit code that a check of `package` may end with.
+fn expected_status(package: &Path, status: Option<i32>) -> bool {
+    if rejected_as_internal(package) {
+        status == Some(3)
+    } else {
+        matches!(status, Some(0 | 1))
+    }
+}
+
 fn conformance() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance")
 }
@@ -732,9 +761,10 @@ fn run_as(
         .unwrap();
     std::fs::remove_dir_all(work).unwrap();
     // A run that fails the same way in both editions, before it checks anything, must not count
-    // as the same result: each run exits 0 or 1 with a diagnostics document.
+    // as the same result: each run exits 0 or 1 with a diagnostics document, or 3 for a package
+    // of `REJECTED_AS_INTERNAL`.
     assert!(
-        matches!(output.status.code(), Some(0 | 1)) && output.stdout.starts_with(document),
+        expected_status(package, output.status.code()) && output.stdout.starts_with(document),
         "{} as {edition}: status {:?}, stdout {:?}, stderr {:?}",
         package.display(),
         output.status.code(),
@@ -878,6 +908,12 @@ fn every_edition_0_3_package_checks_the_same_in_edition_0_4() {
         })
         .collect();
     for Difference04 { case: name, .. } in EXPECTED_DIFFERENCES_0_4 {
+        assert!(
+            cases.iter().any(|(case, _)| case == name),
+            "{name} is not an edition 0.3 package"
+        );
+    }
+    for name in REJECTED_AS_INTERNAL {
         assert!(
             cases.iter().any(|(case, _)| case == name),
             "{name} is not an edition 0.3 package"
@@ -1138,7 +1174,7 @@ fn compare_migrated(
         Some(0) => {
             let checked = una(&["--json", "check", "."]);
             assert!(
-                matches!(checked.status.code(), Some(0 | 1))
+                expected_status(package, checked.status.code())
                     && checked.stdout.starts_with(DOCUMENT),
                 "{} migrated: status {:?}, stdout {:?}, stderr {:?}",
                 package.display(),
