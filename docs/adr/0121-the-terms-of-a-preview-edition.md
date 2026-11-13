@@ -461,4 +461,8 @@ Existing codes cover the rest: U0101 (a construct of `0.4`, or a new reserved ke
 
 ## Note (2026-11-13): edition `0.4` is not bound to `v0.4.0` (ADR 0139)
 
-ADR 0139's amendment of 2026-11-10, accepted on 2026-11-13 (#1897), asks for this note, with the paragraph of its item 3: "When edition `0.4` becomes stable is not decided here. A later dated amendment of this record names that release; the stabilizing record of ADR 0121 rule 15, with every check and gate it lists, quiet period included, still governs it. Until then, the sentence "That release is a minor release, `v0.4.0`" of ADR 0121 rule 15, and its reading "with `v0.N.0` in place of `v0.4.0`" in the amendment of 2026-11-06 (Appendix A), do not bind edition `0.4` to `v0.4.0`." Release `v0.4.0` ships edition `0.4` as a preview. No rule of this record changes: rules 1 to 19 bind edition `0.4` as before, and rule 15's stabilizing record and quiet period still govern the release that makes it stable.
+ADR 0139's amendment of 2026-11-10, accepted on 2026-11-13 (#1897), asks for this note, with the paragraph of its item 3. In that paragraph, quoted below from ADR 0139, "this record" is ADR 0139 and "Appendix A" is ADR 0139's:
+
+> When edition `0.4` becomes stable is not decided here. A later dated amendment of this record names that release; the stabilizing record of ADR 0121 rule 15, with every check and gate it lists, quiet period included, still governs it. Until then, the sentence "That release is a minor release, `v0.4.0`" of ADR 0121 rule 15, and its reading "with `v0.N.0` in place of `v0.4.0`" in the amendment of 2026-11-06 (Appendix A), do not bind edition `0.4` to `v0.4.0`.
+
+Release `v0.4.0` ships edition `0.4` as a preview. No rule of this record changes: rules 1 to 19 bind edition `0.4` as before, and rule 15's stabilizing record and quiet period still govern the release that makes it stable.

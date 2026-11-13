@@ -711,7 +711,7 @@ project never relies on the residual:
 
 **Note for `spec/12 §5` rule 6.** Its sentence "the parent reads at most 256 bytes for it within 2 seconds of the guard" reads "within 10 seconds of the guard" once this amendment is accepted; until then the spec carries a Proposed note at that rule.
 
-## Amendment (2026-11-13): the unwinder library on Linux (rule 1)
+## Amendment (2026-11-13): the unwinder library on Linux (rule 1, #1958)
 
 Rule 1's "What is linked" says that on Linux `una` depends dynamically only on glibc. The Rust standard library of the `-gnu` targets links the unwinder of panics and backtraces (`_Unwind_*`) as a shared library, `libgcc_s.so.1`, which stays a NEEDED entry of `una` although `libgcc` itself is linked statically (`-static-libgcc`). The rule reads: on Linux, `una` depends dynamically on glibc (`libc.so.6`, `libm.so.6` for the solver's math imports, and the dynamic loader) and on `libgcc_s.so.1`, and on nothing else. This amendment concerns `una` itself; what an executable that `una build` writes may load is unchanged.
 
