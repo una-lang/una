@@ -1488,7 +1488,7 @@ doubled(n: Int) -> Text
 /// decides (`spec/27 §5` rule 5: at the first check point past the deadline, each iteration
 /// being one); a deadline is at least 1 ms (U5001), hence 1 ms for key 0. It is not a loop
 /// that stops on `Clock.now`: in edition 0.4 a reading in a program that performs an
-/// operation of `HttpServer` carries `L_srv`, at least `internal` (ADR 0116, Proposed
+/// operation of `HttpServer` carries `L_srv`, at least `internal` (ADR 0116,
 /// amendment of 2026-11-09, C1 item 3), and a `stop` on it is U4002 (#1891). The `secret`
 /// version is the conformance case `serve_delivery_history_secret`, refused by U4003: that
 /// wait reads the `secret` key after a server operation, so `L_srv` is `secret`, and so is

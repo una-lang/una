@@ -797,7 +797,7 @@ Rule 11 gave a waiting host operation of the interpreter a helper thread, and th
 
 ## Amendment (2026-11-09): pooled stacks sized from a structural frame bound (#1152)
 
-- Status: Proposed, for the project to accept. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ. The implementation applies it as a reversible default (#1152): a refusal restores the size of point 1's last sentence for every program.
+- Status: Accepted (2026-11-13), by the project's decision of 2026-11-13 on issue #1152. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs. The implementation applies it since #1152.
 
 The amendment of 2026-10-25, point 2, maps the pool's 64 stacks before `main` at the size a block at the top of the program asks for, which `spec/19 §8` rule 2 derives from `--max-depth` alone: about 328 MiB per stack and about 21 GiB of address space at the default depth of 10,000, before `main`. That size was the interpreter's, whose evaluator recurses once per call with frames of its own; an executable's calls run compiled frames, whose sizes the code generator knows.
 
