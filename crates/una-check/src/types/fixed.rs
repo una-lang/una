@@ -11,6 +11,9 @@ use super::check::{Checker, Rl, Role};
 use super::records::{ConvertNumber, Res};
 use super::ty::Ty;
 
+/// What the refinement language offers instead of an integer method (#743, `spec/03 §3`).
+const REFINEMENT_LANGUAGE_ADVICE: &str = "the refinement language has literals, parameters and their fields, `.len`, `+`, `-`, `*` with a literal, `/` and `mod` by a nonzero literal, comparisons, `and`, `or`, `not`, `implies` and calls of predicates (`spec/03 §3`); compute the rest in the body";
+
 /// Whether the integer `-digits` (when `negative`) or `digits` lies in `int`'s range. A literal
 /// too long for 128 bits lies outside every range.
 pub(crate) fn fits(int: IntType, negative: bool, digits: &str) -> bool {
@@ -299,7 +302,7 @@ impl Checker<'_, '_, '_> {
         let advice = if method == "to_int" {
             "state the bound on the value in its own type, such as `a <= 100`: the refinement language compares a fixed-width value with a literal directly (`spec/03 §3`); convert with `to_int()` in the body"
         } else {
-            "the refinement language has literals, parameters and their fields, `.len`, `+`, `-`, `*` with a literal, `/` and `mod` by a nonzero literal, comparisons, `and`, `or`, `not`, `implies` and calls of predicates (`spec/03 §3`); compute the rest in the body"
+            REFINEMENT_LANGUAGE_ADVICE
         };
         self.outside_rl_with(
             span,
@@ -735,6 +738,14 @@ impl Checker<'_, '_, '_> {
             self.unchecked_args(args);
             return Ty::error();
         }
+        // As on an unmeasured receiver: a wrapping, saturating or shift method is outside the
+        // refinement language (`spec/03 §3`), U2014 in a clause and U2015 in a `reflect` body,
+        // and a condition that holds one is not refinable.
+        self.outside_rl_with(
+            span,
+            || format!("the method `{method}`"),
+            Some(super::Report::advice(REFINEMENT_LANGUAGE_ADVICE)),
+        );
         match op {
             FixedOp::WrappingAdd
             | FixedOp::WrappingSub

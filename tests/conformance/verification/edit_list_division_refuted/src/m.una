@@ -1,0 +1,9 @@
+-- test: a function with an editable list keeps its division obligation, which is refuted
+-- spec: spec/12 §3
+-- expect: error U5001 at src/m.una:9:3
+module m
+
+pub f(n: Int) -> Int
+=
+  let edit xs = [1, 2]
+  100 / n
