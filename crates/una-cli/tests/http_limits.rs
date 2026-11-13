@@ -208,6 +208,15 @@ fn both(dir: &Path, name: &str, flags: &[&str]) -> [(Duration, serde_json::Value
     let built = una(dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
+    // The system checks a new executable at its first launch, which can take seconds on a
+    // loaded machine (#2001): launched once first with a flag it refuses, so only the run is
+    // timed.
+    let refused = Command::new(dir.join(format!("target/una/{name}")))
+        .arg("--no-such-flag")
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     let started = Instant::now();
     let native = Command::new(dir.join(format!("target/una/{name}")))
         .args(flags)

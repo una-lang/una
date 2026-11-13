@@ -29,6 +29,19 @@ fn una_direct(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+/// Launches `program` once with a flag it refuses, before a timed run of it. The system checks
+/// a new executable at its first launch, and on a loaded machine, with other new executables
+/// queued for the same check, that took 11.9 s in a full run of the suite (#2001): only the run
+/// itself may be timed, not the check.
+fn launched_once(program: &std::path::Path, dir: &std::path::Path) {
+    let refused = Command::new(program)
+        .arg("--no-such-flag")
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+}
+
 /// A package of edition 0.4 named `name`, granted `console` and `clock`, whose one module
 /// `name` is `program`.
 fn package(name: &str, program: &str) -> PathBuf {
@@ -111,6 +124,7 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
     std::fs::create_dir_all(dir.join("data/data")).unwrap();
     let expected = ["1 at 0", "2 at 0", "3 at 5000", "4 at 10000", "5 at 15000"];
 
+    launched_once(std::path::Path::new(env!("CARGO_BIN_EXE_una")), &dir);
     let started = Instant::now();
     let interpreted = una_direct(&dir, &["--json", "run", ".", "--virtual-time"]);
     let interpreted_time = started.elapsed();
@@ -130,6 +144,7 @@ fn a_limiter_under_virtual_time_gives_the_same_readings_in_both_engines() {
     let built = una(&dir, &["build", "."]);
     assert_eq!(built.status.code(), Some(0), "{built:?}");
     let trace_file = dir.join("trace.json");
+    launched_once(&dir.join("target/una/paced"), &dir);
     let started = Instant::now();
     let native = Command::new(dir.join("target/una/paced"))
         .args(["--virtual-time", "--trace"])
