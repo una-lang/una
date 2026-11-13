@@ -299,12 +299,19 @@ fn outcome(engine: Engine, index: usize, stream: &mut TcpStream) -> Outcome {
 /// each probe sending a request and going on without waiting for its answer. Returns whether
 /// the refusal came while the run was still going, and the probes that connected: the listener
 /// took them before the stop reached it, or they were still in its backlog when it closed.
+///
+/// A probe whose handshake is in the listener's queue at the instant the listener closes is
+/// reset by the kernel, and on macOS its `connect` itself may then fail with `ECONNRESET`
+/// (#1995, seen when the machine is loaded). Such a probe never connected and sent nothing, so
+/// no request of it was in flight; the probing goes on until a connection is refused, the proof
+/// that the listener is closed.
 fn probe_until_refused(run: &mut Running, port: u16) -> (bool, Vec<TcpStream>) {
     let started = Instant::now();
     let mut probes = Vec::new();
     loop {
         let going = run.going();
         match TcpStream::connect(("127.0.0.1", port)) {
+            Err(error) if error.kind() == ErrorKind::ConnectionReset => {}
             Err(error) => {
                 assert_eq!(
                     error.kind(),
@@ -323,7 +330,7 @@ fn probe_until_refused(run: &mut Running, port: u16) -> (bool, Vec<TcpStream>) {
         }
         assert!(
             started.elapsed() < HANG,
-            "{:?}: the listener still accepts {} probes after the stop",
+            "{:?}: the listener was not refusing connections {HANG:?} after the stop ({} probes connected)",
             run.engine,
             probes.len()
         );
