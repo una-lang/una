@@ -89,14 +89,32 @@ def under(prefix, files):
     return {f"{prefix}/{rel}": text for rel, text in files.items()}
 
 
+# The owner's keys: three at threshold 2, the least a registry logs and a client replays (the key
+# floor, `spec/30 §16` rule 1 and §14 rule 5). The owner signs with the first two.
+OWNER_KEYS = ("laptop", "desktop", "backup")
+OWNER_THRESHOLD = 2
+
+
+def owner_keys(label):
+    """The owner's keys from `label`, and the two it signs with: (keys, signers)."""
+    keys = [itaty.key_from(f"{label}:owner" + ("" if at == 0 else f":{at}"), f"{OWNER}.{name}")
+            for at, name in enumerate(OWNER_KEYS)]
+    return keys, keys[:OWNER_THRESHOLD]
+
+
+def register_owner(reg, label):
+    """Registers the owner `acme` in `reg` at the key floor; returns the keys it signs with."""
+    keys, signers = owner_keys(label)
+    reg.register(OWNER, keys, threshold=OWNER_THRESHOLD)
+    return signers
+
+
 def registry_for(seed, label="acme"):
-    """A registry `acme` with the owner `acme` registered at threshold 1. Its keys come from
-    `label`, so the programs of a family share them; its entries, from what the generator logs.
-    Returns (registry, the owner's key)."""
+    """A registry `acme` with the owner `acme` registered with three keys at threshold 2. Its
+    keys come from `label`, so the programs of a family share them; its entries, from what the
+    generator logs. Returns (registry, the owner's keys that sign its releases and yanks)."""
     reg = itaty.Registry(SOURCE, f"hunt-{label}")
-    owner = itaty.key_from(f"hunt-{label}:owner", f"{OWNER}.laptop")
-    reg.register(OWNER, [owner])
-    return reg, owner
+    return reg, register_owner(reg, f"hunt-{label}")
 
 
 def vendored(reg, name, version, files, size, provenance=None, prefix="vendor/ita"):

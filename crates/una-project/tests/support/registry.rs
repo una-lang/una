@@ -52,6 +52,26 @@ pub fn cosign_line(pair: &SigningKey, key: &Key, text: &str, time: u64) -> Strin
     format!("\u{2014} {} {}\n", key.name, encode_base64(&bytes))
 }
 
+/// The two companion keys of a fixture owner's key `pair` ([`TestRegistry::register`]): derived
+/// from it, named after it with `.c1` and `.c2`.
+pub fn companions(pair: &(SigningKey, Key)) -> [(SigningKey, Key); 2] {
+    [1u8, 2].map(|n| {
+        let mut seed = pair.0.to_bytes();
+        for byte in &mut seed {
+            *byte ^= 0x5a ^ n;
+        }
+        let key = SigningKey::from_bytes(&seed);
+        let public = key.verifying_key().to_bytes();
+        (
+            key,
+            Key {
+                name: format!("{}.c{n}", pair.1.name),
+                public,
+            },
+        )
+    })
+}
+
 /// A signed note of `text` by each of `signers`. A note's text ends with a line feed and is
 /// followed by a blank line, then the signature lines, each over that exact text: a `text` the
 /// builders form without its last line feed gets one here.
@@ -183,6 +203,9 @@ pub struct TestRegistry {
     pub spread: u64,
     /// The witness threshold of the root versions it signs.
     pub witness_k: usize,
+    /// The fixture owners' keys registered by [`TestRegistry::register`], each with its first
+    /// companion, which countersigns every document the key signs ([`TestRegistry::append`]).
+    pub countersign: Vec<((SigningKey, Key), (SigningKey, Key))>,
 }
 
 impl TestRegistry {
@@ -227,6 +250,7 @@ impl TestRegistry {
             sparse_deadlines: Vec::new(),
             spread: 0,
             witness_k: 2,
+            countersign: Vec::new(),
         };
         registry
             .files
@@ -295,7 +319,26 @@ impl TestRegistry {
     }
 
     /// Appends the signed note `document` as an entry about `name`, and returns its index.
+    ///
+    /// **Implicit countersigning.** A document signed by a fixture owner's key
+    /// ([`TestRegistry::register`]) gets its first companion's signature too, unless it has it
+    /// already, so that the one key a test signs with meets the owner's threshold of 2. Every
+    /// document so signed, a "thief's" included, is then signed by two of the owner's keys: a
+    /// test of what one stolen key can sign alone, or of which keys a claim taints, registers
+    /// with [`TestRegistry::register_keys`] and names every signer, or names the companion
+    /// ([`companions`]) explicitly.
     pub fn append(&mut self, name: &str, document: &str) -> u64 {
+        let mut document = document.to_owned();
+        if let Some(cut) = document.find("\n\n") {
+            let text = document[..=cut].to_owned();
+            for ((pair, key), (other, companion)) in &self.countersign {
+                let line = sign_line(other, companion, &text);
+                if document.contains(&sign_line(pair, key, &text)) && !document.contains(&line) {
+                    document.push_str(&line);
+                }
+            }
+        }
+        let document = document.as_str();
         let index = self.entries.len() as u64;
         let leaf = leaf_hash(document.as_bytes());
         self.entries.push(document.as_bytes().to_vec());
@@ -305,17 +348,25 @@ impl TestRegistry {
         index
     }
 
-    /// Registers `owner` with the key of `pair`, threshold 1, signed by that key: the first
-    /// entry of the chain `owner:<owner>`.
+    /// Registers `owner` at the key floor with the key of `pair` and its two [`companions`],
+    /// threshold 2, signed by the three: the first entry of the chain `owner:<owner>`. Every
+    /// document appended later that `pair` signs is countersigned by the first companion
+    /// ([`TestRegistry::append`]), so a test signs with `pair` alone as an owner of one key
+    /// would; a test that chooses each signer registers with [`TestRegistry::register_keys`].
     pub fn register(&mut self, owner: &str, pair: &(SigningKey, Key)) -> u64 {
         let chain = owner_chain(owner);
+        let [c1, c2] = companions(pair);
         let text = format!(
-            "ita-owner/1\nsource {}\nowner {owner}\n{}\nthreshold 1\nkey {}",
+            "ita-owner/1\nsource {}\nowner {owner}\n{}\nthreshold 2\nkey {}\nkey {}\nkey {}",
             self.source,
             self.previous(&chain),
-            key_text(&pair.1)
+            key_text(&pair.1),
+            key_text(&c1.1),
+            key_text(&c2.1)
         );
-        let document = signed(&text, &[pair]);
+        let document = signed(&text, &[pair, &c1, &c2]);
+        let primary = (SigningKey::from_bytes(&pair.0.to_bytes()), pair.1.clone());
+        self.countersign.push((primary, c1));
         self.append(&chain, &document)
     }
 

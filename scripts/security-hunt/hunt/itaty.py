@@ -399,7 +399,10 @@ class Registry:
         self.heads[name] = (index, leaf_hash(document), count)
         return index
 
-    def register(self, owner, keys, threshold=1):
+    def register(self, owner, keys, threshold=2):
+        """Logs the registration of `owner` with `keys` at `threshold`, signed by every key. A
+        registry logs it, and a client replays it, only at the key floor (`spec/30 §16` rule 1,
+        §14 rule 5): a threshold of at least 2, at least one key more than it, at most 32 keys."""
         chain = f"owner:{owner}"
         text = (f"ita-owner/1\nsource {self.source}\nowner {owner}\n{self.previous(chain)}\n"
                 f"threshold {threshold}" + "".join(f"\nkey {k.text()}" for k in keys))
@@ -419,7 +422,10 @@ class Registry:
         document = signed("\n".join(lines), signers)
         index = self.append(name, document)
         self.files[f"blobs/sha256/{content[len('sha256:'):]}"] = archive(files)
-        self.releases[(name, version)] = (index, document, signers[0], content)
+        # The key the lock names as `signed`: the first signer by fingerprint, as `una ita lock`
+        # writes it.
+        signer = min(signers, key=lambda k: k.fingerprint())
+        self.releases[(name, version)] = (index, document, signer, content)
         return index
 
     def yank(self, name, version, signers):

@@ -1371,3 +1371,89 @@ Options rejected:
 **Note on `spec/30 §16` (card #1561).** A latest checkpoint of the lock's point's size that names another root version is evidence against the registry (`spec/30 §11` rule 9). `spec/30 §16` rule 9 lets the registry service sign a size again after a crash ("one signed again after a crash is the same"), but a checkpoint's text includes `ita-root <n>`, which is not a function of the entries: a service that rotates its root and then signs the current size again would produce exactly that pair, from an honest registry. §16 rule 5 ("after each entry") implies an honest service never does it, so the attribution is consistent with the spec, and §16 states it in one sentence, added with card #1561: a rotation takes effect from the checkpoint of the next entry, and a size signed again is signed under the root version it was first signed under.
 
 **Consequences.** `una ita lock --check` refuses a vendored or stored provenance whose root chain was cut below the version the command walked, whatever the state of Itaoca, and reports the offline load's other results; the residual of trust on first use remains relative to the place read and for offline-only runs. A lock whose provenance predates an honest rotation fails `--check` until it is locked again at a fresh resolution point. With L3, a stored floor also binds the digest of its root metadata, and floors of the earlier form keep the comparison by version. No guarantee of the accepted text or of the amendment of 2026-11-03 is weakened.
+
+## Amendment 14 (2026-11-14): the owner replay judges each entry as logged, and replays only key events
+
+- Status: Accepted (2026-11-14), by the project's decision. Card #1997.
+- Supersedes, for the clients and the registry service of this release:
+  - in Amendment 9, decision 1's words "with the claims that settle to, its own claim among them" and its sentence on prefixes that are refused or do not settle;
+  - Amendment 11, in full;
+  - the paragraphs of `spec/30 §14` rule 5 that state compromise as a greatest fixpoint, the mutual case of revocations, the pass cap and the own-word floor of the first assumption;
+  - Amendment 10 and its correction: this release has no reset and no sealed segment, and its cap of claims is a rule of logging (decision 8).
+- Suspends, for the clients and the registry service of this release, the rules of rule 38 and rule 38.1 for recoveries, disputes, co-signer changes, cancellations and overrulings, and of `spec/30 §14` rule 5 for them: those kinds are not replayed (decision 7). Their text is kept for a later release, which judges them by its own rule (decision 9).
+- Amendment 9, decision 2, and Amendment 12 are unchanged. Amendment 13, proposed on 2026-11-13 in a change that was not merged, is withdrawn; its number is not reused.
+
+**Context.** A claim of compromise, `revoke <key> since <p>`, is retroactive. The replay judged each entry against a state that later claims could rewrite, including the entry's own claim, and settled the claims by repeated passes whose result could depend on the order in which the passes dropped claims. The request kinds of rule 38 (recoveries, disputes, co-signer changes, cancellations and overrulings) added waiting periods read from witness time, competing requests and the reset of the cap of claims, and each of these interacted with retroactive claims. This release's registry logs none of those kinds. This amendment gives the claims one definition, and replays in this release only the kinds this release's registry logs:
+- each entry is judged once, against the chain as known when it was logged;
+- a later claim can only take signers away from an entry;
+- the claims are settled by a single pass in reverse log order;
+- no judgment reads a time;
+- every owner keeps a threshold of at least two and at least one key more than its threshold.
+
+**Decision.**
+
+1. **The requirement as logged.**
+   - An entry of an owner's chain is judged against the state that the replay of the chain before it reaches at its position: the owner's current keys, its threshold, its former keys, and the entry that brought each key in. The entry's own effect is left out.
+   - Its **counted signers** are those of its signers among the current keys that are clean there (decision 2).
+   - Its **requirement** is the owner's threshold of counted signers, for every kind, plus the added key's own signature for an `add`. A registration is signed by every key it registers.
+   - Both are fixed when the entry is logged, and no later entry changes them.
+   - The stated `threshold` is checked against the same state, never against one that a later claim rewrote.
+2. **Clean signers and void entries.**
+   - A signer of an entry at position x is **tainted** when either a claim that counts compromises it from a position before x, or the entry that brought it in, its registration or its addition, is void.
+   - An entry is **void** when its counted signers, less the tainted ones, do not meet its requirement. A registration is never void. A void entry changes nothing.
+   - Under a fixed set of compromises, more compromise voids more entries, and never fewer. A claim logged later can make an earlier claim stop counting (decision 4), and so make clean again what that claim had tainted.
+3. **A claim's compromise.**
+   - A claim names a key by its name among the keys held when it was logged, which it removes, or among the keys held before and held no more, which it does not remove; a claim on a former key states the current threshold.
+   - A claim MUST NOT carry a signature by the key it names, and a registry does not log one.
+   - A claim compromises the key from its stated `p`, taken as no earlier than the index that brought the key in. A claim states a `p` before its own index.
+   - A claim that counts compromises its key in every case. A revocation, a claim or a plain `revoke`, removes its key, and its stated threshold applies, only when the key is held at its position in the replay; a revocation of a key not held there applies neither the removal nor its threshold.
+4. **Which claims count.**
+   - The claims are taken from the last to the first. A claim **counts** when it is not void under the compromises of the claims after it that count, together with its own.
+   - The compromises of the claims that count are the chain's compromises. An entry other than a claim is void when it is void under them. A claim that does not count is void.
+   - This is one pass over the claims. Nothing is iterated, and every chain has one result.
+   - A chain is **contested** when a claim that counts is void under the chain's compromises. A contested chain refuses its owner's names (U7010) while it stays contested. It is not the registry's misbehavior.
+5. **What a registry logs.** A registry logs an entry of an owner's chain only when all of these hold:
+   - it is of a kind this release replays (decision 7), and meets the structural rules of its kind: a registration first and only there; a name or a key that the chain named before, in a void entry too, never again; its stated `threshold` right;
+   - it meets its requirement as logged;
+   - if it is a claim: it counts on the chain that ends with it; it is not signed by the key it names; and it changes the keys or the compromises as the chain is known: a claim on a key held removes it, and a claim on a key held before and held no more is logged only when no claim that counts on the chain before it already compromises that key from its `p`, taken as no earlier than the key's introduction, or from an earlier position, so a claim that repeats a compromise already counting is not logged;
+   - **the key floor:** after it, as the chain is known with it, the owner's threshold is at least 2, and its current keys number at least one more than its threshold and at most 32. This holds for a registration and for every key event, a claim on a key held included;
+   - **the cap of claims:** the chain holds at most 64 claims with it (decision 8).
+   - A registry checks a release or a yank against its owner's keys and threshold as logged (decision 6), and against rule 26 as logged.
+   - A client checks every entry of an owner's chain the same way, by the same function, reading the entries in log order. When the chain holds an entry that a registry must not have logged, the owner's names are refused (U7010), and the entry is recorded as evidence against the registry, naming the owner, its log index and the rule it was judged by, which `una ita audit` reports. There is no way back on that owner name: its owner registers under a new one.
+6. **Releases and yanks as logged.**
+   - A release statement counts when its owner's chain is not refused, and its signers counted as logged at its position, less those tainted under the chain's compromises, meet the owner's threshold as logged there. Otherwise it is skipped.
+   - A yank stands under the same condition, and is otherwise void and noted.
+   - A statement that its owner's keys as logged do not sign is skipped, or void for a yank, and recorded as evidence against the registry, never a refusal of the name.
+   - A later claim never makes a release or a yank a refusal of the name.
+   - A release that met rule 26 when it was logged, and fails it only against the releases that count at the end, is skipped and noted. It is never a refusal.
+7. **Kinds a client of this release replays.**
+   - A client of this release replays, in an owner's chain, only registrations without `cosigner` lines, `add`, `revoke`, and `revoke <key> since <p>` on a key held or held before, with the owner's release and yank statements.
+   - An owner's chain that holds any other entry (a registration with cosigners, `recover`, `dispute`, `cosigners`, `cancel` or `overrule`) makes the owner's names unavailable (U7013), naming the entry, unless an entry before it is one that a registry must not have logged, which refuses them (U7010). No release of that owner counts and no yank of it stands, and the client reads nothing of the chain after that entry.
+   - This release's registry logs none of those kinds.
+8. **The cap of claims.** A chain holds at most 64 claims (decision 5); a registry does not log another one, and an owner that needs more registers under a new owner name. The claims of a chain are all settled together: this release has no reset and no sealed segment.
+9. **Changing the rule.** This amendment's rule is rule 1 of `ita-key/1`.
+   - A change that keeps every outcome on every chain a registry could log under it is a correction of an implementation.
+   - A change that accepts more, or changes outcomes, is a new rule. The root metadata declares it from a log index, and each entry is judged by the rule in force at its position. A client that does not know a declared rule makes the owner's names unavailable (U7013). A later release that replays the kinds of decision 7 does so by such a rule.
+   - A change that refuses entries that let an attacker's signatures count applies to the whole log. It refuses the names it must, and is not evidence against the registry.
+   - A change of which claims count, which entries are void, or how releases and yanks are judged applies to every chain as a whole, from the first checkpoint whose size reaches the log index that the root metadata declares for it; whether each entry could be logged is still judged by the rule in force at its position.
+10. **The contract.** `spec/30 §14` rule 5, "The replay's contract", is restated in the terms of this amendment, against a key-only attacker:
+    1. once the owner responded, on the chain and on every chain that extends it in which every claim the owner logs after its response is of the honest form, either the owner's names are refused, or no release counts and no yank stands whose signatures are all the attacker's;
+    2. no release or yank, whoever signs it, refuses the owner's names;
+    3. against an attacker holding one key and an honest owner that responded, the owner's names resolve; a release signed by its current keys other than the stolen one counts; and every honest release or yank that counted or stood when it was logged still does;
+    4. against an attacker holding one key of an owner whose chain the registry logged under decision 5: no entry whose signatures are all the attacker's can be logged, before or after the response; and when the owner is honest and its names resolve, it can log its claim with its keys other than the stolen one at any time while its chain holds fewer than 64 claims, after an addition of a new key when it holds exactly one key more than its threshold, and the claim then counts. The key floor counts keys, not keys that can still sign: an owner that is not honest (for example, one that claims a key from a position before its own last signature with that key) can leave a current key compromised by a claim that counts, and with it fewer keys that sign as counted than its threshold; no key event of its can then be logged. Such an owner, and one whose chain holds 64 claims (decision 8), registers under a new owner name, with new keys. An attacker holding two keys of such an owner is not covered by this item;
+    5. two replays of one chain give the same history; the replay makes a bounded number of passes; and the result depends only on the entries in log order, and not on the order of a note's signature lines.
+
+**Alternatives rejected.**
+- **Replaying the request kinds in this release.** This release's registry logs none of them, so they would reach a client only from a registry that does not follow this release's rules, and their rules are where waiting periods, competing requests and resets meet retroactive claims. A later release replays them by a declared rule (decision 9).
+- **Keeping the key floor in the registry service only.** One clause less, but a client would then replay a chain below the floor that a registry logged against the rules; with the floor in the shared function, such an entry is evidence against the registry.
+- **A threshold of one.** With one key, a stolen key signs whatever the owner can, and the owner has no key left to answer with.
+
+**Consequences.**
+- The replay of a chain of C claims makes at most C(C + 1)/2 + 2C + 2 forward passes: O(C² · E · K) for E entries and K keys held at once, with C at most 64, and O(E · K) for a chain with no claim. Each signature is verified once.
+- A replay never fails to settle. The evidence that a chain does not settle is replaced by the evidence of an entry that a registry must not have logged.
+- With the key floor, a single stolen key of an owner can sign nothing that counts, and an honest owner answers with its other keys, adding a key first when it holds exactly one key more than its threshold. The floor counts keys, not keys that can still sign: an owner whose own claims leave a current key compromised can lose its key management, and its answer is a new owner name, as it is for two keys stolen and for a chain at the cap of claims. A new owner name needs new keys, since a key that another owner's chain named is refused (`spec/30 §16` rule 2).
+- A claim signed by the key it names is not logged. An owner signs its claim with its other keys, and never with the key it names. To retire one of its own keys, it logs a plain `revoke`.
+- An owner whose chain holds a kind of decision 7 that this release does not replay finds its names unavailable with this release's client until a later release replays that kind.
+- The registry service checks registrations, key events, releases and yanks with the client's rule, by the same function, and reads owner entries with the client's parser.
+- The bounded models of the replay check the contract with an oracle that reads only who signed what, and the client's answers. A literal reference of this definition is checked against the replay. Both run in the `owner-replay` release gate.
+- `spec/30 §14` rules 5 and 6, `§15` rule 6 and `§16` rules 1 and 2 state these rules as normative text.

@@ -322,7 +322,7 @@ fn a_change_of_the_owners_keys_needs_accept_key() {
     registry.owner_event(
         "acme",
         &format!("add {}", key_text(&second.1)),
-        1,
+        2,
         &[&key, &second],
     );
     registry.checkpoint(now() - 30);
@@ -411,71 +411,62 @@ fn a_registry_that_logged_a_breach_of_rule_26_is_refused() {
     assert!(!dir.join("ita.lock").exists());
 }
 
-/// A recovery of the owner pending at the resolution point is a key change to consent to.
-#[test]
-fn a_pending_recovery_needs_accept_key() {
-    let (mut registry, _) = acme();
-    registry.recover("acme", "recover", &keypair(64, "acme.new").1, &[]);
-    registry.checkpoint(now() - 30);
-    let (dir, _, itaoca) = project("pending", &registry);
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 1);
-    assert!(
-        err.contains("U7014") && err.contains("pending") && err.contains("a recovery logged at"),
-        "{err}"
-    );
-    assert!(!dir.join("ita.lock").exists());
-    let (code, _, err) = una_in(
-        &[
-            "una",
-            "ita",
-            "lock",
-            "--accept-key",
-            "acme/ledger",
-            arg(&dir),
-        ],
-        &itaoca,
-    );
-    assert_eq!(code, 0, "{err}");
+/// An owner chain that holds `kind` at `index`, an entry this release does not replay, leaves
+/// the owner's names unavailable (U7013), never refused: no lock is written, with or without
+/// `--accept-key`.
+fn unavailable_with(name: &str, registry: &TestRegistry, kind: &str, index: u64) {
+    let (dir, _, itaoca) = project(name, registry);
+    for accept in [false, true] {
+        let mut args = vec!["una", "ita", "lock"];
+        if accept {
+            args.extend(["--accept-key", "acme/ledger"]);
+        }
+        args.push(arg(&dir));
+        let (code, _, err) = una_in(&args, &itaoca);
+        assert_eq!(code, 1, "{err}");
+        assert!(
+            err.contains("U7013")
+                && !err.contains("U7010")
+                && err.contains(&format!("holds {kind}, at log entry {index}"))
+                && err.contains("does not replay"),
+            "{err}"
+        );
+        assert!(!dir.join("ita.lock").exists());
+    }
 }
 
-/// A co-signer change waits seven days as a recovery does, and until it takes effect it is a
-/// pending key change to consent to.
+/// A recovery in the owner's chain: its names are unavailable.
 #[test]
-fn a_pending_cosigner_change_needs_accept_key() {
+fn a_recovery_makes_the_owners_names_unavailable() {
+    let (mut registry, _) = acme();
+    let index = registry.recover("acme", "recover", &keypair(64, "acme.new").1, &[]);
+    registry.checkpoint(now() - 30);
+    unavailable_with("recovery", &registry, "a recovery", index);
+}
+
+/// A dispute in the owner's chain: its names are unavailable.
+#[test]
+fn a_dispute_makes_the_owners_names_unavailable() {
+    let (mut registry, _) = acme();
+    let index = registry.recover("acme", "dispute", &keypair(64, "acme.disputed").1, &[]);
+    registry.checkpoint(now() - 30);
+    unavailable_with("dispute", &registry, "a dispute", index);
+}
+
+/// A co-signer change in the owner's chain, signed by the owner's threshold: its names are
+/// unavailable.
+#[test]
+fn a_cosigner_change_makes_the_owners_names_unavailable() {
     let (mut registry, key) = acme();
     let trustee = keypair(70, "trustee.a");
-    registry.owner_event(
+    let index = registry.owner_event(
         "acme",
         &format!("cosigners 1 {}", key_text(&trustee.1)),
-        1,
+        2,
         &[&key],
     );
     registry.checkpoint(now() - 30);
-    let (dir, _, itaoca) = project("pending-cosigners", &registry);
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 1);
-    assert!(
-        err.contains("U7014")
-            && err.contains("a co-signer change logged at")
-            && err.contains("`trustee.a`"),
-        "{err}"
-    );
-    assert!(!dir.join("ita.lock").exists());
-    let (code, _, err) = una_in(
-        &[
-            "una",
-            "ita",
-            "lock",
-            "--accept-key",
-            "acme/ledger",
-            arg(&dir),
-        ],
-        &itaoca,
-    );
-    assert_eq!(code, 0, "{err}");
-    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
-    assert!(lock.contains("accepted acme "), "{lock}");
+    unavailable_with("cosigners", &registry, "a co-signer change", index);
 }
 
 /// A locked release that counts as signed only with a key compromised before it was logged is
@@ -485,10 +476,13 @@ fn a_release_signed_by_a_compromised_key_is_not_fetched() {
     use una_project::tlog::merkle::{leaf_hash, root as tree_root};
     let a = keypair(60, "acme.a");
     let d = keypair(61, "acme.d");
+    let e = keypair(62, "acme.e");
+    let f = keypair(63, "acme.f");
     let mut registry = TestRegistry::new("acme");
-    registry.register_keys("acme", &[&a, &d], 1, &[], 0);
-    let (index, digest) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
-    registry.owner_event("acme", "revoke acme.a since 0", 1, &[&d]);
+    // Four keys at threshold 2: after the claim against `a`, three clean keys keep the floor.
+    registry.register_keys("acme", &[&a, &d, &e, &f], 2, &[], 0);
+    let (index, digest) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&a, &d]);
+    registry.owner_event("acme", "revoke acme.a since 0", 2, &[&d, &e]);
     registry.checkpoint(now() - 60);
     let (dir, _, itaoca) = project("compromised", &registry);
     let leaves: Vec<_> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
@@ -644,66 +638,6 @@ fn floors_are_stored_on_every_read_and_a_fork_of_the_lock_is_refused() {
     assert!(err.contains("U7010") && err.contains("forked"), "{err}");
 }
 
-/// Consent to a pending dispute is recorded in the lock, which `--check` and later locks honor;
-/// a second dispute logged while it waits freezes the chain. A dispute logged six days ago is
-/// pending.
-#[test]
-fn consent_to_a_pending_dispute_is_recorded_in_the_lock() {
-    let mut registry = TestRegistry::new("acme");
-    let key = keypair(60, "acme.laptop");
-    registry.register("acme", &key);
-    registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
-    registry.checkpoint(now() - 20 * DAY);
-    let dispute = registry.recover("acme", "dispute", &keypair(64, "acme.disputed").1, &[]);
-    registry.checkpoint(now() - 6 * DAY);
-    registry.append("other", "filler");
-    registry.checkpoint(now() - 60);
-    let (dir, mirror, itaoca) = project("accepted", &registry);
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 1);
-    assert!(
-        err.contains("U7014") && err.contains("a dispute logged at"),
-        "{err}"
-    );
-    let (code, _, err) = una_in(
-        &[
-            "una",
-            "ita",
-            "lock",
-            "--accept-key",
-            "acme/ledger",
-            arg(&dir),
-        ],
-        &itaoca,
-    );
-    assert_eq!(code, 0, "{err}");
-    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
-    assert!(
-        lock.contains(&format!("\n  accepted acme {dispute}\n")),
-        "{lock}"
-    );
-    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
-    assert_eq!(code, 0, "{err}");
-    let (code, out, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(
-        (code, out.as_str()),
-        (0, "ita.lock is up to date\n"),
-        "{err}"
-    );
-    // Another dispute while the first waits competes with it: consent to the first covers
-    // nothing of it, and the chain is frozen from the later one's position (`spec/30 §14`, competing
-    // requests).
-    let second = registry.recover("acme", "dispute", &keypair(65, "acme.second").1, &[]);
-    registry.checkpoint(now() - 30);
-    registry.write(&mirror);
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 1);
-    assert!(
-        err.contains("U7010") && err.contains(&format!("frozen from the log position {second}")),
-        "{err}"
-    );
-}
-
 /// One name of `sources` given to two registries in turn: each keeps its own floors, so the
 /// second is neither blocked by the first's larger floor nor stores into it.
 #[test]
@@ -819,65 +753,6 @@ fn a_forged_accepted_index_is_refused() {
     }
 }
 
-/// A consent to a pending dispute covers its pending state only: once it takes effect, the
-/// key change needs `--accept-key` again, which records it as an `effect`.
-#[test]
-fn a_consented_dispute_needs_new_consent_when_it_takes_effect() {
-    use una_project::tlog::merkle::{leaf_hash, root as tree_root};
-    let mut registry = TestRegistry::new("acme");
-    let key = keypair(60, "acme.laptop");
-    registry.register("acme", &key);
-    let (index, digest) = registry.release("acme/ledger", "0.3.1", "none", "none", &[&key]);
-    registry.checkpoint(now() - 20 * DAY);
-    let dispute = registry.recover("acme", "dispute", &keypair(64, "acme.disputed").1, &[]);
-    registry.checkpoint(now() - 10 * DAY);
-    // The lock was written here, the dispute pending and consented to.
-    let old_size = registry.entries.len();
-    let leaves: Vec<_> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
-    let hex: String = tree_root(&leaves)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    registry.append("other", "filler");
-    registry.checkpoint(now() - 60);
-    let (dir, _, itaoca) = project("effect-consent", &registry);
-    let signed = una_project::provenance::signed_name("acme/ledger", &key.1.public);
-    std::fs::write(
-        dir.join("ita.lock"),
-        format!(
-            "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n\nregistry acme\n  root \"{}\"\n  checkpoint {old_size} \"sha256:{hex}\"\n  last root {} \"{}\"\n  accepted acme {dispute}\n\npackage acme/ledger 0.3.1\n  from acme\n  digest \"{digest}\"\n  signed \"{signed}\"\n  logged {index}\n",
-            registry.pin(),
-            registry.roots.len(),
-            una_project::tlog::root::digest(registry.roots.last().unwrap())
-        ),
-    )
-    .unwrap();
-    // Seven days on, the dispute is in effect: a key change the pending consent does not cover.
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 1);
-    assert!(err.contains("U7014") && err.contains("changed"), "{err}");
-    let (code, _, err) = una_in(
-        &[
-            "una",
-            "ita",
-            "lock",
-            "--accept-key",
-            "acme/ledger",
-            arg(&dir),
-        ],
-        &itaoca,
-    );
-    assert_eq!(code, 0, "{err}");
-    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
-    assert!(
-        lock.contains(&format!("\n  effect acme {dispute}\n")),
-        "{lock}"
-    );
-    assert!(!lock.contains("  accepted "), "{lock}");
-    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
-    assert_eq!(code, 0, "{err}");
-}
-
 /// An `accepted` or `effect` index at or above the registry's checkpoint size is U7009 when
 /// the lock is read.
 #[test]
@@ -920,44 +795,12 @@ fn a_consented_index_past_the_checkpoint_is_refused_when_read() {
     }
 }
 
-/// A lock holding a release of an owner whose chain froze after the lock's resolution point
-/// fails `--check` (U7010), naming the freeze's position: a frozen chain never thaws, so the
-/// newest checkpoint a place serves is evidence enough, fresh or not.
-#[test]
-fn check_fails_on_a_release_of_a_frozen_owner() {
-    let (mut registry, _) = acme();
-    let (dir, mirror, itaoca) = project("frozen-check", &registry);
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 0, "{err}");
-    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
-    assert_eq!(code, 0, "{err}");
-    // Two disputes wait at once: an account taken over, and the chain freezes.
-    registry.recover("acme", "dispute", &keypair(72, "acme.m").1, &[]);
-    let second = registry.recover("acme", "dispute", &keypair(73, "acme.n").1, &[]);
-    registry.checkpoint(now() - 2 * DAY);
-    registry.write(&mirror);
-    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
-    assert_eq!(code, 1, "{err}");
-    assert!(
-        err.contains("U7010")
-            && err.contains("frozen")
-            && err.contains(&format!("log position {second}")),
-        "{err}"
-    );
-    // A new lock, at a fresh checkpoint, refuses the name too.
-    registry.append("other", "later filler");
-    registry.checkpoint(now() - 60);
-    registry.write(&mirror);
-    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
-    assert_eq!(code, 1);
-    assert!(err.contains("U7010") && err.contains("frozen"), "{err}");
-}
-
 /// Plain `--check` needs no fresh checkpoint: with a place that serves none newer than the
 /// lock's, it passes and says that a later freeze was not checked; `--check --fresh` fails
-/// there (U7013), passes at a fresh checkpoint, and fails on a frozen owner (U7010).
+/// there (U7013), passes at a fresh checkpoint, and fails (U7013) once the owner's chain holds
+/// an entry this release does not replay.
 #[test]
-fn check_fresh_needs_a_fresh_checkpoint_and_finds_a_freeze() {
+fn check_fresh_needs_a_fresh_checkpoint() {
     let (mut registry, _) = acme();
     let (dir, mirror, itaoca) = project("check-fresh", &registry);
     let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
@@ -992,9 +835,9 @@ fn check_fresh_needs_a_fresh_checkpoint_and_finds_a_freeze() {
             && format!("{out}{err}").contains('Z'),
         "{out}{err}"
     );
-    // A freeze: --check --fresh fails with U7010.
+    // A dispute after the lock's point: the owner's names are unavailable, and
+    // --check --fresh fails with U7013.
     registry.recover("acme", "dispute", &keypair(72, "acme.m").1, &[]);
-    registry.recover("acme", "dispute", &keypair(73, "acme.n").1, &[]);
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (code, _, err) = una_in(
@@ -1002,7 +845,10 @@ fn check_fresh_needs_a_fresh_checkpoint_and_finds_a_freeze() {
         &itaoca,
     );
     assert_eq!(code, 1, "{err}");
-    assert!(err.contains("U7010") && err.contains("frozen"), "{err}");
+    assert!(
+        err.contains("U7013") && !err.contains("U7010") && err.contains("does not replay"),
+        "{err}"
+    );
 }
 
 /// Plain `--check` reads the lock's resolution point from a place: with no place reachable it
