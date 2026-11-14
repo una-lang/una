@@ -285,8 +285,15 @@ mod tests {
     #[test]
     fn waiters_that_leave_cost_constant_time_each() {
         // Many waiters that leave, then one place given: linear in the waiters, never more.
+        // Under Miri, where each step is slow, 1,000 and 10,000 waiters rather than 10,000 and
+        // 100,000 (#2007); the full sizes run in the ordinary tests.
         let mut times = Vec::new();
-        for count in [10_000usize, 100_000] {
+        let counts: &[usize] = if cfg!(miri) {
+            &[1_000, 10_000]
+        } else {
+            &[10_000, 100_000]
+        };
+        for &count in counts {
             let gate = Gate::new(1);
             let wake = counting(&Arc::new(AtomicUsize::new(0)));
             let held = gate.take_or_wait(&waiter(), &wake).unwrap();

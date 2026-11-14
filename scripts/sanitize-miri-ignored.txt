@@ -10,7 +10,8 @@
 # a test of the debug credit of the quarantine whose table sizes hold only at its full 65,536
 # slots, while Miri's has 64 (#1506), a timing test ignored in every build and run by hand
 # in a quiet window (#926), or a test that waits for a phase of the real clock within its
-# millisecond that Miri's simulated clock, which moves in steps of 5,000 ns, never reads (#2007).
+# millisecond that Miri's simulated clock, which moves in steps of 5,000 ns, never reads, or a
+# test that uses the file system, which Miri's isolation refuses (#2007).
 deadline::tests::a_covering_deadline_on_the_run_s_clock_is_never_before_it_late_in_the_millisecond
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
@@ -85,6 +86,7 @@ runtime::tests::the_mechanism_allocates_nothing_scenario
 runtime::tests::the_memory_budget_at_a_call_scenario
 runtime::tests::the_memory_budget_at_an_iteration_scenario
 runtime::tests::the_memory_budget_fires_at_its_exact_byte
+runtime::tests::the_pooled_stack_size_is_the_same_whatever_main_does
 runtime::tests::the_reactor_runs_before_main_in_a_run_granted_http
 runtime::tests::the_timer_thread_runs_before_main_and_no_within_starts_it_whatever_ran_before
 runtime::tests::the_tls_settings_exist_before_main_exactly_when_a_grant_includes_http
@@ -105,7 +107,10 @@ sched::tests::stalled_requests_never_delay_files_or_the_tasks_beside_them
 sched::tests::start_all_fills_the_stack_pool_so_later_blocks_map_only_past_its_size
 sched::tests::start_all_starts_every_worker_and_both_pools_before_any_task
 sched::tests::the_stack_pool_reuses_stacks_by_size_and_keeps_at_most_its_bound
+serve::tests::an_idle_parked_next_is_looked_at_only_when_woken_and_fails_no_poller_wait
 started::tests::a_task_cancelled_by_a_deadline_waits_for_its_running_helper_and_no_other_does
+started::tests::a_trace_file_that_cannot_be_made_is_known_before_the_run
+started::tests::the_trace_is_written_as_it_goes_and_ends_as_one_array
 tasks::tests::a_race_cancels_its_losers_once_a_branch_wins
 tasks::tests::a_race_gives_its_winner_and_fails_only_when_every_branch_fails
 tasks::tests::i10_a_refused_import_while_its_block_s_task_is_cancelled_stops_as_cancelled

@@ -1160,8 +1160,15 @@ mod tests {
     #[test]
     fn a_chunked_body_allocates_as_it_grows_not_once_a_chunk() {
         use una_http::request::{RequestLimits, RequestReader, Scheme};
-        // Growing sizes: the bound is linear in the data, the old cost was 9 times it.
-        for chunks in [4 * 1024, 16 * 1024, 64 * 1024] {
+        // Growing sizes: the bound is linear in the data, the old cost was 9 times it. Under
+        // Miri, where each step is slow, 256 to 4,096 chunks rather than 4,096 to 65,536
+        // (#2007); the full sizes run in the ordinary tests.
+        let sizes: &[usize] = if cfg!(miri) {
+            &[256, 1024, 4 * 1024]
+        } else {
+            &[4 * 1024, 16 * 1024, 64 * 1024]
+        };
+        for &chunks in sizes {
             let mut wire = b"1\r\nx\r\n".repeat(chunks);
             wire.extend_from_slice(b"0\r\n\r\n");
             let mut reader = RequestReader::new(RequestLimits::default(), Scheme::Http);
