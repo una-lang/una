@@ -7,7 +7,9 @@
 # the outer sandbox as its confinement (Question 6); each command runs on a fresh copy of the
 # package, so that each starts the solver rather than reading the proof cache; on
 # Linux it runs in a container of the bare Ubuntu image of scripts/local-ci/ with none of those
-# tools installed, with `una` and the package mounted read-only and the same empty PATH. Any
+# tools installed, with `una` and the package mounted read-only and a PATH of /usr/bin:/bin,
+# which holds the shell and no tool of the toolchain, as a user that is not root (the solver
+# refuses to run as root, U5003) with a scratch tmpfs. Any
 # attempt to start another program fails the gate. On macOS it then builds examples/hello with
 # `una build` under the same profile, which links with the linker inside `una` (ADR 0124 step
 # 3), and runs the executable under a profile that lets only it start; on Linux, the build phase
@@ -93,19 +95,32 @@ case $leg in
         docker run --rm --platform "linux/$arch" \
             --volume "$una:/una:ro" \
             --volume "$package:/package:ro" \
-            --env PATH=/nonexistent \
+            --user 1000:1000 \
+            --tmpfs /w:rw,exec,uid=1000,gid=1000,mode=700 \
+            --env HOME=/w/home \
+            --env TMPDIR=/w/tmp \
+            --env PATH=/usr/bin:/bin \
             --network none \
             "$image" sh -c '
-                for tool in cc gcc clang ld z3 cargo rustc; do
-                    if [ -x "/usr/bin/$tool" ] || [ -x "/usr/local/bin/$tool" ]; then
-                        echo "error: the image has $tool"; exit 1
+                # The PATH holds the shell and the OS basics, since the container runtime must
+                # find `sh` on it (a PATH of /nonexistent fails the start, #2011), and the solver
+                # refuses to run as root, so the container runs as user 1000; the checks
+                # below make sure that it holds no compiler, linker, solver or Rust.
+                for tool in cc c++ gcc g++ cpp clang ld ld.bfd ld.gold ld.lld lld as z3 cargo rustc rustup; do
+                    if command -v "$tool" >/dev/null 2>&1; then
+                        echo "error: $tool is on the PATH"; exit 1
                     fi
+                    for dir in /usr/bin /bin /usr/local/bin /usr/sbin /sbin /usr/local/sbin /root/.cargo/bin /opt; do
+                        if [ -e "$dir/$tool" ]; then
+                            echo "error: the image has $dir/$tool"; exit 1
+                        fi
+                    done
                 done
-                cp -R /package /work && rm -rf /work/.una && cp -R /work /report && cd /work \
-                    && /una --json check . > /tmp/check.json \
-                    && /una --json test . > /tmp/test.json \
-                    && cd /report && /una --json report . > /tmp/report.json \
-                    && grep -q "\"solver_confinement\":\"own\"" /tmp/report.json' \
+                mkdir /w/home /w/tmp && cp -R /package /w/work && rm -rf /w/work/.una && cp -R /w/work /w/report && cd /w/work \
+                    && /una --json check . > /w/check.json \
+                    && /una --json test . > /w/test.json \
+                    && cd /w/report && /una --json report . > /w/report.json \
+                    && grep -q "\"solver_confinement\":\"own\"" /w/report.json' \
             || { echo "error: the toolchain-free run failed on linux/$arch" >&2; exit 1; }
         ;;
     *)
