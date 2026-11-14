@@ -1,0 +1,1 @@
+- **A solver child past its processor-time limit is `unknown` with reason `cpu`, not U8001** (#2008): Z3 5.1.0 handles `SIGXCPU` itself, printing `timeout` and exiting with status 0; the `limits` gate now runs a query that no solver answers within the limit, on fresh copies of the example with no proof cache.

@@ -80,6 +80,14 @@ const SIGSYS: i32 = 31;
 const SIGSYS: i32 = 12;
 /// `SIGXCPU`, the end of a child past its processor-time limit.
 const SIGXCPU: i32 = 24;
+/// What Z3 5.1.0's front end writes on stdout when its processor-time limit (`RLIMIT_CPU`)
+/// sends `SIGXCPU`: the SMT-LIB front end registers a handler for that signal
+/// (`register_on_timeout_proc` in Z3's `util/timeout.cpp`) that prints this word on a line of
+/// its own and ends the process with `_Exit(0)`, so the child never ends by the signal
+/// (#2008). Pinned for the pinned version, like the memout exit, and read as a top-level atom
+/// anywhere in stdout: no answer of a query has it there, since a status word, a model and
+/// values are the only top-level items.
+const CPU_LIMIT_WORD: &str = "timeout";
 /// The exit status of Z3 5.1.0's front end past `memory_max_size`, with the message below on
 /// stderr and nothing on stdout (probe P4 of ADR 0124).
 const MEMOUT_STATUS: i32 = 101;
@@ -227,6 +235,9 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
                 )
             };
         }
+        // Past its processor time, Z3's own handler of `SIGXCPU` ends the child by an exit:
+        // `cpu`, whatever came before on stdout, never a proof, a refutation or U8001.
+        Ended::Exited(_) if past_processor_time(&raw.stdout) => return unknown("cpu", None),
         Ended::Exited(status) => status,
     };
     let parsed = match parse(&raw.stdout, values) {
@@ -261,6 +272,13 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
             )),
         ),
     }
+}
+
+/// Whether the output holds the word Z3's handler of `SIGXCPU` prints, as a top-level atom.
+fn past_processor_time(output: &str) -> bool {
+    tokens(output)
+        .iter()
+        .any(|item| matches!(item, Sexp::Atom(atom) if atom == CPU_LIMIT_WORD))
 }
 
 /// Whether a status word is among the output's items, wherever it is: Z3 exits with 1 after
@@ -700,5 +718,47 @@ mod tests {
         ));
         let silent = answer(&raw("", "", Ended::Exited(2)), 0).unwrap();
         assert_eq!(silent.reason.as_deref(), Some("crash"));
+    }
+
+    #[test]
+    fn the_end_of_z3s_processor_time_handler_is_cpu_and_never_a_proof_issue_2008() {
+        // Z3 5.1.0 past `RLIMIT_CPU`: its `SIGXCPU` handler prints `timeout` and exits with
+        // status 0, which the `limits` gate shows on the real child. Alone, after a status
+        // word, or with another exit status, it is `unknown` with reason `cpu`: never U8001,
+        // never a proof, never a refutation, never cached.
+        for (stdout, status) in [
+            ("timeout\n", 0),
+            ("unsat\ntimeout\n", 0),
+            ("sat\ntimeout\n", 0),
+            ("unknown\ntimeout\n", 0),
+            ("timeout\n", 1),
+        ] {
+            let answer = answer(&raw(stdout, "", Ended::Exited(status)), 0).unwrap();
+            assert_eq!(answer.status, Status::Unknown, "{stdout:?} {status}");
+            assert_eq!(answer.reason.as_deref(), Some("cpu"), "{stdout:?} {status}");
+            assert_eq!(answer.detail, None, "{stdout:?} {status}");
+        }
+        // The word inside a list is not the handler's: a model may name anything.
+        let model = answer(
+            &raw(
+                "sat\n((define-fun timeout () Int 1))\n((|e| 1))\n",
+                "",
+                Ended::Exited(0),
+            ),
+            1,
+        )
+        .unwrap();
+        assert_eq!(model.status, Status::Refuted);
+        // The reason a solver gives for `unknown` is a string, not the handler's word.
+        let reason = answer(
+            &raw(
+                "unknown\n(:reason-unknown \"timeout\")\n",
+                "",
+                Ended::Exited(0),
+            ),
+            0,
+        )
+        .unwrap();
+        assert_eq!(reason.reason.as_deref(), Some("timeout"));
     }
 }
