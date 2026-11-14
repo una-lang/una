@@ -4374,9 +4374,9 @@ mod tests {
     fn i1_a_value_deeper_than_any_stack_segment_is_copied() {
         // ADR 0113 rule 5: the walks' pending stack grows a segment at a time, never on the
         // native stack, each step within `W`: a list nested 100000 deep is exported and
-        // imported whole. Miri runs three segments deep, which still crosses from one segment to
-        // the next.
-        let depth = if cfg!(miri) { 3 * SEGMENT } else { 100_000 };
+        // imported whole. Miri runs one segment and one level deep, which still crosses from one
+        // segment to the next: three segments deep did not end there in 30 minutes (#2007).
+        let depth = if cfg!(miri) { SEGMENT + 1 } else { 100_000 };
         let mut value = list();
         for _ in 0..depth {
             let outer = list();
@@ -5152,11 +5152,18 @@ mod tests {
             release(started);
             took
         }
-        let small = (0..3).map(|_| walk(5_000)).min().unwrap();
-        let large = (0..3).map(|_| walk(80_000)).min().unwrap();
+        // Under Miri, where each allocation is slow, 100 and 1,600 values rather than 5,000 and
+        // 80,000 (#2007); the full sizes run in the ordinary tests.
+        let (few, many) = if cfg!(miri) {
+            (100, 1_600)
+        } else {
+            (5_000, 80_000)
+        };
+        let small = (0..3).map(|_| walk(few)).min().unwrap();
+        let large = (0..3).map(|_| walk(many)).min().unwrap();
         assert!(
             large < small * 64,
-            "{small:?} for 5,000 rights, {large:?} for 80,000"
+            "{small:?} for {few} rights, {large:?} for {many}"
         );
     }
 }
