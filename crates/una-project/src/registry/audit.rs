@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use super::read_failure;
 use crate::client::{Marks, Misbehavior, Observation, Registry, owner_of, shown};
-use crate::tlog::owner::{Sealed, Unsettled};
+use crate::tlog::owner::Unacceptable;
 use crate::tlog::state::Advisory;
 use crate::transport::Refusal;
 use crate::version::{Line, Version};
@@ -89,9 +89,6 @@ pub struct Facts {
     /// The releases of its name whose cooldown eligibility a place's withheld cosignatures
     /// delay, as the client observed them ([`Observation::EligibilityDelay`]).
     pub eligibility_delays: Vec<Delay>,
-    /// The sealed segments of its owner's chain (`spec/30 §14` rule 5, sealed segments), in log
-    /// order: no release logged in one counts, the owner's own included.
-    pub sealed: Vec<Sealed>,
 }
 
 /// A release whose cooldown eligibility withheld cosignatures delay: eligible at the earliest
@@ -281,7 +278,6 @@ pub fn facts(registry: &mut Registry<'_>, locked: &Locked) -> Result<Facts, (Cod
         void_yanks: void_yanks(&marks, &locked.version),
         accepted_effects,
         eligibility_delays,
-        sealed: history.sealed.clone(),
     })
 }
 
@@ -319,10 +315,6 @@ pub enum Kind {
     /// a finding (U7014) when it is the fix an advisory naming the locked release names, a note
     /// otherwise ([`Finding::is_note`]).
     EligibilityDelay(Delay),
-    /// A sealed segment of its owner's chain (`spec/30 §14` rule 5): a note, said once per
-    /// owner and source, since every entry in it is void and no release logged in it counts,
-    /// the owner's own included.
-    Sealed(Sealed),
 }
 
 /// A finding: the package, by its index among the packages audited, and what was found.
@@ -383,37 +375,19 @@ impl Finding {
                 delay.served,
                 delay.earliest
             ),
-            Kind::Sealed(sealed) => format!(
-                "the chain of the owner `{}` at `{}` has a sealed segment, log entries {} to {} ({} claims), sealed by the recovery or dispute at log entry {}, in effect from {}: no release logged in it counts, the owner's own included; the owner republishes the ones it needs",
-                owner_of(&locked.name),
-                locked.source,
-                sealed.first,
-                sealed.last,
-                sealed.claims,
-                sealed.request,
-                sealed.reset
-            ),
         }
     }
 
     /// Whether it is a note, which the audit says and which decides nothing: a delayed release
-    /// that is not the fix of an advisory naming the locked release, or a sealed segment of the
-    /// owner's chain.
+    /// that is not the fix of an advisory naming the locked release.
     pub fn is_note(&self) -> bool {
         matches!(&self.kind, Kind::EligibilityDelay(delay) if !delay.fix)
-            || matches!(&self.kind, Kind::Sealed(_))
-    }
-
-    /// Whether it is a fact of the owner's chain alone, the same for every package of that
-    /// owner at that source, which the audit says once: a sealed segment.
-    pub fn of_owner(&self) -> bool {
-        matches!(&self.kind, Kind::Sealed(_))
     }
 }
 
 /// The findings of one package from its facts, in a fixed order: yanked, advisories,
 /// compromise, pending recoveries, key changes, void yanks, accepted effects, eligibility
-/// delays, sealed segments. O(A + K + S) for its S sealed segments.
+/// delays. O(A + K).
 pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
     let mut kinds = Vec::new();
     if facts.yanked {
@@ -453,7 +427,6 @@ pub fn findings(package: usize, facts: &Facts) -> Vec<Finding> {
             kinds.push(Kind::EligibilityDelay(delay.clone()));
         }
     }
-    kinds.extend(facts.sealed.iter().cloned().map(Kind::Sealed));
     kinds
         .into_iter()
         .map(|kind| Finding { package, kind })
@@ -492,30 +465,25 @@ pub fn audit<E>(
     out
 }
 
-/// Evidence the audit reports apart from its findings (`spec/30 §15` rule 7). An unsettled
-/// chain is the registry's misbehavior, since every place serves the same verified log, and
-/// so is an equivocation, backed by two copies the log signed of one size. A
-/// missing deadline checkpoint or a cadence gap is evidence from an absence, which a place can
+/// Evidence the audit reports apart from its findings (`spec/30 §15` rule 7). An owner-chain
+/// entry or a statement a registry must not log is the registry's misbehavior, since every
+/// place serves the same verified log, and so is an equivocation, backed by two copies the log
+/// signed of one size. A cadence gap is evidence from an absence, which a place can
 /// cause, and two places can be one party: it is never the registry's misbehavior, only a note
 /// (`unattributed: a place or the registry`), with the places read and how many agreed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Evidence {
-    /// The registry logged an owner chain that does not settle (`spec/30 §14` rule 5,
-    /// invariant (4)): the owner's names are refused (U7010).
-    Unsettled(Unsettled),
-    /// No place serves the deadline checkpoint of a request, the first checkpoint at or after
-    /// its target witness time with the witness threshold of cosignatures.
-    MissingDeadline {
-        /// The owner whose chain holds the request.
-        owner: String,
-        /// The request's log index.
+    /// The registry logged an entry of an owner's chain that it must not log (`spec/30 §14`
+    /// rule 5, "What a registry logs"), judged by the rule it names: the owner's names are
+    /// refused (U7010).
+    Unacceptable(Unacceptable),
+    /// The registry logged a release or a yank that its owner's keys as logged at its position
+    /// do not sign: skipped, never a refusal of the name.
+    Unsigned {
+        /// The package name.
+        name: String,
+        /// The log index of the statement.
         index: u64,
-        /// Its target witness time, in seconds since the Unix epoch.
-        target: u64,
-        /// The places read.
-        places: Vec<String>,
-        /// The fewest places that served the same copy of a checkpoint it rests on.
-        places_agreeing: usize,
     },
     /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
     /// a registry may leave between two such checkpoints.
@@ -544,20 +512,8 @@ pub enum Evidence {
 impl From<Misbehavior> for Evidence {
     fn from(misbehavior: Misbehavior) -> Evidence {
         match misbehavior {
-            Misbehavior::Unsettled(unsettled) => Evidence::Unsettled(unsettled),
-            Misbehavior::MissingDeadline {
-                owner,
-                index,
-                target,
-                places,
-                places_agreeing,
-            } => Evidence::MissingDeadline {
-                owner,
-                index,
-                target,
-                places,
-                places_agreeing,
-            },
+            Misbehavior::Unacceptable(bad) => Evidence::Unacceptable(bad),
+            Misbehavior::Unsigned { name, index } => Evidence::Unsigned { name, index },
             Misbehavior::CadenceGap {
                 from,
                 to,
@@ -583,11 +539,14 @@ impl From<Misbehavior> for Evidence {
 }
 
 impl Evidence {
-    /// Whether it is the registry's misbehavior (U7010): an unsettled chain, or an
-    /// equivocation, which two signed copies back. Evidence from an absence is a note, whatever
+    /// Whether it is the registry's misbehavior: an entry or a statement it must not log, or
+    /// an equivocation, which two signed copies back. Evidence from an absence is a note, whatever
     /// the places agree on.
     pub fn attributed(&self) -> bool {
-        matches!(self, Evidence::Unsettled(_) | Evidence::Equivocation { .. })
+        matches!(
+            self,
+            Evidence::Unacceptable(_) | Evidence::Unsigned { .. } | Evidence::Equivocation { .. }
+        )
     }
 
     /// What the evidence states about the registry `source`, shown safely: against the
@@ -603,22 +562,16 @@ impl Evidence {
             )
         };
         match self {
-            Evidence::Unsettled(unsettled) => format!(
-                "evidence against the registry `{source}`: it logged the chain of the owner `{}`, which does not settle within {} replays of its claims of compromise, first at the log index {}; keep its checkpoint and the files read, and publish them as evidence",
-                shown(&unsettled.owner),
-                unsettled.passes,
-                unsettled.index
+            Evidence::Unacceptable(bad) => format!(
+                "evidence against the registry `{source}`: it logged the entry {} of the owner `{}`, which it must not log: {} (rule {} of `ita-key/1`); the owner's packages are refused, and the owner registers under a new owner name, with new keys; keep its checkpoint and the files read, and publish them as evidence",
+                bad.index,
+                shown(&bad.owner),
+                shown(&bad.why),
+                bad.rule
             ),
-            Evidence::MissingDeadline {
-                owner,
-                index,
-                target,
-                places,
-                places_agreeing,
-            } => format!(
-                "unattributed: a place or the registry `{source}`: no place serves the deadline checkpoint of the request at the log index {index} of the owner `{}`, the first checkpoint at or after its target witness time {target} with the witnesses' threshold of cosignatures{}",
-                shown(owner),
-                read(places, *places_agreeing)
+            Evidence::Unsigned { name, index } => format!(
+                "evidence against the registry `{source}`: it logged the statement at log entry {index} of `{}`, which its owner's keys as logged there do not sign; it is skipped; keep its checkpoint and the files read, and publish them as evidence",
+                shown(name)
             ),
             Evidence::Equivocation {
                 size,

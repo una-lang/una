@@ -330,12 +330,17 @@ fn a_client_publishes_and_verifies_every_proof() {
         .collect();
 
     // An owner registers: only with the operator's token, every key signing.
+    // At the key floor: three keys at a threshold of 2; `acme` and `acme_b` sign its entries.
     let acme = signer("acme.a", 60);
+    let acme_b = signer("acme.b", 62);
+    let acme_c = signer("acme.c", 63);
     let registration = format!(
-        "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\n{}\n",
-        key_line(&acme)
+        "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 2\n{}\n{}\n{}\n",
+        key_line(&acme),
+        key_line(&acme_b),
+        key_line(&acme_c)
     );
-    let registration = note(&registration, &[&acme]);
+    let registration = note(&registration, &[&acme, &acme_b, &acme_c]);
     let (status, _) = request(addr, "POST", "register", &[], registration.as_bytes());
     assert_eq!(status, 401);
     let auth = format!("Bearer {TOKEN}");
@@ -374,7 +379,7 @@ fn a_client_publishes_and_verifies_every_proof() {
     let v1 = package("1.0.0", "", body_1);
     let console = authority(&[("Console", &["print"])]);
     // A statement that understates the authority is refused.
-    let (_, understated) = publication(&v1, None, &authority(&[]), &[&acme]);
+    let (_, understated) = publication(&v1, None, &authority(&[]), &[&acme, &acme_b]);
     let (status, why) = post(addr, "publish", &understated);
     assert_eq!(status, 400, "{why}");
     assert!(why.contains("authority"), "{why}");
@@ -382,7 +387,7 @@ fn a_client_publishes_and_verifies_every_proof() {
     let (_, unsigned) = publication(&v1, None, &console, &[&other]);
     let (status, why) = post(addr, "publish", &unsigned);
     assert_eq!(status, 400, "{why}");
-    let (document_1, body) = publication(&v1, None, &console, &[&acme]);
+    let (document_1, body) = publication(&v1, None, &console, &[&acme, &acme_b]);
     let (status, why) = post(addr, "publish", &body);
     assert_eq!(status, 200, "{why}");
     // Immutable: the same version again is refused, whatever its `previous`.
@@ -474,14 +479,14 @@ fn a_client_publishes_and_verifies_every_proof() {
         &wider,
         Some((1, &leaf_1_text)),
         &authority(&[("Console", &["print"]), ("Http", &["get"])]),
-        &[&acme],
+        &[&acme, &acme_b],
     );
     let (status, why) = post(addr, "publish", &body);
     assert_eq!(status, 400, "{why}");
     assert!(why.contains("next major version"), "{why}");
     // A `previous` that is not the name's head is refused.
     let v11 = package("1.1.0", "", body_1);
-    let (_, stale) = publication(&v11, None, &console, &[&acme]);
+    let (_, stale) = publication(&v11, None, &console, &[&acme, &acme_b]);
     let (status, why) = post(addr, "publish", &stale);
     assert_eq!(status, 400, "{why}");
     // As the next major version, the wider release is logged.
@@ -490,7 +495,7 @@ fn a_client_publishes_and_verifies_every_proof() {
         &major,
         Some((1, &leaf_1_text)),
         &authority(&[("Console", &["print"]), ("Http", &["get"])]),
-        &[&acme],
+        &[&acme, &acme_b],
     );
     let (status, why) = post(addr, "publish", &body);
     assert_eq!(status, 200, "{why}");
@@ -503,7 +508,7 @@ fn a_client_publishes_and_verifies_every_proof() {
     );
     let (status, _) = post(addr, "submit", note(&yank, &[&other]).as_bytes());
     assert_eq!(status, 400);
-    let yank_doc = note(&yank, &[&acme]);
+    let yank_doc = note(&yank, &[&acme, &acme_b]);
     let (status, why) = post(addr, "submit", yank_doc.as_bytes());
     assert_eq!(status, 200, "{why}");
     let advisory = format!(

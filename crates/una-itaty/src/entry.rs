@@ -1,17 +1,20 @@
 //! The entries of the log (ADR 0122 rules 36 to 38 and 41, `spec/30 §11` and `§16`): each a
 //! signed note, the leaf's bytes being the whole note, signature lines included.
 //!
-//! Release statements, yanks and advisories are the client's formats, read by its parsers.
-//! The owner formats are this module's:
+//! Every format is the client's, read by its own parsers: release statements, yanks and
+//! advisories, and the owner formats (`una_project::tlog::owner::parse_entry`), of which this
+//! registry logs only the kinds the client replays (`una_project::tlog::owner::unreplayed`):
+//! registrations without recovery cosigners, additions, revocations and claims of compromise.
 //!
 //! ```text
 //! ita-owner/1                          ita-key/1
 //! source itaty                         source itaty
 //! owner acme                           owner acme
 //! previous none                        previous 48211 sha256:…
-//! threshold 1                          add acme.b <base64 key>      (or `revoke acme.a`,
+//! threshold 2                          add acme.d <base64 key>      (or `revoke acme.a`,
 //! key acme.a <base64 key>                                            or `revoke acme.a since 40`)
-//!                                      threshold 2
+//! key acme.b <base64 key>              threshold 2
+//! key acme.c <base64 key>
 //! ```
 //!
 //! An owner's entries form the chain of the name `owner:<owner>` in the name map, which no
@@ -22,11 +25,12 @@
 //! order, each once, bounded before it is read.
 
 use una_project::tlog::merkle::{Hash, leaf_hash};
-use una_project::tlog::note::{Key, Note, base64, parse_note};
+use una_project::tlog::note::{Note, parse_note};
+use una_project::tlog::owner;
 use una_project::tlog::release::{Statement, parse_statement};
 use una_project::tlog::state::{Advisory, Yank, parse_advisory, parse_yank};
 
-use crate::{MAX_ENTRY, MAX_OWNER_KEYS, decimal, digest_string, parse_digest};
+use crate::{MAX_ENTRY, decimal, digest_string, parse_digest};
 
 /// The prefix of the chain name of an owner.
 pub const OWNER_CHAIN: &str = "owner:";
@@ -34,42 +38,6 @@ pub const OWNER_CHAIN: &str = "owner:";
 /// The chain name of `owner`.
 pub fn owner_chain(owner: &str) -> String {
     format!("{OWNER_CHAIN}{owner}")
-}
-
-/// An owner's registration: its first keys and threshold.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Registration {
-    /// The owner name.
-    pub owner: String,
-    /// How many of its keys sign each release and key event.
-    pub threshold: usize,
-    /// Its keys.
-    pub keys: Vec<Key>,
-}
-
-/// What a key event does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum KeyAction {
-    /// Adds a key.
-    Add(Key),
-    /// Revokes a key by name, compromised since a log index when stated.
-    Revoke {
-        /// The key's name.
-        name: String,
-        /// The log index from which the key is compromised.
-        since: Option<u64>,
-    },
-}
-
-/// A key event of an owner (rule 38).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyEvent {
-    /// The owner name.
-    pub owner: String,
-    /// What it does.
-    pub action: KeyAction,
-    /// The threshold after it.
-    pub threshold: usize,
 }
 
 /// What an entry is.
@@ -81,10 +49,10 @@ pub enum Kind {
     Yank(Yank),
     /// An advisory (rule 41).
     Advisory(Advisory),
-    /// An owner's registration (rule 38).
-    Owner(Registration),
-    /// An owner's key event (rule 38).
-    Key(KeyEvent),
+    /// An owner's registration (rule 38), as the client reads it.
+    Owner(owner::Entry),
+    /// An owner's key event (rule 38), as the client reads it.
+    Key(owner::Entry),
 }
 
 /// An entry of the log, read.
@@ -164,145 +132,6 @@ fn only<'t>(fields: &[(&'t str, &'t str)], key: &str) -> Result<&'t str, String>
     }
 }
 
-/// A `<name> <base64 key>` value.
-fn key_value(value: &str) -> Result<Key, String> {
-    let (name, encoded) = value
-        .split_once(' ')
-        .ok_or("a key is `<name> <base64 key>`")?;
-    if name.is_empty()
-        || name.len() > 128
-        || name.contains('+')
-        || name.chars().any(|c| c.is_whitespace() || c.is_control())
-    {
-        return Err(format!("`{name}` is not a key name"));
-    }
-    let public: [u8; 32] = base64(encoded)
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .ok_or_else(|| format!("the key `{name}` is not 32 bytes of base64"))?;
-    Ok(Key {
-        name: name.to_owned(),
-        public,
-    })
-}
-
-fn threshold(value: &str) -> Result<usize, String> {
-    decimal(value)
-        .and_then(|n| usize::try_from(n).ok())
-        .filter(|n| (1..=MAX_OWNER_KEYS).contains(n))
-        .ok_or_else(|| format!("the threshold `{value}` is not between 1 and {MAX_OWNER_KEYS}"))
-}
-
-/// Reads an owner's registration from its text.
-pub fn parse_registration(text: &str) -> Result<(Registration, String, Previous), String> {
-    let (format, f) = fields(text)?;
-    if format != "ita-owner/1" {
-        return Err("expected `ita-owner/1`".to_owned());
-    }
-    let order: Vec<&str> = f.iter().map(|(k, _)| *k).collect();
-    let keys_at = order
-        .iter()
-        .position(|k| *k == "key")
-        .unwrap_or(order.len());
-    if order.get(..keys_at) != Some(&["source", "owner", "previous", "threshold"][..])
-        || order.iter().skip(keys_at).any(|k| *k != "key")
-    {
-        return Err("an owner's registration is `source`, `owner`, `previous`, `threshold`, then its `key` lines".to_owned());
-    }
-    let source = only(&f, "source")?.to_owned();
-    let owner = only(&f, "owner")?.to_owned();
-    let previous = parse_previous(only(&f, "previous")?)?;
-    if previous.is_some() {
-        return Err("an owner's registration is the first entry of its chain".to_owned());
-    }
-    let threshold = threshold(only(&f, "threshold")?)?;
-    let keys = f
-        .iter()
-        .filter(|(k, _)| *k == "key")
-        .map(|(_, v)| key_value(v))
-        .collect::<Result<Vec<_>, _>>()?;
-    if keys.is_empty() || keys.len() > MAX_OWNER_KEYS || threshold > keys.len() {
-        return Err(format!(
-            "an owner registers 1 to {MAX_OWNER_KEYS} keys, at least its threshold"
-        ));
-    }
-    for (i, key) in keys.iter().enumerate() {
-        if keys
-            .iter()
-            .take(i)
-            .any(|other| other.name == key.name || other.public == key.public)
-        {
-            return Err(format!("the key `{}` is listed twice", key.name));
-        }
-    }
-    Ok((
-        Registration {
-            owner,
-            threshold,
-            keys,
-        },
-        source,
-        previous,
-    ))
-}
-
-/// Reads an owner's key event from its text.
-pub fn parse_key_event(text: &str) -> Result<(KeyEvent, String, Previous), String> {
-    let (format, f) = fields(text)?;
-    if format != "ita-key/1" {
-        return Err("expected `ita-key/1`".to_owned());
-    }
-    let order: Vec<&str> = f.iter().map(|(k, _)| *k).collect();
-    let (Some(&"source"), Some(&"owner"), Some(&"previous"), Some(action), Some(&"threshold"), 5) = (
-        order.first(),
-        order.get(1),
-        order.get(2),
-        order.get(3),
-        order.get(4),
-        order.len(),
-    ) else {
-        return Err(
-            "a key event is `source`, `owner`, `previous`, `add` or `revoke`, and `threshold`"
-                .to_owned(),
-        );
-    };
-    let source = only(&f, "source")?.to_owned();
-    let owner = only(&f, "owner")?.to_owned();
-    let previous = parse_previous(only(&f, "previous")?)?;
-    if previous.is_none() {
-        return Err("a key event follows its owner's registration".to_owned());
-    }
-    let action = match *action {
-        "add" => KeyAction::Add(key_value(only(&f, "add")?)?),
-        "revoke" => {
-            let value = only(&f, "revoke")?;
-            let (name, since) = match value.split_once(" since ") {
-                Some((name, since)) => {
-                    (name, Some(decimal(since).ok_or("`since` is a log index")?))
-                }
-                None => (value, None),
-            };
-            if name.is_empty() || name.contains(' ') {
-                return Err(format!("`{name}` is not a key name"));
-            }
-            KeyAction::Revoke {
-                name: name.to_owned(),
-                since,
-            }
-        }
-        other => return Err(format!("`{other}` is not a key event")),
-    };
-    let threshold = threshold(only(&f, "threshold")?)?;
-    Ok((
-        KeyEvent {
-            owner,
-            action,
-            threshold,
-        },
-        source,
-        previous,
-    ))
-}
-
 /// Reads an entry from its bytes, as the log holds it: a signed note of one of the five
 /// formats, at most [`MAX_ENTRY`] bytes. Signatures are not checked here: which keys must sign
 /// depends on the registry's state.
@@ -341,15 +170,27 @@ pub fn parse_entry(bytes: &[u8]) -> Result<Entry, String> {
             let chain = advisory.name.clone();
             (Kind::Advisory(advisory), source, chain, previous)
         }
-        "ita-owner/1" => {
-            let (registration, source, previous) = parse_registration(text)?;
-            let chain = owner_chain(&registration.owner);
-            (Kind::Owner(registration), source, chain, previous)
-        }
-        "ita-key/1" => {
-            let (event, source, previous) = parse_key_event(text)?;
-            let chain = owner_chain(&event.owner);
-            (Kind::Key(event), source, chain, previous)
+        owner::REGISTRATION | owner::KEY_EVENT => {
+            let read = owner::parse_entry(text)?;
+            if let Some(kind) = owner::unreplayed(&read.event) {
+                return Err(format!(
+                    "this registry does not log {kind}: no client of this release replays it"
+                ));
+            }
+            let previous = match &read.previous {
+                Some(p) => Some((
+                    p.index,
+                    parse_digest(&p.leaf).ok_or("the previous entry's hash is not a digest")?,
+                )),
+                None => None,
+            };
+            let (source, chain) = (read.source.clone(), owner_chain(&read.owner));
+            let kind = if format == owner::REGISTRATION {
+                Kind::Owner(read)
+            } else {
+                Kind::Key(read)
+            };
+            (kind, source, chain, previous)
         }
         other => return Err(format!("`{other}` is not an entry the log takes")),
     };
@@ -367,44 +208,64 @@ pub fn parse_entry(bytes: &[u8]) -> Result<Entry, String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::sign::{Signer, note};
     use una_project::tlog::note::encode_base64;
 
     #[test]
-    fn owner_formats_read_strictly() {
-        let k = encode_base64(&[7u8; 32]);
+    fn owner_formats_are_the_clients_and_only_the_kinds_it_replays() {
+        let a = Signer::from_seed("acme.a", &[7; 32]);
+        let key = |s: &Signer| format!("{} {}", s.key().name, encode_base64(&s.key().public));
         let text = format!(
-            "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\nkey acme.a {k}\n"
+            "ita-owner/1\nsource itaty\nowner acme\nprevious none\nthreshold 1\nkey {}\n",
+            key(&a)
         );
-        let (reg, source, previous) = parse_registration(&text).unwrap();
+        let entry = parse_entry(note(&text, &[&a]).as_bytes()).unwrap();
+        assert!(matches!(entry.kind, Kind::Owner(_)));
         assert_eq!(
-            (reg.owner.as_str(), reg.threshold, source.as_str(), previous),
-            ("acme", 1, "itaty", None)
+            (entry.source.as_str(), entry.chain.as_str(), entry.previous),
+            ("itaty", "owner:acme", None)
         );
         for bad in [
             text.replace("threshold 1", "threshold 2"),
             text.replace("threshold 1", "threshold 0"),
             text.replace("previous none", "previous 3 sha256:00"),
-            format!("{text}key acme.a {k}\n"),
+            format!("{text}key {}\n", key(&a)),
             text.replace("owner acme\n", ""),
             text.replace("ita-owner/1", "ita-owner/2"),
+            format!("{text}cosigner {}\ncosigners 1\n", key(&a)).replace("acme.a", "trustee.x"),
         ] {
-            assert!(parse_registration(&bad).is_err(), "{bad}");
+            assert!(parse_entry(note(&bad, &[&a]).as_bytes()).is_err(), "{bad}");
         }
         let d = digest_string(&[1u8; 32]);
         let event = format!(
-            "ita-key/1\nsource itaty\nowner acme\nprevious 4 {d}\nrevoke acme.a since 3\nthreshold 1\n"
+            "ita-key/1\nsource itaty\nowner acme\nprevious 4 {d}\nrevoke acme.a since 3\nthreshold 2\n"
         );
-        let (event, _, previous) = parse_key_event(&event).unwrap();
-        assert_eq!(previous, Some((4, [1u8; 32])));
+        let entry = parse_entry(note(&event, &[&a]).as_bytes()).unwrap();
+        assert_eq!(entry.previous, Some((4, [1u8; 32])));
+        let Kind::Key(read) = entry.kind else {
+            panic!("a key event")
+        };
         assert_eq!(
-            event.action,
-            KeyAction::Revoke {
+            read.event,
+            owner::Event::Revoke {
                 name: "acme.a".to_owned(),
                 since: Some(3)
             }
         );
+        // A request kind is not logged: no client of this release replays it.
+        for action in [
+            format!("recover {}", key(&a)),
+            format!("dispute {}", key(&a)),
+            format!("cosigners 1 {}", key(&a)),
+            "cancel 3".to_owned(),
+            "overrule 3".to_owned(),
+        ] {
+            let text = event.replace("revoke acme.a since 3", &action);
+            let refused = parse_entry(note(&text, &[&a]).as_bytes()).unwrap_err();
+            assert!(refused.contains("does not log"), "{action}: {refused}");
+        }
     }
 }

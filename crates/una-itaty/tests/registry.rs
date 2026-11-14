@@ -57,72 +57,139 @@ fn open() -> (Arc<MemoryStore>, Registry, Config, Vec<Signer>) {
     (store, registry, config, witnesses)
 }
 
-fn register(registry: &mut Registry, owner: &str, keys: &[&Signer], threshold: usize) -> [u8; 32] {
+/// Three keys of `owner`, `<owner>.a` to `<owner>.c`, from the seeds `3 * seed` to
+/// `3 * seed + 2`: an owner at the key floor.
+fn trio(owner: &str, seed: u8) -> Vec<Signer> {
+    ["a", "b", "c"]
+        .iter()
+        .zip(seed * 3..)
+        .map(|(n, s)| signer(&format!("{owner}.{n}"), s))
+        .collect()
+}
+
+/// The registration text of `owner` with `keys` at `threshold`.
+fn registration(owner: &str, keys: &[&Signer], threshold: usize) -> String {
     let mut text =
         format!("ita-owner/1\nsource itaty\nowner {owner}\nprevious none\nthreshold {threshold}\n");
     for k in keys {
         text.push_str(&format!("key {}\n", key_line(k)));
     }
-    let document = note(&text, keys);
+    text
+}
+
+/// Registers `owner` with `keys` at threshold 2, signed by each.
+fn register(registry: &mut Registry, owner: &str, keys: &[Signer]) -> [u8; 32] {
+    let keys: Vec<&Signer> = keys.iter().collect();
+    let document = note(&registration(owner, &keys, 2), &keys);
     registry.register(document.as_bytes(), false).unwrap();
     leaf_hash(document.as_bytes())
 }
 
 #[test]
-fn key_events_follow_the_owners_threshold() {
+fn key_events_follow_the_clients_acceptance() {
     let (_, mut registry, _, _) = open();
-    let a = signer("acme.a", 10);
-    let b = signer("acme.b", 11);
-    let c = signer("acme.c", 12);
-    let leaf = register(&mut registry, "acme", &[&a], 1);
-    // A key added must sign its own event, besides the threshold.
-    let add = |prev: u64, leaf: [u8; 32], key: &Signer, threshold: usize| {
+    let [a, b, c] = <[Signer; 3]>::try_from(trio("acme", 10)).ok().unwrap();
+    let d = signer("acme.d", 40);
+    let e = signer("acme.e", 41);
+    // A registration below the key floor is refused: one key, two keys, a threshold of 1, or
+    // no key more than the threshold.
+    for (keys, threshold) in [
+        (vec![&a], 1),
+        (vec![&a, &b], 2),
+        (vec![&a, &b, &c], 1),
+        (vec![&a, &b, &c], 3),
+    ] {
+        let text = registration("acme", &keys, threshold);
+        assert!(
+            matches!(
+                registry.register(note(&text, &keys).as_bytes(), false),
+                Err(Refusal::Invalid(_))
+            ),
+            "{threshold} of {}",
+            keys.len()
+        );
+    }
+    let keys = [&a, &b, &c];
+    let document = note(&registration("acme", &keys, 2), &keys);
+    registry.register(document.as_bytes(), false).unwrap();
+    let leaf = leaf_hash(document.as_bytes());
+    let event = |prev: u64, leaf: [u8; 32], action: &str, threshold: usize| {
         format!(
-            "ita-key/1\nsource itaty\nowner acme\nprevious {prev} {}\nadd {}\nthreshold {threshold}\n",
-            digest_string(&leaf),
-            key_line(key)
+            "ita-key/1\nsource itaty\nowner acme\nprevious {prev} {}\n{action}\nthreshold {threshold}\n",
+            digest_string(&leaf)
         )
     };
-    let text = add(0, leaf, &b, 2);
-    assert!(matches!(
-        registry.submit(note(&text, &[&a]).as_bytes()),
-        Err(Refusal::Invalid(_))
-    ));
-    // A threshold above the keys the owner would hold is refused.
-    let too_high = add(0, leaf, &b, 3);
+    let add_d = |threshold| event(0, leaf, &format!("add {}", key_line(&d)), threshold);
+    // A key added signs its own event, besides the owner's threshold; one key of the owner is
+    // not enough, a threshold of 1 or above the keys after it is refused.
+    for (text, signers) in [
+        (add_d(2), vec![&a, &b]),
+        (add_d(2), vec![&a, &d]),
+        (add_d(1), vec![&a, &b, &d]),
+        (add_d(5), vec![&a, &b, &d]),
+    ] {
+        assert!(
+            matches!(
+                registry.submit(note(&text, &signers).as_bytes()),
+                Err(Refusal::Invalid(_))
+            ),
+            "{text}"
+        );
+    }
+    let receipt = registry
+        .submit(note(&add_d(2), &[&a, &b, &d]).as_bytes())
+        .unwrap();
+    assert_eq!(receipt.index, 1);
+    // A claim of compromise signed by the key it names, or by one key, is refused; by two other
+    // keys it is logged, and the claimed key then counts for nothing. Since 0 it would void the
+    // addition of `acme.d`, which `acme.b` signed, and leave two keys: below the floor.
+    let since_0 = event(1, receipt.leaf, "revoke acme.b since 0", 2);
     assert!(
         registry
-            .submit(note(&too_high, &[&a, &b]).as_bytes())
+            .submit(note(&since_0, &[&a, &c]).as_bytes())
             .is_err()
     );
-    let document = note(&text, &[&a, &b]);
-    let receipt = registry.submit(document.as_bytes()).unwrap();
-    assert_eq!(receipt.index, 1);
-    // Now two keys must sign: one is not enough.
-    let text = add(1, receipt.leaf, &c, 2);
-    assert!(registry.submit(note(&text, &[&a, &c]).as_bytes()).is_err());
-    // A revocation by the threshold; the revoked key then counts for nothing.
-    let revoke = format!(
-        "ita-key/1\nsource itaty\nowner acme\nprevious 1 {}\nrevoke acme.b since 1\nthreshold 1\n",
-        digest_string(&receipt.leaf)
+    let claim = event(1, receipt.leaf, "revoke acme.b since 1", 2);
+    assert!(registry.submit(note(&claim, &[&a, &b]).as_bytes()).is_err());
+    assert!(registry.submit(note(&claim, &[&a]).as_bytes()).is_err());
+    let receipt = registry.submit(note(&claim, &[&a, &c]).as_bytes()).unwrap();
+    let add_e = event(2, receipt.leaf, &format!("add {}", key_line(&e)), 2);
+    assert!(
+        registry
+            .submit(note(&add_e, &[&b, &c, &e]).as_bytes())
+            .is_err()
     );
     let receipt = registry
-        .submit(note(&revoke, &[&a, &b]).as_bytes())
+        .submit(note(&add_e, &[&a, &c, &e]).as_bytes())
         .unwrap();
-    let text = add(2, receipt.leaf, &c, 1);
-    assert!(registry.submit(note(&text, &[&b, &c]).as_bytes()).is_err());
-    assert!(registry.submit(note(&text, &[&a, &c]).as_bytes()).is_ok());
+    // A revocation that would leave the owner below the floor is refused: four keys at a
+    // threshold of 2 keep three, then a threshold of 3 would leave no key more than it.
+    let revoke = event(3, receipt.leaf, "revoke acme.d", 3);
+    assert!(
+        registry
+            .submit(note(&revoke, &[&a, &c]).as_bytes())
+            .is_err()
+    );
+    // A request kind is not logged: no client of this release replays it.
+    for action in [
+        format!("recover {}", key_line(&signer("acme.r", 42))),
+        "cancel 1".to_owned(),
+    ] {
+        let text = event(3, receipt.leaf, &action, 2);
+        assert!(registry.submit(note(&text, &[&a, &c]).as_bytes()).is_err());
+    }
     // Another owner cannot register a key that is acme's.
-    let mut theirs =
-        "ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\n".to_owned();
+    let mut theirs = registration("zenith", &[], 2);
     theirs.push_str(&format!(
         "key zenith.a {}\n",
         encode_base64(&a.key().public)
     ));
-    let stolen = signer("zenith.a", 10);
+    let [y1, y2, _] = <[Signer; 3]>::try_from(trio("zenith", 20)).ok().unwrap();
+    theirs.push_str(&format!("key {}\nkey {}\n", key_line(&y1), key_line(&y2)));
+    let stolen = signer("zenith.a", 30);
     assert!(
         registry
-            .register(note(&theirs, &[&stolen]).as_bytes(), false)
+            .register(note(&theirs, &[&stolen, &y1, &y2]).as_bytes(), false)
             .is_err()
     );
 }
@@ -130,51 +197,39 @@ fn key_events_follow_the_owners_threshold() {
 #[test]
 fn registrations_follow_the_name_rules_and_the_chain() {
     let (_, mut registry, _, _) = open();
-    let a = signer("acme.a", 10);
-    register(&mut registry, "acme", &[&a], 1);
-    let z = signer("x.a", 20);
+    register(&mut registry, "acme", &trio("acme", 10));
+    let z = trio("x", 20);
+    let zs: Vec<&Signer> = z.iter().collect();
     for owner in ["acme", "4cme", "std", "itauna", "a"] {
-        let text = format!(
-            "ita-owner/1\nsource itaty\nowner {owner}\nprevious none\nthreshold 1\nkey {}\n",
-            key_line(&z)
-        );
+        let text = registration(owner, &zs, 2);
         assert!(
             matches!(
-                registry.register(note(&text, &[&z]).as_bytes(), false),
+                registry.register(note(&text, &zs).as_bytes(), false),
                 Err(Refusal::Invalid(_))
             ),
             "{owner}"
         );
     }
-    let near = format!(
-        "ita-owner/1\nsource itaty\nowner acmes\nprevious none\nthreshold 1\nkey {}\n",
-        key_line(&z)
-    );
+    let near = registration("acmes", &zs, 2);
     assert!(matches!(
-        registry.register(note(&near, &[&z]).as_bytes(), false),
+        registry.register(note(&near, &zs).as_bytes(), false),
         Err(Refusal::Held(_))
     ));
-    assert!(
-        registry
-            .register(note(&near, &[&z]).as_bytes(), true)
-            .is_ok()
-    );
+    assert!(registry.register(note(&near, &zs).as_bytes(), true).is_ok());
     // A key that does not sign its registration is refused.
-    let y = signer("y.a", 21);
-    let text = format!(
-        "ita-owner/1\nsource itaty\nowner zenith\nprevious none\nthreshold 1\nkey {}\n",
-        key_line(&y)
-    );
+    let y = trio("y", 21);
+    let ys: Vec<&Signer> = y.iter().collect();
+    let text = registration("zenith", &ys, 2);
     assert!(
         registry
-            .register(note(&text, &[&z]).as_bytes(), false)
+            .register(note(&text, &ys[..2]).as_bytes(), false)
             .is_err()
     );
     // Another source's entry is refused.
     let other = text.replace("source itaty", "source acme");
     assert!(
         registry
-            .register(note(&other, &[&y]).as_bytes(), false)
+            .register(note(&other, &ys).as_bytes(), false)
             .is_err()
     );
     assert_eq!(registry.size(), 2);
@@ -184,8 +239,7 @@ fn registrations_follow_the_name_rules_and_the_chain() {
 #[test]
 fn cosignatures_are_verified_and_monotonic() {
     let (store, mut registry, _, witnesses) = open();
-    let a = signer("acme.a", 10);
-    register(&mut registry, "acme", &[&a], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     let next = String::from_utf8(store.get(WITNESS_NEXT, 1 << 20).unwrap().unwrap()).unwrap();
     let text = parse_note(&next).unwrap().text;
     // A key that is not a witness, a time from the future, a bad signature: refused.
@@ -233,8 +287,7 @@ fn cosignatures_are_verified_and_monotonic() {
             .size,
         1
     );
-    let b = signer("zenith.a", 11);
-    register(&mut registry, "zenith", &[&b], 1);
+    register(&mut registry, "zenith", &trio("zenith", 11));
     let next = String::from_utf8(store.get(WITNESS_NEXT, 1 << 20).unwrap().unwrap()).unwrap();
     let text = parse_note(&next).unwrap().text;
     assert!(
@@ -259,10 +312,8 @@ fn cosignatures_are_verified_and_monotonic() {
 #[test]
 fn a_store_changed_by_hand_refuses_to_open() {
     let (store, mut registry, config, _) = open();
-    let a = signer("acme.a", 10);
-    register(&mut registry, "acme", &[&a], 1);
-    let b = signer("zenith.a", 11);
-    register(&mut registry, "zenith", &[&b], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
+    register(&mut registry, "zenith", &trio("zenith", 11));
     let shared: Arc<dyn Store> = store.clone();
     let reopened = Registry::open(shared.clone(), &config, Arc::new(Fixed(1_000))).unwrap();
     assert_eq!(
@@ -321,8 +372,7 @@ fn a_size_signed_again_after_a_rotation_keeps_its_first_root() {
     let (store, mut registry, config, _) = open();
     let first = String::from_utf8(store.get("root/1", 1 << 20).unwrap().unwrap()).unwrap();
     let first = root_digest(&first);
-    let a = signer("acme.a", 10);
-    register(&mut registry, "acme", &[&a], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     assert_eq!(root_line(&store, 1), format!("ita-root 1 {first}"));
     let stored = store.get(&checkpoint_path(1), 1 << 20).unwrap().unwrap();
     drop(registry);
@@ -338,8 +388,7 @@ fn a_size_signed_again_after_a_rotation_keeps_its_first_root() {
     );
     assert_eq!(store.get(WITNESS_NEXT, 1 << 20).unwrap().unwrap(), stored);
     // The rotation takes effect from the checkpoint of the next entry.
-    let b = signer("zenith.a", 11);
-    register(&mut registry, "zenith", &[&b], 1);
+    register(&mut registry, "zenith", &trio("zenith", 11));
     assert_eq!(root_line(&store, 2), format!("ita-root 2 {second}"));
     assert_eq!(root_line(&store, 1), format!("ita-root 1 {first}"));
     drop(registry);
@@ -350,8 +399,7 @@ fn a_size_signed_again_after_a_rotation_keeps_its_first_root() {
 #[test]
 fn a_size_first_signed_after_a_rotation_names_the_new_root() {
     let (store, mut registry, _, _) = open();
-    let a = signer("acme.a", 10);
-    register(&mut registry, "acme", &[&a], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     drop(registry);
     // A crash before the checkpoint of size 1 was stored: it was never signed, so it is
     // signed under the version in force when the service opens.
@@ -365,8 +413,7 @@ fn a_size_first_signed_after_a_rotation_names_the_new_root() {
 #[test]
 fn a_stored_checkpoint_naming_another_root_refuses_to_open() {
     let (store, mut registry, _, _) = open();
-    let a = signer("acme.a", 10);
-    register(&mut registry, "acme", &[&a], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     drop(registry);
     let (second, rotated) = rotate(&store);
     let path = checkpoint_path(1);
@@ -406,13 +453,13 @@ fn a_stored_checkpoint_naming_another_root_refuses_to_open() {
 #[test]
 fn a_store_whose_earlier_checkpoint_names_a_root_no_longer_served_refuses_to_open() {
     let (store, mut registry, _, _) = open();
-    register(&mut registry, "acme", &[&signer("acme.a", 10)], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     drop(registry);
     let (_, rotated) = rotate(&store);
     let shared: Arc<dyn Store> = store.clone();
     let mut registry = Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap();
-    register(&mut registry, "zenith", &[&signer("zenith.a", 11)], 1);
-    register(&mut registry, "nadir", &[&signer("nadir.a", 12)], 1);
+    register(&mut registry, "zenith", &trio("zenith", 11));
+    register(&mut registry, "nadir", &trio("nadir", 12));
     drop(registry);
     // A crash before checkpoint/3 was stored, and root/2 restored away: checkpoint/2 names a
     // version the chain no longer has, so the service must not sign size 3 under version 1.
@@ -435,13 +482,13 @@ fn a_store_whose_earlier_checkpoint_names_a_root_no_longer_served_refuses_to_ope
 #[test]
 fn stored_checkpoints_never_name_a_lower_version_as_the_size_grows() {
     let (store, mut registry, _, _) = open();
-    register(&mut registry, "acme", &[&signer("acme.a", 10)], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     drop(registry);
     let (_, rotated) = rotate(&store);
     let shared: Arc<dyn Store> = store.clone();
     let mut registry = Registry::open(shared.clone(), &rotated, Arc::new(Fixed(1_000))).unwrap();
-    register(&mut registry, "zenith", &[&signer("zenith.a", 11)], 1);
-    register(&mut registry, "nadir", &[&signer("nadir.a", 12)], 1);
+    register(&mut registry, "zenith", &trio("zenith", 11));
+    register(&mut registry, "nadir", &trio("nadir", 12));
     drop(registry);
     // checkpoint/3 replaced by the log's own text of size 3 under version 1, signed by version
     // 1's log key: a valid checkpoint of the chain, below the version 2 of size 2.
@@ -471,7 +518,7 @@ fn stored_checkpoints_never_name_a_lower_version_as_the_size_grows() {
 #[test]
 fn a_store_written_before_checkpoints_named_their_root_refuses_to_open() {
     let (store, mut registry, config, _) = open();
-    register(&mut registry, "acme", &[&signer("acme.a", 10)], 1);
+    register(&mut registry, "acme", &trio("acme", 10));
     drop(registry);
     let path = checkpoint_path(1);
     let line = root_line(&store, 1);

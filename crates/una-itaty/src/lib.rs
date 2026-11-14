@@ -52,9 +52,6 @@ pub const MAX_ARCHIVE: usize = (256 << 20) + (4 << 20);
 /// The most needs a release states (rule 23).
 pub const MAX_NEEDS: usize = 1_000;
 
-/// The most keys an owner registers at once, or holds.
-pub const MAX_OWNER_KEYS: usize = 32;
-
 /// The most releases a name holds (rule 23: 10,000 releases read per name).
 pub const MAX_RELEASES_PER_NAME: usize = 10_000;
 

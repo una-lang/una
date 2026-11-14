@@ -806,18 +806,12 @@ fn audit_project(project: &Project, facts_of: &mut FactsOf<'_>) -> (Vec<Diagnost
     for finding in &result.findings {
         if let Some(package) = packages.get(finding.package) {
             if finding.is_note() {
-                // A fact of the owner's chain names the owner and the source itself, so it is
-                // said once for all the owner's packages.
-                let note = if finding.of_owner() {
-                    format!("note: {}", finding.text(package))
-                } else {
-                    format!(
-                        "note: `{}` ({}): {}",
-                        package.name,
-                        package.source,
-                        finding.text(package)
-                    )
-                };
+                let note = format!(
+                    "note: `{}` ({}): {}",
+                    package.name,
+                    package.source,
+                    finding.text(package)
+                );
                 if !said.contains(&note) {
                     said.push(note);
                 }
@@ -968,7 +962,7 @@ pub(crate) fn audit_command(
             );
         }
     }
-    // An unsettled chain is the registry's misbehavior (U7010); evidence from an absence is
+    // An entry a registry must not log is its misbehavior (U7010); evidence from an absence is
     // said, unattributed, with the places read, and decides nothing.
     let (attributed, unattributed): (Vec<_>, Vec<_>) = evidence
         .into_iter()

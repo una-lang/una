@@ -86,25 +86,31 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// A registry `acme`: the owner `acme` registered with the key of seed 60 and the keys of
-/// `more`, at threshold 1, its checkpoint cosigned `ago` seconds before now. Returns it, the
-/// owner's key pair of seed 60, and its signing key as a publisher holds it.
-fn acme_with(
-    ago: u64,
-    more: &[&(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
-) -> (
-    TestRegistry,
-    (ed25519_dalek::SigningKey, una_project::tlog::note::Key),
-    SigningKey,
-) {
+/// The seeds and names of the owner `acme`'s keys: three, at the key floor with threshold 2.
+const ACME_KEYS: [(u8, &str); 3] = [(60, "acme.laptop"), (66, "acme.desk"), (67, "acme.spare")];
+
+/// A registry `acme`: the owner `acme` registered with its three keys ([`ACME_KEYS`]) at
+/// threshold 2, its checkpoint cosigned `ago` seconds before now. Returns it and the signing
+/// keys a publisher holds: the first two, which meet the threshold.
+fn acme_with(ago: u64) -> (TestRegistry, Vec<SigningKey>) {
     let mut registry = TestRegistry::new("acme");
-    let pair = keypair(60, "acme.laptop");
-    let mut keys = vec![&pair];
-    keys.extend_from_slice(more);
-    registry.register_keys("acme", &keys, 1, &[], 0);
+    let pairs: Vec<_> = ACME_KEYS
+        .iter()
+        .map(|(seed, name)| keypair(*seed, name))
+        .collect();
+    let keys: Vec<_> = pairs.iter().collect();
+    registry.register_keys("acme", &keys, 2, &[], 0);
     registry.checkpoint(now() - ago);
-    let signing = SigningKey::from_secret("acme.laptop", &[60; 32]).unwrap();
-    (registry, pair, signing)
+    let signing = ACME_KEYS[..2]
+        .iter()
+        .map(|(seed, name)| SigningKey::from_secret(name, &[*seed; 32]).unwrap())
+        .collect();
+    (registry, signing)
+}
+
+/// The publisher's signing keys, as `submit` takes them.
+fn signers(signing: &[SigningKey]) -> Vec<&SigningKey> {
+    signing.iter().collect()
 }
 
 /// The registry's client at its latest checkpoint, read from its files as a mirror serves them.
@@ -190,16 +196,8 @@ fn project(name: &str, registry: &TestRegistry) -> (PathBuf, PathBuf, PathBuf) {
 
 /// A registry `acme` that holds `acme/ledger 0.3.1`, published through the library into a
 /// directory and logged a month ago, and a fresh checkpoint.
-fn published_registry(name: &str) -> (TestRegistry, SigningKey, PathBuf) {
-    published_registry_with(name, &[])
-}
-
-/// [`published_registry`], the owner registered with the keys of `more` too.
-fn published_registry_with(
-    name: &str,
-    more: &[&(ed25519_dalek::SigningKey, una_project::tlog::note::Key)],
-) -> (TestRegistry, SigningKey, PathBuf) {
-    let (mut registry, _, signing) = acme_with(40 * DAY, more);
+fn published_registry(name: &str) -> (TestRegistry, Vec<SigningKey>, PathBuf) {
+    let (mut registry, signing) = acme_with(40 * DAY);
     let inbox = scratch("ita-registry-inbox", name);
     let size = registry.entries.len() as u64;
     let checkpoint =
@@ -233,7 +231,7 @@ fn published_registry_with(
         &std::collections::BTreeMap::new(),
         &std::collections::BTreeSet::new(),
         &state,
-        &[&signing],
+        &signers(&signing),
     )
     .unwrap();
     // Published into a directory: the registry's inbox.
@@ -429,7 +427,12 @@ fn a_published_release_is_locked_fetched_yanked_and_audited() {
     let mut reader = client(&registry);
     let state = NameState::read(&mut reader, "acme/ledger").unwrap();
     drop(reader);
-    let yank = submit::yank(&state, &Version::parse_full("0.3.1").unwrap(), &[&signing]).unwrap();
+    let yank = submit::yank(
+        &state,
+        &Version::parse_full("0.3.1").unwrap(),
+        &signers(&signing),
+    )
+    .unwrap();
     submit::send(&Directory::new(&inbox), &yank).unwrap();
     log_submission(&mut registry, &inbox, &yank, "acme/ledger");
     registry.checkpoint(now() - 30);
@@ -447,29 +450,20 @@ fn a_published_release_is_locked_fetched_yanked_and_audited() {
     assert!(out.contains("audit reports nothing as clean"), "{out}");
 }
 
-/// The registry then logs an owner chain that does not settle: the audit refuses the package
-/// (U7010) and reports, apart, the evidence against the registry at the lock's `registry`
-/// section (U7010), read from the client's typed record.
+/// The registry then logs an owner-chain entry it must not log, a revocation that leaves the
+/// owner below the key floor (two keys at threshold 2), though the owner's threshold signs it:
+/// the audit refuses the package (U7010) and reports, apart, the evidence against the registry
+/// at the lock's `registry` section (U7010), naming that entry's log index, read from the
+/// client's typed record.
 #[test]
-fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
-    let b = keypair(61, "acme.b");
-    let c = keypair(62, "acme.c");
-    let d = keypair(64, "acme.d");
-    let (mut registry, _, _) = published_registry_with("unsettled", &[&b, &d]);
-    let (dir, mirror, itaoca) = project("unsettled", &registry);
+fn audit_reports_an_unacceptable_owner_chain_entry_as_evidence_against_the_registry() {
+    let (mut registry, _, _) = published_registry("unacceptable");
+    let (dir, mirror, itaoca) = project("unacceptable", &registry);
     let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &itaoca);
     assert_eq!(status, 0, "{out}{err}");
-    // `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and `C` claim `B` since
-    // 0: two claims whose own-word floors alternate, so the chain never settles.
-    let a = keypair(60, "acme.laptop");
-    registry.owner_event(
-        "acme",
-        &format!("add {}", support::key_text(&c.1)),
-        1,
-        &[&a, &c],
-    );
-    let claim = registry.owner_event("acme", "revoke acme.laptop since 0", 1, &[&a, &b]);
-    registry.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
+    let laptop = keypair(ACME_KEYS[0].0, ACME_KEYS[0].1);
+    let desk = keypair(ACME_KEYS[1].0, ACME_KEYS[1].1);
+    let below = registry.owner_event("acme", "revoke acme.spare", 2, &[&laptop, &desk]);
     registry.checkpoint(now() - 30);
     registry.write(&mirror);
     let (status, out, _) = una_in(&["una", "--json", "ita", "audit", path(&dir)], &itaoca);
@@ -490,8 +484,7 @@ fn audit_reports_an_unsettled_owner_chain_as_evidence_against_the_registry() {
     assert_eq!(evidence.len(), 1, "{out}");
     let message = evidence[0]["message"].as_str().unwrap();
     assert!(
-        message.contains("the owner `acme`")
-            && message.contains(&format!("first at the log index {claim}")),
+        message.contains(&format!("it logged the entry {below} of the owner `acme`")),
         "{message}"
     );
 }

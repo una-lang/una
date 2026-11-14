@@ -39,13 +39,14 @@
 #                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
 #                channel stays closed, which the ordinary test run ignores; it runs right after
 #                `native`, with no Docker gate running, so the machine is as quiet as the run gets
-#   owner-replay the exhaustive models of the replay of an owner's chain (spec/30 §14 rule 5)
-#                and of yanks against it (spec/30 §15 rule 6), both to depth 5: `cargo test
-#                --release --locked -p una-project --lib -- --ignored --exact
-#                tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture`,
-#                then the same with registry::yank_model::yanks_hold_their_invariants_to_depth_five;
-#                the ordinary test run checks both to depth 3, and the gate passes only when both
-#                pass
+#   owner-replay scripts/owner-replay-gate.sh (#1997, ADR 0122 Amendment 14): the replay of an
+#                owner's chain (spec/30 §14 rule 5) against the oracle of its contract and
+#                against the literal reference of the amendment, at every question, on every
+#                chain of the bounded model to depth 4, to depth 5 on a narrow alphabet, on
+#                seeded walks of depths 6 to 9 and on the named rows; the
+#                release test binary run directly under a supervisor (a death by signal and
+#                the 60-minute watchdog fail), one test each, with exact recorded counts; the
+#                ordinary test run checks the same to depth 3
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
@@ -696,16 +697,12 @@ gate_timing-channels() {
 }
 
 gate_owner-replay() {
-    # The exhaustive model of the replay of an owner's chain (spec/30 §14 rule 5), then the
-    # model of yanks against it (spec/30 §15 rule 6): both ignored in the ordinary run, which
-    # checks each to depth 3, and both run here to depth 5; the gate passes only when both
-    # pass. They are unit tests of una-project, since the model of signatures that stands in
-    # for Ed25519 exists only in that crate's test build; `--release`, for their millions of
-    # replays; `--nocapture`, so the log holds their counts.
-    run owner-replay sh -c '
-        cargo test --release --locked -p una-project --lib -- --ignored --exact tlog::owner::model::owner_replay_holds_its_contract_to_depth_five --nocapture &&
-        cargo test --release --locked -p una-project --lib -- --ignored --exact registry::yank_model::yanks_hold_their_invariants_to_depth_five --nocapture
-    '
+    # The replay of an owner's chain against its oracle and the literal reference of ADR 0122
+    # Amendment 14 (#1997): scripts/owner-replay-gate.sh, which builds the release test binary
+    # of una-project, runs each test directly under its supervisor, and checks the guards and
+    # the recorded counts. Exhaustive depth 5 on the whole alphabet is a soak (card #2018), not
+    # here.
+    run owner-replay scripts/owner-replay-gate.sh 3600
 }
 
 # #766: Miri on the runtime's unit tests, and the native equivalence test against the runtime

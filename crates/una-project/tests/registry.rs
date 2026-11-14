@@ -26,7 +26,7 @@ use una_project::registry::watch::{
     encode_stored_root, judge, parse_stored_root, to_judge, watch,
 };
 use una_project::tlog::note::parse_note;
-use una_project::tlog::owner::{MAX_CLAIMS, Unsettled};
+use una_project::tlog::owner::{RULE, Unacceptable};
 use una_project::tlog::release::parse_statement;
 use una_project::tlog::state::Advisory;
 use una_project::tlog::state::{Signers, parse_advisory};
@@ -558,7 +558,6 @@ fn audit_reports_yanks_advisories_compromises_and_owner_events() {
                         ..fixed_late.clone()
                     },
                 ],
-                sealed: Vec::new(),
             }
         } else {
             Facts {
@@ -765,7 +764,8 @@ fn the_client_reads_yanks_and_advisories() {
     let name = NameState::read(&mut client, "acme/ledger").unwrap();
     assert!(name.yanked.contains(&v("0.3.0")));
     assert_eq!(name.head.as_ref().unwrap().0, 4, "the advisory is the head");
-    // A yank signed by a key that is not the owner's refuses the name.
+    // A yank signed by a key that is not the owner's: one the owner's keys as logged do not
+    // sign, skipped and recorded against the registry, never a refusal of the name.
     let mut forged = TestRegistry::new("acme");
     forged.register("acme", &owner);
     forged.release("acme/ledger", "0.3.0", "none", "none", &[&owner]);
@@ -775,7 +775,7 @@ fn the_client_reads_yanks_and_advisories() {
         forged.previous("acme/ledger")
     );
     let document = support::signed(&yank, &[&stranger]);
-    forged.append("acme/ledger", &document);
+    let unsigned = forged.append("acme/ledger", &document);
     forged.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
@@ -789,7 +789,15 @@ fn the_client_reads_yanks_and_advisories() {
         None,
     )
     .unwrap();
-    assert!(client.state("acme/ledger", Line::Zero(3)).is_err());
+    let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
+    assert!(!state[0].yanked, "{state:?}");
+    assert_eq!(
+        audit::evidence(&client),
+        [audit::Evidence::Unsigned {
+            name: "acme/ledger".to_owned(),
+            index: unsigned,
+        }]
+    );
 }
 
 /// A yank that counts only with a key compromised before it is void, as such a release is: it
@@ -799,25 +807,28 @@ fn a_yank_signed_after_its_keys_compromise_is_void() {
     let mut test = TestRegistry::new("acme");
     let first = keypair(60, "acme.laptop");
     let second = keypair(62, "acme.desktop");
+    let [c1, c2] = support::companions(&first);
     test.register("acme", &first);
+    // The signers are explicit: `first` with its first companion, the owner's threshold of 2.
     test.owner_event(
         "acme",
         &format!("add {}", support::key_text(&second.1)),
-        1,
-        &[&first, &second],
+        2,
+        &[&first, &c1, &second],
     );
-    let (good, _) = test.release("acme/ledger", "0.3.0", "none", "none", &[&first]);
+    let (good, _) = test.release("acme/ledger", "0.3.0", "none", "none", &[&first, &c1]);
     let yank = format!(
         "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
         test.previous("acme/ledger")
     );
-    let document = support::signed(&yank, &[&first]);
+    // Signed after `first` is compromised (since `good`): `c1` alone counts, below 2.
+    let document = support::signed(&yank, &[&first, &c1]);
     test.append("acme/ledger", &document);
     test.owner_event(
         "acme",
         &format!("revoke {} since {good}", first.1.name),
-        1,
-        &[&second],
+        2,
+        &[&second, &c2],
     );
     test.checkpoint(NOW);
     let memory = Memory {
@@ -1295,51 +1306,6 @@ fn unbundling_notes_a_floor_it_cannot_store() {
     assert!(done.notes.iter().all(|note| note.starts_with("note: ")));
 }
 
-/// Consent the lock records (`accepted <owner> <index>`) is not reported again by the audit; a
-/// pending event the lock did not accept is.
-#[test]
-fn the_audit_leaves_out_what_the_lock_accepted() {
-    let mut test = TestRegistry::new("acme");
-    let owner = keypair(60, "acme.laptop");
-    test.register("acme", &owner);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    let newcomer = keypair(64, "acme.new");
-    let request = test.recover("acme", "recover", &newcomer.1, &[]);
-    // The lock's resolution point holds the request: a recorded consent counts only for an
-    // index below it that is pending there (`spec/30 §14` rule 8).
-    test.checkpoint(NOW - 100);
-    let resolution = test.entries.len() as u64;
-    test.checkpoint(NOW);
-    let memory = Memory {
-        source: "acme".to_owned(),
-        files: test.files.clone(),
-    };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
-    let mut locked = Locked {
-        source: "acme".to_owned(),
-        name: "acme/ledger".to_owned(),
-        version: v("0.3.1"),
-        logged: Some(index),
-        digest: Some(digest),
-        resolution,
-        accepted: BTreeSet::new(),
-        effects: BTreeSet::new(),
-    };
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert_eq!(facts.pending, [request]);
-    locked.accepted.insert(request);
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert!(facts.pending.is_empty(), "{facts:?}");
-    assert!(facts.key_changes.is_empty(), "{facts:?}");
-}
-
 /// Reading a bundle is one pass: its work grows with its bytes, entry by entry.
 #[test]
 fn bundles_read_in_linear_time() {
@@ -1496,62 +1462,6 @@ fn a_published_source_is_the_one_its_workspace_declares() {
 }
 
 // --- Recheck: void owner events, the promise window, disjoint signers, bad promises ----------
-
-/// The attack: a thief who stole the owner's key K adds a key T, yanks with T and publishes with
-/// T; the owner revokes K as compromised since before the theft. The yank is void and reported,
-/// the release is skipped as compromised, and the name is never refused.
-#[test]
-fn entries_signed_only_through_a_void_owner_event_are_void() {
-    let mut test = TestRegistry::new("acme");
-    let stolen = keypair(60, "acme.laptop");
-    let kept = keypair(61, "acme.desktop");
-    let thief = keypair(66, "acme.thief");
-    test.register_keys("acme", &[&stolen, &kept], 1, &[], 0);
-    let (good, _) = test.release("acme/ledger", "0.3.0", "none", "none", &[&stolen]);
-    test.owner_event(
-        "acme",
-        &format!("add {}", support::key_text(&thief.1)),
-        1,
-        &[&stolen, &thief],
-    );
-    let yank = format!(
-        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
-        test.previous("acme/ledger")
-    );
-    let document = support::signed(&yank, &[&thief]);
-    test.append("acme/ledger", &document);
-    test.release("acme/ledger", "0.3.1", "none", "none", &[&thief]);
-    test.owner_event(
-        "acme",
-        &format!("revoke {} since {good}", stolen.1.name),
-        1,
-        &[&kept],
-    );
-    test.checkpoint(NOW);
-    let memory = Memory {
-        source: "acme".to_owned(),
-        files: test.files.clone(),
-    };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
-    let marks = client.marks("acme/ledger").unwrap();
-    assert!(marks.yanked.is_empty(), "{marks:?}");
-    assert_eq!(marks.voided.len(), 1);
-    let releases = client.releases("acme/ledger").unwrap();
-    let late = releases
-        .iter()
-        .find(|r| r.statement.version == v("0.3.1"))
-        .unwrap();
-    assert!(late.compromised);
-    let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
-    assert!(state.iter().any(|r| r.version == v("0.3.1") && r.yanked));
-}
 
 /// The window runs from the later of the witness time and the local clock less the skew: an
 /// honest submission read at a checkpoint 20 hours old is not broken. Kept is final; broken is
@@ -1858,34 +1768,98 @@ fn a_run_judges_a_bounded_number_of_submissions() {
     assert_eq!((judged.len(), waiting), (3, 0));
 }
 
-/// The audit honors an accepted index only as `una ita lock` does, and a recovery accepted while
-/// pending that has taken effect is reported: its new key needs fresh consent.
+// --- Owner chains in the audit (`spec/30 §14` rule 5) --------------------------------------
+
+/// The client of `test` at its latest checkpoint.
+fn client_of<'t>(memory: &'t Memory, test: &TestRegistry) -> Registry<'t> {
+    Registry::open(
+        "acme",
+        memory,
+        &test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        None,
+    )
+    .unwrap()
+}
+
+/// The attack: a thief who stole the owner's keys K and L adds a key T, yanks with T and K and
+/// publishes with them; the owner, with its two other keys, claims K compromised since before
+/// the theft. The addition is void, so the yank is void and reported, the release is skipped as
+/// compromised, and the name is never refused.
 #[test]
-fn the_audit_honors_accepted_indices_as_the_lock_does() {
-    let day = 24 * 3600;
+fn entries_signed_only_through_a_void_owner_event_are_void() {
     let mut test = TestRegistry::new("acme");
-    let owner = keypair(60, "acme.laptop");
-    test.register("acme", &owner);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    test.checkpoint(NOW - 10 * day);
-    let newcomer = keypair(64, "acme.new");
-    let request = test.recover("acme", "recover", &newcomer.1, &[]);
-    test.checkpoint(NOW - 9 * day);
-    let resolution = test.entries.len() as u64;
-    test.append("other", "filler");
+    let stolen = keypair(60, "acme.laptop");
+    let also = keypair(61, "acme.phone");
+    let kept = keypair(62, "acme.desktop");
+    let spare = keypair(63, "acme.spare");
+    let thief = keypair(66, "acme.thief");
+    test.register_keys("acme", &[&stolen, &also, &kept, &spare], 2, &[], 0);
+    let (good, _) = test.release("acme/ledger", "0.3.0", "none", "none", &[&stolen, &kept]);
+    test.owner_event(
+        "acme",
+        &format!("add {}", support::key_text(&thief.1)),
+        2,
+        &[&stolen, &also, &thief],
+    );
+    let yank = format!(
+        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.0\n{}",
+        test.previous("acme/ledger")
+    );
+    let document = support::signed(&yank, &[&thief, &stolen]);
+    test.append("acme/ledger", &document);
+    test.release("acme/ledger", "0.3.1", "none", "none", &[&thief, &stolen]);
+    test.owner_event(
+        "acme",
+        &format!("revoke {} since {good}", stolen.1.name),
+        2,
+        &[&kept, &spare],
+    );
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
         files: test.files.clone(),
     };
-    let mut client = Registry::open(
+    let mut client = client_of(&memory, &test);
+    let marks = client.marks("acme/ledger").unwrap();
+    assert!(marks.yanked.is_empty(), "{marks:?}");
+    assert_eq!(marks.voided.len(), 1);
+    let releases = client.releases("acme/ledger").unwrap();
+    let late = releases
+        .iter()
+        .find(|r| r.statement.version == v("0.3.1"))
+        .unwrap();
+    assert!(late.compromised);
+    let state = client.state("acme/ledger", Line::Zero(3)).unwrap();
+    assert!(state.iter().any(|r| r.version == v("0.3.1") && r.yanked));
+    assert!(audit::evidence(&client).is_empty());
+}
+
+/// The audit honors an `accepted` or an `effect` index only as `una ita lock` does: for a
+/// recovery or a dispute of the owner's chain, which this release never replays. Either line
+/// naming a key event after the resolution point counts for nothing: the key change is
+/// reported.
+#[test]
+fn the_audit_honors_accepted_indices_as_the_lock_does() {
+    let mut test = TestRegistry::new("acme");
+    let owner = keypair(60, "acme.laptop");
+    test.register("acme", &owner);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
+    test.checkpoint(NOW - 100);
+    let resolution = test.entries.len() as u64;
+    let added = keypair(64, "acme.new");
+    let change = test.owner_event(
         "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
+        &format!("add {}", support::key_text(&added.1)),
+        2,
+        &[&owner, &added],
+    );
+    test.checkpoint(NOW);
+    let memory = Memory {
+        source: "acme".to_owned(),
+        files: test.files.clone(),
+    };
+    let mut client = client_of(&memory, &test);
     let mut locked = Locked {
         source: "acme".to_owned(),
         name: "acme/ledger".to_owned(),
@@ -1893,185 +1867,28 @@ fn the_audit_honors_accepted_indices_as_the_lock_does() {
         logged: Some(index),
         digest: Some(digest),
         resolution,
-        accepted: [request].into_iter().collect(),
+        accepted: BTreeSet::new(),
         effects: BTreeSet::new(),
     };
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert_eq!(facts.accepted_effects, [request], "{facts:?}");
-    let kinds: Vec<Kind> = audit::findings(0, &facts)
-        .into_iter()
-        .map(|f| f.kind)
-        .collect();
-    assert!(
-        kinds.contains(&Kind::AcceptedTookEffect(request)),
-        "{kinds:?}"
-    );
-    // An index at or past the resolution point is not honored: the event is reported.
-    locked.resolution = request;
-    locked.accepted = [request].into_iter().collect();
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert!(facts.accepted_effects.is_empty());
-    assert!(facts.key_changes.contains(&request), "{facts:?}");
-}
-
-/// An owner chain with more claims than the cap that a dispute's reset follows has a sealed
-/// segment (`spec/30 §14` rule 5): the audit names it, its first and last log index, its claims
-/// and the reset that sealed it, as a note that decides nothing, once per owner and source.
-#[test]
-fn the_audit_names_a_sealed_segment_of_the_owners_chain() {
-    let day = 24 * 3600;
-    let a = keypair(60, "acme.a");
-    let d = keypair(61, "acme.d");
-    let r = keypair(63, "acme.r");
-    let mut test = TestRegistry::new("acme");
-    test.register_keys("acme", &[&a, &d], 1, &[], 1);
-    test.release("acme/ledger", "0.3.0", "none", "none", &[&a]);
-    let honest = test.owner_event("acme", "revoke acme.d", 1, &[&a]);
-    for _ in 0..=MAX_CLAIMS {
-        test.owner_event("acme", "revoke acme.d since 0", 1, &[&a]);
+    for (accepted, effects) in [(false, false), (true, false), (false, true)] {
+        locked.accepted = accepted.then_some(change).into_iter().collect();
+        locked.effects = effects.then_some(change).into_iter().collect();
+        let facts = audit::facts(&mut client, &locked).unwrap();
+        assert_eq!(facts.key_changes, [change], "{facts:?}");
+        assert!(facts.pending.is_empty() && facts.accepted_effects.is_empty());
+        let kinds: Vec<Kind> = audit::findings(0, &facts)
+            .into_iter()
+            .map(|f| f.kind)
+            .collect();
+        assert_eq!(kinds, [Kind::KeyChange(change)]);
     }
-    test.checkpoint(NOW - 30 * day);
-    let dispute = test.recover("acme", "dispute", &r.1, &[]);
-    test.checkpoint(NOW - 29 * day);
-    test.append("other", "filler");
-    let reset = test.checkpoint(NOW - 20 * day);
-    test.owner_event("acme", &format!("revoke acme.a since {honest}"), 1, &[&r]);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&r]);
-    test.checkpoint(NOW);
-    let memory = Memory {
-        source: "acme".to_owned(),
-        files: test.files.clone(),
-    };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
-    let locked = Locked {
-        source: "acme".to_owned(),
-        name: "acme/ledger".to_owned(),
-        version: v("0.3.1"),
-        logged: Some(index),
-        digest: Some(digest),
-        resolution: test.entries.len() as u64,
-        accepted: BTreeSet::new(),
-        effects: BTreeSet::new(),
-    };
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert_eq!(facts.sealed.len(), 1, "{facts:?}");
-    let sealed = facts.sealed[0].clone();
-    assert_eq!(
-        (sealed.first, sealed.request, sealed.reset, sealed.claims),
-        (0, dispute, reset, MAX_CLAIMS + 1)
-    );
-    let findings = audit::findings(0, &facts);
-    let named: Vec<&audit::Finding> = findings
-        .iter()
-        .filter(|f| f.kind == Kind::Sealed(sealed.clone()))
-        .collect();
-    assert_eq!(named.len(), 1, "{findings:?}");
-    assert!(named[0].is_note() && named[0].of_owner());
-    assert_eq!(
-        named[0].text(&locked),
-        format!(
-            "the chain of the owner `acme` at `acme` has a sealed segment, log entries 0 to {} ({} claims), sealed by the recovery or dispute at log entry {dispute}, in effect from {reset}: no release logged in it counts, the owner's own included; the owner republishes the ones it needs",
-            sealed.last,
-            MAX_CLAIMS + 1
-        )
-    );
-    // The release the owner published after the reset counts: the note is the only finding.
-    assert!(findings.iter().all(audit::Finding::is_note), "{findings:?}");
 }
 
-/// A lock whose `effect` line records a recovery in effect at its resolution point passes the
-/// audit for that effect; an `effect` index that was only pending there is not honored, and the
-/// pending recovery is reported.
+/// An owner chain that holds a kind of entry this release does not replay, a co-signer change
+/// here: the audit cannot verify the package, unavailable (U7013), never refused, and nothing is
+/// evidence against the registry.
 #[test]
-fn an_effect_line_passes_the_audit_for_its_effect() {
-    let day = 24 * 3600;
-    let mut test = TestRegistry::new("acme");
-    let owner = keypair(60, "acme.laptop");
-    test.register("acme", &owner);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    test.checkpoint(NOW - 20 * day);
-    let newcomer = keypair(64, "acme.new");
-    let request = test.recover("acme", "recover", &newcomer.1, &[]);
-    test.checkpoint(NOW - 19 * day);
-    test.append("other", "filler");
-    test.checkpoint(NOW - 10 * day);
-    // The lock's point: the recovery took effect before it.
-    let resolution = test.entries.len() as u64;
-    let other = keypair(65, "acme.other");
-    test.checkpoint(NOW);
-    let memory = Memory {
-        source: "acme".to_owned(),
-        files: test.files.clone(),
-    };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
-    let locked = Locked {
-        source: "acme".to_owned(),
-        name: "acme/ledger".to_owned(),
-        version: v("0.3.1"),
-        logged: Some(index),
-        digest: Some(digest.clone()),
-        resolution,
-        accepted: BTreeSet::new(),
-        effects: [request].into_iter().collect(),
-    };
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert!(audit::findings(0, &facts).is_empty(), "{facts:?}");
-    // A second registry: the recovery still pending at the lock's point. An `effect` line for
-    // it is not honored, and the pending recovery is reported.
-    let mut pending = TestRegistry::new("acme");
-    pending.register("acme", &owner);
-    let (index, digest) = pending.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    pending.checkpoint(NOW - 100);
-    let request = pending.recover("acme", "recover", &other.1, &[]);
-    pending.checkpoint(NOW);
-    let resolution = pending.entries.len() as u64;
-    let memory = Memory {
-        source: "acme".to_owned(),
-        files: pending.files.clone(),
-    };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &pending.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
-    let forged = Locked {
-        source: "acme".to_owned(),
-        name: "acme/ledger".to_owned(),
-        version: v("0.3.1"),
-        logged: Some(index),
-        digest: Some(digest),
-        resolution,
-        accepted: BTreeSet::new(),
-        effects: [request].into_iter().collect(),
-    };
-    let facts = audit::facts(&mut client, &forged).unwrap();
-    assert_eq!(facts.pending, [request], "{facts:?}");
-}
-
-// --- Co-signer changes wait, and competing requests freeze (the ADR 0122 amendment) ---------
-
-const DAY: u64 = 86_400;
-
-/// A pending change of recovery co-signers is reported by the audit, as a pending recovery is.
-#[test]
-fn the_audit_reports_a_pending_cosigner_change() {
+fn the_audit_reports_an_unreplayed_owner_entry_as_unavailable() {
     let mut test = TestRegistry::new("acme");
     let owner = keypair(60, "acme.laptop");
     test.register("acme", &owner);
@@ -2082,7 +1899,7 @@ fn the_audit_reports_a_pending_cosigner_change() {
     let change = test.owner_event(
         "acme",
         &format!("cosigners 1 {}", support::key_text(&trustee.1)),
-        1,
+        2,
         &[&owner],
     );
     test.checkpoint(NOW);
@@ -2090,14 +1907,7 @@ fn the_audit_reports_a_pending_cosigner_change() {
         source: "acme".to_owned(),
         files: test.files.clone(),
     };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
+    let mut client = client_of(&memory, &test);
     let locked = Locked {
         source: "acme".to_owned(),
         name: "acme/ledger".to_owned(),
@@ -2108,100 +1918,36 @@ fn the_audit_reports_a_pending_cosigner_change() {
         accepted: BTreeSet::new(),
         effects: BTreeSet::new(),
     };
-    let facts = audit::facts(&mut client, &locked).unwrap();
-    assert_eq!(facts.pending, [change], "{facts:?}");
-}
-
-/// A chain frozen by competing disputes is not audited as clean: its facts are refused (U7010),
-/// naming the freeze; and a yank logged from the freeze on is void.
-#[test]
-fn a_frozen_owner_chain_is_refused_by_the_audit() {
-    let mut test = TestRegistry::new("acme");
-    let owner = keypair(60, "acme.laptop");
-    test.register("acme", &owner);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&owner]);
-    test.checkpoint(NOW - 30 * DAY);
-    let resolution = test.entries.len() as u64;
-    let first = keypair(68, "acme.first");
-    let second = keypair(69, "acme.second");
-    test.recover("acme", "dispute", &first.1, &[]);
-    test.checkpoint(NOW - 29 * DAY);
-    let freeze = test.recover("acme", "dispute", &second.1, &[]);
-    test.checkpoint(NOW - 28 * DAY);
-    let yank = format!(
-        "ita-yank/1\nsource acme\nname acme/ledger\nversion 0.3.1\n{}",
-        test.previous("acme/ledger")
+    let (code, why) = audit::facts(&mut client, &locked).unwrap_err();
+    assert_eq!(code, una_diag::Code::U7013, "{why}");
+    assert!(
+        why.contains(&format!("a co-signer change, at log entry {change},")),
+        "{why}"
     );
-    let document = support::signed(&yank, &[&owner]);
-    test.append("acme/ledger", &document);
-    test.checkpoint(NOW);
-    let memory = Memory {
-        source: "acme".to_owned(),
-        files: test.files.clone(),
-    };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
-    let marks = client.marks("acme/ledger").unwrap();
-    assert!(marks.yanked.is_empty(), "{marks:?}");
-    assert_eq!(marks.voided.len(), 1);
-    let locked = Locked {
-        source: "acme".to_owned(),
-        name: "acme/ledger".to_owned(),
-        version: v("0.3.1"),
-        logged: Some(index),
-        digest: Some(digest),
-        resolution,
-        accepted: BTreeSet::new(),
-        effects: BTreeSet::new(),
-    };
-    let (code, refusal) = audit::facts(&mut client, &locked).unwrap_err();
-    assert_eq!(code, una_diag::Code::U7010);
-    assert!(refusal.contains("frozen"), "{refusal}");
-    assert!(refusal.contains(&format!("position {freeze}")), "{refusal}");
+    assert!(audit::evidence(&client).is_empty());
 }
 
-/// A chain the registry logged that does not settle: the audit refuses the package (U7010) and
-/// reports the registry's misbehavior as evidence, from the client's typed record. The chain is
-/// the replay's own example: `A` adds `C`, then `A` and `B` claim `A` since 0, and `A`, `B` and
-/// `C` claim `B` since 0, two claims whose own-word floors alternate.
+/// An owner chain entry the registry must not log, a claim signed by the key it names: the
+/// audit refuses the package (U7010) and reports the registry's misbehavior as evidence, from
+/// the client's typed record, once however often it is read.
 #[test]
-fn the_audit_reports_an_unsettled_chain_as_evidence() {
+fn the_audit_reports_an_unacceptable_entry_as_evidence() {
     let mut test = TestRegistry::new("acme");
     let a = keypair(60, "acme.a");
     let b = keypair(61, "acme.b");
     let c = keypair(62, "acme.c");
     let d = keypair(64, "acme.d");
-    test.register_keys("acme", &[&a, &b, &d], 1, &[], 0);
-    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&d]);
+    test.register_keys("acme", &[&a, &b, &c, &d], 2, &[], 0);
+    let (index, digest) = test.release("acme/ledger", "0.3.1", "none", "none", &[&c, &d]);
     test.checkpoint(NOW - 100);
     let resolution = test.entries.len() as u64;
-    test.owner_event(
-        "acme",
-        &format!("add {}", support::key_text(&c.1)),
-        1,
-        &[&a, &c],
-    );
-    let claim = test.owner_event("acme", "revoke acme.a since 0", 1, &[&a, &b]);
-    test.owner_event("acme", "revoke acme.b since 0", 1, &[&a, &b, &c]);
+    let claim = test.owner_event("acme", "revoke acme.a since 0", 2, &[&a, &b]);
     test.checkpoint(NOW);
     let memory = Memory {
         source: "acme".to_owned(),
         files: test.files.clone(),
     };
-    let mut client = Registry::open(
-        "acme",
-        &memory,
-        &test.pin(),
-        &Point::Latest { now: NOW + 60 },
-        None,
-    )
-    .unwrap();
+    let mut client = client_of(&memory, &test);
     assert!(audit::evidence(&client).is_empty());
     let locked = Locked {
         source: "acme".to_owned(),
@@ -2213,26 +1959,32 @@ fn the_audit_reports_an_unsettled_chain_as_evidence() {
         accepted: BTreeSet::new(),
         effects: BTreeSet::new(),
     };
-    assert!(audit::facts(&mut client, &locked).is_err());
-    let unsettled = Unsettled {
-        owner: "acme".to_owned(),
-        index: claim,
-        passes: 6,
+    let (code, _) = audit::facts(&mut client, &locked).unwrap_err();
+    assert_eq!(code, una_diag::Code::U7010);
+    let evidence = audit::evidence(&client);
+    let bad = match evidence.as_slice() {
+        [audit::Evidence::Unacceptable(bad)] => bad.clone(),
+        other => panic!("{other:?}"),
     };
     assert_eq!(
-        audit::evidence(&client),
-        [audit::Evidence::Unsettled(unsettled.clone())]
+        bad,
+        Unacceptable {
+            owner: "acme".to_owned(),
+            index: claim,
+            why: bad.why.clone(),
+            rule: RULE,
+        }
     );
+    assert!(bad.why.contains("signed by `acme.a` itself"), "{}", bad.why);
+    assert!(evidence[0].attributed());
     // Read again, it is recorded once.
     assert!(audit::facts(&mut client, &locked).is_err());
-    assert_eq!(
-        audit::evidence(&client),
-        [audit::Evidence::Unsettled(unsettled)]
-    );
-    let text = audit::evidence(&client)[0].text("acme");
+    assert_eq!(audit::evidence(&client), evidence);
+    let text = evidence[0].text("acme");
     assert!(
         text.contains("evidence against the registry `acme`")
-            && text.contains(&format!("first at the log index {claim}")),
+            && text.contains(&format!("the entry {claim} of the owner `acme`"))
+            && text.contains("the owner's packages are refused"),
         "{text}"
     );
 }
@@ -2382,11 +2134,10 @@ fn a_bundle_carries_every_places_copy_of_a_kept_checkpoint() {
     assert!(copy.get_all("checkpoint/4", 100).unwrap().is_empty());
 }
 
-/// Every kind of the client's typed misbehavior is evidence the audit reports: a cadence gap
-/// the client met, with its range of sizes; a missing deadline checkpoint, with the request's
-/// index and target witness time.
+/// A cadence gap the client met is evidence the audit reports, with its range of sizes, as a
+/// note: evidence from an absence.
 #[test]
-fn the_audit_reports_deadline_and_cadence_evidence() {
+fn the_audit_reports_cadence_evidence() {
     let a = keypair(60, "acme.a");
     let mut test = TestRegistry::new("acme");
     // A registry that leaves its checkpoints below a cosigned one uncosigned.
@@ -2449,23 +2200,6 @@ fn the_audit_reports_deadline_and_cadence_evidence() {
         evidence[0]
             .text("acme")
             .contains("2 of them served the same copy")
-    );
-    let missing = audit::Evidence::from(Misbehavior::MissingDeadline {
-        owner: "acme".to_owned(),
-        index: 7,
-        target: 1_000_000,
-        places: vec!["a".to_owned(), "b".to_owned()],
-        places_agreeing: 2,
-    });
-    assert!(!missing.attributed());
-    let text = missing.text("acme");
-    assert!(
-        text.starts_with("unattributed: a place or the registry `acme`")
-            && text.contains("log index 7")
-            && text.contains("the owner `acme`")
-            && text.contains("target witness time 1000000")
-            && text.contains("places read: a, b; 2 of them"),
-        "{text}"
     );
 }
 

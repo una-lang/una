@@ -28,8 +28,8 @@ client refuses, or a forged one it accepts, is a finding either way.
 """
 
 from .. import itaty
-from ..packages import (OWNER, ROOT, SOURCE, SOURCE_URL, manifest, mirror_files, registry_for,
-                        registry_lock_entry, under, vendored)
+from ..packages import (OWNER, ROOT, SOURCE, SOURCE_URL, manifest, mirror_files, register_owner,
+                        registry_for, registry_lock_entry, under, vendored)
 from ..program import MUST_ACCEPT, MUST_REJECT, Program, rng_for
 from .dependencies import module
 
@@ -155,26 +155,26 @@ def y1(seed, edition, form=None):
     if edition != "0.4":
         return _probe("Y1", seed, edition, form, "lock-check")
     order, yanked, avoided, recent, need = _y1_scenario(rng, form)
-    reg, owner = registry_for(seed, "y")
+    reg, owners = registry_for(seed, "y")
     old_time = itaty.T0 - 30 * itaty.DAY
     point_time = itaty.T0
     releases = {}
     # Noise: releases of another name and of another line, which resolution must not take.
     noise = rng.choice(OTHER_NAMES)
-    reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), [owner])
+    reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), owners)
     for v in [v for v in order if v not in recent]:
-        reg.release(NAME, v, release_files(NAME, v, len(releases) + 1), [owner])
+        reg.release(NAME, v, release_files(NAME, v, len(releases) + 1), owners)
         releases[v] = (old_time, False)
-    reg.release(NAME, "0.4.0", release_files(NAME, "0.4.0", 40), [owner])
+    reg.release(NAME, "0.4.0", release_files(NAME, "0.4.0", 40), owners)
     for v in sorted(yanked & set(releases), key=key):
-        reg.yank(NAME, v, [owner])
+        reg.yank(NAME, v, owners)
     reg.checkpoint(old_time)
     for v in sorted(recent, key=key):
-        reg.release(NAME, v, release_files(NAME, v, len(releases) + 1), [owner])
+        reg.release(NAME, v, release_files(NAME, v, len(releases) + 1), owners)
         releases[v] = (point_time - 3600, False)
         reg.checkpoint(point_time - 3600)
     for v in yanked & recent:
-        reg.yank(NAME, v, [owner])
+        reg.yank(NAME, v, owners)
     releases = {v: (t, v in yanked) for v, (t, _) in releases.items()}
     reg.append("other", "filler")
     size = reg.checkpoint(point_time)
@@ -281,27 +281,26 @@ def y2(seed, edition, form=None):
     expires = itaty.T0 - itaty.DAY if form == "expired-root" else itaty.EXPIRES
     reg = itaty.Registry(SOURCE, "hunt-y", witness_k=1 if form == "threshold-raised" else 2,
                          expires=expires)
-    owner = itaty.key_from("hunt-y:owner", f"{OWNER}.laptop")
-    reg.register(OWNER, [owner])
+    owners = register_owner(reg, "hunt-y")
     if rng.random() < 0.5:
         noise = rng.choice(OTHER_NAMES)
-        reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), [owner])
+        reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), owners)
     files = release_files(NAME, version, n)
     attacker = itaty.key_from("hunt-y:attacker", f"{OWNER}.laptop")
     if form == "manifest-field":
         # A registry that logs a statement whose `manifest` is not the archive's `ita.una`.
-        reg.release(NAME, version, files, [owner])
+        reg.release(NAME, version, files, owners)
         idx, doc, signer, content = reg.releases[(NAME, version)]
         reg.entries.pop()
         reg.heads.pop(NAME)
         forged = doc.split("\n\n", 1)[0].replace(
             "manifest " + itaty.sha256_digest(files["ita.una"].encode()),
             "manifest " + itaty.sha256_digest(b"another manifest\n"))
-        document = itaty.signed(forged, [owner])
+        document = itaty.signed(forged, owners)
         index = reg.append(NAME, document)
-        reg.releases[(NAME, version)] = (index, document, owner, content)
+        reg.releases[(NAME, version)] = (index, document, signer, content)
     else:
-        reg.release(NAME, version, files, [owner])
+        reg.release(NAME, version, files, owners)
     witnesses = None
     if form == "revoked-witness":
         witnesses = reg.witnesses[:2]
@@ -427,13 +426,12 @@ def y3(seed, edition, form=None):
     # Which witnesses the rotations touch, `a` and `b`, and the third, `c`.
     a, b, c = rng.sample(range(3), 3)
     reg = itaty.Registry(SOURCE, "hunt-y3", witness_k=1 if form == "honest-raised-enough" else 2)
-    owner = itaty.key_from("hunt-y3:owner", f"{OWNER}.laptop")
-    reg.register(OWNER, [owner])
+    owners = register_owner(reg, "hunt-y3")
     if rng.random() < 0.5:
         noise = rng.choice(OTHER_NAMES)
-        reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), [owner])
+        reg.release(noise, "0.3.9", release_files(noise, "0.3.9", 9), owners)
     files = release_files(NAME, version, n)
-    reg.release(NAME, version, files, [owner])
+    reg.release(NAME, version, files, owners)
     first = list(reg.witnesses)
     if form == "honest-revoked-enough":
         cosigners = first

@@ -110,8 +110,8 @@ class Dep:
                                     consented=consented,
                                     trusted=self.trusted if consented else ())
             return under(DEP_DIR, self.loaded), [entry], []
-        reg, owner = registry_for(self.seed, "d")
-        reg.release(self.name, VERSION, self.files, [owner], authority=_authority(self.files))
+        reg, owners = registry_for(self.seed, "d")
+        reg.release(self.name, VERSION, self.files, owners, authority=_authority(self.files))
         size = reg.checkpoint(itaty.T0)
         files = vendored(reg, self.name, VERSION, self.files, size)
         if self.loaded != self.files:

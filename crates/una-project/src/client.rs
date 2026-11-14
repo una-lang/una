@@ -25,9 +25,7 @@
 //!   and its whole chain walked from the head, with the count of rule 36.1
 //!   ([`crate::tlog::map::walk`]);
 //! - **an owner's keys** are replayed from its chain, the name `owner:<owner>`
-//!   ([`crate::tlog::owner::replay`]), the
-//!   recovery delay measured in witness time from the checkpoints kept by size,
-//!   `checkpoint/<size>`, each verified when it is read;
+//!   ([`crate::tlog::owner::replay`]), each entry judged as logged;
 //! - **a release** is a release statement of the name's chain, signed by its owner's threshold of
 //!   keys valid at its log position, of the source and name it is read for, each version once
 //!   (rule 36), and with no authority or trust beyond the highest release of its identity logged
@@ -54,9 +52,7 @@
 //! **Costs.** Opening: O(R) root versions and one checkpoint, O(log L) hashes for its consistency
 //! proof in a log of L entries. An entry: O(log L) hashes and tiles. A name: at most 32 map tiles
 //! and O(256 + 8 k) hashes for its head, and O(E log L) for its E entries. A logged time: at most
-//! [`MAX_SCAN`] kept checkpoints; a recovery's effect: O(W/64 + 64) kept checkpoints for the W
-//! sizes from the request to its deadline, the pinned multiples of [`CADENCE`] and then the
-//! sizes up to the deadline, at most [`MAX_DEADLINE_SPAN`] sizes.
+//! [`MAX_SCAN`] kept checkpoints.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,7 +61,7 @@ use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Checkpoint, Key, Note};
-use crate::tlog::owner::{self, History, ReplayError, Standing, Unsettled};
+use crate::tlog::owner::{self, History, ReplayError, Standing, Unacceptable};
 use crate::tlog::release::{self, Statement};
 use crate::tlog::root::{self, Root};
 use crate::tlog::state::{self, Advisory, Signers, Yank};
@@ -87,12 +83,6 @@ pub const MAX_SCAN: usize = 64;
 /// The sizes a registry cosigns by the witness threshold whatever else it does: every multiple
 /// of this (`spec/30 §14` rule 1, the pinned cadence).
 pub const CADENCE: u64 = 64;
-/// The most sizes past a request that the search for its deadline reads (`spec/30 §14` rule
-/// 1): 2^23, at least ten times a week of a large registry at 10^5 entries a day
-/// (7 * 10^5 * 10 = 7 * 10^6 < 2^23 = 8,388,608), so at most 2^17 pinned checkpoints and 64
-/// more are read. Past it, the result is unavailable ([`Omission::ScanCap`]).
-pub const MAX_DEADLINE_SPAN: u64 = 1 << 23;
-
 /// A checkpoint accepted under a root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Accepted {
@@ -277,14 +267,6 @@ pub(crate) fn threshold_of(named: &Root, chain: &[(Root, String)]) -> usize {
     named.witnesses.threshold.max(last.witnesses.threshold)
 }
 
-/// The first size after the multiple of [`CADENCE`] below `end`, at least 1: where the scan
-/// for a deadline at or before `end` reads every size.
-fn bracket_low(end: u64) -> u64 {
-    (end.saturating_sub(1) / CADENCE)
-        .saturating_mul(CADENCE)
-        .saturating_add(1)
-}
-
 /// The prefix proof of a lock's point that names an older root version: what [`prefix_proof`]
 /// found.
 enum Proof {
@@ -439,29 +421,22 @@ pub struct Floors<'f> {
 
 /// What the client found against a rule a registry MUST keep (`spec/30 §14`), every place of
 /// the source read, for `una ita audit` to report to its witnesses and to other places. Only
-/// [`Misbehavior::Unsettled`], which signed entries show, is the registry's misbehavior; the
+/// [`Misbehavior::Unacceptable`] and [`Misbehavior::Unsigned`], which signed entries show, are
+/// the registry's misbehavior; the
 /// others are evidence from an absence, which any place read may have caused, two places
 /// included, since two mirrors can be one party: they never assert the registry's fault.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Misbehavior {
-    /// An owner chain, or a prefix of it, that does not settle within the pass cap: the
-    /// registry's misbehavior.
-    Unsettled(Unsettled),
-    /// A request whose deadline checkpoint no place serves: the first checkpoint at or after
-    /// its seven-day target with the witness threshold of cosignatures, which a registry
-    /// MUST keep, so the request's effect cannot be decided. Evidence from an absence.
-    MissingDeadline {
-        /// The owner whose chain holds the request.
-        owner: String,
-        /// The request's log index.
+    /// An entry of an owner's chain that a registry must not have logged, naming the rule it
+    /// was judged by: the registry's misbehavior.
+    Unacceptable(Unacceptable),
+    /// A release or a yank that its owner's keys as logged at its position do not sign: the
+    /// registry's misbehavior, skipped and never a refusal of the name.
+    Unsigned {
+        /// The package name.
+        name: String,
+        /// The log index of the statement.
         index: u64,
-        /// Its target witness time: seven days after it was logged, in seconds.
-        target: u64,
-        /// The places read.
-        places: Vec<String>,
-        /// The fewest places that served, of a checkpoint of the deadline range, a copy with
-        /// exactly the merged cosignatures.
-        places_agreeing: usize,
     },
     /// Sizes over which no checkpoint carries the witness threshold of cosignatures, more than
     /// the 64 a registry MAY leave between two such checkpoints. Evidence from an absence.
@@ -531,15 +506,6 @@ pub enum Omission {
     /// checkpoint, which retired witnesses need to count on it: a checkpoint or a tile of it
     /// served by no place. The lock point's size.
     PrefixProof(u64),
-    /// The search for a request's deadline reached [`MAX_DEADLINE_SPAN`] sizes past it, from
-    /// `from`, the size after the request, to `to`, without one: a log that grew faster than
-    /// any honest registry's in seven days, or a cap set lower; the result is unavailable.
-    ScanCap {
-        /// The size after the request.
-        from: u64,
-        /// The pinned size the search stopped at.
-        to: u64,
-    },
     /// No checkpoint of the witness threshold among these sizes, every place's copy merged,
     /// short of the point: the registry's cadence of one per 64 sizes is broken, or withheld.
     Cadence {
@@ -548,13 +514,6 @@ pub enum Omission {
         /// The last size scanned.
         to: u64,
     },
-    /// The start checkpoint of the request at this log index, the first that includes it,
-    /// carries fewer than the witness threshold of cosignatures as every place serves it.
-    StartCheckpoint(u64),
-    /// Witnesses' cosignatures that may be withheld: the verdict of the name, given, depends
-    /// on whether a recovery, a dispute or a co-signer change of its owner is in effect at the
-    /// earliest position its seven days allow, or later, as the cosignatures served say.
-    Cosignatures(String),
 }
 
 /// Why a place does not open: it did not serve, or it served what does not verify.
@@ -809,8 +768,9 @@ pub enum YankStanding {
     /// compromised or void before it, it is logged once its owner's chain was frozen, or its
     /// version is yanked already.
     Void,
-    /// It is not signed as required, which a registry following the rules never logs: the
-    /// name is refused (U7010), and `marks` is left unchanged.
+    /// Its owner's keys as logged do not sign it, which a registry following the rules never
+    /// logs: void, listed in [`Marks::voided`], and evidence against the registry, never a
+    /// refusal of the name.
     Unsigned,
 }
 
@@ -836,7 +796,14 @@ pub fn apply_yank(
             });
             return YankStanding::Void;
         }
-        Standing::Unsigned => return YankStanding::Unsigned,
+        Standing::Unsigned => {
+            marks.voided.push(Void {
+                index,
+                version: version.clone(),
+                why: "its owner's keys as logged at its position do not sign it".to_owned(),
+            });
+            return YankStanding::Unsigned;
+        }
     }
     if marks.yanked.contains_key(version) {
         marks.voided.push(Void {
@@ -880,11 +847,6 @@ pub struct Registry<'t> {
     /// When the prefix proof could not be completed, its omissions, recorded again by each
     /// result that would count a retired witness, and why, one sentence.
     unproven: (Vec<Omission>, String),
-    /// The deadlines found, by request index and target ([`Registry::deadline`]).
-    deadlines: BTreeMap<(u64, u64), (Option<u64>, Option<u64>)>,
-    /// The most sizes past a request its deadline search reads: [`MAX_DEADLINE_SPAN`], or
-    /// lower ([`Registry::lower_scan_cap`]).
-    scan_cap: u64,
     /// The kind of the failure of the current operation ([`Registry::take_failure`]).
     failure: Cell<Option<Failure>>,
     /// The omissions recorded and the tiles missing when the current operation began.
@@ -892,9 +854,6 @@ pub struct Registry<'t> {
     /// The threshold that counts the point's cosignatures: the larger of the version it names
     /// and the last root's.
     point_k: usize,
-    /// For an owner whose requests could be in effect earlier than the cosignatures served say,
-    /// its history with each at the earliest position its seven days allow.
-    eager: BTreeMap<String, History>,
     /// The owner chains seen not to settle, evidence against the registry, in the order seen.
     misbehavior: Vec<Misbehavior>,
     /// The omissions met since [`Registry::take_omitted`] was last called.
@@ -1140,8 +1099,6 @@ impl<'t> Registry<'t> {
             retired,
             prefix,
             unproven: (unproven, unproven_why),
-            deadlines: BTreeMap::new(),
-            scan_cap: MAX_DEADLINE_SPAN,
             failure: Cell::new(None),
             began: Cell::new((0, 0)),
             point_k,
@@ -1151,7 +1108,6 @@ impl<'t> Registry<'t> {
             point: accepted,
             kept: BTreeMap::new(),
             histories: BTreeMap::new(),
-            eager: BTreeMap::new(),
             misbehavior: Vec::new(),
             omitted: Vec::new(),
             observations: Vec::new(),
@@ -1283,32 +1239,6 @@ impl<'t> Registry<'t> {
         self.chain
             .last()
             .map(|(root, digest)| (root.version, digest.as_str()))
-    }
-
-    /// Refuses, as unavailable, the judgment of `note`, an entry of `name`'s chain at `index`,
-    /// by its owner's `history` when the earliest timing of the owner's requests would change
-    /// it (`spec/30 §14` rule 1, withheld cosignatures): an omission of cosignatures, recorded
-    /// for [`Registry::take_omitted`], never a verdict. `what` names the entry. O(S) for its S
-    /// signatures.
-    fn timing_settled(
-        &mut self,
-        name: &str,
-        history: &History,
-        note: &Note,
-        index: u64,
-        what: &str,
-    ) -> Result<(), Refusal> {
-        let differs = self
-            .eager
-            .get(owner_of(name))
-            .is_some_and(|eager| eager.judge(note, index) != history.judge(note, index));
-        if differs {
-            self.omitted.push(Omission::Cosignatures(name.to_owned()));
-            return Err(self.unserved(format!(
-                "{what} at log entry {index} stands or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint"
-            )));
-        }
-        Ok(())
     }
 
     /// A failure because what was served does not verify (U7010), one sentence naming the
@@ -1730,85 +1660,6 @@ impl<'t> Registry<'t> {
             .map_err(|problem| self.refuse(witness_problem(&problem)))
     }
 
-    /// Lowers the most sizes past a request that its deadline search reads to `sizes`, never
-    /// above [`MAX_DEADLINE_SPAN`]: for an audit that bounds its reads, and for tests.
-    pub fn lower_scan_cap(&mut self, sizes: u64) {
-        self.scan_cap = sizes.min(MAX_DEADLINE_SPAN);
-        // Every result a deadline went into is read again under the new cap.
-        self.deadlines.clear();
-        self.histories.clear();
-        self.eager.clear();
-        self.releases.clear();
-        self.marks.clear();
-    }
-
-    /// The deadline of a wait from the entry at `index` that ends at witness time `target`,
-    /// with the size of the last checkpoint read before it that has a witness time, or `None`
-    /// for each when no checkpoint up to the point reaches `target`. A registry cosigns every
-    /// multiple of [`CADENCE`] by the threshold, so the scan reads those, from the request on,
-    /// up to the first whose witness time reaches `target`, or to the point, and then each size
-    /// after the multiple below that one, up to the first whose witness time reaches `target`:
-    /// the deadline, where the deadline and pre-deadline checkpoints a registry must keep are:
-    /// the deadline D as `spec/30 §14` rule 5 defines it, which the registry finds alike.
-    /// So the first crossing found is the first among the pinned checkpoints; a later one that
-    /// dips below `target` is never read, and one between them never changes it. A pinned
-    /// checkpoint without a witness time, every place's copy merged, is an omission
-    /// ([`Omission::Cadence`]); a pinned size [`MAX_DEADLINE_SPAN`] past the request, or the
-    /// lowered cap, is one too ([`Omission::ScanCap`]). O(W/64 + 64) kept checkpoints for W
-    /// sizes from the request to its deadline, each read once and cached; the result is cached
-    /// by `index` and `target`.
-    fn deadline(&mut self, index: u64, target: u64) -> Result<(Option<u64>, Option<u64>), Refusal> {
-        if let Some(found) = self.deadlines.get(&(index, target)) {
-            return Ok(*found);
-        }
-        let point = self.point.checkpoint.size;
-        let from = index.saturating_add(1);
-        let mut previous: Option<u64> = None;
-        let mut end = point;
-        let mut pinned = from.div_ceil(CADENCE).saturating_mul(CADENCE);
-        while pinned < point {
-            if pinned.saturating_sub(from) >= self.scan_cap {
-                self.omitted.push(Omission::ScanCap { from, to: pinned });
-                return Err(self.unserved(format!(
-                    "the search for the deadline of the request at {index} reached size {pinned}, {} sizes past it, without one",
-                    self.scan_cap
-                )));
-            }
-            match self.kept(pinned)? {
-                Some(Kept {
-                    time: Some(time), ..
-                }) => {
-                    if time >= target {
-                        end = pinned;
-                        break;
-                    }
-                    previous = Some(pinned);
-                }
-                Some(kept) => return Err(self.cadence(pinned, pinned, kept.agreeing)),
-                None => return Err(self.cadence(pinned, pinned, usize::MAX)),
-            }
-            pinned = pinned.saturating_add(CADENCE);
-        }
-        let mut found = (None, None);
-        if end != point || self.point.time >= target {
-            let low = from.max(bracket_low(end));
-            for size in low..=end {
-                if let Some(Kept {
-                    time: Some(time), ..
-                }) = self.kept(size)?
-                {
-                    if time >= target {
-                        found = (Some(size), previous);
-                        break;
-                    }
-                    previous = Some(size);
-                }
-            }
-        }
-        self.deadlines.insert((index, target), found);
-        Ok(found)
-    }
-
     /// No checkpoint of the witness threshold among the sizes `from` to `to`, short of the
     /// point, every place's copy merged: an omission that makes the result unavailable, and
     /// evidence of a cadence gap.
@@ -1823,96 +1674,6 @@ impl<'t> Registry<'t> {
         self.unserved(format!(
             "no checkpoint from size {from} to {to} carries the witness threshold of cosignatures as any place serves it, which a registry must not leave"
         ))
-    }
-
-    /// The earliest position the seven days of the request logged at `index` could allow,
-    /// whatever cosignatures a place withholds, which can only lower a checkpoint's witness
-    /// time or leave it without one: one past the last kept checkpoint with a witness time
-    /// before the deadline of a wait from the request's start, found by the same scan, over
-    /// the same sizes, as [`Registry::recovery_effect`], when that is before its effect; its
-    /// effect otherwise. O(W/64 + 64) kept checkpoints, W the sizes from the request to its
-    /// deadline.
-    pub fn earliest_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
-        self.begin();
-        let effect = self.recovery_effect(index)?;
-        let point = self.point.checkpoint.size;
-        if index >= point {
-            return Ok(effect);
-        }
-        // The start: the k-th earliest of the merged cosignatures on the start checkpoint, the
-        // first that includes the request, which a registry cosigns by the threshold, so fewer
-        // than k witnesses, back-dating or withheld, cannot move it.
-        let start = self.start_time(index)?;
-        let target = start.saturating_add(owner::RECOVERY_DELAY);
-        // Why this agrees with the served effect for an honest registry, whatever k up to n:
-        // both read a checkpoint's witness time by the same order statistic, the k-th latest of
-        // its counted cosignatures, and find the deadline D by the same scan over the same
-        // sizes. An honest registry cosigns every multiple of 64, and every checkpoint it
-        // cosigns, by all its witnesses as time passes, so those witness times grow with the
-        // size: the first pinned multiple P whose witness time reaches the target is the first multiple
-        // at or after D, D lies after the multiple below P, and the scan of those sizes finds
-        // it. The registry cosigns the checkpoint just before D by the threshold, below the
-        // target (else it would be D), so the earliest position, one past the last checkpoint
-        // with a witness time read before D, is D itself. Withheld cosignatures can only lower
-        // a checkpoint's witness time or leave it without one, so the served D is that one or
-        // later, and a pinned one left without one is an omission of the cadence. A checkpoint
-        // before D cosigned later than D by a witness they share changes neither: its witness
-        // time is still below the target. A pinned checkpoint that reaches the target before a
-        // later one dips below it bounds the scan there, so the first crossing is the one found.
-        let (deadline, previous) = self.deadline(index, target)?;
-        if deadline.is_none() {
-            return Ok(effect);
-        }
-        let low = previous.map_or(index.saturating_add(1), |p| p.saturating_add(1));
-        Ok(match effect {
-            Some(effect) if effect <= low => Some(effect),
-            _ => Some(low),
-        })
-    }
-
-    /// When the request logged at `index` started its wait, as no place can move it: the k-th
-    /// earliest of the merged verified cosignatures on its start checkpoint, the first kept
-    /// checkpoint that includes it. One with fewer than k is an omission
-    /// ([`Omission::StartCheckpoint`]): the result that needs it is unavailable.
-    fn start_time(&mut self, index: u64) -> Result<u64, Refusal> {
-        let size = index.saturating_add(1);
-        let (cosigned, k) = match self.kept(size)? {
-            Some(kept) => (kept.cosigned, kept.k),
-            None => (Vec::new(), self.point_k),
-        };
-        match witness::logged_at(index, &cosigned, k) {
-            Ok(time) => Ok(time),
-            Err(_) => {
-                self.omitted.push(Omission::StartCheckpoint(index));
-                Err(self.unserved(format!(
-                    "the checkpoint of size {size}, the first that includes the request at {index}, carries fewer cosignatures than the witness threshold as every place serves it, which a registry must not leave"
-                )))
-            }
-        }
-    }
-
-    /// The first log position a recovery or a dispute logged at `index` governs (rule 38.1): the
-    /// size of the first kept checkpoint whose witness time is at least seven days after the
-    /// time the request was logged ([`Registry::logged_at`]); `None` when no checkpoint up to the
-    /// point is. A kept checkpoint that no place serves makes it unavailable, never later: a
-    /// registry keeps one for every size. Found by one scan, the same as
-    /// [`Registry::earliest_effect`]'s: the multiples of [`CADENCE`], which a registry cosigns
-    /// by the threshold, from the request up to the first whose witness time reaches the
-    /// target, then each size after the multiple below it, up to the first that does. O(W/64 +
-    /// 64) kept checkpoints, W the sizes from the request to its deadline; past
-    /// [`MAX_DEADLINE_SPAN`] sizes, unavailable ([`Omission::ScanCap`]).
-    pub fn recovery_effect(&mut self, index: u64) -> Result<Option<u64>, Refusal> {
-        self.begin();
-        let point = self.point.checkpoint.size;
-        if index >= point {
-            return Ok(None);
-        }
-        // The wait starts when the request was logged: the k-th EARLIEST of the witnesses'
-        // earliest cosignatures (rule 36.4), which fewer than k witnesses cannot move earlier,
-        // whatever a place leaves out. It ends at a checkpoint's witness time, the k-th LATEST.
-        let start = self.logged_at(index)?;
-        let target = start.saturating_add(owner::RECOVERY_DELAY);
-        Ok(self.deadline(index, target)?.0)
     }
 
     /// The documents no place served since the last call: each one made the result that
@@ -1937,47 +1698,13 @@ impl<'t> Registry<'t> {
     }
 
     /// The registry misbehavior this client has seen, every place of the source read
-    /// ([`Misbehavior`]): an owner chain that does not settle, whose names it refused (U7010);
-    /// a request with no deadline checkpoint; a gap of more than 64 sizes with no checkpoint of
-    /// the witness threshold; two checkpoints of one size naming different root versions. For `una ita audit` to report as evidence against the registry.
+    /// ([`Misbehavior`]): an owner-chain entry a registry must not log, whose owner's names it
+    /// refused (U7010); a release or a yank its owner's keys as logged do not sign; a gap of
+    /// more than 64 sizes with no checkpoint of the witness threshold; two checkpoints of one
+    /// size naming different root versions. For `una ita audit` to report as evidence against
+    /// the registry.
     pub fn misbehavior(&self) -> &[Misbehavior] {
         &self.misbehavior
-    }
-
-    /// Records a missing deadline checkpoint for the request of `owner` at `index` when its
-    /// earliest and served timings differ, every place having been read, with the fewest
-    /// places agreeing on a checkpoint the deadline search read: the pinned multiples of
-    /// [`CADENCE`] from the request on, then the sizes after the multiple below its served
-    /// effect, or the point, up to it. O(W/64 + 64) kept checkpoints, read once and cached.
-    fn missing_deadline(&mut self, owner: &str, index: u64) -> Result<(), Refusal> {
-        let earliest = self.earliest_effect(index)?;
-        let served = self.recovery_effect(index)?;
-        if earliest == served {
-            return Ok(());
-        }
-        let target = self.logged_at(index)?.saturating_add(owner::RECOVERY_DELAY);
-        // The sizes the deadline search read: the pinned ones, then every size after the
-        // multiple below the served effect, or the point.
-        let end = served.unwrap_or(self.point.checkpoint.size);
-        let from = index.saturating_add(1);
-        let low = from.max(bracket_low(end));
-        let pinned = (from.div_ceil(CADENCE)..)
-            .map(|at| at.saturating_mul(CADENCE))
-            .take_while(|size| *size < low);
-        let mut agreeing = usize::MAX;
-        for size in pinned.chain(low..=end) {
-            if let Some(kept) = self.kept(size)? {
-                agreeing = agreeing.min(kept.agreeing);
-            }
-        }
-        self.evidence(Misbehavior::MissingDeadline {
-            owner: owner.to_owned(),
-            index,
-            target,
-            places: self.transport.describe_all(),
-            places_agreeing: agreeing,
-        });
-        Ok(())
     }
 
     /// Records evidence against the registry, once.
@@ -2017,128 +1744,44 @@ impl<'t> Registry<'t> {
                     entry,
                 })
                 .collect();
-            let log = self.root.log.clone();
             let source = self.source.clone();
-            // The kind of an effect's failure, which ends the replay with it.
-            let mut effect_failure: Option<Failure> = None;
-            let replayed = {
-                let mut effect = |index: u64| {
-                    self.recovery_effect(index).inspect_err(|_| {
-                        effect_failure = self.failure.get();
-                    })
-                };
-                owner::replay(owner_name, &source, &logged, &log, &mut effect)
-            };
-            // An effect that could not be read: the owner's keys are unavailable here, with the
-            // omission the read recorded, never a verdict on its chain.
-            if let Err(ReplayError::Effect(why)) = &replayed {
-                self.failure
-                    .set(Some(effect_failure.unwrap_or(Failure::Unserved)));
-                return Err(format!("the registry `{source}`: {}", shown(why)));
-            }
-            // The timing no place can withhold: each recovery, dispute and co-signer change at
-            // the earliest position its seven days could allow. When the owner's verdict depends
-            // on which, a place may be withholding cosignatures: unavailable, never decided.
-            let mut eager_needed = false;
-            for (index, _, entry) in &entries {
-                let request = matches!(
-                    entry.event,
-                    owner::Event::Recover(_)
-                        | owner::Event::Dispute(_)
-                        | owner::Event::Cosigners(_)
-                );
-                if request && self.earliest_effect(*index)? != self.recovery_effect(*index)? {
-                    eager_needed = true;
-                }
-            }
-            let eager = if eager_needed {
-                let mut effect = |index: u64| self.earliest_effect(index);
-                let eager = owner::replay(owner_name, &source, &logged, &log, &mut effect);
-                if let Err(ReplayError::Effect(why)) = &eager {
-                    let kind = self.failure.get().unwrap_or(Failure::Unserved);
-                    self.failure.set(Some(kind));
-                    return Err(format!("the registry `{source}`: {}", shown(why)));
-                }
-                Some(eager)
-            } else {
-                None
-            };
-            let withheld = match (&replayed, &eager) {
-                (Err(ReplayError::Unsettled(_) | ReplayError::TooManyClaims(_)), _) => false,
-                (Ok(_), Some(Err(_))) | (Err(_), Some(Ok(_))) => true,
-                // Both settle but differ: the owner's keys, its requests or the positions their
-                // effects govern from depend on cosignatures a place may withhold, and a lock's
-                // consent and its key changes (rule 8) read them, so no history is decided here.
-                // The count of signature checks is not part of the history's meaning.
-                (Ok(served), Some(Ok(earliest))) => {
-                    let mut earliest = earliest.clone();
-                    earliest.checks = served.checks;
-                    earliest != *served
-                }
-                _ => false,
-            };
-            if withheld {
-                // Every place's copy of each kept checkpoint was read: a request whose timings
-                // differ has no deadline checkpoint any place serves.
-                for (index, _, entry) in &entries {
-                    let request = matches!(
-                        entry.event,
-                        owner::Event::Recover(_)
-                            | owner::Event::Dispute(_)
-                            | owner::Event::Cosigners(_)
-                    );
-                    if request {
-                        self.missing_deadline(owner_name, *index)?;
-                    }
-                }
-                self.omitted
-                    .push(Omission::Cosignatures(owner_name.to_owned()));
-                self.failure.set(Some(Failure::Unserved));
-                return Err(format!(
-                    "the registry `{source}`: the keys of the owner `{}` cannot be decided at this point, since whether a recovery, a dispute or a co-signer change is in effect depends on witnesses' cosignatures that no place served, which a place may withhold; its names are unavailable here: try another place or a later checkpoint",
-                    shown(owner_name)
-                ));
-            }
-            if let Some(Ok(eager)) = eager {
-                self.eager.insert(owner_name.to_owned(), eager);
-            }
-            match replayed {
-                Ok(history) => {
-                    for unsettled in &history.unsettled_prefixes {
-                        self.evidence(Misbehavior::Unsettled(unsettled.clone()));
-                    }
-                    history
-                }
+            match owner::replay(owner_name, &source, &logged) {
+                Ok(history) => history,
                 Err(ReplayError::Refused(why)) => {
                     self.failure.set(Some(Failure::Refused));
                     return Err(format!("the registry `{source}`: {}", shown(&why)));
                 }
-                Err(ReplayError::Effect(why)) => {
-                    self.failure
-                        .set(Some(effect_failure.unwrap_or(Failure::Unserved)));
-                    return Err(format!("the registry `{source}`: {}", shown(&why)));
-                }
-                // Not replayed: no release of the owner counts, the thief's included. A registry
-                // logs every claim, so this is no misbehavior.
-                Err(ReplayError::TooManyClaims(too)) => {
-                    self.failure.set(Some(Failure::Refused));
-                    return Err(format!(
-                        "the registry `{source}`: the chain of the owner `{}` holds {} claims of compromise, more than the {} a client replays, the first past them at the log index {}, so its names are unavailable and no release of it counts; the owner recovers by a registry dispute or registers under a new owner name",
-                        shown(&too.owner),
-                        too.claims,
-                        owner::MAX_CLAIMS,
-                        too.index
-                    ));
-                }
-                Err(ReplayError::Unsettled(unsettled)) => {
+                // An entry the registry must not have logged: evidence against it, and no
+                // release of the owner counts.
+                Err(ReplayError::Unacceptable(bad)) => {
                     let message = format!(
-                        "the registry `{source}` logged an owner chain that does not settle, which is registry misbehavior: the claims of compromise of `{}` change at every replay, first at the log index {}",
-                        shown(&unsettled.owner),
-                        unsettled.index
+                        "the registry `{source}` logged the entry {} of the owner `{}`, which it must not log: {}; the owner's packages are refused, and the owner registers under a new owner name, with new keys",
+                        bad.index,
+                        shown(&bad.owner),
+                        shown(&bad.why)
                     );
-                    self.evidence(Misbehavior::Unsettled(unsettled));
+                    self.evidence(Misbehavior::Unacceptable(bad));
                     self.failure.set(Some(Failure::Refused));
                     return Err(message);
+                }
+                Err(ReplayError::Contested(contested)) => {
+                    let claims: Vec<String> = contested.claims.iter().map(u64::to_string).collect();
+                    self.failure.set(Some(Failure::Refused));
+                    return Err(format!(
+                        "the registry `{source}`: the owner chain of `{}` is contested: the claims of compromise at log entries {} cannot all hold, so its packages are refused while it stays contested; a later claim of compromise by the owner can resolve it",
+                        shown(&contested.owner),
+                        claims.join(", ")
+                    ));
+                }
+                // A kind this release does not replay: unavailable, never a verdict.
+                Err(ReplayError::Unsupported(unsupported)) => {
+                    self.failure.set(Some(Failure::Unserved));
+                    return Err(format!(
+                        "the registry `{source}`: the owner chain of `{}` holds {}, at log entry {}, that this release of `una` does not replay, so its packages are unavailable; a later release of `una` judges it, or the owner registers under a new owner name, with new keys",
+                        shown(&unsupported.owner),
+                        unsupported.kind,
+                        unsupported.index
+                    ));
                 }
             }
         };
@@ -2160,6 +1803,8 @@ impl<'t> Registry<'t> {
         let history = self.history(owner_of(name))?;
         let mut out: Vec<LoggedRelease> = Vec::new();
         let mut highest: BTreeMap<Line, usize> = BTreeMap::new();
+        // The highest release of each identity that counted as it was logged, for rule 26.
+        let mut logged_highest: BTreeMap<Line, usize> = BTreeMap::new();
         for entry in chain {
             let statement = match entry.kind {
                 Kind::Release(statement) => *statement,
@@ -2184,52 +1829,52 @@ impl<'t> Registry<'t> {
                 )));
             }
             let index = entry.index;
-            // Keys compromised before it, keys that only void entries of the owner's chain
-            // bring in, and a chain frozen by then: what they sign is skipped, never counted.
+            // Its signers that counted as logged, less those the chain's compromises taint
+            // (`spec/30 §14` rule 6): it counts, or it is skipped, never a refusal of the name.
+            // One its owner's keys as logged do not sign is also evidence against the registry.
             let standing = history.judge(&entry.note, index);
-            // A verdict that depends on cosignatures a place may withhold is no verdict.
-            if let Some(eager) = self.eager.get(owner_of(name))
-                && eager.judge(&entry.note, index) != standing
-            {
-                let requests: Vec<u64> = eager.requests.keys().copied().collect();
-                for request in requests {
-                    self.missing_deadline(owner_of(name), request)?;
-                }
-                self.omitted.push(Omission::Cosignatures(name.to_owned()));
-                return Err(self.unserved(format!(
-                    "`{name} {}` counts or not as a recovery, a dispute or a co-signer change of its owner is in effect at its earliest position or later, which depends on witnesses' cosignatures that no place served, which a place may withhold; the name is unavailable here: try another place or a later checkpoint",
-                    statement.version
-                )));
-            }
+            let counted_then = !matches!(standing, Standing::Unsigned);
             let (signers, compromised) = match standing {
                 Standing::Counts(sound) => (sound, false),
                 Standing::Skipped(signers) => (signers, true),
                 Standing::Unsigned => {
-                    return Err(self.refuse(format!(
-                        "`{name} {}` is not signed by the threshold of its owner's keys valid at its log position {index}",
-                        statement.version
-                    )));
+                    self.evidence(Misbehavior::Unsigned {
+                        name: name.to_owned(),
+                        index,
+                    });
+                    (Vec::new(), true)
                 }
             };
-            // Rule 26, against the highest release of the identity logged before it. A release
-            // skipped as compromised is neither checked nor counted: what a thief signs cannot
-            // refuse the name.
+            // Rule 26, against the highest release of the identity logged before it that
+            // counts. A release skipped is neither checked nor counted: what a thief signs
+            // cannot refuse the name. One that fails it only because a release it relied on
+            // when it was logged no longer counts is skipped and noted, never a refusal.
             let line = statement.version.line();
+            let mut compromised = compromised;
             if !compromised
                 && let Some(earlier) = highest.get(&line).and_then(|at| out.get(*at))
                 && let Err(why) = release::within(&statement, &earlier.statement)
             {
-                return Err(self.refuse(format!(
-                    "{why}: the log holds a release that breaks rule 26"
-                )));
-            }
-            let replace = !compromised
-                && highest
+                let as_logged = logged_highest
                     .get(&line)
                     .and_then(|at| out.get(*at))
-                    .is_none_or(|earlier| earlier.statement.version < statement.version);
-            if replace {
+                    .is_some_and(|then| release::within(&statement, &then.statement).is_ok());
+                if !as_logged {
+                    return Err(self.refuse(format!(
+                        "{why}: the log holds a release that breaks rule 26"
+                    )));
+                }
+                compromised = true;
+            }
+            let higher = |at: Option<&usize>| {
+                at.and_then(|at| out.get(*at))
+                    .is_none_or(|earlier| earlier.statement.version < statement.version)
+            };
+            if !compromised && higher(highest.get(&line)) {
                 highest.insert(line, out.len());
+            }
+            if counted_then && higher(logged_highest.get(&line)) {
+                logged_highest.insert(line, out.len());
             }
             out.push(LoggedRelease {
                 index,
@@ -2292,17 +1937,15 @@ impl<'t> Registry<'t> {
                         )));
                     }
                     // How it stands is the owner replay's, never derived here
-                    // ([`apply_yank`], through `History::judge`), and only when the earliest
-                    // timing of its owner's requests would not change it.
-                    let what = format!("the yank of `{name} {}`", yank.version);
-                    self.timing_settled(name, &history, &entry.note, index, &what)?;
+                    // ([`apply_yank`], through `History::judge`): it stands or it is void,
+                    // never a refusal of the name.
                     if apply_yank(&mut marks, &history, &entry.note, index, &yank.version)
                         == YankStanding::Unsigned
                     {
-                        return Err(self.refuse(format!(
-                            "the yank of `{name} {}` at log entry {index} is not signed by the threshold of its owner's keys valid there",
-                            yank.version
-                        )));
+                        self.evidence(Misbehavior::Unsigned {
+                            name: name.to_owned(),
+                            index,
+                        });
                     }
                 }
                 Kind::Advisory(advisory) => {
@@ -2323,13 +1966,10 @@ impl<'t> Registry<'t> {
                     let needs_owner =
                         alone.needs_owner(advisory.fixed.is_some(), security_threshold);
                     // The owner's threshold counts as the owner replay judges the entry
-                    // (`History::judge`), once the earliest timing of the owner's requests
-                    // would not change it, its sound signers taken without the root's security
+                    // (`History::judge`), its sound signers taken without the root's security
                     // keys, so the two counts are of disjoint keys, and one key that is both
                     // never counts twice (§11 rule 11).
                     let owner_threshold = if needs_owner {
-                        let what = format!("the advisory {}", advisory.id);
-                        self.timing_settled(name, &history, &entry.note, index, &what)?;
                         match history.judge(&entry.note, index) {
                             Standing::Counts(sound) => history.at(index).is_some_and(|snapshot| {
                                 let owners = sound
