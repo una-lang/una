@@ -5129,6 +5129,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "times a walk Miri ran for over 18 minutes")]
     fn the_walk_of_start_is_linear_in_the_values_it_reaches() {
         // The move at `start` looks once at each object its captures reach: 16 times the values
         // take about 16 times the time, not 256 times.
@@ -5152,18 +5153,11 @@ mod tests {
             release(started);
             took
         }
-        // Under Miri, where each allocation is slow, 100 and 1,600 values rather than 5,000 and
-        // 80,000 (#2007); the full sizes run in the ordinary tests.
-        let (few, many) = if cfg!(miri) {
-            (100, 1_600)
-        } else {
-            (5_000, 80_000)
-        };
-        let small = (0..3).map(|_| walk(few)).min().unwrap();
-        let large = (0..3).map(|_| walk(many)).min().unwrap();
+        let small = (0..3).map(|_| walk(5_000)).min().unwrap();
+        let large = (0..3).map(|_| walk(80_000)).min().unwrap();
         assert!(
             large < small * 64,
-            "{small:?} for {few} rights, {large:?} for {many}"
+            "{small:?} for 5,000 rights, {large:?} for 80,000"
         );
     }
 }

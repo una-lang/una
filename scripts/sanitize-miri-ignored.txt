@@ -10,8 +10,9 @@
 # a test of the debug credit of the quarantine whose table sizes hold only at its full 65,536
 # slots, while Miri's has 64 (#1506), a timing test ignored in every build and run by hand
 # in a quiet window (#926), or a test that waits for a phase of the real clock within its
-# millisecond that Miri's simulated clock, which moves in steps of 5,000 ns, never reads, or a
-# test that uses the file system, which Miri's isolation refuses (#2007).
+# millisecond that Miri's simulated clock, which moves in steps of 5,000 ns, never reads, a test
+# that uses the file system, which Miri's isolation refuses, or a timing test that Miri ran for
+# over 18 minutes even at a fiftieth of its size (#2007).
 deadline::tests::a_covering_deadline_on_the_run_s_clock_is_never_before_it_late_in_the_millisecond
 ffi::tests::a_refused_task_aborts_the_run
 ffi::tests::a_refused_task_aborts_the_run_scenario
@@ -131,4 +132,5 @@ values::collections::tests::a_bit_set_the_allocator_cannot_give_scenario
 values::tests::a_reservation_left_unused_still_bounds_the_credit
 values::tests::a_reservation_within_the_debug_table_still_lowers_the_credit
 values::tests::an_import_that_reserves_more_than_twice_its_table_moves_the_release_bound
+values::tests::the_walk_of_start_is_linear_in_the_values_it_reaches
 values::tests::two_fresh_chains_compare_in_time_linear_in_their_depth
