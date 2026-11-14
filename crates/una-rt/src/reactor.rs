@@ -848,9 +848,16 @@ mod tests {
         Arc::new(sched::channel::<Woken>().0)
     }
 
-    /// A run's stop that lives for the process, as the runtime's does.
+    /// A run's stop that lives for the process, as the runtime's does. A static holds every
+    /// one, so that Miri, which reports at exit the memory no static reaches, sees them held
+    /// rather than leaked (#2007).
     fn run_stop() -> &'static RunStop {
+        static STOPS: Mutex<Vec<&'static Arc<RunStop>>> = Mutex::new(Vec::new());
         let leaked: &'static Arc<RunStop> = Box::leak(Box::new(RunStop::new(1)));
+        STOPS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(leaked);
         leaked
     }
 
@@ -913,10 +920,17 @@ mod tests {
 
     #[test]
     fn registering_waking_and_removing_scale_linearly() {
-        // O(1) per wait: a hundred times the waits takes about a hundred times the time.
+        // O(1) per wait: a hundred times the waits takes about a hundred times the time. Under
+        // Miri, where each allocation is slow, 10 to 1,000 waits rather than 1,000 to 100,000,
+        // which did not end in 50 minutes there (#2007); the full sizes run in the ordinary tests.
         let stop = run_stop();
         let mut times = Vec::new();
-        for count in [1_000usize, 10_000, 100_000] {
+        let counts: &[usize] = if cfg!(miri) {
+            &[10, 100, 1_000]
+        } else {
+            &[1_000, 10_000, 100_000]
+        };
+        for &count in counts {
             let mut table = Table::new();
             let now = millis();
             let started = Instant::now();

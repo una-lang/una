@@ -4374,9 +4374,9 @@ mod tests {
     fn i1_a_value_deeper_than_any_stack_segment_is_copied() {
         // ADR 0113 rule 5: the walks' pending stack grows a segment at a time, never on the
         // native stack, each step within `W`: a list nested 100000 deep is exported and
-        // imported whole. Miri runs three segments deep, which still crosses from one segment to
-        // the next.
-        let depth = if cfg!(miri) { 3 * SEGMENT } else { 100_000 };
+        // imported whole. Miri runs one segment and one level deep, which still crosses from one
+        // segment to the next: three segments deep did not end there in 30 minutes (#2007).
+        let depth = if cfg!(miri) { SEGMENT + 1 } else { 100_000 };
         let mut value = list();
         for _ in 0..depth {
             let outer = list();
@@ -5129,6 +5129,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "times a walk Miri ran for over 18 minutes")]
     fn the_walk_of_start_is_linear_in_the_values_it_reaches() {
         // The move at `start` looks once at each object its captures reach: 16 times the values
         // take about 16 times the time, not 256 times.

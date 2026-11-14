@@ -817,8 +817,16 @@ mod tests {
                 assert!(read >= at && read < at + 1_000_000, "{at}: {read}");
             }
         }
-        // Through `within_enter` and `left`, on the run's clock, at phases late in the
-        // millisecond, where rounding down put the old reading a whole millisecond early.
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "waits for a clock phase Miri's clock never reads")]
+    fn a_covering_deadline_on_the_run_s_clock_is_never_before_it_late_in_the_millisecond() {
+        // #1355, the test above through `within_enter` and `left`, on the run's clock, at phases
+        // late in the millisecond, where rounding down put the old reading a whole millisecond
+        // early. Under Miri the monotonic clock is simulated and moves in steps of 5,000 ns, so
+        // it never reads a phase of 999,000 ns and the wait below would never end (#2007); the
+        // arithmetic of the test above runs there.
         std::thread::spawn(|| {
             let clock = crate::runtime::clock();
             for phase in [0u128, 250_000, 500_000, 900_000, 999_000] {

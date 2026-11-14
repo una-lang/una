@@ -531,6 +531,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "uses the file system, which Miri's isolation refuses")]
     fn the_trace_is_written_as_it_goes_and_ends_as_one_array() {
         // ADR 0117 rule 10: events are numbered in the order they are written, and the file is
         // one JSON array once the run ends, also with no event.
@@ -557,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "uses the file system, which Miri's isolation refuses")]
     fn a_trace_file_that_cannot_be_made_is_known_before_the_run() {
         let missing = std::env::temp_dir()
             .join(format!("una-rt-no-such-dir-{}", std::process::id()))

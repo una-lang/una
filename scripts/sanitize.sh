@@ -89,9 +89,9 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # values at depth 1,000 rather than 1,000,000, a copy between heaps at depth 1,000 rather than
 # 200,000, 200 rounds of `find` rather than 10,000, the entry points with a pool of one word of
 # each kind and 20 drawn tuples, and the copies of ADR 0113 (#777): 1,000 exports rather than
-# 1,000,000, imports of 100 and 1,000 objects rather than up to 100,000, a list 3 segments deep
-# rather than 100,000, a staged block of 3 tasks rather than 70, in batches of 2, lists of 10
-# and 100 texts counted rather than up to 100,000, blocks nested 3 deep rather than 200, and 4
+# 1,000,000, imports of 100 and 1,000 objects rather than up to 100,000, a list 1,025 deep (one
+# segment and one level, #2007) rather than 100,000, a staged block of 3 tasks rather than 70,
+# in batches of 2, lists of 10 and 100 texts counted rather than up to 100,000, blocks nested 3 deep rather than 200, and 4
 # and 8 traced blocks rather than up to 256, and flat lists of 1,000 integers compared rather
 # than 100,000 (#815), and texts of 4,301 and 17,200 digits rather than 100,000 and 1,000,000
 # refused by the integer digit cap, whose timing runs only outside Miri, two mentions (#914),
@@ -106,7 +106,11 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # credited, three mentions; the other skips only its check that more than 60,000 slots are
 # credited, one mention. Their full checks run in the ordinary tests and under
 # AddressSanitizer below; the three credit tests that check only full-size tables are ignored
-# under Miri by name, in scripts/sanitize-miri-ignored.txt. And one constant: the
+# under Miri by name, in scripts/sanitize-miri-ignored.txt. And three scaling tests (#2007),
+# one mention each: the reactor's table registers, wakes and removes 10 to 1,000 waits rather
+# than 1,000 to 100,000, a chunked body is read in 256 to 4,096 chunks rather than 4,096 to
+# 65,536, and 1,000 and 10,000 waiters leave the sockets' gate rather than 10,000 and 100,000.
+# And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
 # Since #1065 the three reductions in the tests of tasks.rs (the staged block, the start depths
@@ -116,7 +120,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # Miri does not run: una-http forbids `unsafe` through the workspace lints, so Miri would check
 # only the standard library and the dependencies beneath it there (#1432).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 23 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 23"
+[ "$reduced" = 26 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 26"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
