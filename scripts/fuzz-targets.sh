@@ -28,8 +28,11 @@ FUZZ_TARGETS="literal:350000 words:350000 json:450000"
 # minutes), since a lower count could end under its floor.
 FUZZ_TARGETS="$FUZZ_TARGETS provenance:1280000 archive:1280000 ita_lock:300000"
 # The parsers and verifiers of the documents a package registry serves (ADR 0122). Their counts
-# and floors are placeholders until a run on the release machine measures them.
-FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000 registry_proofs:350000 registry_map_walk:350000 registry_owner_replay:350000 registry_location:350000 registry_archive_check:350000 registry_root_chain:350000 registry_yank:350000 registry_advisory:350000 registry_entry:350000 registry_keyfile:350000 registry_bundle:350000 registry_watch:350000 registry_promise:350000"
+# and floors are placeholders until a run on the release machine measures them. The exception is
+# registry_root_chain (#2024): it signs up to 24 documents an input, runs about 500 inputs a second
+# under AddressSanitizer (three runs: 498, 525 and 559), and 350000 inputs overran the ceiling of
+# 600 s; 150000 take about 300 s at the slowest measured speed.
+FUZZ_TARGETS="$FUZZ_TARGETS registry_note:350000 registry_root:350000 registry_statement:350000 registry_owner:350000 registry_map_tile:350000 registry_mirrors:350000 registry_tile:350000 registry_provenance:350000 registry_archive:350000 registry_proofs:350000 registry_map_walk:350000 registry_owner_replay:350000 registry_location:350000 registry_archive_check:350000 registry_root_chain:150000 registry_yank:350000 registry_advisory:350000 registry_entry:350000 registry_keyfile:350000 registry_bundle:350000 registry_watch:350000 registry_promise:350000"
 # The internal linker's ELF reader and relocation engine (ADR 0124 step 4b), seeded with the
 # per-type fixtures of crates/una-link/tests/elf-oracle as clang assembles them. Its count and
 # floor are placeholders until a run on the release machine measures them.
