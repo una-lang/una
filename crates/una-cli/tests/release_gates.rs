@@ -229,6 +229,43 @@ fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
     }
 }
 
+/// The site gate checks the book and the website's samples with the `una` of the release
+/// gate's archive, never with the clone's own `target/release/una` (#2029): the self-test of
+/// `scripts/site-shipped-una.sh` (a book report that carries the shipped library fails with the
+/// build's `una` and passes with the shipped one; a missing, altered or wrong archive fails), and
+/// the gate's text, which is the only place that wires the two.
+#[test]
+fn the_site_gate_checks_the_book_with_the_shipped_una() {
+    let output = Command::new("sh")
+        .arg(root().join("scripts/site-shipped-una.sh"))
+        .arg("--self-test")
+        .env("TMPDIR", env!("CARGO_TARGET_TMPDIR"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let site: Vec<&str> = script
+        .lines()
+        .filter(|line| line.contains("scripts/site-website.sh \"'"))
+        .collect();
+    assert_eq!(
+        site.len(),
+        1,
+        "one call of scripts/site-website.sh in the site gate"
+    );
+    assert!(site[0].contains("UNA_BIN=\"$shipped\""), "{}", site[0]);
+    assert!(!site[0].contains("target/release/una"), "{}", site[0]);
+    assert!(script.contains("scripts/site-shipped-una.sh --self-test"));
+    assert!(script.contains(
+        "shipped=$(scripts/site-shipped-una.sh \"$version\" \"target/local-release/v$version\""
+    ));
+}
+
 /// Runs `scripts/release-gates-tag-test.sh` (#1017), which needs git alone and makes every
 /// repository it uses in a temporary directory.
 #[test]

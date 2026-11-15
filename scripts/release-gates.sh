@@ -57,7 +57,9 @@
 #                the website's and builds the website that site/website.lock pins from the
 #                bundle, with its budget and its code samples checked. When that website pins
 #                una-lang/una-by-example (learn.lock, una#733), every example, its Try it
-#                changes and its download archives are checked with the clone's `una`, and the
+#                changes and its download archives are checked with the `una` of the release
+#                gate's archive of this host, the shipped one (scripts/site-shipped-una.sh,
+#                #2029), as are the website's code samples, and the
 #                website must build its Learn pages from them. A missing Python 3, Node.js or
 #                npm, or no access to the website's or the examples' repository, is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
@@ -660,6 +662,12 @@ gate_hunt-linux-arm64() {
 }
 
 gate_site() {
+    # The docs bundle is built with the clone's own release `una`; the book and the website's
+    # code samples are checked with the `una` of the release gate's archive of this host, the
+    # one that is shipped (#2029): its reports name the Z3 library of supply-chain/z3.lock and
+    # the embedded runtime, which the book's expected reports carry, and the clone's `una` has
+    # neither. Without that archive the gate fails (scripts/site-shipped-una.sh); it never
+    # falls back to target/release/una.
     # The neutrality pattern reaches this one command on file descriptor 3 (`run`), never in
     # its environment or arguments; the command reads it into a variable, closes the
     # descriptor, and hands it to the bundle and the website steps each on a pipe of its own.
@@ -683,9 +691,11 @@ gate_site() {
         scripts/doc-links.py --self-test \
             && scripts/site-learn-release.sh --self-test \
             && scripts/site-learn-una.sh --self-test \
+            && scripts/site-shipped-una.sh --self-test \
             && scripts/doc-links.py \
             && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && with_pattern env UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && shipped=$(scripts/site-shipped-una.sh "$version" "target/local-release/v$version" "'"$OUT"'/site-shipped") \
+            && with_pattern env UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN="$shipped" scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }
 gate_formal() { run formal scripts/formal.sh; }
 

@@ -39,7 +39,9 @@
 # runs, check the lockfile against its supply-chain review record (#783). It writes only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the
 # website is cloned from, UNA_SITE_LEARN_SOURCE where una-by-example is cloned from,
 # UNA_SITE_LEARN_RELEASE_DIR a directory that holds the release's files in place of the
-# download, and UNA_BIN which `una` checks the samples (default: target/release/una). With a
+# download, and UNA_BIN which `una` checks the samples and, at release time, the book (default:
+# target/release/una; the site gate gives the `una` of the release archive, which is the one the
+# book's reports are written for, scripts/site-shipped-una.sh, #2029). With a
 # learn.lock that names a release, it needs `gh`, signed in with read access to una-by-example.
 #
 # Usage: scripts/site-website.sh BUNDLE OUT
