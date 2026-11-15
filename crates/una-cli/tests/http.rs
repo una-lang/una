@@ -1498,7 +1498,10 @@ fn silent_server_helper() {
     };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    std::fs::write(&file, port.to_string()).unwrap();
+    // Written whole and then renamed, so the reader never sees half a port.
+    let partial = std::path::Path::new(&file).with_extension("partial");
+    std::fs::write(&partial, port.to_string()).unwrap();
+    std::fs::rename(&partial, &file).unwrap();
     let mut held = Vec::new();
     for stream in listener.incoming() {
         held.extend(stream.ok());
@@ -1518,7 +1521,13 @@ fn silent_server_process(fds: usize) -> (std::process::Child, u16) {
 /// is `fds`, and the port it listens on, which it writes to the port file it is given.
 #[allow(clippy::zombie_processes)]
 fn server_process(helper: &str, fds: usize) -> (std::process::Child, u16) {
-    let file = std::env::temp_dir().join(format!("una-{helper}-port-{}", std::process::id()));
+    // One port file per call: tests of this process start their helpers at the same time, and a
+    // file named by the process alone was removed by whichever test read it first, leaving the
+    // other to wait for a file that was never written again (#2030).
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file =
+        std::env::temp_dir().join(format!("una-{helper}-port-{}-{call}", std::process::id()));
     let _ = std::fs::remove_file(&file);
     let mut child = Command::new("sh")
         .arg("-c")
