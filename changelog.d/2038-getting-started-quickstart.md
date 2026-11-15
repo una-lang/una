@@ -1,0 +1,1 @@
+- **Docs: Getting started reaches a refuted contract right after the install** (#2038, the tutorial is reordered around the same tested code blocks; the details of installing, such as supported systems and installing as root, move to a section at its end as a table and lists)

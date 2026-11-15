@@ -187,7 +187,7 @@ Delete the `if none use 0` line in `counts`. `seen` is then an `Option[Int]`, an
 ## Learn more
 
 - Construct pages: [`requires`](../../docs/guide/language/functions/requires.md), [`ensures`](../../docs/guide/language/functions/ensures.md), [`let edit`](../../docs/guide/language/control-flow/let-edit.md), [`for`](../../docs/guide/language/control-flow/for.md), [`if none use`](../../docs/guide/language/errors/if-error.md), [`example`](../../docs/guide/language/examples/example.md).
-- Tutorial: [Getting started](../../docs/guide/getting-started.md#3-a-contract-and-a-proof-that-fails).
+- Tutorial: [Getting started](../../docs/guide/getting-started.md#2-a-contract-and-a-proof-that-fails).
 - Learn, the tutorial on the Una website: "Collections" (`/learn/collections/`); "Contracts and the verifier" (`/learn/contracts/`).
 - Specification: [clauses (spec/04 §2)](../../docs/spec/04-functions-and-contracts.md), [one effect per line (spec/04 §4)](../../docs/spec/04-functions-and-contracts.md), [counterexamples (spec/12 §7)](../../docs/spec/12-verification.md), [editable bindings (spec/17 §2)](../../docs/spec/17-memory-model.md), [backend freedom (spec/17 §7)](../../docs/spec/17-memory-model.md), [maps](../../docs/spec/21-maps.md), [JSON](../../docs/spec/23-json.md).
 
