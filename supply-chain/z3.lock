@@ -70,7 +70,10 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # The Debian packages of the Linux image that built the library above and that links the release
 # `una` (#1926), as `"package" = "version"` from `dpkg-query -W` in the image
 # una-local-ci:1.98.1-arm64 (image ID
-# sha256:9df416abe4a0980d58da44e93da60a782991f0b60577ea94de89075a43b4876d), recorded 2026-11-11.
+# sha256:9df416abe4a0980d58da44e93da60a782991f0b60577ea94de89075a43b4876d), recorded 2026-11-11;
+# libc6 and libc6-dev refreshed 2026-11-15 (#2028) after an Ubuntu update, from the rebuilt image of
+# the same tag (image ID sha256:4cd984ff32f31e3645c6312ed524b5d575cc0094de19f381a1df1ccb582d2563),
+# which installs 2.39-0ubuntu8.12; every other package and every file digest below is unchanged.
 # The Dockerfile pins its base by digest but installs these with no version, so a rebuild of the
 # image after an Ubuntu update may give others: scripts/release.sh then refuses to build, through
 # scripts/check-toolchain.sh (exit 2), when an installed version differs from this table or a
@@ -91,8 +94,8 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 "libgcc-13-dev" = "13.3.0-6ubuntu2~24.04.1"
 "libstdc++-13-dev" = "13.3.0-6ubuntu2~24.04.1"
 "libgcc-s1" = "14.2.0-4ubuntu2~24.04.1"
-"libc6" = "2.39-0ubuntu8.9"
-"libc6-dev" = "2.39-0ubuntu8.9"
+"libc6" = "2.39-0ubuntu8.12"
+"libc6-dev" = "2.39-0ubuntu8.12"
 
 # The files of those packages that the linker copies, whole or the members it needs, into the
 # release `una` on this target (#1958, review L2 of #1957), with their SHA-256: GNU's C++ runtime

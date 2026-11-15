@@ -1,0 +1,1 @@
+- **Linux toolchain pin refreshed** (#2028, libc6 and libc6-dev 2.39-0ubuntu8.9 -> 2.39-0ubuntu8.12 in the aarch64 table of supply-chain/z3.lock, after an Ubuntu update of the image)
