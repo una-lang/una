@@ -21,7 +21,7 @@ A guarantee of this release is proven, tested, trusted, assumed or human-reviewe
 The serve engine of this release has the limits of the [Servers](#servers) section below. This release also does not have or check the following:
 
 - **No memory-model test of the serve threads.** Their sleep and wake protocol has no memory-model test with `loom`, and a grant's worst-case memory does not count the `rustls` buffer limits of serving connections.
-- **A listener the program never serves.** A package that has a `serve:` grant and never uses `HttpServer` still binds its listener before `main`, silently and on any granted address, `0.0.0.0` included: the system completes the connection handshakes, nothing answers, and no `serving on` line is written ([Serving HTTP](serving-http.md), `spec/31 §6` rule 14). Read a package's `run grants`, or its report, before running it.
+- **A listener the program never serves.** A package that has a `serve:` grant, never uses `HttpServer` and has no `serve` section still binds its listener before `main`, silently and on any granted address, `0.0.0.0` included: the system completes the connection handshakes, nothing answers, and no `serving on` line is written ([Serving HTTP](serving-http.md), `spec/31 §6` rule 14). Read a package's `run grants`, or its report, before running it.
 - **Coarser labels of concurrent work.** The labels are less precise than the design intends: `τ_conc` at the limiter's site and for `L_srv`, `L_res` where the reactor removes the residue, and the task-switch rule.
 - **Scheduler measurements not made.** Structural placement on nested constructs is not measured, nor whether a rare 100 ms stall can happen without load.
 - **No formal model of the server or of the collections.**
