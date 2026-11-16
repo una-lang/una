@@ -1,0 +1,1 @@
+- **Explain: the explanations of U0001 to U2034 say what happened, why and how to fix it, in that order** (#2039, the prose of 26 explanations is rearranged under the headings "Why Una rejects it" and "How to fix it"; no fact, citation or example changes)
