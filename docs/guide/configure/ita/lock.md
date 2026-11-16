@@ -111,7 +111,7 @@ $ una ita lock --check
 
 Run `una ita lock --check --fresh` wherever the pipeline can reach a place or a mirror of each registry source. Besides checking the lock, it reads a checkpoint less than 24 hours old that extends the lock's resolution point, and fails when the owner of a locked registry package has had its chain frozen since the lock was written (U7010), which happens only when that owner's account was taken over and the owner answered. It fails too when no place or mirror serves such a checkpoint (U7013), so a pipeline cannot pass by not looking.
 
-Plain `una ita lock --check` needs no fresh checkpoint, but it does read the lock's resolution point from a place or a mirror: with none reachable, it fails (U7013), closed rather than passing unchecked. A later release is planned to check a lock offline, from what Itaoca and the vendor directory hold. It still looks for a freeze in the newest checkpoint a place serves, whatever its age, and says how far it looked, in a note: either that a later freeze was checked at a checkpoint of a given witness time, in UTC, or that a later freeze was not checked, when no place serves a checkpoint newer than the lock's.
+Plain `una ita lock --check` needs no fresh checkpoint, but it does read the lock's resolution point from a place or a mirror: with none reachable, it fails (U7013), closed rather than passing unchecked. It still looks for a freeze in the newest checkpoint a place serves, whatever its age, and says how far it looked, in a note: either that a later freeze was checked at a checkpoint of a given witness time, in UTC, or that a later freeze was not checked, when no place serves a checkpoint newer than the lock's.
 
 ```text
 $ una ita lock --check --fresh

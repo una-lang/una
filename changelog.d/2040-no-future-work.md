@@ -1,0 +1,1 @@
+- **Docs: the known limits and the lock page state what this release does** (#2040, they no longer list work planned for a later release)

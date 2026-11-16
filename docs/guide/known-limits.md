@@ -18,17 +18,7 @@ A guarantee of this release is proven, tested, trusted, assumed or human-reviewe
 - **Trusted and assumed.** The toolchain itself, the solver, the standard library, the host capabilities, the TLS stack, `trusted` modules and the key of the proof cache are trusted. The behavior of external systems beyond their declared signatures is assumed, and so is the secrecy of the key under which a server places its connections, with SipHash-2-4 as a pseudorandom function (`spec/31 §6`).
 - **Human-reviewed.** A change to the soundness rules, the information-flow rules, the verifier's encoding or the trusted base, and a security fix, gets an adversarial review separate from its author before it merges. That requirements and contracts state the intent is for their authors and reviewers to judge.
 
-The serve engine of this release has the limits of the [Servers](#servers) section below. This hardening is planned for the next release, R0.5, and is not part of this one:
-
-- the share per peer of a grant's `waiting`, `/once` and `delivered` (#1789), after the Proposed amendment of 2026-11-08 of [ADR 0123](../adr/0123-http-servers.md) is accepted;
-- the follow-ups of the serve threads' design (#1172; see the card): among them a memory-model test of their sleep and wake protocol with `loom`, and the `rustls` buffer limits of serving connections in a grant's worst-case memory;
-- a silent listener for a `serve:` grant that `main` never uses (#1786; see the card);
-- more precise labels of concurrent work: `τ_conc` at the limiter's site and for `L_srv` (#1804), `L_res` where the reactor removes the residue (#1790), and the task-switch rule (#1792);
-- scheduler measurements: structural placement on nested constructs (#1156), and whether a rare 100 ms stall can happen without load (#1184);
-- two more example servers and a reference page of the `serve` section (#1793), and the `requires` of the drive module's `init` and `step` (#1794);
-- the proof cache's key check without a file per check (#1896);
-- fuzz targets for the HTTP request reader, the response parser and the chunked decoder (#1883);
-- the formal model of the server (#1863, #1864, #1865) and of the collections (#1857, #1858, #1859).
+The serve engine of this release has the limits of the [Servers](#servers) section below.
 
 ## Servers
 
