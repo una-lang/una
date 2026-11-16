@@ -18,7 +18,13 @@ A guarantee of this release is proven, tested, trusted, assumed or human-reviewe
 - **Trusted and assumed.** The toolchain itself, the solver, the standard library, the host capabilities, the TLS stack, `trusted` modules and the key of the proof cache are trusted. The behavior of external systems beyond their declared signatures is assumed, and so is the secrecy of the key under which a server places its connections, with SipHash-2-4 as a pseudorandom function (`spec/31 §6`).
 - **Human-reviewed.** A change to the soundness rules, the information-flow rules, the verifier's encoding or the trusted base, and a security fix, gets an adversarial review separate from its author before it merges. That requirements and contracts state the intent is for their authors and reviewers to judge.
 
-The serve engine of this release has the limits of the [Servers](#servers) section below.
+The serve engine of this release has the limits of the [Servers](#servers) section below. This release also does not have or check the following:
+
+- **No memory-model test of the serve threads.** Their sleep and wake protocol has no memory-model test with `loom`, and a grant's worst-case memory does not count the `rustls` buffer limits of serving connections.
+- **A silent listener.** A `serve:` grant that `main` never uses leaves a listener that accepts nothing.
+- **Coarser labels of concurrent work.** The labels are less precise than the design intends: `τ_conc` at the limiter's site and for `L_srv`, `L_res` where the reactor removes the residue, and the task-switch rule.
+- **Scheduler measurements not made.** Structural placement on nested constructs is not measured, nor whether a rare 100 ms stall can happen without load.
+- **No formal model of the server or of the collections.**
 
 ## Servers
 
