@@ -1,59 +1,125 @@
 # Getting started with Una
 
-This tutorial takes you from installing Una to a verified program built as a native executable. You write `wordfreq`, which counts the words of a text and prints the counts as JSON. On the way you meet a contract the solver proves, a proof that fails with a counterexample, examples that run as tests, capabilities and their grants, and the native backend.
+In about ten minutes you install Una, write a function with a contract, watch `una check` find the input that breaks it, fix it, and build a native executable.
 
-Every code block of this tutorial is checked by the test suite (`crates/una-cli/tests/guide.rs`), and the finished program is `examples/wordfreq`.
+You write `wordfreq`, a program that counts the words of a text and prints the counts as JSON. Every code block here is tested against this release, and the finished program is `examples/wordfreq`.
+
+> [!NOTE]
+> Una runs on macOS and Linux on arm64. [More about installing](#more-about-installing) lists the supported systems.
 
 ## 1. Install
 
-The installer puts a release in `~/.una`: the `una` binary, with the Z3 solver and the native runtime that `una build` links built into it. Nothing else is needed: there is no separate Z3 to install, and `una` never looks for a `z3` on your `PATH`.
+Run the installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
 ```
 
-It installs only an archive whose digest the release's validation record lists. On macOS arm64, `una build` links with the linker built into `una` and needs no C compiler. The solver refuses to run as root, so `una check` as root fails with U5003; run `una` as an ordinary user, in a container too (`docker run --user 1000:1000 ...`). The README describes the other ways to install, and how to uninstall.
-
-This release targets macOS on arm64 and Linux on arm64. On Linux, `una` needs glibc 2.39 or later (Ubuntu 24.04, for example; not Ubuntu 22.04 nor Debian 12, whose glibc is older): it is a dynamic executable against the system's glibc, with the C++ runtime of the solver linked into it, and it does not run on musl systems such as Alpine. The installer refuses, before any download, Linux on x86-64, a musl system, a glibc older than 2.39 and a 32-bit userland on a 64-bit kernel. As root, the installer installs only into a `UNA_HOME` that only root can change: `UNA_HOME`, the directories it writes in and the files there are not symbolic links, and they are owned by root and writable by no one else, and so is every directory above them, except that a directory above an existing, root-owned one may be writable by others when it is sticky, as `/tmp` is. So `UNA_HOME=/tmp/una` is refused unless `/tmp/una` already exists and is root's. The same holds for `TMPDIR` (default `/tmp`), where the archive is checked and unpacked, which may itself be sticky. Otherwise it refuses before any download, and as root it never runs the installed `una`. Only owners and mode bits are read: write access granted by an ACL (on macOS, a `+` after the mode in `ls -l`) is not seen. `una check`, `una test` and `una run` need no other program; `una build` on Linux needs a C compiler available as `cc`, such as gcc or clang with the C library's development files (section 6). Windows is not supported.
-
-The installer changes nothing outside `~/.una`, so your shell finds `una` only once that directory is on your `PATH`:
+It puts the release in `~/.una` and changes nothing else. Put that directory on your `PATH`:
 
 ```sh
 export PATH="$HOME/.una/bin:$PATH"
 ```
 
-That line lasts for the current shell. To keep it, add the same line to your shell's profile: `~/.zshrc` for zsh, the default shell on macOS, or `~/.bashrc` for bash. A new shell then finds `una` too.
+To keep it for new shells, add the same line to your shell's profile: `~/.zshrc` for zsh, the default shell on macOS, or `~/.bashrc` for bash.
 
-Check the version:
+Check that it works:
 
 ```sh
 una --version
 ```
 
-It prints `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3, 0.4, 0.5`, the editions among them that are previews, such as `preview: 0.3, 0.4, 0.5`, and the version of Z3 built into it. A release with no preview edition prints no `preview:` line.
+It prints the release, the editions it serves and the version of the prover built into it. That is everything you need to check, test and run programs.
 
-A release older than 0.3 has no `--version` flag, and answers with an error:
+> [!TIP]
+> Working with an AI agent? Give it [Una, compact](una-compact.md): the language in one page, sized for its context.
+
+## 2. A contract, and a proof that fails
+
+A contract says what a function needs and what it promises. Una proves it for every input, before the program runs.
+
+Make a directory `wordfreq` with two files. `una.toml` names the package and its edition, and the module `wordfreq` lives in `src/wordfreq.una`. Start with a function that takes the first letter of a word:
+
+`una.toml`
+```toml
+[package]
+name = "wordfreq"
+version = "0.1.0"
+edition = "0.2"
+```
+
+`src/wordfreq.una`
+```una
+-- fails with U5001
+module wordfreq
+
+--- The first letter of a word.
+pub initial(word: Text) -> Text
+  ensures result.len == 1
+=
+  word.slice(start: 0, end: 1)
+```
+
+The line `ensures result.len == 1` is the promise: the result is one character long. In the `wordfreq` directory, run `una check .`:
 
 ```text
-error: unexpected argument '--version' found
+[U5001] Error: precondition `0 <= 0 and 0 <= 1 and 1 <= word.len` of this call is refuted
+    ╭─[ src/wordfreq.una:7:3 ]
+    │
+  7 │   word.slice(start: 0, end: 1)
+    │   ──────────────┬─────────────
+    │                 ╰─────────────── precondition `0 <= 0 and 0 <= 1 and 1 <= word.len` of this call is refuted
+    │
+    │ Note 2: counterexample: word = Text#0, word.len = 0
 ```
 
-If you see that error after installing, the shell found an older `una` first. `which -a una` lists every `una` on your `PATH`, in the order the shell tries them. Remove the old one, or put `$HOME/.una/bin` before its directory.
+The promise does not hold, and Una shows why:
 
-To update, run the installer again. It replaces the release in `~/.una` with the current one, and prints the new version when it is done.
+- **The counterexample** is `word.len = 0`: an empty word.
+- **The cause** is the call of `slice`, which requires its positions to lie in the text.
+- **The repairs** come with the diagnostic. With `una --json check`, it is a JSON document an agent can act on.
 
-Check that it works by asking `una` to explain a diagnostic code:
+The fix is to say what `initial` needs, with `requires`:
 
-```sh
-una explain U5001
+`una.toml`
+```toml
+[package]
+name = "wordfreq"
+version = "0.1.0"
+edition = "0.2"
 ```
 
-## 2. A package
+`src/wordfreq.una`
+```una
+module wordfreq
 
-A package is a directory with `una.toml`, `verification.lock` and the sources under `src/`. Make a directory `wordfreq` with the three files below:
-- `una.toml` names the package, picks edition `0.2` and says how `una run` starts it.
-- `verification.lock` pins the solver, so that a proof means the same everywhere.
-- The module `wordfreq` lives in `src/wordfreq.una`. Start with the words of a line, and a `main` that prints how many there are.
+--- The first letter of a word.
+pub initial(word: Text) -> Text
+  requires word.len >= 1
+  ensures result.len == 1
+=
+  word.slice(start: 0, end: 1)
+
+example "a word's first letter"
+  do initial("una")
+  expect result == "u"
+```
+
+Now `una check .` prints nothing: every check passes.
+
+- **Every caller has to prove the `requires`**, and the body may assume it.
+- **The `example` is a test.** `una test .` runs it, and `una check` proves that `"una"` meets the `requires`.
+
+> [!TIP]
+> `una explain U5001` explains a diagnostic code, with a failing example and its fix.
+
+## 3. A program that runs
+
+Turn the package into a program. Three files:
+
+- **`una.toml`** gains a `[run]` section: where `una run` starts, and what the program may use.
+- **`verification.lock`** fixes the prover's version and settings, so a check that passes on your machine passes on every other. Copy it as it is.
+- **`src/wordfreq.una`** gets the words of a line, and a `main` that prints how many there are.
 
 `una.toml`
 ```toml
@@ -94,11 +160,13 @@ pub main() -> Unit
   @console.print("{words(text).len} words")
 ```
 
-- A function is an equation: its header, then `=`, then its body.
-- `split` and `filter` are prelude functions, called with method syntax.
-- `main` says which capabilities it uses: `@console`, with the operation `print`. An operation is written with `@`, and a call performs the effects of the function it calls, which the caller's `uses` cover. `una contract` prints a function's header, its `uses` included.
+Three things to notice:
 
-In the `wordfreq` directory, check it and run it:
+- **A function is an equation:** its header, then `=`, then its body.
+- **`split` and `filter` are prelude functions**, called with method syntax.
+- **`main` says what it uses:** `@console`, with the operation `print`. A function that calls another performs its effects too, so the caller's `uses` must cover them. `una contract` prints a function's header, its `uses` included.
+
+Check it and run it:
 
 ```sh
 una check .   # copy examples/wordfreq
@@ -109,78 +177,11 @@ una run .
 8 words
 ```
 
-`una check` runs every check, the proofs included, and prints nothing when all pass. Its source must also be in canonical form; `una fmt .` rewrites it so.
-
-## 3. A contract, and a proof that fails
-
-Add a function that takes the first letter of a word. A first try:
-
-`una.toml`
-```toml
-[package]
-name = "wordfreq"
-version = "0.1.0"
-edition = "0.2"
-```
-
-`src/wordfreq.una`
-```una
--- fails with U5001
-module wordfreq
-
---- The first letter of a word.
-pub initial(word: Text) -> Text
-  ensures result.len == 1
-=
-  word.slice(start: 0, end: 1)
-```
-
-`una check` proves contracts with the solver, and here it refutes one:
-
-```text
-[U5001] Error: precondition `0 <= 0 and 0 <= 1 and 1 <= word.len` of this call is refuted
-    ╭─[ src/wordfreq.una:7:3 ]
-    │
-  7 │   word.slice(start: 0, end: 1)
-    │   ──────────────┬─────────────
-    │                 ╰─────────────── precondition `0 <= 0 and 0 <= 1 and 1 <= word.len` of this call is refuted
-    │
-    │ Note 2: counterexample: word = Text#0, word.len = 0
-```
-
-`slice` requires its positions to lie in the text, and the counterexample shows a word where they do not: an empty one. The diagnostic also proposes repairs; with `una --json check`, it is a JSON document an agent can act on.
-
-The fix is to say what `initial` needs, with `requires`. Every caller then has to prove it, and the body may assume it:
-
-`una.toml`
-```toml
-[package]
-name = "wordfreq"
-version = "0.1.0"
-edition = "0.2"
-```
-
-`src/wordfreq.una`
-```una
-module wordfreq
-
---- The first letter of a word.
-pub initial(word: Text) -> Text
-  requires word.len >= 1
-  ensures result.len == 1
-=
-  word.slice(start: 0, end: 1)
-
-example "a word's first letter"
-  do initial("una")
-  expect result == "u"
-```
-
-Now `una check` proves both the precondition of `slice` and the `ensures` of `initial`. The `example` is a test: `una test` runs it, and `una check` proves that `"una"` meets the `requires`.
+`una check` runs every check, the proofs included, and prints nothing when all pass. The source must also be in canonical form; `una fmt .` rewrites it so.
 
 ## 4. Maps and JSON
 
-Count the words with a `Map`, which keeps its keys in order, and write the counts as JSON. This is the whole program:
+Count the words with a `Map`, which keeps its keys in order, and write the counts as JSON. This is the whole program, with `initial` from section 2 back in:
 
 `una.toml`
 ```toml
@@ -259,9 +260,23 @@ una run .
 
 ## 5. Capabilities and grants
 
-`main` uses `Console[print]` and nothing else, and `una run` gives it exactly what `[run] grants` lists in `una.toml`. Without `"console"` there, the program does not start: U3012 names the capability that is missing. Grants can also come from the command line, as `una run . --grant console`.
+`main` uses `Console[print]` and nothing else, and `una run` gives it exactly what `[run] grants` lists in `una.toml`.
 
-The host offers `Console`, `Clock`, `Env`, `Files` and `Keys`, and from edition `0.2` also `Http`, only to `main`, which passes them to the functions it calls. Edition `0.4` adds `HttpServer`, for a program that serves HTTP, and offers them to the entry functions of a driven or served module too ([Serving HTTP](serving-http.md), [Driven programs](driven-programs.md)). Text that comes from the outside, as `Files.read` returns, is labeled `internal`, and printing it needs a declassification policy: information flow is checked too (§9 of [the guide for agents](una-for-agents.md)).
+- **Without `"console"` there, the program does not start:** U3012 names the capability that is missing.
+- **A grant can also come from the command line:** `una run . --grant console`.
+
+The host offers these capabilities, only to `main`, which passes them to the functions it calls:
+
+| Capability | Since edition |
+| --- | --- |
+| `Console`, `Clock`, `Env`, `Files`, `Keys` | `0.1` |
+| `Http` | `0.2` |
+| `HttpServer`, for a program that serves HTTP | `0.4` |
+
+Edition `0.4` offers them to the entry functions of a driven or served module too ([Serving HTTP](serving-http.md), [Driven programs](driven-programs.md)).
+
+> [!NOTE]
+> Information flow is checked too. Text that comes from the outside, as `Files.read` returns, is labeled `internal`, and printing it needs a declassification policy (§9 of [the guide for agents](una-for-agents.md)).
 
 ## 6. A native executable
 
@@ -279,7 +294,8 @@ built target/una/wordfreq
 
 The executable prints what `una run` prints, and traces the same events: the interpreter is the reference, and the test suite runs every example program in both.
 
-On Linux, `una build` links the executable through `cc`, against the system's C library: without `cc` it stops with "cannot run the system linker `cc`". The executable is dynamic, against the glibc of the machine that built it, so it runs there and on systems with the same or a newer glibc, not on musl systems, and it resolves host names through the system's name-service configuration. The Linux `una` of a release already carries musl, the C library it is to link instead, but does not link it yet (ADR 0124): once it does, an executable runs on any Linux of its architecture with no shared library, and it resolves host names through `/etc/hosts` and the DNS servers that `/etc/resolv.conf` names only, without the system's name-service modules, such as LDAP or mDNS.
+> [!NOTE]
+> On Linux, `una build` links the executable through `cc`, against the system's C library: without `cc` it stops with "cannot run the system linker `cc`". The executable runs on the machine that built it and on systems with the same or a newer glibc, not on musl systems.
 
 ## 7. An editor
 
@@ -287,7 +303,14 @@ On Linux, `una build` links the executable through `cc`, against the system's C 
 
 ## 8. Edition 0.4
 
-`wordfreq` is a package of edition `0.2`, a stable edition. Edition `0.4` is a preview: it adds programs that run until they are stopped, tasks and time limits, HTTP servers, and dependencies on other packages through Itá, the package manager (in this release, path dependencies and registry packages read from a mirror directory). A preview carries no stability promise, so a later release may still change what it accepts (ADR 0121). A package of edition `0.4` is described by `ita.una` and pinned by `ita.lock`, not by `una.toml` and `verification.lock`: `una.toml` naming `edition = "0.4"` is U7002, and `una migrate` is the repair.
+`wordfreq` is a package of edition `0.2`, a stable edition. Edition `0.4` is a preview: a later release may still change what it accepts. It adds:
+
+- programs that run until they are stopped;
+- tasks and time limits;
+- HTTP servers;
+- dependencies on other packages through Itá, the package manager (in this release, path dependencies and registry packages read from a mirror directory).
+
+A package of edition `0.4` is described by `ita.una` and pinned by `ita.lock`, not by `una.toml` and `verification.lock`: `una.toml` naming `edition = "0.4"` is U7002, and `una migrate` is the repair.
 
 To move a copy of `wordfreq` to edition `0.4`:
 
@@ -312,7 +335,57 @@ The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/
 
 ## Where next
 
-- [The guide for agents](una-for-agents.md) is the compact reference to edition `0.2`, with notes where editions `0.3` and `0.4` differ and how to move a package to edition `0.4`; it does not teach the constructs that edition `0.4` adds.
-- [The syntax reference](syntax-reference.md) lists the constructs of edition `0.2`, and some of what editions `0.3` and `0.4` add.
-- [The specification](https://github.com/una-lang/una/tree/main/docs/spec) is the normative definition.
-- `una explain <code>` explains any diagnostic, with examples.
+- **With an agent:** [Una, compact](una-compact.md) is the language in one page, and [the guide for agents](una-for-agents.md) is the full reference to edition `0.2`, with notes where editions `0.3` and `0.4` differ.
+- **A construct:** [the syntax reference](syntax-reference.md) lists the constructs of edition `0.2`, and some of what editions `0.3` and `0.4` add.
+- **A diagnostic:** `una explain <code>` explains any code, with examples.
+- **The definition:** [the specification](https://github.com/una-lang/una/tree/main/docs/spec) is normative.
+
+## More about installing
+
+### Supported systems
+
+| System | Supported | What `una build` needs |
+| --- | --- | --- |
+| macOS on arm64 | Yes | Nothing: it links with the linker built into `una` |
+| Linux on arm64, glibc 2.39 or later (Ubuntu 24.04, for example) | Yes | A C compiler available as `cc`, such as gcc or clang with the C library's development files |
+| Linux with an older glibc (Ubuntu 22.04, Debian 12) | No | |
+| Linux with musl, such as Alpine | No | |
+| Linux on x86-64 | No | |
+| Windows | No | |
+
+`una check`, `una test` and `una run` need no other program. On Linux, `una` is a dynamic executable against the system's glibc, with the C++ runtime of the solver linked into it. The installer refuses an unsupported Linux before any download, a 32-bit userland on a 64-bit kernel included.
+
+### What the installer does
+
+- It installs only an archive whose digest the release's validation record lists.
+- It changes nothing outside `~/.una`.
+- To update, run it again: it replaces the release in `~/.una` with the current one, and prints the new version when it is done.
+- The README describes the other ways to install, and how to uninstall.
+
+### Run `una` as an ordinary user
+
+The solver refuses to run as root, so `una check` as root fails with U5003. Run `una` as an ordinary user, in a container too (`docker run --user 1000:1000 ...`).
+
+### Installing as root
+
+As root, the installer installs only into a `UNA_HOME` that only root can change:
+
+- `UNA_HOME`, the directories it writes in and the files there are not symbolic links, and they are owned by root and writable by no one else.
+- So is every directory above them, except that a directory above an existing, root-owned one may be writable by others when it is sticky, as `/tmp` is. So `UNA_HOME=/tmp/una` is refused unless `/tmp/una` already exists and is root's.
+- The same holds for `TMPDIR` (default `/tmp`), where the archive is checked and unpacked, which may itself be sticky.
+- Otherwise it refuses before any download, and as root it never runs the installed `una`.
+- Only owners and mode bits are read: write access granted by an ACL (on macOS, a `+` after the mode in `ls -l`) is not seen.
+
+### What `una --version` prints
+
+It prints `una` and the release, the editions it serves, such as `editions: 0.1, 0.2, 0.3, 0.4, 0.5`, the editions among them that are previews, such as `preview: 0.3, 0.4, 0.5`, and the version of Z3, the solver built into it. A release with no preview edition prints no `preview:` line.
+
+### If `--version` is an unexpected argument
+
+A release older than 0.3 has no `--version` flag, and answers with an error:
+
+```text
+error: unexpected argument '--version' found
+```
+
+If you see that error after installing, the shell found an older `una` first. `which -a una` lists every `una` on your `PATH`, in the order the shell tries them. Remove the old one, or put `$HOME/.una/bin` before its directory.
