@@ -1172,7 +1172,7 @@ pub doubled(n: U8) -> List[Int]
 - **Failures.** When a task fails, the tasks after it are canceled, and the block fails with the failure of the lowest-indexed failing task, as running the tasks one after another would. A canceled task stops at its next call, operation or loop iteration; an operation in progress completes.
 - **Labels.** `together for` runs its tasks under the top label of its list, or the labels of its range bounds, as a `for` loop does, and its result carries that label.
 - **Traces** list the events of the tasks in task order, each with its task's path, as `"task": "2.1"`. A canceled task that had started ends with a `cancelled` event.
-- **Runtimes.** The interpreter runs the tasks one after another. A native executable runs each task on its own thread, so the lines that tasks print may interleave.
+- **Runtimes.** The interpreter runs the tasks one after another. A native executable runs the tasks on `--workers` threads, one per core by default, so the lines that tasks print may interleave.
 
 ```una
 -- fails with U2023

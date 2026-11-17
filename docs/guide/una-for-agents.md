@@ -1185,12 +1185,12 @@ pub count(xs: List[Int]) -> Int
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
 - The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. That its output and trace match the interpreter's is tested, not proven: the toolchain's tests run the runnable programs in both engines and compare them. With tasks on the real clock the order of the effects of different tasks may differ; `--virtual-time` makes the executable follow the interpreter's schedule (`spec/27 §8` rules 3 and 4).
-- Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
-- `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
+- Tasks of `together` run on `--workers` threads, one per core by default, in a native executable, and one at a time in `una run`.
+- `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks as you type, proves a file when it is opened or saved, formats on request, and never runs programs.
 
 ## 20. The Agent ABI
 
-Every command takes `--json` and prints one document whose `schema` names its shape:
+Every command but `una lsp` takes `--json` and prints one document whose `schema` names its shape:
 
 | Command | Document |
 | --- | --- |
@@ -1264,9 +1264,9 @@ From edition `0.4`, a package is described by `ita.una` and pinned by `ita.lock`
 What changes:
 
 - **The manifest.** `ita <name>` and its `version` and `edition` lines head the file; the tables of `una.toml` become sections with one entry per line, and a grant is a line such as `files "data/" read`. `edition = "0.4"` in `una.toml` is U7002, with `una migrate` as its repair.
-- **Dependencies.** A package may need another one from a directory, `util from path "../util"` with `accept name`, or from a registry its `sources` section declares and pins, `acme/ledger 0.3 from acme`, and import its modules as `util.text` or `ledger.ledger`. `una ita lock` resolves and writes the lock; `una ita add` and `una ita update` change the needs and lock. A need of `itaty`, the default registry, has no resolution in this release (U7013).
+- **Dependencies.** A package may need another one from a directory, `util from path "../util"` with `accept name`, or from a registry its `sources` section declares and pins, `acme/ledger 0.3 from acme`, which this release reads only from a mirror directory that Itaoca's `mirrors.una` lists as a `file://` URL, since it has no https transport, and import its modules as `util.text` or `ledger.ledger`. `una ita lock` resolves and writes the lock; `una ita add` and `una ita update` change the needs and lock. A need of `itaty`, the default registry, has no resolution in this release (U7013).
 - **Authority.** A dependency receives a capability only at a call, with `with`, within the `may` lines its need writes, and `una ita lock --accept-authority <package>` records each wider ceiling. A dependency's trusted modules count only with a `trust` line and `--accept-trust <package>@<digest>`.
-- **Offline.** `una check`, `una run`, `una build` and `una test` never read a registry: `una ita fetch` fills Itaoca, `una ita vendor` writes `vendor/ita/` to commit, and `una ita bundle` and `una ita unbundle` carry the packages to a machine with no network. A locked package that is not there is U7011; one whose files changed is U7010.
+- **Offline.** `una check`, `una run`, `una build` and `una test` never read a registry: `una ita fetch` fills Itaoca, in this release from a `file://` mirror directory only, `una ita vendor` writes `vendor/ita/` to commit, and `una ita bundle` and `una ita unbundle` carry the packages to a machine with no network. A locked package that is not there is U7011; one whose files changed is U7010.
 - **Never by hand.** `ita.lock` is written by `una ita lock`; `una fix` never edits `ita.una` or `ita.lock`. CI runs `una ita lock --check --fresh` and `una ita audit`.
 
 A package of edition `0.4`, with its manifest, its lock and one module:
