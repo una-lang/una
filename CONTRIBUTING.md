@@ -27,7 +27,7 @@ Branches are named `dev/<issue>-<topic>`, for example `dev/6-integration-rule`. 
 Validation runs locally. A pull request is merged after `scripts/local-ci.sh` passes on its final commit:
 
 ```bash
-scripts/install-z3.sh "$HOME/.local/z3" && export PATH="$HOME/.local/z3/bin:$PATH"
+eval "$(scripts/z3-library.sh --export)"   # the Z3 library that una links, as in the README's "Build from source"
 scripts/local-ci.sh           # solver check, formatting, clippy, every test, the release archive
 scripts/local-ci.sh --linux   # the same steps in a Linux container
 ```
@@ -41,7 +41,7 @@ cargo test --workspace
 cargo insta review   # review each snapshot change; never accept one blindly
 ```
 
-Tests that reach the solver need Z3 at the exact version pinned in `verification.lock`. Without it they fail with U5003 rather than skip.
+Tests that reach the solver need a `una` built with `UNA_Z3_LIB` set, in the same shell, to the Z3 library that `scripts/z3-library.sh --export` builds from the source `supply-chain/z3.lock` pins (the README's [Build from source](README.md#build-from-source)); `una` uses no `z3` on `PATH`. Without it the build makes a `una` with no solver, and those tests fail with U5003 rather than skip.
 
 Releases are checked the same way: `scripts/release-gates.sh` runs every gate on one commit from a fresh clone, and each release's summary is in [`docs/validation/`](docs/validation/), as [`docs/release-gates.md`](docs/release-gates.md) describes.
 

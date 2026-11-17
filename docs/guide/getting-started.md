@@ -2,7 +2,7 @@
 
 In about ten minutes you install Una, write a function with a contract, watch `una check` find the input that breaks it, fix it, and build a native executable.
 
-You write `wordfreq`, a program that counts the words of a text and prints the counts as JSON. Every code block here is tested against this release, and the finished program is `examples/wordfreq`.
+You write `wordfreq`, a program that counts the words of a text and prints the counts as JSON. Every code block here is tested against this release, except that the outputs shown in `text` blocks are not compared with a run, and the finished program is `examples/wordfreq`.
 
 > [!NOTE]
 > Una runs on macOS and Linux on arm64. [More about installing](#more-about-installing) lists the supported systems.
@@ -299,7 +299,7 @@ The executable prints what `una run` prints, and traces the same events: the int
 
 ## 7. An editor
 
-`una lsp` is a language server (LSP 3.17 over stdin and stdout) for any editor that speaks the protocol: it checks, formats and solves as you type, and never runs programs.
+`una lsp` is a language server (LSP 3.17 over stdin and stdout) for any editor that speaks the protocol: it checks as you type, proves a file when it is opened or saved, formats on request, and never runs programs.
 
 ## 8. Edition 0.4
 
@@ -357,7 +357,7 @@ The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/
 
 ### What the installer does
 
-- It installs only an archive whose digest the release's validation record lists.
+- It installs only an archive whose digest the release's validation record lists, or that `docs/validation/repacked.md` pairs with that listed digest (an archive packed again after its release).
 - It changes nothing outside `~/.una`.
 - To update, run it again: it replaces the release in `~/.una` with the current one, and prints the new version when it is done.
 - The README describes the other ways to install, and how to uninstall.
