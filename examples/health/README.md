@@ -6,7 +6,7 @@ This is the example of ADR 0123, "A health endpoint" ([HTTP servers](../../docs/
 
 What it demonstrates:
 
-- a manifest in `ita.una`, edition `0.4` ([manifest](../../docs/guide/configure/ita/manifest.md)), with a `serve:` grant and a `serve` section;
+- a manifest in `ita.una`, edition `0.4`, a preview ([manifest](../../docs/guide/configure/ita/manifest.md)), with a `serve:` grant and a `serve` section;
 - `handle(request: internal Request) -> internal Reply` of `std.host`, the shape the host calls;
 - [tests](../../docs/guide/language/examples/test.md) that call `handle` directly with a request from `test_request` of `std.testing`, the request the host would read from a peer;
 - an [`internal`](../../docs/guide/language/information-flow/labels.md) request and reply, the label the host gives what its peers send and read.
@@ -50,4 +50,4 @@ serve
 
 ## Edition
 
-Edition `0.4` ([edition](../../docs/guide/configure/package/edition.md)).
+Edition `0.4`, a preview ([edition](../../docs/guide/configure/package/edition.md)).
