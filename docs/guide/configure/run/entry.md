@@ -117,7 +117,7 @@ Further rules:
 
 ## Edition
 
-`entry` is the same in editions `0.1` and `0.2`.
+`entry` is the same in editions `0.1` and `0.2`. From edition `0.4` it is written in the `run` section of `ita.una`, as `entry <module>` (see [`ita.una`](../ita/manifest.md)).
 
 ## Normative source
 

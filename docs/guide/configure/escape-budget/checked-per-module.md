@@ -116,7 +116,7 @@ Further rules:
 
 ## Edition
 
-The escape budget is the same in editions `0.1` and `0.2`.
+The escape budget is the same in editions `0.1` and `0.2`. From edition `0.4` it is written in the `escapes` section of `ita.una`, as `checked per module <n>` (see [`ita.una`](../ita/manifest.md)).
 
 ## Normative source
 

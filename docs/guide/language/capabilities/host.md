@@ -134,7 +134,7 @@ Further rules:
 - **Labeled failures.** Whether a host operation fails is labeled by the arguments that decide it: the path of `Files`, not the content; the key name of `Keys.hmac`, not the data; and every argument of `Http`, so its failures are `internal`. A `Files.write` to an `internal` path fails `internal`, and every `Files` failure also carries the package's file-state label: the labels that decide where the package's writes land and whether they run.
 - **Host text.** When `Files.read` or `Env.get` meets bytes that are not valid UTF-8, the run aborts with U6005.
 - **Out of the model.** Races on a path, hard links, resource limits and other processes are outside what the checker reasons about, and `una report` lists such channels under `out_of_model`.
-- **User handlers.** Code may implement a host capability with its own handler, such as a fake `Keys` in examples. The host implementations are used only by `una run`.
+- **User handlers.** Code may implement a host capability with its own handler, such as a fake `Keys` in examples. The host implementations are used only by `una run` and by an executable that `una build` makes.
 - **Declared in `std.host`.** A user capability with the same name is a different declaration.
 
 ## Diagnostics

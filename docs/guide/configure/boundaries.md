@@ -1,6 +1,6 @@
 ---
 construct: "[boundaries]"
-editions: ["0.3"]
+editions: ["0.3", "0.4", "0.5"]
 spec: ["spec/13 §7", "spec/05 §4", "spec/05 §9", "spec/07 §6"]
 codes: [U3020, U3021, U3024, U7002]
 ---
@@ -328,7 +328,7 @@ Further rules:
 
 ## Edition
 
-Edition `0.3` only, a preview. In editions `0.1` and `0.2`, `[boundaries]` is an unknown table (U7002), and the narrowed rebinding `with @x = @y[ops]` is a syntax error.
+From edition `0.3`, a preview. In edition `0.3` the boundaries are the `[boundaries]` table of `una.toml`; from edition `0.4` they are the `boundaries` section of `ita.una`, with the same rules (see [`ita.una`](ita/manifest.md)). In editions `0.1` and `0.2`, `[boundaries]` is an unknown table (U7002), and the narrowed rebinding `with @x = @y[ops]` is a syntax error.
 
 ## Normative source
 

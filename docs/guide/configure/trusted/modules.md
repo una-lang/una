@@ -115,7 +115,7 @@ Further rules:
 
 ## Edition
 
-Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries, and a trusted module may not lie inside one.
+Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries, and a trusted module may not lie inside one. From edition `0.4` trusted modules are written in the `trusted` section of `ita.una`, one module path per line (see [`ita.una`](../ita/manifest.md)).
 
 ## Normative source
 

@@ -9,7 +9,7 @@ codes: [U1001, U1002, U3001, U3014, U3020, U3021]
 
 ## What it does
 
-A `test` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs. It is the declaration of editions `0.3` and `0.4`; editions `0.1` and `0.2` write it [`example`](example.md), with the same lines and rules.
+A `test` is executable evidence of behavior: a small test written beside the code it exercises, which `una test` runs. It is the declaration of editions `0.3` to `0.5`; editions `0.1` and `0.2` write it [`example`](example.md), with the same lines and rules.
 
 Learn more: [Examples: do and expect](/learn/testing/examples-do-and-expect/), [Fakes: given, expect performed and expect not performed](/learn/testing/fakes-given-expect-performed-and-expect-not-performed/) and [Testing failures: expect fails](/learn/testing/testing-failures-expect-fails/).
 

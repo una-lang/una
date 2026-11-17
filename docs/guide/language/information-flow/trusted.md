@@ -151,11 +151,11 @@ A review of the report still compares each policy's purpose and owner with the r
 
 ## Edition
 
-Trusted modules are the same in editions `0.1` and `0.2`. Edition `0.3`, a preview, adds boundaries (groups of modules whose authority `una.toml` caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
+Trusted modules are the same in editions `0.1` and `0.2`. From edition `0.3`, a preview, the language adds boundaries (groups of modules whose authority `una.toml`, or from edition `0.4` `ita.una`, caps): a module inside a boundary is never trusted, and a call into a boundary that could reach a policy call is rejected. See [`[boundaries]`](../../configure/boundaries.md) and [A ceiling for a module: boundaries](/learn/authority/a-ceiling-for-a-module-boundaries/).
 
 ## Normative source
 
-- `spec/07 §6`: trusted modules, and in edition `0.3`, boundary modules that are never trusted; `spec/07 §5`: policies.
+- `spec/07 §6`: trusted modules, and from edition `0.3`, boundary modules that are never trusted; `spec/07 §5`: policies.
 - `spec/02 §1`: the module header.
 - `spec/13 §6`: the build report and its `tcb`; `spec/13 §7`: `[trusted] modules`.
 - Decision record: [ADR 0093](../../../adr/0093-authority-at-module-boundaries.md), for boundaries.
