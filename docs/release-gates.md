@@ -246,6 +246,7 @@ The script writes into `OUT`:
     - `PASS (every gate)`;
     - `FAIL (<gates>)`;
     - `INCOMPLETE (not run: <gates>)`, over the required gates (§2).
+    - `ACCEPTED BY THE OWNER`, written by hand into the record committed for a tag, never by the script: the owner's recorded decision to release a commit whose gates did not all pass, followed by the gates' result and the reason. The installer (`install.sh`) accepts this line like `PASS (every gate)`; it still checks the archive's digest against the record.
 - `summary.md`, the public summary, which `scripts/release-summary.py` writes from `record.md` by a fixed template (#717):
   - the commit, the run's date, operating system and architecture, and the `rustc` and Docker versions;
   - the table of the gates, with result and seconds;

@@ -253,6 +253,46 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn the_installer_installs_a_release_that_the_owner_accepted_in_its_summary() {
+    // The summary is read from the tag's tree, so the release cannot replace it: a verdict line
+    // `ACCEPTED BY THE OWNER` is the owner's recorded decision for a release whose gates did not
+    // all pass on its commit. The archive's digest is still the one the summary lists.
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-accepted");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.8";
+    let home = dir.join("home/.una");
+    // Accepted, but with a digest that is not the archive's: refused, nothing installed.
+    release(
+        &dir,
+        target,
+        version,
+        "ACCEPTED BY THE OWNER",
+        Some(&"0".repeat(64)),
+    );
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("SHA-256 mismatch"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!home.exists());
+    // A verdict that only starts like the accepted one: refused.
+    release(&dir, target, version, "ACCEPTED BY THE OWNERS", None);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!home.exists());
+    // Accepted, with the archive's digest: installed.
+    release(&dir, target, version, "ACCEPTED BY THE OWNER", None);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(home.join("bin/una").exists());
+}
+
+#[test]
 fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for() {
     // The installer has no release for another platform.
     let Some(target) = target() else {

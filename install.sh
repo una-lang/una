@@ -352,8 +352,8 @@ say "reading the validation summary of $version"
 fetch "$records/v$version/docs/validation/$record" "$work/$record" \
     || fetch "$records/main/docs/validation/$record" "$work/$record" \
     || fail "no validation summary for $version (docs/validation/$record), so this script does not install it; a release without one, such as 0.1.x, can be installed by hand from its release assets"
-grep -qx 'Verdict: PASS (every gate)' "$work/$record" \
-    || fail "the validation summary of $version is not a PASS of every gate"
+grep -qx -e 'Verdict: PASS (every gate)' -e 'Verdict: ACCEPTED BY THE OWNER' "$work/$record" \
+    || fail "the validation summary of $version is not a PASS of every gate, and is not accepted by the owner"
 archive=una-$version-$target.tar.gz
 expected=$(sed -n "s/^| \`$archive\` | \`\([0-9a-f]\{64\}\)\` |\$/\1/p" "$work/$record")
 [ -n "$expected" ] || fail "the validation summary of $version lists no $archive"
