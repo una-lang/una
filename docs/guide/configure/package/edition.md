@@ -131,4 +131,4 @@ The stable editions are `0.1` and `0.2`; `0.3`, `0.4` and `0.5` are previews. `u
 - `spec/17 §1`, `spec/18 §1`, `spec/19 §1`, `spec/20 §2`: the constructs of edition `0.2`.
 - `spec/28 §2` and `spec/29 §16` to `§19`: the constructs of edition `0.5`.
 - `spec/05 §3`: conditions on operations; `spec/03 §3`: refined type arguments in edition `0.3`; `spec/25 §1`: units of measure.
-- Decision record: [ADR 0056](../../../adr/0056-memory-model.md), which introduced edition `0.2`, and its amendment of 2026-10-13, which introduced edition `0.3`.
+- Decision record: ADR 0056, which introduced edition `0.2`, and its amendment of 2026-10-13, which introduced edition `0.3`.

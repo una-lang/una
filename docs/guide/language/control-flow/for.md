@@ -217,4 +217,4 @@ pub order_total(prices: List[Int]) -> Int
 - `spec/17 §5` rules 3 and 5: the loop invariant, facts and termination; `spec/17 §6` rule 3: labels; `spec/17 §7`: failures.
 - `spec/01 §5`: reserved words.
 - `spec/12 §6`: what an unknown obligation's reason says about a loop.
-- Decision record: [ADR 0071](../../../adr/0071-a-length-frame-for-loops.md), for the length frame; [ADR 0103](../../../adr/0103-refined-elements-of-collections.md), for refined elements in edition `0.3`.
+- Decision record: ADR 0071, for the length frame; ADR 0103, for refined elements in edition `0.3`.

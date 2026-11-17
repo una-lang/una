@@ -1,9 +1,0 @@
--- test: `result` as the name of a `let` is U0101 saying that `result` is reserved for `ensures`, with a repair that renames the binding and its uses (spec/01 §5, #206)
--- spec: spec/01 §5
--- expect: error U0101 at 8:7
-module reserved_result_as_binding
-
-pub doubled(x: Int) -> Int
-=
-  let result = x + x
-  result

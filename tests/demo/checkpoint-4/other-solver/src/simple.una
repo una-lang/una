@@ -1,7 +1,0 @@
-module simple
-
-pub positive(x: Int) -> Int
-  requires x > 0
-  ensures result > 0
-=
-  x

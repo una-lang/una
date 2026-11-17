@@ -155,4 +155,4 @@ The five host capabilities of v0.1 are in every edition. Edition `0.2` adds `Htt
 - `spec/07 §4`: sinks; `spec/07 §7` rule 4: labeled failures.
 - `spec/24 §1`: the `Http` operations; `spec/24 §2`: `Http` grants; `spec/24 §5` rule 3: the labels of `Http` failures.
 - `spec/31 §1`: `HttpServer`; `spec/31 §2`: `serve:` grants (edition `0.4`).
-- Decision record: [ADR 0039](../../../adr/0039-labels-of-keys-hmac.md), for the labels of `Keys.hmac`.
+- Decision record: ADR 0039, for the labels of `Keys.hmac`.

@@ -1,7 +1,0 @@
-[package]
-name = "gives_passed_within"
-version = "0.1.0"
-edition = "0.3"
-
-[labels]
-categories = ["Service"]

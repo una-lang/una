@@ -1,8 +1,0 @@
-[package]
-name = "rv_id_imported_capability_handler"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "app"
-grants = ["console"]

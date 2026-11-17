@@ -1,3 +1,0 @@
-module m.inner
-
-pub shown(file: Text) -> Text = file

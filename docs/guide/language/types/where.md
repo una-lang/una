@@ -138,4 +138,4 @@ Refinements are the same in editions `0.1` and `0.2`. In edition `0.2`, a fixed-
 - `spec/12 §2`: the decidable fragment; `spec/12 §3`: the `refinement` obligation; `spec/12 §6`: statuses.
 - `spec/03 §4`: predicates, and opaque facts.
 - `spec/18 §1`: refined fixed-width integers.
-- Decision records: [ADR 0040](../../../adr/0040-refined-type-arguments.md), for refined type arguments in editions `0.1` and `0.2`; [ADR 0103](../../../adr/0103-refined-elements-of-collections.md), for refined type arguments in edition `0.3`; [ADR 0092](../../../adr/0092-conditions-on-allowed-effects.md), for `it` in edition `0.3`; [ADR 0045](../../../adr/0045-refined-kinds-over-function-types.md), for refined function kinds.
+- Decision records: ADR 0040, for refined type arguments in editions `0.1` and `0.2`; ADR 0103, for refined type arguments in edition `0.3`; ADR 0092, for `it` in edition `0.3`; ADR 0045, for refined function kinds.

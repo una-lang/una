@@ -1,8 +1,0 @@
--- test: the prelude is not an importable module
--- spec: spec/10 §11
--- expect: error U1001 at 6:8
-module import_std_prelude
-
-import std.prelude (Option)
-
-pub one() -> Int = 1

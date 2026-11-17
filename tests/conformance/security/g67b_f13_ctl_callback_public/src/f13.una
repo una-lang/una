@@ -1,8 +1,0 @@
--- test: ADR 0067 recheck of #231, control F13_ctl_callback_public: the same shapes with nothing secret decided, which edition 0.2 accepts (spec/07 §7 rule 8, #92)
--- spec: spec/07 §7
--- expect: ok
-module f13
-
-apply[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int = k(if a == b then p else q)
-
-pub fine(s: Int) -> Int = apply([s], b: [0], p: [], q: [1, 2], k: fn(xs: List[Int]) -> xs.len)

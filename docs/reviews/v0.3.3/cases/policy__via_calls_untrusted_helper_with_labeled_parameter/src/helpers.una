@@ -1,3 +1,0 @@
-module helpers
-
-pub digits_of(t: secret[Pin] Text) -> secret[Pin] Nat = t.len

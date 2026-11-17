@@ -44,9 +44,9 @@ Una is a verification-first programming language for software that AI agents wri
 - importable standard modules;
 - editions 0.1 and 0.2, and edition 0.3 as a preview: it has every rule of 0.2, conditions on the operations a function may perform, locked contracts of public functions, the first part of module boundaries, and errors for failure handling on code that cannot fail; later releases add the rest of its designs, so they may reject a package that this one accepts;
 - edition 0.4 as a preview, the edition of this release (below), and edition 0.5 as an early preview, without module constants or `const` and `var` yet;
-- archives for macOS on arm64 and Linux on arm64 with glibc 2.39 or later (`scripts/release-targets.txt`), each listed with its digest in the validation record `docs/validation/0.4.0.md`; Linux on x86-64 and Windows are not targets of v0.4.0.
+- archives for macOS on arm64 and Linux on arm64 with glibc 2.39 or later, each listed with its digest in the validation record `docs/validation/0.4.0.md`; Linux on x86-64 and Windows are not targets of v0.4.0.
 
-Releases, compiler versions and editions follow one number ([ADR 0139](docs/adr/0139-edition-numbering-follows-the-release-that-closes-it.md)): release R0.N ships `una` v0.N.0, and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of [ADR 0121](docs/adr/0121-the-terms-of-a-preview-edition.md), and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is in [`docs/plan/roadmap.md`](docs/plan/roadmap.md#releases-and-editions).
+Releases, compiler versions and editions follow one number (ADR 0139): release R0.N ships `una` v0.N.0, and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of ADR 0121, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is kept by the maintainers.
 
 Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. Edition 0.4, the edition of v0.4.0, is a preview (ADR 0121): a later release may ask for edits to a package of edition 0.4. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md); what this release proves, tests and assumes is in [Known limits](docs/guide/known-limits.md#assurance-in-this-release).
 
@@ -226,7 +226,7 @@ Every command but `una lsp` takes `--json` and prints exactly one JSON document,
 | [Tasks and time](docs/guide/tasks-and-time.md) | `together`, `tasks` and `start`, `within` and `first of`, cancellation, the two engines' schedules and the timing labels, in editions 0.2 and 0.4 |
 | [Specification](docs/spec/) | The normative definition of the language |
 | [Charter](docs/00-charter.md) | What Una is for, what it proves and what it assumes |
-| [Design decisions](docs/adr/) | Why each key decision was made |
+| Design decisions (kept by the maintainers, not in this tree) | Why each key decision was made |
 | [Release gates](docs/release-gates.md) and [validation summaries](docs/validation/) | How each release was checked, with the digests of its archives |
 | [Changelog](CHANGELOG.md) | The changes of each release |
 | [Documentation map](docs/README.md) | Every document, in reading order |

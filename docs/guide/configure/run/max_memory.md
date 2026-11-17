@@ -159,4 +159,4 @@ Further rules:
 
 - `spec/13 §7`: project files; `spec/13 §5`: `una run` and its flags; `spec/30 §2`: `ita.una`.
 - `spec/11 §7`: the memory budget of a run.
-- Decision record: [ADR 0109](../../../adr/0109-profiles-app-and-systems.md).
+- Decision record: ADR 0109.

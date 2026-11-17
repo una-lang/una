@@ -130,4 +130,4 @@ Further rules:
 - `spec/04 §4`: one effect per line.
 - `spec/12 §3`: the facts after `attempt`.
 - `spec/07 §3` rule 3, `spec/07 §7` rule 4 and `spec/07 §5` rule 6: labeled failures.
-- Decision record: [ADR 0100](../../../adr/0100-failure-handling-on-code-that-cannot-fail.md), for U3026.
+- Decision record: ADR 0100, for U3026.

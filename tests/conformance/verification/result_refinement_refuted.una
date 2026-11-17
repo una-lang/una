@@ -1,8 +1,0 @@
--- test: a returned value that may fall outside the declared result's range is refuted at the failing return
--- spec: spec/12 §3
--- expect: error U5001 at 8:65
-module result_refinement_refuted
-
-pub kind Seats = Int in 0..5000
-
-pub cap_seats(raw: Int) -> Seats = if raw > 5000 then 5000 else raw

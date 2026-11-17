@@ -1,3 +1,0 @@
-module m
-
-pub both[T](a: T, b: T) -> Bool = a == b or a < b

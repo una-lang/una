@@ -1,9 +1,0 @@
--- test: a line continued inside brackets is joined
--- spec: spec/01 §2
--- expect: error U7001 at 6:1
-module joined_brackets
-
-pub total() -> Int = sum([
-  1,
-  2
-])

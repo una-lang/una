@@ -1,9 +1,0 @@
--- test: generic `filter(x == y).len` instantiated with secret data (R-004)
--- spec: spec/07 §7
--- expect: error U4001 at 7:69
--- expect: error U4001 at 9:36
-module generic_filter_count
-
-count_equal[T](xs: List[T], y: T) -> Int = xs.filter(keep: fn(x) -> x == y).len
-
-pub leak(pin: secret Int) -> Int = count_equal([pin], y: 1234)

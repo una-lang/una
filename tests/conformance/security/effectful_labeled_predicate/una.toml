@@ -1,4 +1,0 @@
-[package]
-name = "effectful_labeled_predicate"
-version = "0.1.0"
-edition = "0.2"

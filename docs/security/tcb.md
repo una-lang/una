@@ -1,5 +1,7 @@
 # The trusted computing base: a risk profile
 
+Note on the public tree: the test suites, the scripts for validation and release, the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; paths below that name them describe the maintainers' checkout.
+
 Every Una guarantee holds "assuming the trusted base behaves as specified" (charter §3). The build report counts part of that base: its `tcb` section lists a package's `trusted` modules with their line counts, the host capabilities it uses, the solver and the proof cache (`spec/13 §6`). Line counts do not say what a bug in a component could do, what catches it, or what is left open. This document says that for each component of the toolchain's trusted base, and ranks the open gaps.
 
 Its sizes describe the repository at commit `3e5b800b`, when edition `0.3` was in preview. The formal coverage of §3.1 was refreshed at commit `491dc89c` (2026-11-10), for v0.4.0, whose previews are editions `0.3`, `0.4` and `0.5` (`una --version`). Sizes are lines of Rust under each crate's `src/`, unit tests included. The counts of `unsafe` code (§3.2, §3.3) were taken again from the code at commit `0516fba0` (#1686), by a regular expression over every crate's `src/` and the tests of `una-sys`, comments left out, cross-checked with `grep -c` and the `// SAFETY:` comments of each file. Proposed decisions are described as proposals.

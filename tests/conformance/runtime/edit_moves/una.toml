@@ -1,8 +1,0 @@
-[package]
-name = "edit_moves"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "edit_moves"
-grants = ["console"]

@@ -1,8 +1,0 @@
-[package]
-name = "recheck_pipe_then_fail"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "pipe"
-grants = ["console", "files:data:write"]

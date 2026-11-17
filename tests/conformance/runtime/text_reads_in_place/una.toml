@@ -1,8 +1,0 @@
-[package]
-name = "text_reads_in_place"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "reads"
-grants = ["console"]

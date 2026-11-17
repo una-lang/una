@@ -1,3 +1,0 @@
-module results
-
-pub kind Result = Good | Bad

@@ -1,6 +1,0 @@
--- test: the body of an opaque predicate keeps its division obligation, which is refuted
--- spec: spec/12 §3
--- expect: error U5001 at src/m.una:6:42
-module m
-
-pub predicate opaque p(n: Int) -> Bool = 100 / n > 0

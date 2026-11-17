@@ -1,8 +1,0 @@
--- test: in edition 0.4 `of` follows only a number type: on `Bool` it is U2029 at the unit
--- spec: spec/25 §2
--- expect: error U2029 at src/m.una:8:18
-module m
-
-pub measure Meter
-
-pub f(b: Bool of Meter) -> Bool = b

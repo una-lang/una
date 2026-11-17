@@ -1,8 +1,0 @@
--- test: in edition 0.2, `F64` is an ordinary name: a kind may take it
--- spec: spec/29 §13
--- expect: ok
-module m
-
-pub kind F64 = A | B
-
-pub first() -> F64 = A

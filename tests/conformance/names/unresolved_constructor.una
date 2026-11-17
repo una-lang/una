@@ -1,8 +1,0 @@
--- test: a constructor no scope holds is unresolved
--- spec: spec/02 §7
--- expect: error U1001 at 8:68
-module unresolved_constructor
-
-pub kind Availability = SoldOut | Open
-
-pub availability(x: Int) -> Availability = if x > 0 then Open else Closed

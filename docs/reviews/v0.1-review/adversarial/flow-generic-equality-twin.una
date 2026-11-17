@@ -1,7 +1,0 @@
--- Adversarial: positive control: the same comparison written without a generic
--- Expected: U4001
--- Observed: U4001 at 7:37
--- Verdict: Pass (control)
-module flow_generic_equality_twin
-
-pub leak(pin: secret Int) -> Bool = pin == 1234

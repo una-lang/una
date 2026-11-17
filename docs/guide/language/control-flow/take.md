@@ -133,4 +133,4 @@ pub ship(take items: List[Int]) -> Int = items.len
 - `spec/17 §1`: syntax.
 - `spec/17 §3`: parameter conventions, rules 1 to 8.
 - `spec/17 §7` rule 3: backend freedom.
-- Decision record: [ADR 0056](../../../adr/0056-memory-model.md), for the memory model of edition `0.2`.
+- Decision record: ADR 0056, for the memory model of edition `0.2`.

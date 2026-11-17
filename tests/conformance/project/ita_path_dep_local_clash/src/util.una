@@ -1,3 +1,0 @@
-module util
-
-pub helper() -> Text = "x"

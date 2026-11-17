@@ -2,7 +2,7 @@
 
 A health endpoint: an HTTP server that answers `GET /health` with `200 ok`, and every other request with `404`.
 
-This is the example of ADR 0123, "A health endpoint" ([HTTP servers](../../docs/adr/0123-http-servers.md)), in the host-driven form of [`spec/31 §7`](../../docs/spec/31-http-servers.md): the package declares no `main`. Its `ita.una` names, in a `serve` section, the module whose `handle` the host calls once for each request it reads, and grants the address it listens on. The host owns every connection and answers each request with the reply `handle` returns, so the module itself is one ordinary function, which the checker, the verifier and the tests see as any other.
+This is the example of ADR 0123, "A health endpoint" (a decision record of the HTTP servers), in the host-driven form of [`spec/31 §7`](../../docs/spec/31-http-servers.md): the package declares no `main`. Its `ita.una` names, in a `serve` section, the module whose `handle` the host calls once for each request it reads, and grants the address it listens on. The host owns every connection and answers each request with the reply `handle` returns, so the module itself is one ordinary function, which the checker, the verifier and the tests see as any other.
 
 What it demonstrates:
 

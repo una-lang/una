@@ -1,8 +1,0 @@
-[package]
-name = "prelude_meanings_run"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "meanings"
-grants = ["console"]

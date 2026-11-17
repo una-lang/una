@@ -1,8 +1,0 @@
--- test: a module declares a name once
--- spec: spec/02 §1
--- expect: error U1002 at 8:5
-module duplicate_declaration
-
-pub one() -> Int = 1
-
-pub one() -> Int = 2

@@ -1,8 +1,0 @@
-ita task_switch_first_where_predicate
-  version 0.1.0
-  edition 0.4
-
-run
-  entry order
-  grants
-    console

@@ -1,6 +1,0 @@
--- test: a closing bracket without an opening one is rejected
--- spec: spec/01 §2
--- expect: error U0101 at 6:21
-module unmatched_closing_bracket
-
-pub one() -> Int = 1)

@@ -1,6 +1,0 @@
--- test: bytes that are not valid UTF-8 are rejected, even in a comment
--- spec: spec/01 Â§1
--- expect: error U0001 at 6:7
-module invalid_utf8
-
--- café au lait

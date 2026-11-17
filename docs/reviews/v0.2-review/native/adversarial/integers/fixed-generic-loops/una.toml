@@ -1,8 +1,0 @@
-[package]
-name = "genloop"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "genloop"
-grants = ["console"]

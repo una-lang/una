@@ -1,8 +1,0 @@
-[package]
-name = "hosthandlers"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "hosthandlers"
-grants = ["console", "clock"]

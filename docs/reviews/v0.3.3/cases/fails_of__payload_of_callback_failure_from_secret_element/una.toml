@@ -1,8 +1,0 @@
-[package]
-name = "fails_of__payload_of_callback_failure_from_secret_element"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "sw"
-grants = ["console"]

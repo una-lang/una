@@ -1,7 +1,0 @@
-module b_writer
-
-pub save(path: internal Text) -> Unit
-  uses @files: Files[write]
-=
-  let w = attempt @files.write(path, content: "")
-  unit

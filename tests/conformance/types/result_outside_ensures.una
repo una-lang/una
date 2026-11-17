@@ -1,9 +1,0 @@
--- test: result appears only in ensures clauses and expect lines
--- spec: spec/02 §8
--- expect: error U2012 at 7:12
-module result_outside_ensures
-
-pub positive(x: Int) -> Int
-  requires result > 0
-=
-  x

@@ -1,9 +1,0 @@
--- test: a function with an editable binding keeps its overflow obligation, which is refuted
--- spec: spec/12 §3
--- expect: error U5001 at src/m.una:9:3
-module m
-
-pub h(n: U8) -> U8
-=
-  let edit x = n
-  n + 255

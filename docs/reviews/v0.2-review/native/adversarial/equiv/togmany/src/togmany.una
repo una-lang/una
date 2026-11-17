@@ -1,9 +1,0 @@
-module togmany
-
-pub main() -> Unit
-  uses @console: Console[print]
-=
-  let n = 5000
-  let xs = together for i in 0..<n
-    i * 2
-  @console.print("{xs.sum}")

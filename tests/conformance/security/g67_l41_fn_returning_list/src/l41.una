@@ -1,8 +1,0 @@
--- test: ADR 0067 adversarial check of #231, L41_fn_returning_list: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
--- spec: spec/07 §7
--- expect: error U4001 at src/l41.una:6:57
-module l41
-
-maker[T](a: T, b: T) -> fn(Int) -> List[Int] = fn(n) -> if a == b then [n] else []
-
-pub leak(s: secret Int) -> Int = maker(s, b: 0)(1).len

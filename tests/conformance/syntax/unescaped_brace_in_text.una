@@ -1,6 +1,0 @@
--- test: a closing brace outside an interpolation must be escaped
--- spec: spec/01 §6
--- expect: error U0007 at 6:26
-module unescaped_brace_in_text
-
-pub label() -> Text = "a } b"

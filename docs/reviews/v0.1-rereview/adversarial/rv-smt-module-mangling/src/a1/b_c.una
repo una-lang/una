@@ -1,3 +1,0 @@
-module a1.b_c
-
-pub kind K = First | Second | Third

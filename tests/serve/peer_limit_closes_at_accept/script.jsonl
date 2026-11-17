@@ -1,4 +1,0 @@
-{"at": 0, "connection": 1, "grant": "127.0.0.1:8080", "peer": "192.0.2.1:1001", "reads": "eager"}
-{"at": 0, "connection": 2, "grant": "127.0.0.1:8080", "peer": "192.0.2.1:1002", "reads": "eager"}
-{"at": 0, "connection": 3, "grant": "127.0.0.1:8080", "peer": "192.0.2.1:1003", "reads": "eager"}
-{"at": 0, "connection": 4, "grant": "127.0.0.1:8080", "peer": "192.0.2.2:1004", "reads": "eager"}

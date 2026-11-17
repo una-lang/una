@@ -12,38 +12,31 @@ Open an [issue](https://github.com/una-lang/una/issues/new/choose) and pick the 
 
 Include the smallest program that shows the problem, the command you ran, what you expected, and the output of `una --version`. If a report could hurt users before it is fixed, such as a way for a program to escape its grants at run time, follow [`SECURITY.md`](SECURITY.md) instead of opening a public issue.
 
+## What is in this repository
+
+The public tree holds the compiler's sources (`crates/`), the specification (`docs/spec/`), the guides (`docs/guide/`), the standard library listing (`docs/std/`), the compiler's design notes (`docs/compiler/`), the examples, the validation records of each release (`docs/validation/`), the security documents, the formal development (`formal/`), the fuzz targets and the pinned supply-chain inputs. The maintainers keep the rest, which is not in this tree: the architecture decision records, the roadmap and plan, the review records, the test suites (the conformance cases and the integration tests of each crate; the unit tests inside `crates/*/src` are here), and the scripts for validation, release and the website. Where a document names one of those, it says it is kept by the maintainers.
+
 ## How work flows
 
 1. **An issue first.** Every change starts as an issue, so its scope is agreed before code is written. One issue per branch and per pull request.
-2. **The specification first.** [`docs/spec/`](docs/spec/) defines the language, and when the code and the specification disagree, the specification wins. A change to the language starts as an architecture decision record: copy [`docs/adr/0000-template.md`](docs/adr/0000-template.md) to `docs/adr/NNNN-short-title.md` with status `Proposed`. It is implemented only once it is `Accepted`, and the specification is updated in the same change as the implementation. Accepted records are not edited; later changes are appended as a dated amendment.
-3. **Tests first.** Write the tests that encode the rule before implementing it. A language rule gets conformance cases in [`tests/conformance/`](tests/conformance/), positive and negative, in the format of [`docs/compiler/testing.md`](docs/compiler/testing.md). A fix gets a regression test that fails before the fix.
-4. **Implement**, following [`docs/compiler/conventions.md`](docs/compiler/conventions.md).
-5. **Validate locally**, then open the pull request.
+2. **The specification first.** [`docs/spec/`](docs/spec/) defines the language, and when the code and the specification disagree, the specification wins. A change to the language is first agreed in the issue, as a proposal that the maintainers record as an architecture decision; the specification is updated in the same change as the implementation.
+3. **Implement**, following [`docs/compiler/conventions.md`](docs/compiler/conventions.md). The maintainers add the tests that encode a rule, and a fix is accepted with a regression test that fails before it; describe the case in the pull request.
+4. **Check locally**, then open the pull request.
 
-Branches are named `dev/<issue>-<topic>`, for example `dev/6-integration-rule`. Every commit references its issue (`Refs #6`), and the pull request closes it (`Closes #6`, one keyword per issue). Each pull request adds one changelog fragment, `changelog.d/<issue>-<slug>.md`: a single line that is one bullet, `- **What changed** (#<issue>, …). Details.`, and never edits [`CHANGELOG.md`](CHANGELOG.md) itself (#744). Two pull requests then never change the same lines. The release assembles the fragments (`scripts/changelog-assemble.sh`), and the tests check every fragment's shape and that `## Unreleased` stays empty.
+Branches are named `dev/<issue>-<topic>`, for example `dev/6-integration-rule`. Every commit references its issue (`Refs #6`), and the pull request closes it (`Closes #6`, one keyword per issue). Each pull request adds one changelog fragment, `changelog.d/<issue>-<slug>.md`: a single line that is one bullet, `- **What changed** (#<issue>, …). Details.`, and never edits [`CHANGELOG.md`](CHANGELOG.md) itself. Two pull requests then never change the same lines. The maintainers assemble the fragments at each release.
 
-## Validation
+## Building and checking
 
-Validation runs locally. A pull request is merged after `scripts/local-ci.sh` passes on its final commit:
-
-```bash
-eval "$(scripts/z3-library.sh --export)"   # the Z3 library that una links, as in the README's "Build from source"
-scripts/local-ci.sh           # solver check, formatting, clippy, every test, the release archive
-scripts/local-ci.sh --linux   # the same steps in a Linux container
-```
-
-A pull request that changes `scripts/local-ci.sh`, its Docker image under `scripts/local-ci/`, or a script that one of its steps calls also needs `scripts/local-ci.sh --linux-arm64` to pass on its final commit, since a tool the image lacks fails only there (`docs/release-gates.md` §1). Each run ends with `PASS`, or with `FAIL` and the step that failed. One step, `scripts/doc-links.py`, checks that every link of the repository's documents names a tracked file and every `#fragment` a heading of its document; it needs Python 3. The website is built from the repository's documents by the release gate `site` (`docs/release-gates.md`). During development, the usual commands are:
+You need the Rust toolchain pinned in `rust-toolchain.toml` and the Z3 library that `una` links; the README's [Build from source](README.md#build-from-source) explains both (`scripts/z3-library.sh` builds the library from the source `supply-chain/z3.lock` pins). Then:
 
 ```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo insta review   # review each snapshot change; never accept one blindly
+eval "$(scripts/z3-library.sh --export)"
+cargo build --release -p una-cli -p una-rt
+cargo fmt --all --check
+cargo clippy --workspace --locked -- -D warnings
 ```
 
-Tests that reach the solver need a `una` built with `UNA_Z3_LIB` set, in the same shell, to the Z3 library that `scripts/z3-library.sh --export` builds from the source `supply-chain/z3.lock` pins (the README's [Build from source](README.md#build-from-source)); `una` uses no `z3` on `PATH`. Without it the build makes a `una` with no solver, and those tests fail with U5003 rather than skip.
-
-Releases are checked the same way: `scripts/release-gates.sh` runs every gate on one commit from a fresh clone, and each release's summary is in [`docs/validation/`](docs/validation/), as [`docs/release-gates.md`](docs/release-gates.md) describes.
+`una` uses no `z3` on `PATH`. Without `UNA_Z3_LIB` the build makes a `una` with no solver, and a check at tier 1 fails with U5003. A pull request is merged after the maintainers' own validation on its final commit; a release is tagged when every gate passes on one commit, or when the maintainer accepts it in the record, whose verdict line says so. Each release's record is in [`docs/validation/`](docs/validation/) and states which gates ran and on which commit, as [`docs/release-gates.md`](docs/release-gates.md) describes.
 
 ## Rules for the code
 

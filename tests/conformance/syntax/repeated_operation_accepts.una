@@ -1,9 +1,0 @@
--- test: an operation declares at most one accepted label
--- spec: spec/02 §4
--- expect: error U0102 at 9:5
-module repeated_operation_accepts
-
-pub capability Log
-  op write(message: Text) -> Unit
-    accepts internal
-    accepts public

@@ -1,7 +1,0 @@
--- Adversarial: secret value as Some payload returned as Option[Int]
--- Expected: U4001 (spec/07 §7.2)
--- Observed: U4001 at 7:44
--- Verdict: Pass
-module flow_option_payload
-
-pub wrap(pin: secret Int) -> Option[Int] = Some(pin)

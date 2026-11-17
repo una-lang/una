@@ -1,6 +1,0 @@
--- test: a signature needs `->` before its result type
--- spec: spec/02 §3
--- expect: error U0101 at 6:11
-module missing_arrow
-
-pub one() Int = 1

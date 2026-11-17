@@ -1,7 +1,0 @@
-ita server_start_in_dependency
-  version 0.1.0
-  edition 0.4
-
-needs
-  lib from path "deps/lib"
-    accept name

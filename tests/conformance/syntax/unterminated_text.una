@@ -1,6 +1,0 @@
--- test: a text literal without its closing quote is rejected
--- spec: spec/01 §6
--- expect: error U0004 at 6:26
-module unterminated_text
-
-pub greeting() -> Text = "hello

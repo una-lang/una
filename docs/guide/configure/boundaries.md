@@ -335,4 +335,4 @@ From edition `0.3`, a preview. In edition `0.3` the boundaries are the `[boundar
 - `spec/13 §7`: `[boundaries]`.
 - `spec/05 §4` rule 5: calls into a boundary; `spec/05 §9` rules 2, 4 and 5: inference, handlers and examples.
 - `spec/07 §6`: U3024, and which function values a call into a boundary follows.
-- Decision record: [ADR 0093](../../adr/0093-authority-at-module-boundaries.md), for authority at module boundaries.
+- Decision record: ADR 0093, for authority at module boundaries.

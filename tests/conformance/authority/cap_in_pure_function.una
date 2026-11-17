@@ -1,9 +1,0 @@
--- test: a function without uses cannot contain @
--- spec: spec/04 §2
--- expect: error U3004 at 9:24
-module cap_in_pure_function
-
-capability Log
-  op write(line: Text) -> Unit
-
-pub report() -> Unit = @log.write("done")

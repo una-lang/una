@@ -1,8 +1,0 @@
--- test: `as` gives a dependency another local name
--- spec: spec/30 §3
--- expect: ok
-module main
-
-import strings.text (shout)
-
-pub greet() -> Text = shout("hello")

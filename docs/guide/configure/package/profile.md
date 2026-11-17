@@ -216,4 +216,4 @@ Further rules:
 ## Normative source
 
 - `spec/13 §7`: project files; `spec/18 §3`: the `overflow` obligation; `spec/30 §2`: `ita.una`.
-- Decision record: [ADR 0109](../../../adr/0109-profiles-app-and-systems.md).
+- Decision record: ADR 0109.

@@ -1,6 +1,0 @@
-module pure_function
-
-pub capability Log
-  op write(line: Text) -> Unit
-
-pub report() -> Unit = @log.write("done")

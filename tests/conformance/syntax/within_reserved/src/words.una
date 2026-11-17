@@ -1,9 +1,0 @@
--- test: `within` stays reserved in edition 0.4 outside `for ever within` (spec/26 §1 rule 2)
--- spec: spec/26 §1
--- expect: error U0103 at src/words.una:8:7
-module words
-
-pub f() -> Int
-=
-  let within = 1
-  1

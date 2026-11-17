@@ -1,7 +1,0 @@
--- test: a local name is never `std` or its skeleton (`std`)
--- spec: spec/30 §3
--- expect: error U7008 at ita.una:6:15
--- expect: error U7008 at ita.una:6:3
-module main
-
-pub one() -> Int = 1

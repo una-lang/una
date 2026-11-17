@@ -1,8 +1,0 @@
-[package]
-name = "generic__generic_over_map_with_secret_key__control"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "sw"
-grants = ["console"]

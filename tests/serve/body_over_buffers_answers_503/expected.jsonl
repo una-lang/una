@@ -1,6 +1,0 @@
-{"at":0,"bytes":"SFRUUC8xLjEgNTAzIFNlcnZpY2UgVW5hdmFpbGFibGUNCkRhdGU6IFR1ZSwgMTQgTm92IDIwMjMgMjI6MTM6MjAgR01UDQpDb250ZW50LUxlbmd0aDogMA0KUmV0cnktQWZ0ZXI6IDENCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==","connection":2}
-{"at":0,"connection":2,"shutdown":true}
-{"at":1000,"closed":true,"connection":2}
-{"at":20000,"bytes":"SFRUUC8xLjEgNDA4IFJlcXVlc3QgVGltZW91dA0KRGF0ZTogVHVlLCAxNCBOb3YgMjAyMyAyMjoxMzo0MCBHTVQNCkNvbnRlbnQtTGVuZ3RoOiAwDQpDb25uZWN0aW9uOiBjbG9zZQ0KDQo=","connection":1}
-{"at":20000,"connection":1,"shutdown":true}
-{"at":21000,"closed":true,"connection":1}

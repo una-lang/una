@@ -208,4 +208,4 @@ pub apply_discount(cents: Int, discount: fn(Int) -> Int) -> Int
 - `spec/02 §3`: the grammar, the order of clauses, and the `of` clauses of edition `0.2`.
 - `spec/05 §9` rule 9: `fails of` and `uses of`, and what they may name.
 - `spec/10 §1`: one error kind for an inferred function.
-- Decision record: [ADR 0062](../../../adr/0062-effect-polymorphism.md), for `fails of`.
+- Decision record: ADR 0062, for `fails of`.

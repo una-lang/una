@@ -1,9 +1,0 @@
-module main
-
-f(t: internal Text) -> internal Response
-  uses @http: Http[get, post, put, delete]
-  fails HttpError
-=
-  let hs = if t == "x" then [Header(name: "a", value: "b")] else []
-  @http.get("http://127.0.0.1:8765/", headers: hs, key_name: None)
-    if error pass

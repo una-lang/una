@@ -1,8 +1,0 @@
-module m
-
-pub kind Small = Int where it < 10
-
-pub f(x: Int) -> Int
-=
-  let it = x
-  it

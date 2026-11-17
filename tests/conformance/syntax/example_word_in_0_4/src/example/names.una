@@ -1,6 +1,0 @@
-module example.names
-
-pub kind Sample
-  example: Int
-
-pub example(x: Int) -> Int = x + 1

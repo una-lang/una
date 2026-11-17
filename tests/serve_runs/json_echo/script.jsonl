@@ -1,2 +1,0 @@
-{"at": 0, "connection": 1, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"}
-{"at": 1, "connection": 1, "text": "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9\r\n\r\nsay \"hi\"\n"}

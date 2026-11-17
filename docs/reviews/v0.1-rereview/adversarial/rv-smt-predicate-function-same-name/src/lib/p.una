@@ -1,3 +1,0 @@
-module lib.p
-
-pub predicate reflect big(x: Int) -> Bool = x > 10

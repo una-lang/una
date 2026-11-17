@@ -1,3 +1,0 @@
-module main
-
-f(s: internal Text) -> Header = Header(name: "x", value: s)

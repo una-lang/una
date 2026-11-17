@@ -1,4 +1,0 @@
-module bools
-
-pub capability Bool
-  op flip() -> Unit

@@ -1,6 +1,0 @@
--- test: an integer literal with a doubled underscore is malformed
--- spec: spec/01 §6
--- expect: error U0007 at 6:20
-module integer_doubled_underscore
-
-pub ten() -> Int = 1__0

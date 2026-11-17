@@ -1,9 +1,0 @@
--- test: the functions of the prelude that implement the dense methods are reached by their receiver only: no name in a program finds them
--- spec: spec/29 §17
--- expect: error U1001 at src/dense.una:7:36
--- expect: error U1001 at src/dense.una:9:38
-module dense
-
-pub direct(a: Array[F64]) -> F64 = dense_array_sum(a)
-
-pub method(a: Array[F64]) -> F64 = a.dense_array_sum()

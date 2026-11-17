@@ -181,4 +181,4 @@ Labels are the same in editions `0.1` and `0.2`, except at calls of generic func
 - `spec/07 §1`: the guarantee and its scope; `spec/07 §2`: labels; `spec/07 §3`: typing rules; `spec/07 §4`: sinks.
 - `spec/07 §7` rule 2: flows at every position; `spec/03 §5`: labeled types.
 - `spec/02 §2`: the grammar; `spec/13 §7`: `[labels] categories`.
-- Decision record: [ADR 0067](../../../adr/0067-position-precise-result-labels-of-user-generic-functions.md), for the labels of a generic function's result.
+- Decision record: ADR 0067, for the labels of a generic function's result.

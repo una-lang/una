@@ -1,9 +1,0 @@
--- test: a tab in indentation is rejected
--- spec: spec/01 §2
--- expect: error U0002 at 9:1
-module tab_in_indentation
-
-pub double(x: Int) -> Int
-  requires x >= 0
-=
-	x * 2

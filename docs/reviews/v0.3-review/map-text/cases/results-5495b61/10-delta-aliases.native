@@ -1,5 +1,0 @@
-{1: 10} {1: 10, 2: 2} {1: 10, 3: 3} {101: 0} {101: 0}
-{1: 10, 5: 5, 6: 6} {1: 10, 2: 10} {1: 10}
-x xab xx x
-note: una-rt (debug build): lists, maps, records and texts copied: 9
-exit 0

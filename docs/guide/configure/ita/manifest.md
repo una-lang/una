@@ -136,4 +136,4 @@ Edition `0.4` and later, a preview. Editions `0.1` to `0.3` are described by `un
 
 - `spec/30 §1`: the lexical rules; `spec/30 §2`: the grammar and the head.
 - `spec/13 §7`: the settings that `una.toml` and `ita.una` share.
-- Decision record: [ADR 0122](../../../adr/0122-ita-packages-and-the-registry.md), for packages, dependencies and the registry.
+- Decision record: ADR 0122, for packages, dependencies and the registry.

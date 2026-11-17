@@ -1,8 +1,0 @@
-[package]
-name = "json_from_map_and_text"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "main"
-grants = ["console"]

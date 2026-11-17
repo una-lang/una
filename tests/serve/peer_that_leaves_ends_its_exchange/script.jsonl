@@ -1,3 +1,0 @@
-{"at": 0, "connection": 1, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"}
-{"at": 0, "connection": 1, "bytes": "R0VUIC8gSFRUUC8xLjENCkhvc3Q6IGxvY2FsaG9zdA0KDQo="}
-{"at": 5, "connection": 1, "close": true}

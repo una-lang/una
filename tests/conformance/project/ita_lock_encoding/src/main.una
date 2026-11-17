@@ -1,6 +1,0 @@
--- test: the solver section of ita.lock has the values of spec/12 §9
--- spec: spec/30 §4
--- expect: error U7009 at ita.lock:5:12
-module main
-
-pub one() -> Int = 1

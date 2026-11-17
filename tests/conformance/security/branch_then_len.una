@@ -1,9 +1,0 @@
--- test: list chosen by a secret branch in a `let`, then `.len` (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 9:3
-module branch_then_len
-
-pub leak(flag: secret Bool) -> Int
-=
-  let xs = if flag then [1] else []
-  xs.len

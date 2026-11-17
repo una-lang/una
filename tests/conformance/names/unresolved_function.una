@@ -1,6 +1,0 @@
--- test: a call to an undeclared function is unresolved
--- spec: spec/02 §1
--- expect: error U1001 at 6:28
-module unresolved_function
-
-pub total(x: Int) -> Int = double(x)

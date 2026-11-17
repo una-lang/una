@@ -183,4 +183,4 @@ Further rules:
 - `spec/05 §1`: the model; `spec/05 §3`: using capabilities, and in edition `0.3` rules 4 and 5, conditions on operations and locked contracts; `spec/05 §4`: passing capabilities; `spec/05 §9`: reporting.
 - `spec/04 §2` rule 4: pure functions; `spec/04 §5`: inference.
 - `spec/02 §3`: the grammar and clause order.
-- Decision records: [ADR 0062](../../../adr/0062-effect-polymorphism.md), for `uses of`; [ADR 0092](../../../adr/0092-conditions-on-allowed-effects.md), for conditions on operations and locked contracts.
+- Decision records: ADR 0062, for `uses of`; ADR 0092, for conditions on operations and locked contracts.

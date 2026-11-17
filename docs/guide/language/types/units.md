@@ -118,4 +118,4 @@ Edition `0.3`, a preview. In editions `0.1` and `0.2`, a `measure` declaration a
 
 - `spec/25 §1`: declarations; `§2`: measured types; `§3`: arithmetic and comparison; `§5`: conversions; `§8`: diagnostics.
 - `spec/02 §1`: the grammar of `measure` and `of`; `spec/03 §2`: kinds; `spec/18`: the fixed-width integer types, which may carry a unit.
-- Decision record: [ADR 0104](../../../adr/0104-units-of-measure.md), which targets units to edition `0.3` as a preview construct.
+- Decision record: ADR 0104, which targets units to edition `0.3` as a preview construct.

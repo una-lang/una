@@ -2451,12 +2451,12 @@ These are planned or deliberately absent. Using a reserved word gives U0103 (§1
 | `break`, `continue`, an `invariant` clause for loops | not in v0.2 |
 | A checked left shift | not in v0.2; use `wrapping_shift_left` or a multiplication |
 | Cross-compilation of native executables | not in v0.2; each host builds for itself |
-| Units of measure | edition `0.3` preview ([spec/25](../spec/25-units-of-measure.md), [ADR 0104](../adr/0104-units-of-measure.md)) |
-| Pipeline operator (`\|>`) | not added; method-call chains already cover this form ([ADR 0110](../adr/0110-pipelines-and-shorthand-lambdas.md)) |
-| Foreign code and FFI | not permitted in any edition ([ADR 0121](../adr/0121-the-terms-of-a-preview-edition.md), rule 17) |
-| Quantified laws and property tests | deferred: verification tiers 2 and 3 ([spec/12](../spec/12-verification.md), [backlog](../plan/backlog.md)) |
+| Units of measure | edition `0.3` preview ([spec/25](../spec/25-units-of-measure.md), ADR 0104) |
+| Pipeline operator (`\|>`) | not added; method-call chains already cover this form (ADR 0110) |
+| Foreign code and FFI | not permitted in any edition (ADR 0121, rule 17) |
+| Quantified laws and property tests | deferred: verification tiers 2 and 3 ([spec/12](../spec/12-verification.md), the maintainers' backlog) |
 | Semantic diff | deferred; in no release yet ([availability](availability.md)) |
-| Cost contracts | a later release, not yet scheduled ([backlog](../plan/backlog.md)) |
-| External state semantics (idempotency, delivery, `observe`), durable effect journal | not in 0.4.0, and no edition plans them yet ([ADR 0139](../adr/0139-edition-numbering-follows-the-release-that-closes-it.md), rule 6); `observe` is only a reserved word |
+| Cost contracts | a later release, not yet scheduled (the maintainers' backlog) |
+| External state semantics (idempotency, delivery, `observe`), durable effect journal | not in 0.4.0, and no edition plans them yet (ADR 0139, rule 6); `observe` is only a reserved word |
 | Services, data access, infrastructure generation | not in 0.4.0, and no edition plans them yet; edition `0.4` (preview) has HTTP servers only ([spec/31](../spec/31-http-servers.md)) |
 | Exceptions, null, inheritance, operator overloading, macros, implicit conversions, global mutable state, ambient authority | never |

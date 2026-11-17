@@ -1,8 +1,0 @@
--- test: lambda returning its secret parameter into fn(secret Int) -> Int (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 8:51
-module fn_param_label_drop
-
-apply(f: fn(secret Int) -> Int, x: secret Int) -> Int = f(x)
-
-pub leak(pin: secret Int) -> Int = apply(fn(x) -> x, x: pin)

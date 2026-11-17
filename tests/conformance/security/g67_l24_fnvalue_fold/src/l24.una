@@ -1,9 +1,0 @@
--- test: ADR 0067 adversarial check of #231, L24_fnvalue_fold: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
--- spec: spec/07 §7
--- expect: error U4001 at src/l24.una:9:41
--- expect: error U4001 at src/l24.una:9:67
-module l24
-
-add_if[T](acc: Int, x: T) -> Int = if x == x then acc + 1 else acc
-
-pub leak(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: add_if)

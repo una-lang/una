@@ -1,3 +1,0 @@
-trusted module release
-
-pub peek(t: secret[Pin] Text) -> Nat = t.len

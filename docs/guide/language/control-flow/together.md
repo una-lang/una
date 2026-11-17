@@ -162,4 +162,4 @@ pub hash_skus(skus: List[Int]) -> List[Int]
 - `spec/19 §1`: syntax and rules 1 to 6; `spec/19 §2`: static semantics; `spec/19 §3`: information flow; `spec/19 §4`: verification.
 - `spec/19 §6`: dynamic semantics; `spec/19 §7`: traces.
 - `spec/17 §5` rule 4: captures, as for lambdas.
-- Decision record: [ADR 0065](../../../adr/0065-structured-concurrency.md), for structured concurrency.
+- Decision record: ADR 0065, for structured concurrency.

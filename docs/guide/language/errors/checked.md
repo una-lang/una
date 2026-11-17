@@ -267,4 +267,4 @@ Further rules:
 - `spec/10 §7`: T-Checked and its label rule; `spec/10 §13.2`: the predicate's other reads.
 - `spec/07 §3` rule 3: failures under the program counter.
 - `spec/18 §4` rule 4: narrowing conversions.
-- Decision record: [ADR 0089](../../../adr/0089-checked-predicate-labels.md), for the labels a predicate reads.
+- Decision record: ADR 0089, for the labels a predicate reads.

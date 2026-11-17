@@ -1,6 +1,0 @@
-module a
-
---- A different function, which already has the name.
-pub the_table(x: Int) -> Int = x + 100
-
-pub table(x: Int) -> Int = x

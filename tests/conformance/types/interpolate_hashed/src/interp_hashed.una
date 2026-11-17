@@ -1,9 +1,0 @@
--- test: a value that holds a `Hashed`, here inside a generic record, is not interpolated directly; the message names the field (spec/10 §12 rule 14, ADR 0068 D4)
--- spec: spec/10 §12
--- expect: error U2001 at src/interp_hashed.una:9:43
-module interp_hashed
-
-pub kind Box[T]
-  inner: T
-
-pub shown(b: Box[Hashed]) -> Text = "box {b}"

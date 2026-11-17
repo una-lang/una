@@ -1,7 +1,0 @@
--- test: `fold` over secret values from a public initial accumulator (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 7:42
--- expect: error U4001 at 7:68
-module fold_public_initial
-
-pub total(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + x)

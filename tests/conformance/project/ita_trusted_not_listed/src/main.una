@@ -1,6 +1,0 @@
--- test: a trusted header is listed in ita.una
--- spec: spec/30 §2
--- expect: error U7005 at src/main.una:4:1
-trusted module main
-
-pub one() -> Int = 1

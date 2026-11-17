@@ -1,3 +1,0 @@
-module b
-
-pub to_f32[T](x: T) -> Int = 0

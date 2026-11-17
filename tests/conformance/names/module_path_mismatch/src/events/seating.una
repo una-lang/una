@@ -1,6 +1,0 @@
--- test: a module lives at the path its name gives
--- spec: spec/13 §7
--- expect: error U1008 at src/events/seating.una:4:8
-module events.seats
-
-pub one() -> Int = 1

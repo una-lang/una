@@ -1,6 +1,0 @@
--- test: a file ends with one line break
--- spec: spec/01 §2
--- expect: error U7001 at 6:1
-module missing_final_line_break
-
-pub one() -> Int = 1

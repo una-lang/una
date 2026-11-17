@@ -1,8 +1,0 @@
-[package]
-name = "hof_run_eff_annotated_lambda"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "sw"
-grants = ["console", "env"]

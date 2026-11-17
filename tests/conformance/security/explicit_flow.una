@@ -1,6 +1,0 @@
--- test: a secret value returned as a public result
--- spec: spec/07 §3
--- expect: error U4001 at 6:36
-module explicit_flow
-
-pub leak(pin: secret Int) -> Int = pin

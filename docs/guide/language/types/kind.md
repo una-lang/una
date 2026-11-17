@@ -192,4 +192,4 @@ pub kind Bundle = Item(sku: Int) | Pair(left: Bundle, right: Bundle)
 - `spec/03 §1`: built-in type names.
 - `spec/10 §11` rule 5: duplicate names; `spec/10 §12`: the formal rules of recursive kinds.
 - `spec/20 §2` rule 1: a kind's type parameters take no constraint.
-- Decision records: [ADR 0060](../../../adr/0060-recursive-kinds.md), for recursive kinds; [ADR 0040](../../../adr/0040-refined-type-arguments.md), for refined type arguments in editions `0.1` and `0.2`; [ADR 0103](../../../adr/0103-refined-elements-of-collections.md), for refined type arguments in edition `0.3`; [ADR 0045](../../../adr/0045-refined-kinds-over-function-types.md), for refined function kinds.
+- Decision records: ADR 0060, for recursive kinds; ADR 0040, for refined type arguments in editions `0.1` and `0.2`; ADR 0103, for refined type arguments in edition `0.3`; ADR 0045, for refined function kinds.

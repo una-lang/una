@@ -1,8 +1,0 @@
--- test: a kind of limit is given at most once on a grant, and two rates are one kind whatever their periods; a second one is U7008 at its line (ADR 0117 rule 8)
--- spec: spec/27 §9
--- expect: error U7008 at ita.una:9:7
--- expect: error U7008 at ita.una:11:7
--- expect: error U7008 at ita.una:13:7
-module main
-
-pub one() -> Int = 1

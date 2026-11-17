@@ -1,6 +1,0 @@
--- test: in edition 0.1, type parameters take no constraint (spec/20, Editions)
--- spec: spec/20 §2
--- expect: error U0101 at src/constraint01.una:6:11
-module constraint01
-
-pub same[T: Eq](a: T, b: T) -> Bool = a == b

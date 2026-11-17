@@ -195,4 +195,4 @@ Examples are the same in editions `0.1` and `0.2`. In edition `0.3` the declarat
 - `spec/05 §9` rule 5: operations named in examples, and, in edition `0.3`, examples of boundary modules.
 - `spec/07 §4`: the sink exemption; `spec/04 §4`: one effect per line.
 - `spec/11 §5`: traces; `spec/13 §5`: `una test`.
-- Decision record: [ADR 0032](../../../adr/0032-runtime-details-left-open.md), for the order of expectations after a failed `do`.
+- Decision record: ADR 0032, for the order of expectations after a failed `do`.

@@ -1,4 +1,0 @@
-[package]
-name = "has_secret_key_branch"
-version = "0.1.0"
-edition = "0.2"

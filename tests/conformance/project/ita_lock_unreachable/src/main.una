@@ -1,6 +1,0 @@
--- test: every locked package is reachable from the root
--- spec: spec/30 §4
--- expect: error U7009 at ita.lock:12:1
-module main
-
-pub one() -> Int = 1

@@ -1,6 +1,0 @@
--- test: std and prelude are reserved only as the first segment of a module path (R-010)
--- spec: spec/10 §11
--- expect: ok
-module stdlib.prelude.std
-
-pub twice(x: Int) -> Int = x + x

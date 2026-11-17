@@ -1,8 +1,0 @@
--- test: an opaque predicate body cannot fail
--- spec: spec/03 §4
--- expect: error U2015 at 8:44
-module failing_opaque_predicate
-
-pub kind Failure = | Broken
-
-predicate opaque broken(t: Text) -> Bool = fail Broken

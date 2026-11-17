@@ -1,8 +1,0 @@
-[package]
-name = "loop_state_after_0_2"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "earlier"
-grants = ["console"]

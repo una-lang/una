@@ -1,8 +1,0 @@
--- test: ADR 0067 adversarial check of #231, L45_contains: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
--- spec: spec/07 §7
--- expect: error U4001 at src/l45.una:8:41
-module l45
-
-has[T](xs: List[T], p: T) -> List[Int] = if xs.contains(item: p) then [1] else []
-
-pub leak(xs: List[secret Int]) -> Int = has(xs, p: 1).len

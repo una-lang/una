@@ -1,8 +1,0 @@
-module m
-
-pub main() -> Unit
-  uses @console: Console[print]
-=
-  let result = 1
-  let result = result + 3
-  @console.print("{result}")

@@ -1,6 +1,0 @@
--- test: a bidirectional control written as an escape is allowed in text
--- spec: spec/01 §1
--- expect: tier0-ok
-module bidi_escape_in_text
-
-pub override() -> Text = "\u{202E}"

@@ -1,8 +1,0 @@
-[package]
-name = "runtime_deep_recursion_memory"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "deep"
-grants = ["console"]

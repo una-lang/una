@@ -1365,7 +1365,6 @@ dependencies = [
  "una-report",
  "una-syntax",
  "una-sys",
- "una-test-cases",
  "una-verify",
  "una-z3",
 ]
@@ -1551,10 +1550,6 @@ version = "0.4.0"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "una-test-cases"
-version = "0.4.0"
 
 [[package]]
 name = "una-verify"

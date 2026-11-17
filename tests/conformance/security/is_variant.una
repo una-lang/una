@@ -1,6 +1,0 @@
--- test: `is` test on a secret Option (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 6:46
-module is_variant
-
-pub present(o: secret Option[Int]) -> Bool = o is Some

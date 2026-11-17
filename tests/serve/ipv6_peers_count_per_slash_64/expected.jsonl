@@ -1,7 +1,0 @@
-{"at":0,"closed":true,"connection":2}
-{"at":0,"connection":2,"refused":"peerlimit"}
-{"at":0,"closed":true,"connection":5}
-{"at":0,"connection":5,"refused":"peerlimit"}
-{"at":20000,"closed":true,"connection":1}
-{"at":20000,"closed":true,"connection":3}
-{"at":20000,"closed":true,"connection":4}

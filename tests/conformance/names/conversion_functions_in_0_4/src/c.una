@@ -1,3 +1,0 @@
-module c
-
-pub to_decimal(n: Int) -> Int = n

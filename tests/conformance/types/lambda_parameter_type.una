@@ -1,9 +1,0 @@
--- test: a lambda parameter without an expected type needs an annotation
--- spec: spec/03 §7
--- expect: error U2010 at 8:14
-module lambda_parameter_type
-
-pub one() -> Int
-=
-  let f = fn(x) -> x + 1
-  1

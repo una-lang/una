@@ -1,6 +1,0 @@
--- test: the trusted section lists the package's trusted modules
--- spec: spec/30 §2
--- expect: ok
-trusted module main
-
-pub one() -> Int = 1

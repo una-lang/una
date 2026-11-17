@@ -1,3 +1,0 @@
-module ledger
-
-pub total() -> Int = 3

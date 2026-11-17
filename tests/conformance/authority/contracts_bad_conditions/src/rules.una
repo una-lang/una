@@ -1,3 +1,0 @@
-module rules
-
-pub predicate reflect positive(n: Int) -> Bool = n > 0

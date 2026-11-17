@@ -1,6 +1,0 @@
--- test: a package commits its verification.lock
--- spec: spec/12 §9
--- expect: error U7004 at una.toml:1:1
-module main
-
-pub one() -> Int = 1

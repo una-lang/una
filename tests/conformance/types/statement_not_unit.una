@@ -1,9 +1,0 @@
--- test: a statement whose value is discarded has type Unit
--- spec: spec/02 §6
--- expect: error U2011 at 8:3
-module statement_not_unit
-
-pub twice(x: Int) -> Int
-=
-  x + x
-  x

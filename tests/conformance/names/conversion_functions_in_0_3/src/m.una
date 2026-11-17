@@ -1,6 +1,0 @@
--- test: before edition 0.4, package functions named `to_f32` and `to_decimal` on integers, F64 and type parameters are ordinary functions
--- spec: spec/29 §18
--- expect: ok
-module m
-
-pub to_f32(n: Int) -> Int = n

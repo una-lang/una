@@ -1,8 +1,0 @@
-module main
-
-g(p: internal Text) -> Unit
-  uses @files: Files[read, write]
-  fails FileError
-=
-  @files.write(p, content: "x")
-    if error pass

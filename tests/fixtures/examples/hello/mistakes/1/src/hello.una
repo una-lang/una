@@ -1,3 +1,0 @@
-module hello
-
-pub main() -> Unit = @console.print("Hello, Una")

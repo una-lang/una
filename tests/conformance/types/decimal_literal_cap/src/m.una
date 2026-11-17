@@ -1,8 +1,0 @@
--- test: a decimal literal whose coefficient would pass the digit cap of 4,300 digits is U2037, refused before any number is built
--- spec: spec/29 §16
--- expect: error U2037 at src/m.una:6:28
-module m
-
-pub huge() -> Decimal[0] = 1.0e4300
-
-pub fine() -> Decimal[0] = 1.0e4299

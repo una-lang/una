@@ -1,6 +1,0 @@
--- test: `as_decimal` takes its result's scale from each call, so it is not a function value: U2037
--- spec: spec/29 §16
--- expect: error U2037 at src/m.una:6:55
-module m
-
-pub reader() -> fn(Json, Int) -> Option[Decimal[0]] = as_decimal

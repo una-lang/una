@@ -1,5 +1,0 @@
-module main
-
-pub parse_json(t: Text) -> Text = t
-
-pub to_json(t: Text) -> Text = t
