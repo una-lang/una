@@ -6,10 +6,8 @@ Una makes promises about programs: that they use no authority beyond what their 
 
 Please report vulnerabilities privately, not in a public issue. Use any of these channels:
 
-<!-- OWNER: fill in the channels below once they exist, and remove this comment and any line that does not apply. -->
-
 - **GitHub private vulnerability reporting**: on the repository's [Security tab](https://github.com/una-lang/una/security), choose "Report a vulnerability".
-- **Email**: [SECURITY CONTACT TO BE ADDED].
+- **Email**: <contact+security@una-lang.org>.
 
 Include:
 - the Una version (`una --version`) and your platform;
