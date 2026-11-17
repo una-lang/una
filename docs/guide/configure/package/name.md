@@ -76,7 +76,7 @@ Further rules:
 
 ## Edition
 
-`name` is the same in editions `0.1` and `0.2`.
+`name` is the same in editions `0.1` and `0.2`. From edition `0.4` it is the head line of `ita.una`, `ita <name>` or `ita <owner>/<name>` (see [`ita.una`](../ita/manifest.md)).
 
 ## Normative source
 

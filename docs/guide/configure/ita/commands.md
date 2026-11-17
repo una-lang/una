@@ -9,6 +9,8 @@ codes: [U7013, U7014]
 
 ## What it does
 
+In release 0.4.0 no registry is served and no command builds one or a mirror, so the commands and options on this page that read or write a registry have nothing to work with yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
+
 `una ita` is the package manager, part of the `una` binary. The same binary run under the name `ita` behaves as `una ita`: `ita lock` is `una ita lock`. No command of this release opens a network connection, and none ever starts another program: a bundle goes through a file, and a submission waits for an https transport.
 
 `ita.una`
@@ -94,7 +96,7 @@ una ita unbundle <file> [path]
 - **`vendor`** copies each locked registry package from Itaoca into `vendor/ita/`, and **`verify`** checks each one again wherever it is, in `vendor/ita/` and in Itaoca. Until the registry client supplies the owner's key chain, a package whose copies match the lock is reported as not verified (U7013), and `verify` exits with code 1.
 - **`publish`** refuses a package without `publish to`, `about` or `license`, with a `sources`, `replace` or `trust` section, or with a need of a path, a workspace member or another registry; a package in a git repository, since the check for uncommitted changes is not available yet; and one that does not check at tier 1 with no diagnostic. In this release it stops at the source's https address before it builds anything (see "Where it goes" below). By design (ADR 0122) it then builds the archive of `ita.una`, the modules, `README.md`, `CHANGELOG.md` and the license files, writes the release statement against the verified state of the name, refusing authority that grows within a major line, signs it with the owner's keys, and sends both to the source that `publish to` names. **`yank`** is designed to send a yank of one version, signed by the owner's keys, through the same transport: new resolutions skip it, and existing locks keep it. It also stops at the https address.
 - **Where it goes.** A source other than `itaty` is the one the `itaty.una` of the package's workspace declares. A source is served over HTTPS, and there is no https transport yet, so `publish` and `yank` stop there and send nothing. Plain `http://` is never used: it is refused wherever a URL is read, in `sources` and in `mirrors.una`.
-- **The owner's keys** are the files `<owner>-<id>.key` in `~/.una/keys/`. Each must be readable by its owner only and written without a passphrase, since passphrase encryption is not implemented yet. The keys registered for the owner sign, and they must reach the owner's threshold.
+- **The owner's keys** are the files `<owner>-<id>.key` in `~/.una/keys/`. Each must be readable by its owner only and written without a passphrase, since passphrase encryption is not implemented yet. The keys registered for the owner sign, and they must reach the owner's threshold. No command of this release creates a key file.
 - **`audit`** checks each locked registry package against the verified state of its name and owner: a yanked release, an advisory, a key revoked as compromised, a pending recovery, a key change or a transfer is U7014, once per package, and the exit code is 1. It is the command a release gate runs; `una build` never runs it.
 - **`watch`** prints the new entries of an owner's chains since the position it keeps in Itaoca, and reports a registry's promise to log a submission that it did not keep.
 - **`bundle`** writes the lock's registry packages, with their provenance and the registry's files that prove them (its roots, checkpoints, the names' chains and the owners' keys), into one file, and **`unbundle`** on an air-gapped machine verifies all of it against `ita.una` and `ita.lock`, then fills Itaoca. A bundle is trusted for nothing: one changed byte refuses it whole, and nothing is written.
@@ -102,7 +104,7 @@ una ita unbundle <file> [path]
 - **Consent.** Each flag names what it accepts. A wider ceiling needs `--accept-authority <package>`, and a dependency's trusted modules need `--accept-trust <package>@<digest>` for the content digest of the package as it is now; both repeat, one per package. Without consent the review is printed all the same, with `to accept, after reviewing: una ita lock ...` and the exact flags to copy, and nothing is written. `add` and `remove` take neither flag: `una ita lock` with it is the repair.
 - **`add` and `update`** work on the package in the current directory; the other commands take its directory, `.` by default.
 - **`--json`** prints one `una.ita/1` document; a command that writes the lock gives the review as `changes`, and `error`, why it failed outside its diagnostics, or `null`.
-- **More.** [Registry dependencies](registry.md) shows `sources`, `mirrors.una` and `fetch`; [offline builds](offline.md) shows `vendor`, `verify`, `bundle` and `unbundle`; [publishing](publishing.md) shows `publish`, `yank`, `audit` and `watch`.
+- **More.** [Registry dependencies](registry.md) shows `sources`, `mirrors.una` and `fetch`; [offline builds](offline.md) shows `vendor`, `verify`, `bundle` and `unbundle`; `publish`, `yank`, `audit` and `watch` are described above.
 
 ## Examples
 

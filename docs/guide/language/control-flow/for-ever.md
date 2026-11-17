@@ -433,7 +433,7 @@ Written `within 100 * millisecond`, with `import std.time (millisecond)`, it che
 
 ## Edition
 
-These forms exist only in edition `0.4`, a preview, which a package names in `ita.una`. In edition `0.3`, `stop`, `skip`, `ever` and `until` are identifiers, and `diverges` and `within` are names too, so the forms do not parse:
+These forms exist only in editions `0.4` and `0.5`, previews, which a package names in `ita.una`. In edition `0.3`, `stop`, `skip`, `ever` and `until` are identifiers, and `diverges` and `within` are names too, so the forms do not parse:
 
 ```una
 -- edition 0.3

@@ -1,6 +1,6 @@
 # 25. Units of measure
 
-Status: Normative, v0.3 (ADR 0104), with the other number types of ADR 0114 rule 12 and ADR 0120 rules 61 to 65 (§9).
+Status: Normative, v0.3 preview (ADR 0104), with the other number types of ADR 0114 rule 12 and ADR 0120 rules 61 to 65 (§9).
 
 A unit of measure is part of a number type. `Int of Meter` is neither `Int` nor `Int of Second`, so a program cannot add meters to seconds, pass seconds where milliseconds are expected, or compare grams with milliliters. Units exist only at compile time: they are erased after the type check, so they cost nothing at run time or in verification, and they do not change a program's output.
 

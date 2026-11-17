@@ -9,7 +9,7 @@ codes: [U7009, U7010, U7013]
 
 ## What it does
 
-`ita.lock` pins what a package of edition `0.4` and later is checked with: the solver, as `verification.lock` does for earlier editions, and every package of the program, with its version, its origin, its content digest and the ceiling its dependent grants it. It is committed with the package. Only `una ita lock` and `una migrate` write it; every other command only reads it, with no network. A missing or invalid lock, or one that does not meet `ita.una`, is U7009, and `una ita lock` is the repair.
+`ita.lock` pins what a package of edition `0.4` and later is checked with: the solver, as `verification.lock` does for earlier editions, and every package of the program, with its version, its origin, its content digest and the ceiling its dependent grants it. It is committed with the package. Only `una ita lock`, `una ita update`, `una ita add`, `una ita remove` and `una migrate` write it; every other command only reads it, with no network. A missing or invalid lock, or one that does not meet `ita.una`, is U7009, and `una ita lock` is the repair.
 
 `ita.una`
 

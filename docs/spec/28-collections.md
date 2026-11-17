@@ -1,6 +1,6 @@
 # 28. Collections
 
-Status: Normative, edition `0.5` (ADR 0119, and its amendment of 2026-11-06: ADR 0139 moved it from edition `0.4`). This chapter grows with the implementation of ADR 0119: it holds the rules that have landed, and ADR 0119 holds the rest until they land.
+Status: Normative, edition `0.5` preview (ADR 0119, and its amendment of 2026-11-06: ADR 0139 moved it from edition `0.4`). This chapter grows with the implementation of ADR 0119: it holds the rules that have landed, and ADR 0119 holds the rest until they land.
 
 ## 1. Keyed hashing
 

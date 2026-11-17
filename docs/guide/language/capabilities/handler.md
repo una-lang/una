@@ -132,7 +132,7 @@ Further rules:
 - **Not a value.** A handler is installed only with `with` or `given`. Binding it with `let` is U2001.
 - **Worst caller.** An operation body is checked for the worst caller its operation allows, the caller that passes the most sensitive data the operation accepts: every parameter is raised to the operation's `accepts` label (how sensitive its data may be). So a handler of an operation that accepts `internal` data cannot print it, while a fake store that fails or returns fixed values stays valid.
 - **Its own authority.** A handler's `uses` must be held where it is installed.
-- **Host capabilities** may have user handlers too, such as a fake `Keys` in examples. The host implementations are used only by `una run`.
+- **Host capabilities** may have user handlers too, such as a fake `Keys` in examples. The host implementations are used only by `una run` and by an executable that `una build` makes.
 
 ## Diagnostics
 

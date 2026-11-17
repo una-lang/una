@@ -150,7 +150,7 @@ Further rules:
 
 ## Edition
 
-Categories are the same in editions `0.1` and `0.2`.
+Categories are the same in editions `0.1` and `0.2`. From edition `0.4` they are written in the `labels` section of `ita.una`, one category per line (see [`ita.una`](../ita/manifest.md)).
 
 ## Normative source
 

@@ -137,7 +137,7 @@ Further rules:
 
 ## Edition
 
-The lock is the same in editions `0.1` and `0.2`.
+The lock is the same in editions `0.1` and `0.2`. From edition `0.4` a package has no `verification.lock`: `ita.lock` pins the solver in its solver section (see [`ita.lock`](ita/lock.md)), and `una migrate` moves the pin there.
 
 ## Normative source
 

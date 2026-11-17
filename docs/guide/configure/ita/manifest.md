@@ -49,7 +49,7 @@ Next to it, `ita.lock` pins the solver and every dependency (see [`ita.lock`](lo
 ```text
 ita <name>                       -- or <owner>/<name>
   version <MAJOR.MINOR.PATCH>    -- required
-  edition 0.4                    -- required
+  edition 0.4 | 0.5              -- required
   profile app | systems          -- optional; app by default
   about "<one line>"             -- optional; required to publish
   license "<SPDX expression>"    -- optional; required to publish

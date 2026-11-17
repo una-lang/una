@@ -2,6 +2,8 @@
 
 Status: Draft (ADR 0127, accepted on 2026-11-02 with ADRs 0128, 0129 and 0131, whose decisions of acceptance this text follows). Each section becomes normative with the phase that implements it (ADR 0127 rule 34), with its fixtures; until then nothing in this chapter is normative.
 
+Not implemented in release 0.4.0: `una` has no `quality` and no `diff` command, and none of the reports, rules or gates of this chapter.
+
 Una Quality measures a package and reports the values, the findings of the rules a project configures, and the state of three gates. It is a tool of the toolchain, `una quality`; it adds no syntax, no construct and no `U` diagnostic code, and it never changes what `una check` accepts.
 
 **Editions.** Una Quality reads packages of every edition. The definitions for constructs of editions `0.4` and `0.5` are marked *preview*: they follow the terms of a preview edition (ADR 0121, as its amendment of 2026-11-06 extends them) and may change by a new metric version.

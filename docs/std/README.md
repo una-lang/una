@@ -1,6 +1,6 @@
 # Standard library listing
 
-`listing.json` lists every public item of the prelude and of `std.testing`, as the checker reads them in each edition: its name, module, kind, the spec sections its doc comments cite, and one variant per run of editions in which its declaration and doc comments are the same. A variant holds the editions, the declaration without its body, and the doc comments.
+`listing.json` lists every public item of the prelude and of `std.testing`, as the checker reads them in each edition, with the names of the server that only an import of `std.host` brings into scope listed under `std.host`. It does not list the standard modules `std.time`, `std.drive` and `std.limit` of edition `0.4`, nor `std.collections` of edition `0.5`: their specification is `spec/26`, `spec/27` and `spec/28`. Each listed item has its name, module, kind, the spec sections its doc comments cite, and one variant per run of editions in which its declaration and doc comments are the same. A variant holds the editions, the declaration without its body, and the doc comments.
 
 **Unstable, not part of the specification.** The schema `una.std-listing/1` may change without notice. No `una` command prints it, and no tool should depend on it. The specification of the standard library is `spec/14` and `spec/20` to `spec/24`.
 

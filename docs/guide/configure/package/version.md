@@ -72,7 +72,7 @@ Further rules:
 
 ## Edition
 
-`version` is the same in editions `0.1` and `0.2`.
+`version` is the same in editions `0.1` and `0.2`. From edition `0.4` it is the head line `version` of `ita.una`, and it must have the form `MAJOR.MINOR.PATCH`: any other is U7008 (see [`ita.una`](../ita/manifest.md)).
 
 ## Normative source
 

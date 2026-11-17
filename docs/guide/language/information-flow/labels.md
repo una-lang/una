@@ -9,7 +9,7 @@ codes: [U4001, U4002, U4003, U4007]
 
 ## What it does
 
-A label classifies data by how sensitive it is: a level, and optional categories (named kinds of data, such as personal data). The checker follows labels through every computation and every branch, and rejects any flow of data to a place that its label does not allow. The guarantee is termination-insensitive noninterference (data can influence what a reader sees only through a declared release, leaving aside whether the program finishes at all): an observer at a label sees the same values and effects in two runs that differ only in data labeled above it, unless a [policy](policy.md) released it.
+A label classifies data by how sensitive it is: a level, and optional categories (named kinds of data, such as personal data). The checker follows labels through every computation and every branch, and rejects any flow of data to a place that its label does not allow. The guarantee is termination-insensitive noninterference (data can influence what a reader sees only through a declared release, leaving aside whether the program finishes at all): an observer at a label sees the same values and effects in two runs that differ only in data labeled above it, unless a [policy](policy.md) released it. It covers the channels the model observes: timing, termination, resource use and the other channels it leaves out are listed under `out_of_model` by `una report`, and flows inside the `via` functions of a trusted module are, but for one timing rule of edition `0.4`, not checked. The checker enforces it by its rules; the formal model in Lean proves it for a fragment of the language only (see [Known limits](../../known-limits.md)).
 
 Learn more: [Labels and how they follow data](/learn/information-flow/labels-and-how-they-follow-data/), and [Sinks: where labeled data may go](/learn/information-flow/sinks-where-labeled-data-may-go/).
 
@@ -174,7 +174,7 @@ Further rules:
 
 ## Edition
 
-Labels are the same in editions `0.1` and `0.2`, except at calls of generic functions: edition `0.2` raises only the positions of the result that can carry each type argument's labels, and edition `0.1` raises every position. Editions `0.3` and `0.4` keep the rules of edition `0.2` (`spec/13 §7`).
+Labels are the same in editions `0.1` and `0.2`, except at calls of generic functions: edition `0.2` raises only the positions of the result that can carry each type argument's labels, and edition `0.1` raises every position. Editions `0.3`, `0.4` and `0.5` keep the rules of edition `0.2` and add rules of their own, among them: from edition `0.3`, the answer of an operation carries the label that its header's `gives` names, and a boundary module never releases (`spec/13 §7`); from edition `0.4`, deadlines and races have timing labels, and a deadline or race outcome reaches the result of a `via` function only when its concurrent label is `public`.
 
 ## Normative source
 
