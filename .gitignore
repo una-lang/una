@@ -30,3 +30,6 @@ __pycache__/
 /scripts/*
 !/scripts/z3-library.sh
 !/scripts/build-z3.sh
+
+# The test runner configuration belongs with the tests, which are not in the public tree.
+/.config/
