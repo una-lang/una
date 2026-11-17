@@ -6,7 +6,7 @@ This is a driven program, the host-driven step of [`spec/26 §2`](../../docs/spe
 
 What it demonstrates:
 
-- a manifest in `ita.una`, edition `0.4` ([manifest](../../docs/guide/configure/ita/manifest.md)), with a `drive` section;
+- a manifest in `ita.una`, edition `0.4`, a preview ([manifest](../../docs/guide/configure/ita/manifest.md)), with a `drive` section;
 - `init`, `step` and `on_stop`, the three functions the host calls, with a state of a kind of the package and a `Tick` of `std.drive`;
 - a `step` whose `edit` parameter carries the state from one tick to the next;
 - [tests](../../docs/guide/language/examples/test.md) of `advance`, the function `step` calls, which the host never needs to run.
@@ -85,4 +85,4 @@ pub step(edit state: Metronome, input: Tick) -> Unit
 
 ## Edition
 
-Edition `0.4` ([edition](../../docs/guide/configure/package/edition.md)).
+Edition `0.4`, a preview ([edition](../../docs/guide/configure/package/edition.md)).
