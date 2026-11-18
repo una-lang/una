@@ -1,12 +1,14 @@
 #!/bin/sh
-# The `una` that the release archive of this host ships, for the site gate (#2029).
+# The `una` that the release archive of this host ships (#2029), to give scripts/site-website.sh
+# as UNA_BIN in the website's own flow (#2081); crates/una-cli/tests/release_gates.rs runs its
+# self-test.
 #
 # The book, Una by Example, and the code samples of the website are written for the `una` that a
 # release ships: its report names the Z3 library that supply-chain/z3.lock records for the target
 # (`solver build: ..., library <sha>`) and the runtime that is embedded in it (`runtime sha256:`).
 # A `una` built by `cargo build --release` in the clone uses the machine's own Z3 library and
-# embeds no runtime, so its reports differ and the book does not check with it. The site gate
-# therefore checks the book and the samples with the `una` of the archive that the release gate
+# embeds no runtime, so its reports differ and the book does not check with it. The book and
+# the samples are therefore checked with the `una` of the archive that the release gate
 # built in this clone, the one scripts/toolchain-free.sh runs too: the archive is checked against
 # its .sha256 file, unpacked outside the clone, and its `una --version` must name the version.
 # An archive that is absent, one whose digest differs, a binary that is absent or says another
@@ -48,7 +50,7 @@ shipped() {
     target=$(host_target)
     name=una-$version-$target
     [ -f "$built/$name.tar.gz" ] && [ -f "$built/$name.tar.gz.sha256" ] \
-        || fail "no $built/$name.tar.gz with its .sha256: the site gate checks the book with the una that the release archive ships, so run the release gate first"
+        || fail "no $built/$name.tar.gz with its .sha256: the book is checked with the una that the release archive ships, so run the release gate first"
     want=$(cut -d ' ' -f 1 "$built/$name.tar.gz.sha256")
     found=$(sha256_of "$built/$name.tar.gz")
     [ -n "$want" ] && [ "$found" = "$want" ] \

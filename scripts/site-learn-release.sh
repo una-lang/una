@@ -1,7 +1,8 @@
 #!/bin/sh
 # The Una by Example release that the website's Learn pages link their downloads to (una#831),
-# compared with the archives the site gate builds from the pinned commit: scripts/site-website.sh
-# calls it, and the release gate `site` runs its self-test first.
+# compared with the archives scripts/site-website.sh builds from the pinned commit: that script
+# calls it, in the website's own flow (#2081), and crates/una-cli/tests/site_website.rs runs its
+# self-test.
 #
 # The release is the `release` line of the website's learn.lock, read with the website's grammar
 # (scripts/preview/learn.mjs, readLock: any spacing around `=`, trailing spacing, CRLF). A lock
@@ -14,7 +15,7 @@
 #
 # The release is downloaded with `gh release download` from github.com, so `gh` must be signed in
 # with read access to the repository. UNA_SITE_LEARN_RELEASE_DIR names a directory that holds the
-# release's files in place of the download, for a local test; the release gates unset it.
+# release's files in place of the download, for a local test; a check for a release leaves it unset.
 #
 # Usage: scripts/site-learn-release.sh LOCK ARCHIVES OUT
 #          LOCK      the website's learn.lock

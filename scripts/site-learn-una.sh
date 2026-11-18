@@ -1,6 +1,7 @@
 #!/bin/sh
-# The `una` that the site gate checks the Learn book, Una by Example, with (#1039):
-# scripts/site-website.sh calls it, and the release gate `site` runs its self-test first.
+# The `una` that scripts/site-website.sh checks the Learn book, Una by Example, with (#1039):
+# scripts/site-website.sh calls it, in the website's own flow (#2081), and
+# crates/una-cli/tests/site_website.rs runs its self-test.
 #
 # The book pins the una release it is written for in its una.lock (`version = "X"`), and its
 # expected outputs are that release's. The book is checked with this checkout's `una` while that
@@ -14,12 +15,12 @@
 # name the lock's version. A lock without exactly one version line, a version with no record or
 # no digest for this host's archive, a digest that differs and a binary of another version fail.
 # A release's own gate checks the book with the release's `una`, so a book is re-released for a
-# new una before the tag: scripts/release-gates.sh sets UNA_SITE_LEARN_SAME_VERSION=1, and then
+# new una before the tag: a check for a release sets UNA_SITE_LEARN_SAME_VERSION=1, and then
 # a lock that pins another version fails instead of falling back to a published release, and
 # this checkout's `una` is used.
 #
 # UNA_SITE_LEARN_UNA_DIR names a directory that holds the archive in place of the download, for a
-# local test; the release gates unset it.
+# local test; a check for a release leaves it unset.
 #
 # Usage: scripts/site-learn-una.sh LEARN UNA OUT
 #          LEARN  the clone of una-by-example, which holds una.lock

@@ -23,11 +23,11 @@
 # text file of the una-by-example clone, English or translated, its packages, outcomes and
 # changes included, against the neutrality pattern with grep -E (the dialect of every check of
 # the gates), and fails on a match, listing the files by path only. The pattern comes on the
-# file descriptor that UNA_NEUTRALITY_PATTERN_FD names, as scripts/release-gates.sh passes it,
+# file descriptor that UNA_NEUTRALITY_PATTERN_FD names, as a caller passes it on a pipe,
 # else from UNA_NEUTRALITY_PATTERN, for a run by hand; it never reaches an environment or an
 # argument of any command: not check.py, which runs without it, and not the website's build.
 # A run without the pattern fails, unless UNA_GATES_UNCHECKED=1 marks it as not for publication
-# (scripts/release-gates.sh), and then says that it skipped the check. The website is built
+# (docs/release-gates.md §3), and then says that it skipped the check. The website is built
 # with UNA_LEARN_DRAFTS unset, so no environment can turn its build into the preview of draft
 # translations.
 #
@@ -40,7 +40,7 @@
 # website is cloned from, UNA_SITE_LEARN_SOURCE where una-by-example is cloned from,
 # UNA_SITE_LEARN_RELEASE_DIR a directory that holds the release's files in place of the
 # download, and UNA_BIN which `una` checks the samples and, at release time, the book (default:
-# target/release/una; the site gate gives the `una` of the release archive, which is the one the
+# target/release/una; a check for a release gives the `una` of the release archive, which is the one the
 # book's reports are written for, scripts/site-shipped-una.sh, #2029). With a
 # learn.lock that names a release, it needs `gh`, signed in with read access to una-by-example.
 #
@@ -156,7 +156,7 @@ if [ -f "$website/learn.lock" ]; then
     elif [ "${UNA_GATES_UNCHECKED:-}" = 1 ]; then
         echo "una-by-example: neutrality skipped: no pattern, and UNA_GATES_UNCHECKED=1 marks this run as not for publication"
     else
-        fail "no neutrality pattern for una-by-example: scripts/release-gates.sh passes it, or set UNA_NEUTRALITY_PATTERN for a run by hand"
+        fail "no neutrality pattern for una-by-example: pass it on UNA_NEUTRALITY_PATTERN_FD, or set UNA_NEUTRALITY_PATTERN for a run by hand"
     fi
 else
     echo "una-by-example: skipped (the website at $commit has no learn.lock)"
