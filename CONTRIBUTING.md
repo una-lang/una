@@ -36,6 +36,8 @@ cargo fmt --all --check
 cargo clippy --workspace --locked -- -D warnings
 ```
 
+These commands are known to pass on macOS arm64, the platform of the maintainers' validation; on other platforms `cargo clippy` may report warnings that are not yet fixed. The public tree has no continuous-integration workflow.
+
 `una` uses no `z3` on `PATH`. Without `UNA_Z3_LIB` the build makes a `una` with no solver, and a check at tier 1 fails with U5003. A pull request is merged after the maintainers' own validation on its final commit; a release is tagged when every gate passes on one commit, or when the maintainer accepts it in the record, whose verdict line says so. Each release's record is in [`docs/validation/`](docs/validation/) and states which gates ran and on which commit, as [`docs/release-gates.md`](docs/release-gates.md) describes.
 
 ## Rules for the code
