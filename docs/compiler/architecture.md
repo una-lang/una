@@ -105,7 +105,7 @@ Allowed by ADR 0133 (accepted on 2026-11-02), for `una-http`: `una-crypto`, `get
 
 Allowed by ADR 0133 (accepted on 2026-11-02), for `una-crypto` only: `zeroize`, the volatile wipe of secrets, already in the lockfile through `rustls`; pure Rust. As dev-dependencies of `una-crypto` only: `ring` and `curve25519-dalek` (the references of the differential tests), `serde_json` and `sha2`. No build script, no `-sys` crate, no foreign code.
 
-`una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`.
+`una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`. The transport does not trust its peer with memory (#1476): a header line holds at most 4 KiB (`MAX_HEADER_LINE`, its line ending not counted), a frame at most 16 header lines (`MAX_HEADER_LINES`) and a body at most 64 MiB (`MAX_CONTENT_LENGTH`, room for a document of several MiB however JSON escapes it). Input past a bound is refused with an `InvalidData` error before anything of its size is buffered or reserved, and the server then ends the session as at the end of its input, as it does for a frame that is not JSON.
 
 Allowed by ADR 0124 rule 22, for `una-link` only: `object`, already in `Cargo.lock` through `cranelift-object`, with its features `std`, `read_core`, `archive`, `macho` and `elf` (readers only), for the inputs of the link; the writer is `una-link`'s own. `una-link` also uses `sha2`, for the signature's hashes and the UUID.
 
