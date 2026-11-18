@@ -1,0 +1,22 @@
+-- Adversarial: effect nested in a lambda body expression
+-- Expected: U3013
+-- Observed: U3013 at 22:29
+-- Verdict: Pass
+module auth_effect_in_lambda_arg
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+each(xs: List[Int], f: fn(Int) -> Int uses @store: Store[count]) -> Int
+  uses @store: Store[count]
+=
+  0
+
+pub run() -> Int
+  uses @store: Store[count]
+=
+  each([1], f: fn(x) -> x + @store.count())

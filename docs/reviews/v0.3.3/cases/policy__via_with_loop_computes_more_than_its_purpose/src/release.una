@@ -1,0 +1,17 @@
+trusted module release
+
+pub policy first_digit
+  from secret[Pin] Text
+  to public Nat
+  via scan
+  purpose "the first digit only"
+  owner review
+
+scan(t: secret[Pin] Text) -> public Nat
+=
+  let edit total = 0
+  for c in t.chars()
+    let d = c.parse_int()
+      if error use 0
+    total = total * 10 + d
+  total

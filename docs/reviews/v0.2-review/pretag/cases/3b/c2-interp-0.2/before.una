@@ -1,0 +1,3 @@
+module m
+
+pub shown[A, T](a: A, x: T) -> Text = "is {x}"

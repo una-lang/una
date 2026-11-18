@@ -1,0 +1,8 @@
+[package]
+name = "loop_nested_map_key"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "main"
+grants = ["console", "env"]

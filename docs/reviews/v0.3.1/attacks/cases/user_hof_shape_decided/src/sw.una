@@ -1,0 +1,17 @@
+-- expect: U4003
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+count_all[U](xs: List[U], f: fn(U) -> Int) -> Int = xs.map(each: f).sum()
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(count_all(if a == b then [p] else [p, q], f: k))
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

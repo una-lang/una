@@ -1,0 +1,31 @@
+-- expect: accept: control: an annotated record round trip
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let h: Hold[T] = Hold(value: p)
+  let y = h.value
+  let n = k(y)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

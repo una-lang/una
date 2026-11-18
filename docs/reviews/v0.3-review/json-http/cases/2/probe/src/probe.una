@@ -1,0 +1,38 @@
+module probe
+
+--- One input's outcome: its canonical form, or its failure with the position.
+outcome(t: Text) -> Text
+=
+  let parsed = attempt parse_json(t)
+  when parsed
+    is Ok(j) -> "ok {j.to_json()}"
+    is Err(e) ->
+      when e
+        is Syntax(at) -> "syntax {at}"
+        is TooDeep(at) -> "deep {at}"
+        is DuplicateKey(at) -> "duplicate {at}"
+        is NumberTooLong(at) -> "long {at}"
+
+--- Whether the canonical form is a fixed point: to_json(parse_json(c)) == c.
+fixed(t: Text) -> Text
+=
+  let parsed = attempt parse_json(t)
+  when parsed
+    is Ok(j) ->
+      let c = j.to_json()
+      let again = attempt parse_json(c)
+      when again
+        is Ok(k) -> if k == j and k.to_json() == c then "fixed" else "NOT FIXED"
+        is Err -> "NOT REPARSED"
+    is Err -> "-"
+
+pub main() -> Unit
+  uses @files: Files[read, write]
+  fails FileError
+=
+  let input = @files.read("in.txt")
+    if error pass
+  let separator = "\n=====\n"
+  let lines = input.split(on: separator).map(each: fn(t) -> "{outcome(t)} | {fixed(t)}")
+  @files.write("out.txt", content: lines.join(separator: "\n"))
+    if error pass

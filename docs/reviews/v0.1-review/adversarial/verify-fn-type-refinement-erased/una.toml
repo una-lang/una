@@ -1,0 +1,8 @@
+[package]
+name = "verify_fn_type_refinement_erased"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "fnres"
+grants = ["console"]

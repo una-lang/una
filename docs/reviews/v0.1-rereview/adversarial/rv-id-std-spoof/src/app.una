@@ -1,0 +1,15 @@
+module app
+
+import lib.prelude (Expired, KeyError)
+
+expired() -> Int
+=
+  let e = Expired
+  let zero = 0
+  100 / zero
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = expired()
+  @console.print("q = {q}")

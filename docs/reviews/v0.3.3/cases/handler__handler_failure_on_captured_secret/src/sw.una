@@ -1,0 +1,35 @@
+-- expect: reject: handler__handler_failure_on_captured_secret
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+pub capability Gate
+  op allow(n: Int) -> Int
+    fails Bad
+
+pub handler strict(limit: secret Int) for Gate
+  op allow(n) = if n > limit then fail Oops else n
+
+probe() -> Unit
+  uses @gate: Gate[allow]
+  uses @log: Log[write]
+=
+  let r = attempt @gate.allow(5)
+  @log.write(if r is Ok then 1 else 0)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_cell() with @log = to_console()
+
+run_cell() -> Unit
+  uses @log: Log[write]
+=
+  probe() with @gate = strict(3)

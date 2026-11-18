@@ -1,0 +1,15 @@
+-- expect: ok
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write([p, q].map(each: k).sum())
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

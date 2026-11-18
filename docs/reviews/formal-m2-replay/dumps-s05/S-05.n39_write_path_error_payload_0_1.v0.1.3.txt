@@ -1,0 +1,22 @@
+module main
+
+fun probe(path: internal Text) : Unit uses {files ↦ Files[write], console ↦ Console[print]} =
+  let r: Result[Unit, FileError] =
+    attempt
+      let %t0: Unit = files.write(path, "x") in
+      %t0
+  in
+  case r of
+    Ok(v) ⇒
+      unit
+    Err(e) ⇒
+      case e of
+        NotFound ⇒
+          let %t1: Unit = console.print("not found") in
+          %t1
+        Denied ⇒
+          let %t2: Unit = console.print("denied") in
+          %t2
+        Io ⇒
+          let %t3: Unit = console.print("io") in
+          %t3

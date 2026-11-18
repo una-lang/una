@@ -1,0 +1,11 @@
+[package]
+name = "rv_id_policy_twins_ok"
+version = "0.1.0"
+edition = "0.1"
+
+[trusted]
+modules = ["lib.a", "lib.b"]
+
+[run]
+entry = "app"
+grants = ["console"]

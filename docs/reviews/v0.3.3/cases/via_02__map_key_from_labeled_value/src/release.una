@@ -1,0 +1,14 @@
+trusted module release
+
+pub policy p
+  from secret[Pin] Int
+  to public Int
+  via v
+  purpose "a review cell"
+  owner review
+
+v(s: secret[Pin] Int) -> public Int
+=
+  let edit m: Map[Int, Int] = empty_map()
+  edit m.set(key: s, value: 1)
+  m.len

@@ -1,0 +1,10 @@
+module lib.a
+
+pub kind Level = Int in 0..10
+
+pub predicate reflect nonneg(x: Int) -> Bool = x >= 0
+
+pub bump(x: Int) -> Int
+  ensures result == x - 1
+=
+  x - 1

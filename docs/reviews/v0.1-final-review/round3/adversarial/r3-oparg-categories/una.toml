@@ -1,0 +1,11 @@
+[package]
+name = "r3_oparg_categories"
+version = "0.1.0"
+edition = "0.1"
+
+[labels]
+categories = ["Location"]
+
+[run]
+entry = "app"
+grants = ["console"]

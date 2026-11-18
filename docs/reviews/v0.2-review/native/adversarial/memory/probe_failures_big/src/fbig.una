@@ -1,0 +1,71 @@
+-- Probes: failures inside range loops over integers beyond the tagged range, inside `when` arms
+-- in loops, in `checked`, and in a handler's operation that holds a list, with in-place updates.
+module fbig
+
+pub kind Oops = | Bad(at: Int, trail: List[Text])
+
+pub capability Source
+  op grab(i: Int) -> List[Int]
+    fails Oops
+
+pub handler from_list(items: List[Int]) for Source
+  op grab(i) = if i > 2 then fail Bad(at: i, trail: ["handler"]) else items.append(item: i)
+
+pub show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
+
+pub big_loop(edit xs: List[Int], stop: Int) -> Unit
+  fails Oops
+=
+  let low = 4611686018427387904
+  for i in low..low + 5
+    let note = "at {i}"
+    if i - low == stop
+      fail Bad(at: i, trail: [note])
+    xs = xs.append(item: i - low)
+
+pub arms(edit xs: List[Int], opts: List[Option[Int]]) -> Unit
+  fails Oops
+=
+  for o in opts
+    let v = o.or_else(default: 0)
+    let w = checked(v, it >= 0) else fail Bad(at: v, trail: ["checked"])
+    xs = xs.append(item: w)
+
+pub pulled(n: Int) -> List[Int]
+  uses @source: Source[grab]
+  fails Oops
+=
+  let edit acc: List[Int] = []
+  for i in 0..<n
+    let got = @source.grab(i)
+      if error pass
+    acc = acc.append(item: got.len)
+  acc
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit a = [100]
+  big_loop(edit a, stop: 3)
+    if error use unit
+  let edit b = [100]
+  big_loop(edit b, stop: 9)
+    if error use unit
+  @console.print("big: {show(a)} / {show(b)}")
+  let edit c = [7]
+  arms(edit c, opts: [Some(1), None, Some(-2), Some(4)])
+    if error use unit
+  let edit d = [7]
+  arms(edit d, opts: [Some(1), None, Some(4)])
+    if error use unit
+  @console.print("arms: {show(c)} / {show(d)}")
+  let base = [1, 2]
+  let p = attempt pulled(5) with @source = from_list(base)
+  let q = attempt pulled(2) with @source = from_list(base)
+  let ps = when p
+    is Ok(v) -> show(v)
+    is Err(e) -> "err"
+  let qs = when q
+    is Ok(v) -> show(v)
+    is Err(e) -> "err"
+  @console.print("handler: {ps} / {qs} / {show(base)}")

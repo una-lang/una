@@ -1,0 +1,4 @@
+[package]
+name = "partial_fold_decided_elements_lambda_takes_acc_only"
+version = "0.1.0"
+edition = "0.1"

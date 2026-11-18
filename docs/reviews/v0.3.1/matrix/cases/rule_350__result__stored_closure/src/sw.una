@@ -1,0 +1,32 @@
+-- expect: reject: the callee returns a closure over the decided value and the callback, called later
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+capture[U](x: U, f: fn(U) -> Int) -> fn(Int) -> Int = fn(n) -> f(x) + n
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let later = capture(if a == b then p else q, f: k)
+  let n = later(0)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

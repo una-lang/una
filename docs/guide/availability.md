@@ -8,13 +8,13 @@ This selected catalog records checked evidence, not every language feature. `edi
 | --- | --- | --- | --- | --- | --- |
 | Explicit checked validation (`checked`) | supported | 0.1 | unknown | [06-errors](../spec/06-errors.md) | `runtime/checked` |
 | Conditional effect contract locks (`contracts.lock`) | preview | 0.3 | unknown | [05-capabilities-and-effects](../spec/05-capabilities-and-effects.md) | `authority/contracts_accepted` |
-| Foreign code and FFI (`foreign.ffi`) | excluded | none | unknown | ADR 0121, "The terms of a preview edition" | none (unavailable) |
+| Foreign code and FFI (`foreign.ffi`) | excluded | none | unknown | [0121-the-terms-of-a-preview-edition](../adr/0121-the-terms-of-a-preview-edition.md) | none (unavailable) |
 | Built-in constraints (`generics.constraints`) | supported | 0.2 | unknown | [20-constraints-on-generics](../spec/20-constraints-on-generics.md) | `runtime/constraint_runs` |
-| Quantified laws (`logic.quantified-laws`) | deferred | none | unknown | [12-verification](../spec/12-verification.md), the maintainers' backlog | none (unavailable) |
+| Quantified laws (`logic.quantified-laws`) | deferred | none | unknown | [12-verification](../spec/12-verification.md), [backlog](../plan/backlog.md) | none (unavailable) |
 | Value-semantic edit and rollback (`memory.edit`) | supported | 0.2 | unknown | [17-memory-model](../spec/17-memory-model.md) | `runtime/edit_moves` |
 | IEEE 754 F64 (`numbers.f64`) | preview | 0.3 | unknown | [29-numerics](../spec/29-numerics.md) | `runtime/float_parse_run` |
-| Pipeline operator (`syntax.pipeline`) | excluded | none | unknown | ADR 0110, "Pipelines and shorthand lambdas" | none (unavailable) |
+| Pipeline operator (`syntax.pipeline`) | excluded | none | unknown | [0110-pipelines-and-shorthand-lambdas](../adr/0110-pipelines-and-shorthand-lambdas.md) | none (unavailable) |
 | Structured together blocks (`tasks.together`) | supported | 0.2 | unknown | [19-structured-concurrency](../spec/19-structured-concurrency.md) | `runtime/together_traces` |
 | Interpolation of values in their Una form (`text.interpolation`) | supported | 0.2 | unknown | [11-dynamic-semantics](../spec/11-dynamic-semantics.md) | `runtime/print_values` |
-| Semantic diff (`tools.semantic-diff`) | deferred | none | unknown | the maintainers' backlog | none (unavailable) |
+| Semantic diff (`tools.semantic-diff`) | deferred | none | unknown | [backlog](../plan/backlog.md) | none (unavailable) |
 | Integer units of measure (`units.integer`) | preview | 0.3 | unknown | [25-units-of-measure](../spec/25-units-of-measure.md) | `types/units_accepted` |

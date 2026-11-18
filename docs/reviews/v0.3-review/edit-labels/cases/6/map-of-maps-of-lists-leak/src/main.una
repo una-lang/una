@@ -1,0 +1,17 @@
+-- expect: rejected (U4003): the innermost element label, raised late, reaches the read
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  edit m.set(key: 0, value: empty_map().with(key: "a", value: [1]))
+  edit m.set(key: 1, value: empty_map().with(key: "b", value: [s.len]))
+  let inner = m.get(key: 0)
+    if none use empty_map()
+  let xs = inner.get(key: "a")
+    if none use []
+  @console.print("{xs}")

@@ -1,0 +1,13 @@
+module sw
+
+pub kind Hold[T]
+  value: T
+
+choose[T](a: T, b: T, p: T, q: T) -> Hold[T]
+=
+  let h: Hold[T] = Hold(value: if a == b then p else q)
+  h
+
+pub use_it(s: secret Int) -> secret Int = choose(s, b: 0, p: 1, q: 2).value
+
+pub use_public(n: Int) -> Int = choose(n, b: 0, p: 1, q: 2).value

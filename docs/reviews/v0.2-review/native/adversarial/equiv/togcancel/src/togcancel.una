@@ -1,0 +1,52 @@
+module togcancel
+
+pub kind Oops = | Bad
+
+pub capability Log
+  op note(n: Int) -> Int
+
+pub handler quiet() for Log
+  op note(n) = n
+
+--- Fails after some work, once the tasks after it have started.
+early() -> Int
+  fails Oops
+=
+  let w = chatty(300)
+  if w > 0
+    fail Bad
+  w
+
+--- Performs many operations of a handler.
+chatty(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 0..<n
+    let v = noted(i) with @log = quiet()
+    total = total + v
+  total
+
+noted(i: Int) -> Int
+  uses @log: Log[note]
+=
+  let v = @log.note(i)
+  v
+
+pick() -> Int
+  fails Oops
+=
+  together
+    let a = early()
+      if error pass
+    let b = chatty(2000)
+    let c = chatty(2000)
+  a + b + c
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let r = attempt pick()
+  let shown = when r
+    is Ok(v) -> "ok"
+    is Err(e) -> "failed"
+  @console.print(shown)

@@ -1,0 +1,4 @@
+[package]
+name = "user_nested__effect__callback"
+version = "0.1.0"
+edition = "0.1"

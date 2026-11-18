@@ -1,0 +1,35 @@
+-- expect: accept: edit_param__receiver_takes_secret_amount__control (control)
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+pub kind Tally
+  count: Int
+
+record(edit t: Tally, n: Int) -> Unit
+=
+  t.count = t.count + n
+
+probe(s: public Int) -> Unit
+  uses @log: Log[write]
+=
+  let edit t = Tally(count: 0)
+  edit t.record(n: s)
+  @log.write(t.count)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_cell() with @log = to_console()
+
+run_cell() -> Unit
+  uses @log: Log[write]
+=
+  probe(2)

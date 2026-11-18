@@ -1,0 +1,10 @@
+module m
+
+pub kind Acct
+  owner: Text
+  note: internal Text
+
+pub show(a: Acct, s: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{a} {s}")

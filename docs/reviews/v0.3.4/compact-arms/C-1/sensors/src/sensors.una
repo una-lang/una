@@ -1,0 +1,54 @@
+module sensors
+
+pub kind SensorError = Offline(sensor: Text) | Garbled(sensor: Text)
+
+pub capability SensorBank
+  op read(sensor: Text) -> Int
+    fails SensorError
+
+--- Reads every sensor concurrently; fails with the first failure in list order.
+pub read_all(sensors: List[Text]) -> List[Int]
+  uses @bank: SensorBank[read]
+  fails SensorError
+=
+  let readings = together for sensor in sensors
+    @bank.read(sensor)
+      if error pass
+  readings
+
+--- Reads every sensor concurrently and counts how many answered.
+pub count_answered(sensors: List[Text]) -> Int
+  uses @bank: SensorBank[read]
+=
+  let attempts = together for sensor in sensors
+    attempt @bank.read(sensor)
+  let edit answered = 0
+  for a in attempts
+    answered = if a is Ok then answered + 1 else answered
+  answered
+
+handler bank_with_broken(broken: Text) for SensorBank
+  op read(sensor) = if sensor == broken then fail Offline(sensor: sensor) else sensor.len * 10
+
+example "the first failure in list order"
+  given @bank = bank_with_broken("b")
+  do read_all(["a", "b", "ccc"])
+  expect fails Offline
+
+example "all sensors answer"
+  given @bank = bank_with_broken("z")
+  do read_all(["a", "bb"])
+  expect result == [10, 20]
+
+example "two of three sensors answer"
+  given @bank = bank_with_broken("b")
+  do count_answered(["a", "b", "ccc"])
+  expect result == 2
+
+handler bank_two_broken(offline: Text, garbled: Text) for SensorBank
+  op read(sensor) = if sensor == offline then fail Offline(sensor: sensor) else if sensor == garbled then fail Garbled(sensor: sensor) else 1
+
+example "with two failures, the earlier one in the list wins"
+  given @bank = bank_two_broken("x", garbled: "y")
+  do read_all(["a", "y", "x"])
+  expect fails Garbled

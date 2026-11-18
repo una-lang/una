@@ -1,0 +1,61 @@
+module depth
+
+pub kind Big
+  a: Int
+  b: Int
+  c: Text
+  d: List[Int]
+  e: Option[Int]
+
+pub capability Probe
+  op go(n: Int) -> Int
+
+pub handler prober() for Probe
+  op go(n) = down(n)
+
+down(n: Int) -> Int = if n <= 0 then 0 else 1 + down(n - 1)
+
+heavy(n: Int, x: Big) -> Int
+=
+  let a1 = x.a + n
+  let a2 = x.b * a1
+  let a3 = "{x.c}{a2}"
+  let a4 = x.d.append(item: a2)
+  let a5 = Big(a: a1, b: a2, c: a3, d: a4, e: Some(a1))
+  let a6 = a5.d.len + a3.len
+  let r = if n <= 0 then a6 else heavy(n - 1, x: Big(a: x.a, b: x.b, c: x.c, d: x.d, e: x.e))
+  r + a6 - a6 + 0 * a1 * a2
+
+viamap(n: Int) -> Int
+=
+  if n <= 0
+    0
+  else
+    let xs = [n].map(each: fn(k) -> viamap(k - 1) + 1)
+    xs.sum
+
+pub probe(n: Int) -> Int
+  uses @probe: Probe[go]
+=
+  let v = @probe.go(n)
+  v
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let m = "a"
+  let n = 9990
+  let big = Big(a: 1, b: 2, c: "c", d: [1, 2, 3], e: None)
+  @console.print("mode {m} n {n}")
+  if m == "a"
+    let r = down(n)
+    @console.print("down {r}")
+  if m == "b"
+    let r = heavy(n, x: big)
+    @console.print("heavy {r}")
+  if m == "c"
+    let r = viamap(n)
+    @console.print("viamap {r}")
+  if m == "d"
+    let r = probe(n) with @probe = prober()
+    @console.print("probe {r}")

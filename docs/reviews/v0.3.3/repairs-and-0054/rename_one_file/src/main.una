@@ -1,0 +1,18 @@
+module main
+
+capability shared
+  op put(table: Int) -> Unit
+
+pub kind Shared2 = | One
+
+pub the_table(x: Int) -> Int = x
+
+pub use_it(table: Int) -> Int
+  requires table > 0
+=
+  the_table(table)
+
+pub run(n: Int) -> Unit
+  uses @s: shared[put]
+=
+  @s.put(table: n)

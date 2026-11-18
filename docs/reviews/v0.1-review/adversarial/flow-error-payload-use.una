@@ -1,0 +1,21 @@
+-- Adversarial: secret failure payload recovered through 'attempt' and returned as public
+-- Expected: U4001
+-- Observed: U4001 at 21:26
+-- Verdict: Pass
+module flow_error_payload_use
+
+kind PinError = | Bad(value: secret Int)
+
+inner(pin: secret Int) -> Int
+  fails PinError
+=
+  fail Bad(value: pin)
+
+pub outer_leak(pin: secret Int) -> Int
+=
+  let r = attempt inner(pin)
+  when r
+    is Ok(value) -> value
+    is Err(failure) ->
+      when failure
+        is Bad(value) -> value

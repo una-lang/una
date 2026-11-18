@@ -1,0 +1,14 @@
+-- Adversarial: effectful lambda returned
+-- Expected: U3006
+-- Observed: U3006 at 14:3
+-- Verdict: Pass
+module auth_lambda_returned
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+pub make() -> fn(Text) -> Unit uses @log: Log[write]
+  uses @log: Log[write]
+=
+  fn(t) -> @log.write(t)

@@ -1,0 +1,21 @@
+-- Adversarial: handler binders named in the opposite order of the operation's parameters.
+-- Expected: U5001 postcondition of the handler op (spec/05 §5). Observed: U5001. Held.
+module handler_swap
+
+pub capability Pick
+  op pick(a: Int, b: Int) -> Int
+    ensures result == a
+
+pub handler swapped() for Pick
+  op pick(b, a) = a
+
+pub use_pick() -> Int
+  ensures result == 1
+  uses @p: Pick[pick]
+=
+  @p.pick(1, b: 2)
+
+example "the handler breaks the contract"
+  given @p = swapped()
+  do use_pick()
+  expect result == 1

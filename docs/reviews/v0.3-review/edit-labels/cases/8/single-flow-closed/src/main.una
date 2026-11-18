@@ -1,0 +1,12 @@
+module main
+
+-- expect: accepted: one flow determines the shape, closed (no annotate)
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  edit m.set(key: "a", value: [Some(Ok(1))])
+  @console.print("{m.len}")

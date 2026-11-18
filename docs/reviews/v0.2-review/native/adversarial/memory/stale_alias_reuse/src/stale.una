@@ -1,0 +1,15 @@
+-- An alias `let z = a` at the last use of `a` moves the record to `z`; a later record of the
+-- same kind must not reuse it while `z` is still in use.
+module stale
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = Point(x: 1, y: 2)
+  let z = a
+  let r = Point(x: 7, y: 8)
+  @console.print("{z.x} {z.y} / {r.x} {r.y}")

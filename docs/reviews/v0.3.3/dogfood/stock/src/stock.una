@@ -1,0 +1,39 @@
+module stock
+
+import credentials (api_token)
+
+--- The stock level of an item from the inventory API, sending the API token in a header.
+pub level(item: Text, token: secret Text) -> internal Option[internal Int]
+  uses @http: Http[get]
+=
+  let auth = Header(name: "X-Api-Token", value: api_token(token))
+  let r = attempt @http.get("https://inventory.example.com/v1/items/{item}", headers: [auth], key_name: None)
+  when r
+    is Ok(response) -> if response.status == 200 then count(response.body) else None
+    is Err(e) -> None
+
+--- The `count` field of a JSON object.
+count(body: internal Text) -> internal Option[internal Int]
+=
+  let doc = body.parse_json()
+    if error use Null
+  when doc
+    is Object(fields) ->
+      let value = fields.get(key: "count")
+        if none use Null
+      when value
+        is Number(n) -> Some(n)
+        else -> None
+    else -> None
+
+--- A stand-in for the inventory API: every item has 7 in stock.
+handler seven() for Http
+  op get(url, headers, key_name) = Response(status: 200, headers: [], body: "\{\"count\": 7\}")
+  op post(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op put(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op delete(url, headers, key_name) = Response(status: 405, headers: [], body: "")
+
+example "a known item has its count"
+  given @http = seven()
+  do level("saw", token: "t0k3n")
+  expect result == Some(7)

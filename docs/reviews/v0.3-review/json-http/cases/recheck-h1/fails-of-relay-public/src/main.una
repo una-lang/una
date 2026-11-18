@@ -1,0 +1,27 @@
+module main
+
+relay(us: List[internal Text], each: fn(internal Text) -> internal Response) -> List[internal Response]
+  uses of each
+  fails of each
+=
+  us.map(each)
+    if error pass
+
+fetch(x: internal Text) -> internal Response
+  uses @http: Http[get]
+  fails HttpError
+=
+  @http.get("http://127.0.0.1:8765/", headers: [Header(name: "q", value: x)], key_name: None)
+    if error pass
+
+pub main() -> Unit
+  uses @http: Http[get]
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let u = @env.get("U")
+    if none use "http://127.0.0.1:8765/"
+  let r = attempt relay([u], each: fetch)
+  when r
+    is Ok -> @console.print("y")
+    is Err -> @console.print("n")

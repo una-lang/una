@@ -1,0 +1,4 @@
+[package]
+name = "annotated_nested__result__prelude_inner_inferred"
+version = "0.1.0"
+edition = "0.1"

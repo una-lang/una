@@ -1,0 +1,11 @@
+trusted module release
+
+--- The summary line of the readings file is shown on the console.
+pub policy shown_summary
+  from internal Text
+  to public Text
+  via copy
+  purpose "print how many readings are valid and their sum"
+  owner report_owner
+
+copy(t: internal Text) -> public Text = t

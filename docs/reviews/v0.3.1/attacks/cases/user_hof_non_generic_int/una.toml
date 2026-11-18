@@ -1,0 +1,4 @@
+[package]
+name = "user_hof_non_generic_int"
+version = "0.1.0"
+edition = "0.1"

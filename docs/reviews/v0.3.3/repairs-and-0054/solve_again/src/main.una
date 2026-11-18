@@ -1,0 +1,31 @@
+module main
+
+kind Pos = Int where it >= 1
+
+--- Refuted at a = 0, a real counterexample.
+pub square_pos(a: Int) -> Pos = a * a
+
+--- True; nonlinear, so never proven by the second query.
+pub square_nat(a: Int) -> Int
+  ensures result >= 0
+=
+  a * a
+
+--- True for Euclidean division by a positive divisor.
+pub quotient_bound(a: Int, b: Int) -> Int
+  requires a >= 0 and b > 0
+  ensures result <= a
+=
+  a / b
+
+--- The division obligation is refuted at b = 0; what does the ensures report?
+pub divided(a: Int, b: Int) -> Int
+  ensures result == 7
+=
+  a / b
+
+--- Guarded: b = 0 takes the other arm.
+pub guarded(a: Int, b: Int) -> Int
+  ensures result != 3
+=
+  if b == 0 then 0 else a / b

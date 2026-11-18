@@ -1,0 +1,8 @@
+module main
+
+-- expect: U4001 annotate, whose example is a Map (E-2): a map whose values are functions
+pub f() -> Int
+=
+  let edit ops = empty_map()
+  edit ops.set(key: "inc", value: fn(x: Int) -> x + 1)
+  ops.len

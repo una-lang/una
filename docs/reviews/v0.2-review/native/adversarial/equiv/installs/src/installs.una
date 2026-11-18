@@ -1,0 +1,51 @@
+module installs
+
+pub kind Oops = | Bad(n: Int)
+
+pub capability Log
+  op note(n: Int) -> Int
+    fails Oops
+
+pub capability Meta
+  op wrap(n: Int) -> Int
+    fails Oops
+
+pub handler log_h(limit: Int) for Log
+  op note(n) = if n > limit then fail Bad(n: n) else n
+
+pub handler meta_h() for Meta
+  op wrap(n) =
+    let v = inner(n) with @log = log_h(n)
+      if error pass
+    let w = inner(n + 1) with @log = log_h(n)
+      if error use -1
+    v + w
+
+pub inner(n: Int) -> Int
+  uses @log: Log[note]
+  fails Oops
+=
+  let v = @log.note(n)
+    if error pass
+  v
+
+pub through(n: Int) -> Int
+  uses @meta: Meta[wrap]
+  fails Oops
+=
+  let v = @meta.wrap(n)
+    if error pass
+  v
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit total = 0
+  for i in [1, 2, 3]
+    let v = through(i) with @meta = meta_h()
+      if error use 0
+    let w = inner(i) with @log = log_h(2)
+      if error use 100
+    total = total + v + w
+  let xs = attempt [5, 6].map(each: fn(k) -> k + 1)
+  @console.print("{total}")

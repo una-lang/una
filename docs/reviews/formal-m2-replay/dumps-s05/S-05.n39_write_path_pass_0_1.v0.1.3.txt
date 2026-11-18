@@ -1,0 +1,5 @@
+module main
+
+fun probe(path: internal Text) : Unit uses {files ↦ Files[write]} fails FileError =
+  let %t0: Unit = files.write(path, "x") in
+  %t0

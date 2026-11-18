@@ -1,0 +1,8 @@
+[package]
+name = "handler__handler_result_is_captured_secret__control"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

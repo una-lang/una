@@ -1,0 +1,33 @@
+-- Adversarial: a record `Tool` with a field `bump` of function type and a field `size`, next to
+-- functions `bump(t, x)` and `size(t)` that ensure `result == 1`. `t.bump(5)` and `t.size` call
+-- the field and read the field (spec/10 §12 rule 4); if the verifier used the functions'
+-- contracts it would prove both divisions, and `main` would divide by zero.
+-- Expected: U5001 `t.bump(5) != 0` and `t.size != 0`.
+-- Observed: exactly those two U5001 (exit 1).
+-- Verdict: Held
+module t
+
+pub kind Tool
+  bump: fn(Int) -> Int
+  size: Int
+
+bump(t: Tool, x: Int) -> Int
+  ensures result == 1
+=
+  1
+
+size(t: Tool) -> Int
+  ensures result == 1
+=
+  1
+
+use_field(t: Tool) -> Int = 100 / t.bump(5)
+
+use_size(t: Tool) -> Int = 100 / t.size
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let t = Tool(bump: fn(x) -> x - 5, size: 0)
+  let q = use_field(t) + use_size(t)
+  @console.print("q = {q}")

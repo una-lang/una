@@ -1,0 +1,16 @@
+module main
+
+-- expect: rejected (U4003 or U4001): a list inside a tuple inside an Option
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit o = None
+  o = Some((0, [0]))
+  for i in 0..<2
+    let pair = o.or_else(default: (0, []))
+    let (a, xs) = pair
+    @console.print("{xs}")
+    o = Some((0, [s.len]))

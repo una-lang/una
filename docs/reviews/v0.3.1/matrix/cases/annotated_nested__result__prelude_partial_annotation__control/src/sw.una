@@ -1,0 +1,29 @@
+-- expect: accept: control: fold with a lambda whose second parameter alone is annotated
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let n = [p].fold(initial: 0, step: fn(acc, x: T) -> acc + k(x))
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

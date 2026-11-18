@@ -1,0 +1,8 @@
+[package]
+name = "runtime_euclidean_division"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "rt1"
+grants = ["console"]

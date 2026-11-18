@@ -1,0 +1,44 @@
+module decided
+
+cap Log {
+  op write(n: Int) : Unit accepts public
+}
+
+fun apply[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: Bool = ==(a, b) in
+  let %t1: T =
+    if %t0 then
+      p
+    else
+      q
+  in
+  let n: Int = k(%t1) in
+  let %t3: Unit = log.write(n) in
+  %t3
+
+fun pass_through[T](p: T, k: fn(T) -> Int) : Unit uses {log ↦ Log[write]} =
+  let n: Int = k(p) in
+  let %t1: Unit = log.write(n) in
+  %t1
+
+fun leak(s: secret Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: List[secret Int] = [s] in
+  let %t1: List[secret Int] = [0] in
+  let %t2: List[secret Int] = [] in
+  let %t3: List[secret Int] = [1, 2] in
+  let %t5: fn(List[secret Int]) -> Int =
+    λ(xs: List[secret Int]).
+      let %t4: Int = len(xs) in
+      %t4
+  in
+  let %t6: Unit = decided.apply[List[secret Int]](%t0, %t1, %t2, %t3, %t5) in
+  %t6
+
+fun fine(xs: List[Int]) : Unit uses {log ↦ Log[write]} =
+  let %t1: fn(List[Int]) -> Int =
+    λ(ys: List[Int]).
+      let %t0: Int = len(ys) in
+      %t0
+  in
+  let %t2: Unit = decided.pass_through[List[Int]](xs, %t1) in
+  %t2

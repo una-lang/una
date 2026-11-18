@@ -14,7 +14,7 @@ Include the smallest program that shows the problem, the command you ran, what y
 
 ## What is in this repository
 
-The public tree holds the compiler's sources (`crates/`), the specification (`docs/spec/`), the guides (`docs/guide/`), the standard library listing (`docs/std/`), the compiler's design notes (`docs/compiler/`), the test suites (`tests/` and the integration tests of each crate), the scripts that build, validate and release `una` (`scripts/`), the examples, the validation records of each release (`docs/validation/`), the security documents, the formal development (`formal/`), the fuzz targets and the pinned supply-chain inputs. The architecture decision records (`docs/adr/`) and the plan (`docs/plan/`) are here too. The maintainers keep the review records, which are not in this tree. Where a document names one of those, it says it is kept by the maintainers.
+The public tree holds the compiler's sources (`crates/`), the specification (`docs/spec/`), the guides (`docs/guide/`), the standard library listing (`docs/std/`), the compiler's design notes (`docs/compiler/`), the test suites (`tests/` and the integration tests of each crate), the scripts that build, validate and release `una` (`scripts/`), the examples, the validation records of each release (`docs/validation/`), the security documents, the formal development (`formal/`), the fuzz targets and the pinned supply-chain inputs. The architecture decision records (`docs/adr/`), the plan (`docs/plan/`) and the review records (`docs/reviews/`) are here too. Where a document names one of those, it says it is kept by the maintainers.
 
 ## How work flows
 

@@ -1,0 +1,53 @@
+module sensors
+
+pub kind ReadError = Offline(sensor: Text) | Garbled(sensor: Text)
+
+--- A bank of sensors, each read by its name. A reading can fail.
+pub capability SensorBank
+  op read(sensor: Text) -> Int
+    fails ReadError
+
+--- Every sensor read at once, in list order; fails with the first failure in list order.
+pub read_all(names: List[Text]) -> List[Int]
+  uses @bank: SensorBank[read]
+  fails ReadError
+=
+  let readings = together for name in names
+    @bank.read(name)
+      if error pass
+  readings
+
+--- Every sensor read at once; how many of them answered.
+pub answered(names: List[Text]) -> Nat
+  uses @bank: SensorBank[read]
+=
+  let outcomes = together for name in names
+    attempt @bank.read(name)
+  let ok = outcomes.filter(keep: fn(o) -> o.is_ok())
+  ok.len
+
+--- A stand-in bank: the sensors in `failing` are offline, the others read 10 times the
+--- length of their name.
+handler bank_with(failing: List[Text]) for SensorBank
+  op read(sensor) = if failing.contains(item: sensor) then fail Offline(sensor) else sensor.len * 10
+
+example "all sensors answer"
+  given @bank = bank_with(failing: [])
+  do read_all(["a", "bb", "ccc"])
+  expect result == [10, 20, 30]
+
+example "one failing sensor fails the whole read"
+  given @bank = bank_with(failing: ["bb"])
+  do read_all(["a", "bb", "ccc"])
+  expect fails Offline
+
+example "the first failure in list order wins"
+  given @bank = bank_with(failing: ["ccc", "bb"])
+  do attempt read_all(["a", "bb", "ccc"])
+  expect result == Err(Offline("bb"))
+
+example "the sensors that answered are counted"
+  given @bank = bank_with(failing: ["bb"])
+  do answered(["a", "bb", "ccc"])
+  expect result == 2
+  expect performed @bank.read

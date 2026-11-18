@@ -1,0 +1,18 @@
+1-closure-value: rejected, 2 diagnostics
+1-edit-three-levels: rejected, 1 diagnostics
+1-fold-state: rejected, 3 diagnostics
+1-generic-several-labels: rejected, 1 diagnostics
+1-http-response: rejected, 1 diagnostics
+1-json-values: rejected, 1 diagnostics
+1-mutual-recursion: rejected, 1 diagnostics
+1-nested-list-value: rejected, 1 diagnostics
+1-option-state: rejected, 1 diagnostics
+1-two-level-generic: rejected, 1 diagnostics
+2-caller-first-chain: rejected, 1 diagnostics
+2-map-key-generic-chain: rejected, 1 diagnostics
+2-summary-after-solution: rejected, 1 diagnostics
+3-cost: accepted
+4-accepted-controls: accepted
+4-edition-0-1: rejected, 1 diagnostics
+4-unchanged-rejections: rejected, 5 diagnostics
+5-parity: engines agree

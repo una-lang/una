@@ -1,0 +1,8 @@
+module main
+
+f(u: internal Text) -> internal Response
+  uses @http: Http[get, post, put, delete]
+  fails HttpError
+=
+  @http.delete(u, headers: [], key_name: None)
+    if error fail Unreachable

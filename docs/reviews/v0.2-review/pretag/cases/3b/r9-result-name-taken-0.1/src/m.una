@@ -1,0 +1,9 @@
+module m
+
+outcome(x: Int) -> Int = x
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let outcome2 = outcome(3)
+  @console.print("{outcome2}")

@@ -1,0 +1,6 @@
+module main
+
+pub f() -> Int
+  uses @http: Http[get]
+=
+  1

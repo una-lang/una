@@ -1,0 +1,8 @@
+module m
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let outcome = 1
+  let outcome = outcome + 3
+  @console.print("{outcome}")

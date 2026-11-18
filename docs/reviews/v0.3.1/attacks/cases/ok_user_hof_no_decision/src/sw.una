@@ -1,0 +1,17 @@
+-- expect: ok
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+my_map[U](xs: List[U], f: fn(U) -> Int) -> List[Int] = xs.map(each: f)
+
+g(a: Int, k: fn(Int) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(my_map([a, 2], f: k).sum())
+
+pub run() -> Unit
+  uses @log: Log[write]
+=
+  g(1, k: fn(n) -> n)

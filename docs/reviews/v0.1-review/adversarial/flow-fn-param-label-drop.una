@@ -1,0 +1,9 @@
+-- Adversarial: lambda returning its secret parameter into fn(secret Int) -> Int
+-- Expected: U4001 (S-Fun)
+-- Observed: U4001 at 9:51
+-- Verdict: Pass
+module flow_fn_param_label_drop
+
+apply(f: fn(secret Int) -> Int, x: secret Int) -> Int = f(x)
+
+pub leak(pin: secret Int) -> Int = apply(fn(x) -> x, x: pin)

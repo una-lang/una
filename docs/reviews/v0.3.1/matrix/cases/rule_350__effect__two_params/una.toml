@@ -1,0 +1,4 @@
+[package]
+name = "rule_350__effect__two_params"
+version = "0.1.0"
+edition = "0.1"

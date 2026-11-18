@@ -1,0 +1,109 @@
+[U4001] Error: the result of `split_len` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+   ╭─[ src/main.una:4:40 ]
+   │
+ 4 │ pub split_len(t: secret Text) -> Int = t.split(on: ",").len
+   │                                        ──────────┬─────────  
+   │                                                  ╰─────────── the result of `split_len` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+   │ 
+   │ Note: run `una explain U4001` for an explanation
+───╯
+[U4001] Error: the result of `split_with_secret_separator` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+   ╭─[ src/main.una:6:60 ]
+   │
+ 6 │ pub split_with_secret_separator(sep: secret Text) -> Int = "a,b".split(on: sep).len
+   │                                                            ────────────┬───────────  
+   │                                                                        ╰───────────── the result of `split_with_secret_separator` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+   │ 
+   │ Note: run `una explain U4001` for an explanation
+───╯
+[U4001] Error: the result of `find_tag` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`
+    ╭─[ src/main.una:11:3 ]
+    │
+ 11 │   p is Some
+    │   ────┬────  
+    │       ╰────── the result of `find_tag` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `replace_by_secret_len` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    ╭─[ src/main.una:13:62 ]
+    │
+ 13 │ pub replace_by_secret_len(t: Text, by: secret Text) -> Int = t.replace(pattern: "a", by: by).len
+    │                                                              ─────────────────┬─────────────────  
+    │                                                                               ╰─────────────────── the result of `replace_by_secret_len` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `chars_count` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    ╭─[ src/main.una:15:42 ]
+    │
+ 15 │ pub chars_count(t: secret Text) -> Int = t.chars().len
+    │                                          ──────┬──────  
+    │                                                ╰──────── the result of `chars_count` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `join_secret_part` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    ╭─[ src/main.una:17:55 ]
+    │
+ 17 │ pub join_secret_part(xs: List[secret Text]) -> Text = xs.join(separator: ",")
+    │                                                       ───────────┬───────────  
+    │                                                                  ╰───────────── the result of `join_secret_part` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `join_secret_list` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    ╭─[ src/main.una:19:54 ]
+    │
+ 19 │ pub join_secret_list(xs: secret List[Text]) -> Int = xs.join(separator: ",").len
+    │                                                      ─────────────┬─────────────  
+    │                                                                   ╰─────────────── the result of `join_secret_list` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `slice_secret_bound` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    ╭─[ src/main.una:24:3 ]
+    │
+ 24 │   t.slice(start: 0, end: n)
+    │   ────────────┬────────────  
+    │               ╰────────────── the result of `slice_secret_bound` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `trim_secret` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    ╭─[ src/main.una:26:43 ]
+    │
+ 26 │ pub trim_secret(t: secret Text) -> Text = t.trim_end()
+    │                                           ──────┬─────  
+    │                                                 ╰─────── the result of `trim_secret` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `bytes_len` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    ╭─[ src/main.una:28:40 ]
+    │
+ 28 │ pub bytes_len(t: secret Text) -> Int = t.bytes().len
+    │                                        ──────┬──────  
+    │                                              ╰──────── the result of `bytes_len` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `upper` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    ╭─[ src/main.una:30:37 ]
+    │
+ 30 │ pub upper(t: secret Text) -> Text = t.to_upper()
+    │                                     ──────┬─────  
+    │                                           ╰─────── the result of `upper` is `Text`, and this value is `secret Text`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: the result of `ends` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`
+    ╭─[ src/main.una:32:36 ]
+    │
+ 32 │ pub ends(t: secret Text) -> Bool = t.ends_with(suffix: "x")
+    │                                    ────────────┬───────────  
+    │                                                ╰───────────── the result of `ends` is `Bool`, and this value is `secret Bool`: a flow from `secret` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+exit 1

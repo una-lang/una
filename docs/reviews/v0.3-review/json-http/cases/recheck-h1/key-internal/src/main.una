@@ -1,0 +1,8 @@
+module main
+
+f(k: internal Text) -> internal Response
+  uses @http: Http[get, post, put, delete]
+  fails HttpError
+=
+  @http.get("http://127.0.0.1:8765/", headers: [], key_name: Some(k))
+    if error pass

@@ -1,0 +1,46 @@
+-- Adversarial: handler instance arguments that carry labels: a handler fails, prints and returns a value that depends on a `secret` instance parameter, and an `internal` value is passed to a public handler parameter
+-- Expected: U4002 at the `fail`, U4003 at the print, U4001 at the result `tag.len` and at the handler argument (spec/05 §5 rule 3; spec/07 §3, §7)
+-- Observed: U4002 at the fail, U4003 at the print, U4001 at `tag.len`, at the `gate` result and at the `plain` argument (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_hdl_labeled_instance_args
+
+kind LogError = | Refused
+
+capability Log
+  op write(line: Text) -> Int
+    fails LogError
+
+handler gate(tag: secret Text) for Log
+  op write(line) = if tag == "x" then fail Refused else 0
+
+handler shout(tag: secret Text) for Log
+  uses @console: Console[print]
+  op write(line) =
+    let u = if tag == "x"
+      @console.print("a")
+    else
+      unit
+    0
+
+handler count(tag: secret Text) for Log
+  op write(line) = tag.len
+
+handler plain(tag: Text) for Log
+  op write(line) = 0
+
+run() -> Int
+  uses @log: Log[write]
+  fails LogError
+=
+  let n = @log.write("x")
+    if error pass
+  n
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let pin = @env.get("PIN")
+    if none use ""
+  let r = attempt run() with @log = plain(tag: pin)
+  unit

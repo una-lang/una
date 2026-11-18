@@ -1,0 +1,8 @@
+module main
+
+g(n: internal Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(n, data: "d")
+    if error pass

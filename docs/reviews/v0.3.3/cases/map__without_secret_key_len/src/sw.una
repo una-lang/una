@@ -1,0 +1,28 @@
+-- expect: reject: map__without_secret_key_len
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+probe(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  let m: Map[Int, Int] = empty_map()
+  let n = m.with(key: 1, value: 1).with(key: 2, value: 2)
+  @log.write(n.without(key: s).len)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_cell() with @log = to_console()
+
+run_cell() -> Unit
+  uses @log: Log[write]
+=
+  probe(1)

@@ -1,0 +1,13 @@
+module main
+
+pub main() -> Unit
+  uses @http: Http[get]
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let u = @env.get("U")
+    if none use "http://127.0.0.1:8765/"
+  let r = attempt @http.get(u, headers: [], key_name: None)
+  when r
+    is Ok -> @console.print("y")
+    is Err(e) -> @console.print("{e}")

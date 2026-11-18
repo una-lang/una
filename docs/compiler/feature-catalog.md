@@ -1,7 +1,5 @@
 # The reviewed feature catalog
 
-Note on the public tree: the review records are kept by the maintainers and are not in this repository; paths below that name them describe the maintainers' checkout.
-
 `docs/features.json` is a selected, evidence-backed inventory for documentation consumers. It does not replace the specification or enumerate every language feature. Its unstable build-metadata schema is `una.features/1`.
 
 Each record has a stable `id`, title, status, evidence edition, nullable `minimum_release`, normative source paths, and package paths relative to `tests/conformance/`. `supported` and `preview` require positive non-pending conformance cases. `edition` is the edition in which the evidence was checked, not the first edition supporting the feature. Editions 0.3, 0.4 and 0.5 retain their preview designation. Unknown release history is represented by null; assigning a minimum release requires a future extension that verifies historical evidence. `deferred` records a feature that the specification or the backlog defers, and `excluded` one that an accepted decision record rules out; neither advertises an edition or an executable fixture.

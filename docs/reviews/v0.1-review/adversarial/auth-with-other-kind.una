@@ -1,0 +1,23 @@
+-- Adversarial: 'with @log = @audit' across capability kinds
+-- Expected: U3001 (spec/05 §4.1)
+-- Observed: U3001 at 23:3
+-- Verdict: Pass
+module auth_with_other_kind
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+capability Audit
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub run() -> Unit
+  uses @audit: Audit[write]
+=
+  note("x") with @log = @audit

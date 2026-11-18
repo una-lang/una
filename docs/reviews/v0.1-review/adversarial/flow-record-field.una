@@ -1,0 +1,10 @@
+-- Adversarial: secret value stored in a public record field
+-- Expected: U4001 (spec/07 §7.2)
+-- Observed: U4001 at 10:47
+-- Verdict: Pass
+module flow_record_field
+
+kind Card
+  pin: Int
+
+pub wrap(pin: secret Int) -> Card = Card(pin: pin)

@@ -1,0 +1,4 @@
+[package]
+name = "partial_two_type_params"
+version = "0.1.0"
+edition = "0.1"

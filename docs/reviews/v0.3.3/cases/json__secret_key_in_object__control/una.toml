@@ -1,0 +1,8 @@
+[package]
+name = "json__secret_key_in_object__control"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

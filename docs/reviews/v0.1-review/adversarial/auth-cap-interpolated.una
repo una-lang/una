@@ -1,0 +1,14 @@
+-- Adversarial: capability interpolated
+-- Expected: U3005
+-- Observed: U3005 at 14:5
+-- Verdict: Pass
+module auth_cap_interpolated
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+leak() -> Text
+  uses @log: Log[write]
+=
+  "{@log}"

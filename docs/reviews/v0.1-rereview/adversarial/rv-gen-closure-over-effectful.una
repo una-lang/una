@@ -1,0 +1,26 @@
+-- Adversarial: pure-typed lambdas that close over an effectful function parameter, passed to a pure parameter and to a generic `id`, and the parameter put in a list
+-- Expected: U3003 at the inner calls and U3006 at the list element (spec/05 §9 rules 1, 6; ADR 0038 D1, D2)
+-- Observed: U3003 at both inner calls of `f`, U3006 at `[f]` (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_closure_over_effectful
+
+id[T](x: T) -> T = x
+
+pure_call(g: fn() -> Unit) -> Unit = g()
+
+run(f: fn() -> Unit uses @c: Console[print]) -> Unit
+  uses @c: Console[print]
+=
+  pure_call(fn() -> f())
+
+run2(f: fn() -> Unit uses @c: Console[print]) -> Int
+  uses @c: Console[print]
+=
+  let h = id(fn() -> f())
+  1
+
+run3(f: fn() -> Unit uses @c: Console[print]) -> Int
+  uses @c: Console[print]
+=
+  let k = [f]
+  1

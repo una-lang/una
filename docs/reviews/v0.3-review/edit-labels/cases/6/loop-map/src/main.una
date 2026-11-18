@@ -1,0 +1,13 @@
+module main
+
+-- expect: rejected (U4003). Leaks on main 3aed995 (prints {} then {0: length of S}); fixed at 2e0ff81
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  for i in 0..<2
+    @console.print("{m}")
+    edit m.set(key: i, value: s.len)

@@ -1,0 +1,22 @@
+-- Adversarial: effectful function stored in Box[T] directly (control for the generic escape)
+-- Expected: U3006
+-- Observed: U3006 at 22:14
+-- Verdict: Pass (control)
+module auth_lambda_in_generic_box
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+kind Box[T]
+  value: T
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub make() -> Box[fn(Text) -> Unit uses @log: Log[write]]
+  uses @log: Log[write]
+=
+  Box(value: note)

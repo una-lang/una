@@ -1,0 +1,32 @@
+module tog2
+
+pub kind Oops = Bad(n: Int, why: secret Text) | Worse
+
+spin(n: Int) -> Int = if n <= 0 then 0 else 1 + spin(n - 1)
+
+work(i: Int, mode: Int) -> Int
+  uses @console: Console[print]
+  fails Oops
+=
+  @console.print("start {i}")
+  if mode == 1 and i == 2
+    fail Bad(n: i, why: "hidden")
+  if mode == 2 and i == 1
+    let d = spin(100000)
+    @console.print("never {d}")
+  @console.print("end {i}")
+  i
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Oops
+=
+  let mode = 0
+  let many = together for i in 0..<300
+    i * i
+  @console.print("many {many.sum}")
+  let rs = together for i in 0..<4
+    let v = work(i, mode: mode)
+      if error pass
+    v
+  @console.print("rs {rs.sum}")

@@ -1,0 +1,11 @@
+-- Adversarial: 'when' on a secret Option decides a public result
+-- Expected: U4001 (spec/07 §3.2)
+-- Observed: U4001 at 9:8
+-- Verdict: Pass
+module flow_when_option
+
+pub present(o: secret Option[Int]) -> Int
+=
+  when o
+    is Some(v) -> 1
+    is None -> 0

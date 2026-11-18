@@ -1,0 +1,44 @@
+module sensors
+
+pub kind ReadError = Offline(sensor: Int) | Garbled
+
+pub capability Sensor
+  op reading(id: Int) -> Int
+    fails ReadError
+
+--- Reads every sensor at once; fails with the first sensor that fails, in list order.
+pub readings(ids: List[Int]) -> List[Int]
+  uses @sensor: Sensor[reading]
+  fails ReadError
+=
+  let values = together for id in ids
+    @sensor.reading(id)
+      if error pass
+  values
+
+--- Reads every sensor at once, counting the ones that fail instead of failing.
+pub best_effort(ids: List[Int]) -> Int
+  uses @sensor: Sensor[reading]
+=
+  let outcomes = together for id in ids
+    attempt @sensor.reading(id)
+  outcomes.filter(keep: fn(o) -> o.is_ok()).len
+
+--- A sensor bank where sensor 3 is offline.
+handler bank() for Sensor
+  op reading(id) = if id == 3 then fail Offline(sensor: id) else id * 10
+
+example "all sensors answer"
+  given @sensor = bank()
+  do readings([1, 2])
+  expect result == [10, 20]
+
+example "the first failure in list order wins"
+  given @sensor = bank()
+  do readings([1, 3, 4])
+  expect fails Offline
+
+example "best effort counts the answers"
+  given @sensor = bank()
+  do best_effort([1, 3, 4])
+  expect result == 2

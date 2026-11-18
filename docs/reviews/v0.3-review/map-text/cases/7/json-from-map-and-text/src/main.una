@@ -1,0 +1,27 @@
+module main
+
+-- Object fields from a map built of text pieces; to_json in key order; a round trip.
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let line = "zeta=1, alpha=2 ,é=3,\"q\"=4,back\\slash=5,=6,😀=7"
+  let edit fields: Map[Text, Json] = empty_map()
+  for part in line.split(on: ",")
+    let pair = part.trim().split(on: "=")
+    let key = pair.first().or_else(default: "")
+    let value = pair.at(index: 1).or_else(default: "0")
+    let n = value.parse_int()
+      if error use -1
+    edit fields.set(key: key, value: Number(value: n))
+  let doc = Object(fields: fields)
+  let text = to_json(doc)
+  @console.print(text)
+  let back = text.parse_json()
+    if error use Null
+  @console.print("{back == doc}")
+  @console.print("{to_json(back) == text}")
+  let replaced = text.replace(pattern: "\"", by: "'")
+  @console.print(replaced)
+  when back
+    is Object(read) -> @console.print("{read.keys()} {read.len}")
+    else -> @console.print("not an object")

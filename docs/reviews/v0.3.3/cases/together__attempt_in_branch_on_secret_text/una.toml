@@ -1,0 +1,8 @@
+[package]
+name = "together__attempt_in_branch_on_secret_text"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

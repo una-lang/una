@@ -1,0 +1,15 @@
+-- expect: U4003
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, h: fn(Int) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write([p].fold(step: fn(acc, x) -> h(acc), initial: if a == b then 1 else 0))
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], h: fn(n) -> n)

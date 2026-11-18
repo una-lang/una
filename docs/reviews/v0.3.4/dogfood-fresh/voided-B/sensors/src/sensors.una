@@ -1,0 +1,64 @@
+module sensors
+
+--- Why a sensor gave no reading.
+pub kind SensorError = Offline | Garbled
+
+--- A bank of sensors, each read by its number.
+pub capability Bank
+  op read(sensor: Int) -> Int
+    fails SensorError
+
+--- The readings of every sensor, read concurrently, in list order; fails with the failure of the first failing sensor in list order.
+pub read_all(sensors: List[Int]) -> List[Int]
+  uses @bank: Bank[read]
+  fails SensorError
+=
+  let readings = together for sensor in sensors
+    @bank.read(sensor)
+      if error pass
+  readings
+
+--- How many sensors answered, reading them concurrently.
+pub count_answered(sensors: List[Int]) -> Int
+  uses @bank: Bank[read]
+=
+  let outcomes = together for sensor in sensors
+    attempt @bank.read(sensor)
+  let edit answered = 0
+  for outcome in outcomes
+    answered = answered + answered_one(outcome)
+  answered
+
+answered_one(outcome: Result[Int, SensorError]) -> Int
+=
+  when outcome
+    is Ok(value) -> 1
+    is Err(failure) -> 0
+
+--- A stand-in bank where one sensor fails: sensor 2 is offline, every other sensor reads ten times its number.
+handler one_broken() for Bank
+  op read(sensor) = if sensor == 2 then fail Offline else sensor * 10
+
+--- A stand-in bank with two failing sensors, to show which failure `read_all` reports: sensor 2 is offline, sensor 4 is garbled.
+handler two_broken() for Bank
+  op read(sensor) = if sensor == 2 then fail Offline else if sensor == 4 then fail Garbled else sensor * 10
+
+example "every sensor answers"
+  given @bank = one_broken()
+  do read_all([1, 3, 5])
+  expect result == [10, 30, 50]
+
+example "one sensor fails"
+  given @bank = one_broken()
+  do attempt read_all([1, 2, 3])
+  expect result == Err(Offline)
+
+example "the first failure in list order wins"
+  given @bank = two_broken()
+  do attempt read_all([1, 4, 2, 3])
+  expect result == Err(Garbled)
+
+example "count the sensors that answered"
+  given @bank = one_broken()
+  do count_answered([1, 2, 3, 5])
+  expect result == 3

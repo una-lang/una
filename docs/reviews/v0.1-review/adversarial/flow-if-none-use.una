@@ -1,0 +1,11 @@
+-- Adversarial: 'if none use' on a secret Option returned as public
+-- Expected: U4001 (spec/07 §7.3)
+-- Observed: U4001 at 11:3
+-- Verdict: Pass
+module flow_if_none_use
+
+pub present(o: secret Option[Int]) -> Int
+=
+  let v = o
+    if none use 0
+  v

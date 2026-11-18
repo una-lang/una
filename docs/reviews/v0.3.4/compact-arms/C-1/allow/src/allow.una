@@ -1,0 +1,30 @@
+module allow
+
+import std.testing (fake_hash)
+
+--- Whether `address` is on the allowlist, which holds only HMAC hashes made with the key `pepper`.
+pub allowed(address: secret Text, allowlist: List[internal Hashed]) -> secret Bool
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let digest = @keys.hmac("pepper", data: address)
+    if error pass
+  let edit found: secret Bool = false
+  for h in allowlist
+    found = found or h == digest
+  found
+
+--- A stand-in for the key service: it knows only the key `pepper`, and gives each known address a fixed fake hash.
+handler pepper_keys() for Keys
+  op hmac(key_name, data) = if key_name != "pepper" then fail UnknownKey else if data == "ana@example.com" then fake_hash(1) else if data == "bo@example.com" then fake_hash(2) else fake_hash(0)
+
+example "an address on the allowlist"
+  given @keys = pepper_keys()
+  do allowed("ana@example.com", allowlist: [fake_hash(2), fake_hash(1)])
+  expect result == true
+  expect performed @keys.hmac
+
+example "an address not on the allowlist"
+  given @keys = pepper_keys()
+  do allowed("eve@example.com", allowlist: [fake_hash(1)])
+  expect result == false
