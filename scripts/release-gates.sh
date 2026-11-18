@@ -50,18 +50,14 @@
 #   sanitize     scripts/sanitize.sh (#766): Miri on the unit tests of una-rt, and the native
 #                equivalence test against una-rt built with AddressSanitizer, with the checking
 #                toolchain of scripts/check-toolchain.toml; macOS only for now
-#   site         scripts/doc-links.py: its self-test, then every link of the repository's
+#   docs         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
-#                clone's release `una`, and scripts/site-website.sh compares the heading ids with
-#                the website's and builds the website that site/website.lock pins from the
-#                bundle, with its budget and its code samples checked. When that website pins
-#                una-lang/una-by-example (learn.lock, una#733), every example, its Try it
-#                changes and its download archives are checked with the `una` of the release
-#                gate's archive of this host, the shipped one (scripts/site-shipped-una.sh,
-#                #2029), as are the website's code samples, and the
-#                website must build its Learn pages from them. A missing Python 3, Node.js or
-#                npm, or no access to the website's or the examples' repository, is a FAIL
+#                clone's release `una`, its files checked against the neutrality pattern. The
+#                gate was named `site` before #2081, when it also built the website from that
+#                bundle; the website is now validated by its own repository's flow against a
+#                published bundle, and no step of this run clones, installs or builds it. A
+#                missing Python 3 is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
 #   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
@@ -115,7 +111,7 @@ esac
 unset BASH_ENV ENV
 ulimit -c 0
 
-ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize site formal hunt hunt-linux-arm64 solver-identity limits limits-linux-arm64 limits-linux toolchain-free)
+ALL=(clone build deps mac linux linux-arm64 release reproducible determinism native timing-channels owner-replay sanitize docs formal hunt hunt-linux-arm64 solver-identity limits limits-linux-arm64 limits-linux toolchain-free)
 
 # The Z3 library built into una (ADR 0124, #1996). A development `una` that cargo builds without
 # UNA_Z3_LIB has no solver, and every check of it is U5003: each gate that runs cargo or a
@@ -124,11 +120,11 @@ ALL=(clone build deps mac linux linux-arm64 release reproducible determinism nat
 # built once) before its command, or fails the gate, loudly, before any cargo step. The other
 # gates build in a container that finds its own library (the Linux legs and hunt-linux-arm64),
 # build with the embedded library alone (release and reproducible: scripts/release.sh unsets
-# UNA_Z3_LIB), run the release archives' una (toolchain-free) or the build gate's (site), or run
+# UNA_Z3_LIB), run the release archives' una (toolchain-free) or the build gate's (docs), or run
 # no cargo at all (clone, formal). Every gate is in exactly one of the two lists, or the run
 # stops before any gate: a new gate cannot run cargo without the library by omission.
 SOLVER_GATES=" build deps mac determinism native timing-channels owner-replay sanitize hunt solver-identity limits "
-NO_SOLVER_GATES=" clone linux linux-arm64 release reproducible site formal hunt-linux-arm64 limits-linux-arm64 limits-linux toolchain-free "
+NO_SOLVER_GATES=" clone linux linux-arm64 release reproducible docs formal hunt-linux-arm64 limits-linux-arm64 limits-linux toolchain-free "
 for gate in "${ALL[@]}"; do
     in_solver=0 in_other=0
     case "$SOLVER_GATES" in *" $gate "*) in_solver=1 ;; esac
@@ -165,7 +161,7 @@ TARGETS=$(release_targets "$REPO/scripts/release-targets.txt") || exit 2
 # target; a target with no gates here stops the run before any gate. Adding
 # x86_64-unknown-linux-gnu to the list makes `linux` and `limits-linux` required, and the latter
 # refuses to run under emulation (ADR 0124 rule 31).
-HOST_GATES="clone build deps mac release reproducible determinism native timing-channels owner-replay sanitize site formal hunt solver-identity limits toolchain-free"
+HOST_GATES="clone build deps mac release reproducible determinism native timing-channels owner-replay sanitize docs formal hunt solver-identity limits toolchain-free"
 TARGET_GATES=""
 while read -r target; do
     case $target in
@@ -242,7 +238,7 @@ fi
 # is held in a shell variable that is never exported, the caller's variable unset at once, and
 # reaches the one step that applies it on a pipe (file descriptor 3), never in an environment
 # or an argument, which other processes of the machine could read: the summary step for the
-# privacy pattern, the site gate for the neutrality pattern. Neither is ever printed, logged or
+# privacy pattern, the docs gate for the neutrality pattern. Neither is ever printed, logged or
 # written. Each must be a valid extended regular expression (grep -E, the one dialect every
 # check uses) that matches the canary `una-pattern-canary`, so that a pattern that matches
 # nothing cannot pass for a check. Without either, the run stops before any gate (fail
@@ -338,9 +334,6 @@ export UNA_RELEASED_SECTIONS_SCOPE=ancestors
 # documents' links (#708), whatever the caller's shell exports.
 unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST \
     UNA_LOCAL_CI_DOC_LINKS_ON_HOST
-# Nor does the site gate build or compare anything but what the locks pin: the website and Una by
-# Example from their repositories, and the Learn release as published (#831).
-unset UNA_SITE_WEBSITE_SOURCE UNA_SITE_LEARN_SOURCE UNA_SITE_LEARN_RELEASE_DIR UNA_SITE_LEARN_UNA_DIR
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -378,9 +371,9 @@ run() {
                 echo "release gates: UNA_Z3_LIB=$UNA_Z3_LIB"
                 ;;
         esac
-        # Only the site gate's command gets the neutrality pattern, on file descriptor 3 (a
+        # Only the docs gate's command gets the neutrality pattern, on file descriptor 3 (a
         # pipe), and UNA_NEUTRALITY_PATTERN_FD says so; no other gate has that descriptor.
-        if [ "$gate" = site ] && [ -n "$NEUTRALITY" ]; then
+        if [ "$gate" = docs ] && [ -n "$NEUTRALITY" ]; then
             UNA_NEUTRALITY_PATTERN_FD=3 "$@" 3< <(printf '%s\n' "$NEUTRALITY")
         else
             "$@"
@@ -661,17 +654,15 @@ gate_hunt-linux-arm64() {
     run hunt-linux-arm64 scripts/hunt-linux.sh --linux-arm64 "$hunt" "$SHA"
 }
 
-gate_site() {
-    # The docs bundle is built with the clone's own release `una`; the book and the website's
-    # code samples are checked with the `una` of the release gate's archive of this host, the
-    # one that is shipped (#2029): its reports name the Z3 library of supply-chain/z3.lock and
-    # the embedded runtime, which the book's expected reports carry, and the clone's `una` has
-    # neither. Without that archive the gate fails (scripts/site-shipped-una.sh); it never
-    # falls back to target/release/una.
+gate_docs() {
+    # The documents and the docs bundle, the two products of this repository that the website
+    # reads (#2081): the link check, then the bundle, built with the clone's own release `una`.
+    # The website itself is built and checked by its own repository's flow against a published
+    # bundle, never here: this gate clones, installs and builds nothing of it.
     # The neutrality pattern reaches this one command on file descriptor 3 (`run`), never in
     # its environment or arguments; the command reads it into a variable, closes the
-    # descriptor, and hands it to the bundle and the website steps each on a pipe of its own.
-    run site sh -c '
+    # descriptor, and hands it to the bundle step on a pipe of its own.
+    run docs sh -c '
         unset neutrality
         neutrality=
         if [ -n "${UNA_NEUTRALITY_PATTERN_FD:-}" ]; then
@@ -679,7 +670,7 @@ gate_site() {
             exec 3<&-
         fi
         unset UNA_NEUTRALITY_PATTERN_FD
-        # Each step reads the pattern from its own pipe on descriptor 3, when there is one.
+        # The step reads the pattern from its own pipe on descriptor 3, when there is one.
         with_pattern() {
             if [ -n "$neutrality" ]; then
                 printf "%s\n" "$neutrality" | { UNA_NEUTRALITY_PATTERN_FD=3 "$@" 3<&0 </dev/null; }
@@ -687,15 +678,9 @@ gate_site() {
                 "$@"
             fi
         }
-        version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
         scripts/doc-links.py --self-test \
-            && scripts/site-learn-release.sh --self-test \
-            && scripts/site-learn-una.sh --self-test \
-            && scripts/site-shipped-una.sh --self-test \
             && scripts/doc-links.py \
-            && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
-            && shipped=$(scripts/site-shipped-una.sh "$version" "target/local-release/v$version" "'"$OUT"'/site-shipped") \
-            && with_pattern env UNA_SITE_LEARN_SAME_VERSION=1 UNA_BIN="$shipped" scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+            && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle"'
 }
 gate_formal() { run formal scripts/formal.sh; }
 
@@ -831,15 +816,13 @@ print("- Findings: %s; errors: %s" % (len(s["findings"]), len(s["errors"])))
     echo
     bundles=$(ls "$OUT"/site-bundle/una-docs-*.tar.gz 2>/dev/null)
     if [ -z "$bundles" ]; then
-        echo "None: the site gate did not run or did not write it."
+        echo "None: the docs gate did not run or did not write it."
     else
         echo "| Bundle | sha256 |"
         echo "| --- | --- |"
         for bundle in $bundles; do
             echo "| \`$(basename "$bundle")\` | \`$(digest "$bundle")\` |"
         done
-        echo
-        echo "Built into the website at \`$(sed -n 's/^commit = "\(.*\)"$/\1/p' "$CLONE/site/website.lock" 2>/dev/null)\` (\`site/website.lock\`)."
     fi
     echo
     failed=$(tail -n +2 "$RESULTS" | awk -F'\t' '$3 == "FAIL" { print $1 }' | sort -u | paste -sd ' ' - | sed 's/ /, /g')

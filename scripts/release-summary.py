@@ -39,9 +39,14 @@ RUN = re.compile(
 # crates/una-cli/tests/release_gates.rs keeps the two equal. A row of the record's gate table
 # naming any other gate is refused.
 GATES = ["clone", "build", "deps", "mac", "linux", "linux-arm64", "release", "reproducible",
-         "determinism", "native", "timing-channels", "owner-replay", "sanitize", "site", "formal", "hunt",
+         "determinism", "native", "timing-channels", "owner-replay", "sanitize", "docs", "formal", "hunt",
          "hunt-linux-arm64", "solver-identity", "limits", "limits-linux-arm64", "limits-linux",
          "toolchain-free"]
+# Earlier names of a gate, each mapped to its name now (docs/release-gates.md §3). The record of a
+# run made before #2081 names the documentation gate `site`, which then also built the website;
+# its row is accepted and copied as it was written, never renamed. A record that names a gate by
+# both names is refused: no run of one script writes both.
+EARLIER = {"site": "docs"}
 GATE_ROW = re.compile(r"\| ([a-z0-9-]+) \| (PASS|FAIL) \| ([0-9]+) \| `[0-9a-f]{64}` \|")
 ARCHIVE_ROW = re.compile(r"\| `(una-[0-9A-Za-z._-]+\.tar\.gz)` \| `([0-9a-f]{64})` \|")
 # The target part of an archive's name, after `una-<version>-`.
@@ -112,11 +117,15 @@ def main():
         m = GATE_ROW.fullmatch(line)
         if not m:
             fail(f"a gate row out of shape: {line[:40]!r}")
-        if m.group(1) not in GATES:
+        if m.group(1) not in GATES and m.group(1) not in EARLIER:
             fail(f"an unknown gate {m.group(1)!r}")
         gates.append(m.groups())
     if not gates:
         fail("the gate table is empty")
+    named = {g for g, _, _ in gates}
+    for earlier, now in EARLIER.items():
+        if earlier in named and now in named:
+            fail(f"the gate {now!r} is named both {earlier!r} and {now!r}")
 
     archives = []
     for line in section(lines, "## Archives"):
