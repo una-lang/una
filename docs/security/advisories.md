@@ -16,6 +16,22 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 ## Advisories
 
+### UNA-SA-021: a run's trace showed whether an operation failed although that decision was labeled
+
+- **Severity:** Medium
+- **Affected:** `CHANGELOG.md` names no release. The exposure was reproduced on v0.3.17, in the trace of `una run` and in the `--trace` of executables built by `una build`, and on v0.1.13, in the trace of `una run`; the decision has been labeled since v0.3.4 and v0.1.6 (ADR 0085, UNA-SA-008), so the releases of both lines from those on are taken as affected.
+- **Fixed in:** v0.4.0. The v0.3 and v0.1 lines have no release with the fix.
+- **Summary:** the trace of a run redacted an operation's returned value by its label but wrote, in clear, whether the operation returned or failed, its failure variant and its payload, although the checker labels that decision (ADR 0085). The `internal` path of a `Files.write`, which the write's own event showed as `<redacted:internal>`, could therefore be recovered from that write's outcome or from the outcomes of later `Files.read`s of public paths, one bit per read; and in the v0.3 line the failure variant of an `Http` request, `Denied` or `Unreachable`, told whether an `internal` URL lay inside the grant. The program itself could not observe these values (U4003); only a reader of the trace could. `secret` data are not affected: these operations accept at most `internal`. An outcome whose label, the decision's joined with its failure type's and its result's, is above `public` is now written as `{"kind":"redacted","level":"internal"}`, and no text is built from it, in both engines and every edition. The traces of examples keep their outcomes in clear. Readers of run traces must accept the kind `redacted`: the outcomes of every `Http` request, `Files.read`, `Env.get` and `Keys.hmac`, and of every `Files` operation of a package whose file-state label is above `public`, are now redacted. An executable built by an affected release keeps the old behavior until it is built again. Users of an affected release should treat the run traces of programs that handle `internal` data as `internal`.
+- **References:** #1552, #1562, S-45, ADR 0032 (amendment of 2026-11-06), ADR 0085, `spec/11 §5`, `spec/26 §6`.
+
+### UNA-SA-020: writing a long integer as text took time quadratic in its digits
+
+- **Severity:** Availability
+- **Affected:** `CHANGELOG.md` names no release. Every published release before v0.4.0 writes an `Int` in decimal without a bound: by interpolation, `to_text` and `to_json`, and in the Una form of traces, outputs and failures.
+- **Fixed in:** v0.4.0. The v0.3 and v0.1 lines have no release with the fix.
+- **Summary:** an `Int` has no bound, and a few multiplications build one of millions of digits, from a program's own arithmetic or from untrusted numbers it computes with. Writing such an integer in decimal took time quadratic in its digits, so one write could be made to spend that time; UNA-SA-016 bounded the parsing direction only. Both engines now refuse to write an `Int` of more than 4300 digits, the bound of parsing, decided in O(1) from the integer's bit length and before any conversion: the run aborts with U6003 at the interpolation, the call or the operation; the final value or failure of `main` aborts with no position, and a test's report names such a value instead of writing it. A program that writes integers within the bound is unchanged.
+- **References:** #923, #1221, `spec/11 §7`; #1223 is to lift the bound with a subquadratic conversion.
+
 ### UNA-SA-019: the v0.1 proof cache accepted entries it had not written
 
 - **Severity:** High
