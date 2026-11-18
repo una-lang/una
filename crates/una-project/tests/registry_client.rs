@@ -3019,10 +3019,10 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         floor(3, Some(digest('d')))
     );
 
-    // The earlier form, as release 0.3 writes it: the version alone, read without a digest. A
-    // lower version leaves it as it is; the equal version takes its digest, in the new form
-    // (#1970), after which another digest at that version is a fork, refused, and a lower one
-    // is still not stored; a higher one replaces it.
+    // The earlier form, as builds before v0.4.0 write it: the version alone, read without a
+    // digest. A lower version leaves it as it is; the equal version takes its digest, in the new
+    // form (#1970), after which another digest at that version is a fork, refused, and a lower
+    // one is still not stored; a higher one replaces it.
     std::fs::remove_file(&file).unwrap();
     std::fs::write(&file, "3\n").unwrap();
     assert_eq!(itaoca.load_root_version(&id).unwrap(), floor(3, None));

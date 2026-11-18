@@ -1214,8 +1214,8 @@ fn unbundling_refuses_a_fork_at_the_floor_version() {
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
     assert!(done.notes.is_empty(), "{:?}", done.notes);
     assert!(store.contains(&b.expected.digest).unwrap());
-    // The earlier form, as release 0.3 writes it: compared by version, unbundled, and given the
-    // digest of the verified chain's version.
+    // The earlier form, as builds before v0.4.0 write it: compared by version, unbundled, and
+    // given the digest of the verified chain's version.
     let store = Itaoca {
         root: scratch("unbundle-root-old-form"),
     };

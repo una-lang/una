@@ -594,8 +594,8 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
         );
     }
 
-    // The earlier form, as release 0.3 writes it: by version, accepted offline, and given the
-    // digest of version 1 by a command that walks and verifies the chain at version 1.
+    // The earlier form, as builds before v0.4.0 write it: by version, accepted offline, and
+    // given the digest of version 1 by a command that walks and verifies the chain at version 1.
     write("1\n");
     assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
     assert_eq!(std::fs::read_to_string(&floor).unwrap(), "1\n");
