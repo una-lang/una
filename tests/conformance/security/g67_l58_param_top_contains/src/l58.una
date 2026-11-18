@@ -1,0 +1,8 @@
+-- test: ADR 0067 adversarial check of #231, L58_param_top_contains: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l58.una:8:49
+module l58
+
+filtered[U](xs: List[U], p: U) -> List[U] = xs.filter(keep: fn(x) -> x == p)
+
+pub leak(rows: List[List[secret Int]]) -> Int = filtered(rows, p: [1]).len

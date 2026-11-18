@@ -1,0 +1,18 @@
+-- Adversarial: `lib.x.run_with` takes `fn() -> Int uses @g: Gauge[read]` with `lib.x.Gauge`
+-- (`>= 0`); `app` passes `lib.y.measure`, which uses `lib.y.Gauge` (`>= 10`) and divides by
+-- `r - 5`, under the `lib.x` handler `five`. Comparing `uses` clauses of function types by
+-- capability name would accept it and fault at run.
+-- Expected: U3003 (or U2001) at the argument (spec/05 §4, spec/10 §11 rule 8).
+-- Observed: U3003 "this function uses `@g: Gauge[read]`, which the expected function type
+-- does not allow" (exit 1); the message does not say which `Gauge` (finding RV2-3).
+-- Verdict: Held
+module app
+
+import lib.x (five, run_with)
+import lib.y (measure)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = run_with(measure) with @g = five()
+  @console.print("q = {q}")

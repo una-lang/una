@@ -1,0 +1,6 @@
+-- test: lower-case names with inner underscores are accepted; only a trailing underscore is U1005 (positive twin, #11)
+-- spec: spec/01 §4
+-- expect: ok
+module function_name_convention_ok
+
+pub total_count(x: Int) -> Int = x

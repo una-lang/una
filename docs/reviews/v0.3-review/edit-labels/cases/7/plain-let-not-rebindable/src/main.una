@@ -1,0 +1,12 @@
+-- expect: rejected: a plain `let` cannot be assigned in edition 0.1
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let xs = []
+  xs = [s.len]
+  @console.print("{xs}")

@@ -1,0 +1,76 @@
+-- test: the shapes of the secret_fn_* cases with public choices are accepted: function values chosen by a public condition pass through the prelude, user `of` functions, a relay, a constrained generic, a `together for`, an `edit` argument and a generic parameter (spec/07 §7, ADR 0062, #210)
+-- spec: spec/07 §7
+-- expect: ok
+module shapesok
+
+positive(x: Int) -> Bool = x > 0
+
+negative(x: Int) -> Bool = x < 0
+
+add(total: Int, x: Int) -> Int = total + x
+
+keep_total(total: Int, x: Int) -> Int = total
+
+count[T](xs: List[T], keep: fn(T) -> Bool) -> Int
+  uses of keep
+  fails of keep
+=
+  let kept = xs.filter(keep)
+    if error pass
+  kept.len
+
+relay[T](xs: List[T], keep: fn(T) -> Bool) -> Int
+  uses of keep
+  fails of keep
+=
+  count(xs, keep)
+    if error pass
+
+best[T: Ord](xs: List[T], floor: T, better: fn(T, T) -> T) -> T
+  uses of better
+=
+  xs.fold(initial: floor, step: better)
+
+pub kind Rule
+  keep: fn(Int) -> Bool
+  name: Text
+
+choose(edit rule: Rule, s: Bool) -> Unit
+=
+  rule.keep = if s then positive else negative
+
+pub prelude_shapes(s: Bool, xs: List[Int]) -> Int
+=
+  let keep = if s then positive else negative
+  let step = if s then add else keep_total
+  let firsts = xs.first_where(keep)
+  let flags = xs.map(each: keep)
+  let total = xs.fold(initial: 0, step)
+  xs.filter(keep).len + flags.len + total + firsts.or_else(default: 0)
+
+pub user_shapes(s: Bool, xs: List[Int]) -> Int
+=
+  let keep = if s then positive else negative
+  let better = if s then fn(a: Int, b: Int) -> max(a, b: b) else fn(a: Int, b: Int) -> min(a, b: b)
+  let direct = count(xs, keep)
+  let relayed = relay(xs, keep)
+  direct + relayed + best(xs, floor: 0, better)
+
+pub task_shapes(s: Bool, groups: List[List[Int]]) -> List[Int]
+=
+  let keep = if s then positive else negative
+  let counts = together for xs in groups
+    let kept = xs.filter(keep)
+    kept.len
+  counts
+
+pub edit_shapes(s: Bool, xs: List[Int]) -> Int
+=
+  let edit rule = Rule(keep: positive, name: "rule")
+  choose(edit rule, s)
+  let edit keep = positive
+  if s
+    keep = negative
+  xs.filter(keep: rule.keep).len + xs.filter(keep).len
+
+pub param_shapes[T](keep: fn(T) -> Bool, xs: List[T]) -> Int = xs.filter(keep).len

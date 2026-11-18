@@ -1,0 +1,8 @@
+[package]
+name = "effects__together_for_with_secret_bound"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

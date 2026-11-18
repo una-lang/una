@@ -1,0 +1,20 @@
+-- expect: reject: two type parameters: a decision on T selects a V value given to a V callback
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+two[U, W](x: U, y: W, f: fn(U) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(f(x))
+
+g[T, V](a: T, b: T, c: V, e: V, k: fn(V) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  two(if a == b then c else e, y: a, f: k)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g(s, b: 0, c: [], e: [1], k: fn(xs) -> xs.len)

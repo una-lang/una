@@ -1,0 +1,14 @@
+module m
+
+pick(c: Bool) -> Int
+=
+  if c
+    let outcome = 5
+    outcome
+  else
+    0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{pick(true)}")

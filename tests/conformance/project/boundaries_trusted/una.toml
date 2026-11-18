@@ -1,0 +1,10 @@
+[package]
+name = "case"
+version = "0.1.0"
+edition = "0.3"
+
+[boundaries]
+"gallery.thumbnailer" = ["Files[read]"]
+
+[trusted]
+modules = ["gallery.thumbnailer"]

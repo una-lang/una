@@ -1,0 +1,28 @@
+-- test: a task of `together for` that appends in a loop to a list of its own updates it in place, and a list it captures keeps its value for every task and after the block, in both engines (#263, spec/19 §6, spec/17 §7)
+-- spec: spec/19 §6
+-- grant: console
+-- expect: run-output "sizes [3, 4, 5], base 1 2"
+-- expect: run-output "inner [2, 2], outer 6"
+module task_appends
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let base = [1, 2]
+  let sizes = together for r in [1, 2, 3]
+    let edit acc = base
+    for i in 0..<r
+      acc = acc.append(item: i)
+    acc.len
+  let shown = base.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
+  @console.print("sizes {sizes}, base {shown}")
+  let edit outer: List[Int] = []
+  let inner = together for r in [0, 1]
+    let edit own: List[Int] = []
+    for i in 0..<2
+      own = own.append(item: i)
+    own.len
+  for i in 0..<3
+    for j in 0..<2
+      outer = outer.append(item: j)
+  @console.print("inner {inner}, outer {outer.len}")

@@ -226,7 +226,7 @@ Every command but `una lsp` takes `--json` and prints exactly one JSON document,
 | [Tasks and time](docs/guide/tasks-and-time.md) | `together`, `tasks` and `start`, `within` and `first of`, cancellation, the two engines' schedules and the timing labels, in editions 0.2 and 0.4 |
 | [Specification](docs/spec/) | The normative definition of the language |
 | [Charter](docs/00-charter.md) | What Una is for, what it proves and what it assumes |
-| Design decisions (kept by the maintainers, not in this tree) | Why each key decision was made |
+| [Design decisions](docs/adr/) | Why each key decision was made |
 | [Release gates](docs/release-gates.md) and [validation summaries](docs/validation/) | How each release was checked, with the digests of its archives |
 | [Changelog](CHANGELOG.md) | The changes of each release |
 | [Documentation map](docs/README.md) | Every document, in reading order |

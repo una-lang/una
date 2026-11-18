@@ -1,0 +1,8 @@
+ita units_numbers_run
+  version 0.1.0
+  edition 0.5
+
+run
+  entry measures
+  grants
+    console

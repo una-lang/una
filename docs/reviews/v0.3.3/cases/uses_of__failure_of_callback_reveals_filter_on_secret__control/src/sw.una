@@ -1,0 +1,36 @@
+-- expect: accept: uses_of__failure_of_callback_reveals_filter_on_secret__control (control)
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+check(n: Int) -> Int
+  fails Bad
+=
+  if n > 0 then fail Oops else n
+
+probe(xs: List[Int], s: public Int) -> Unit
+  uses @log: Log[write]
+  fails Bad
+=
+  let kept = xs.filter(keep: fn(x) -> x == s)
+  let done = kept.map(each: check)
+    if error pass
+  @log.write(0)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_cell() with @log = to_console()
+
+run_cell() -> Unit
+  uses @log: Log[write]
+=
+  let r = attempt probe([0, 1], s: 0)
+  @log.write(0)

@@ -1,0 +1,14 @@
+module pipe
+
+pub kind Oops = Bad | Worse
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[write]
+  fails Oops
+=
+  for i in 0..<5000
+    @console.print("line {i}")
+  @files.write("done.txt", content: "main finished")
+    if error use unit
+  fail Bad

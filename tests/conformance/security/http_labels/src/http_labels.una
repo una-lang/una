@@ -1,0 +1,46 @@
+-- test: an operation of Http accepts internal data and no more: a secret URL or body is U4003 and a secret header value cannot enter a Header, whose value is internal, while internal headers and bodies go out; a response is internal, so printing it is U4003, and since a request's failure is internal too (S-15, ADR 0085), the branch on it prints under an internal condition (spec/24 §5, ADR 0074 H3)
+-- spec: spec/24 §5
+-- expect: error U4003 at src/http_labels.una:12:29
+-- expect: error U4001 at src/http_labels.una:18:98
+-- expect: error U4003 at src/http_labels.una:24:77
+-- expect: error U4003 at src/http_labels.una:45:24
+module http_labels
+
+pub secret_url(token: secret Text) -> Unit
+  uses @http: Http[get]
+=
+  let r = attempt @http.get("https://api.example.com/?t={token}", headers: [], key_name: None)
+  unit
+
+pub secret_header(token: secret Text) -> Unit
+  uses @http: Http[get]
+=
+  let r = attempt @http.get("https://api.example.com/", headers: [Header(name: "X-Token", value: token)], key_name: None)
+  unit
+
+pub secret_body(token: secret Text) -> Unit
+  uses @http: Http[post]
+=
+  let r = attempt @http.post("https://api.example.com/", headers: [], body: token, key_name: None)
+  unit
+
+pub internal_header(session: internal Text) -> Unit
+  uses @http: Http[get]
+=
+  let r = attempt @http.get("https://api.example.com/", headers: [Header(name: "Cookie", value: session)], key_name: None)
+  unit
+
+pub internal_body(note: internal Text) -> Unit
+  uses @http: Http[post]
+=
+  let r = attempt @http.post("https://api.example.com/", headers: [], body: note, key_name: None)
+  unit
+
+pub printed() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+=
+  let r = attempt @http.get("https://api.example.com/", headers: [], key_name: Some("api"))
+  when r
+    is Ok(response) -> @console.print(response.body)
+    is Err(e) -> unit

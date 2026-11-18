@@ -1,0 +1,25 @@
+-- test: the precondition of a function used as a value is refuted with a goal over its parameters (R-032)
+-- spec: spec/12 §3
+-- expect: error U5001 at 19:17
+-- expect: error U5001 at 20:18
+module fn_value_precondition_goal_text
+
+same(x: Int, y: Int) -> Int
+  requires x == y
+=
+  100 / (x - y + 1)
+
+halve(needs: Int) -> Int
+  requires needs > 0
+=
+  needs / 2
+
+pub main() -> Int
+=
+  let n = apply(same)
+  let m = apply1(halve)
+  n + m
+
+apply(g: fn(Int, Int) -> Int) -> Int = g(0, 1)
+
+apply1(g: fn(Int) -> Int) -> Int = g(0)

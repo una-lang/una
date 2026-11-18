@@ -1,0 +1,58 @@
+-- Adversarial: #101 (#76): functions with `requires` passed as function values: one clause, two clauses, a callee that can fail, a refined result, an annotated `let`
+-- Expected: U5001 at each, with a lambda repair whose shape checks once applied
+-- Observed: U5001 at each. The described lambda checks for one clause. For `two`, each clause's lambda guards only that clause, so applying one leaves `b > a` refuted; for `failing`, `if a > 0 then failing(a) else ...` is U3013 (V12-003)
+-- Verdict: Minor (V12-003)
+module v12_precondition_fn_value
+
+pub kind Bad = Broke | Other
+
+pub same(a: Int, b: Int) -> Int
+  requires a == b
+=
+  a - b
+
+pub two(a: Int, b: Int) -> Int
+  requires a > 0
+  requires b > a
+=
+  b - a
+
+pub failing(a: Int) -> Int
+  requires a > 0
+  fails Bad
+=
+  if a > 5 then fail Broke else a
+
+pub one(a: Int) -> Int
+  requires a != 0
+=
+  100 / a
+
+pub apply(f: fn(Int, Int) -> Int) -> Int = f(1, 2)
+
+pub apply1(f: fn(Int) -> Int) -> Int = f(0)
+
+pub apply_failing(f: fn(Int) -> Int fails Bad) -> Int
+  fails Bad
+=
+  let v = f(0)
+    if error pass
+  v
+
+pub p1() -> Int = apply(same)
+
+pub p2() -> Int = apply(two)
+
+pub p3() -> Int
+  fails Bad
+=
+  let v = apply_failing(failing)
+    if error pass
+  v
+
+pub p4() -> Int = apply1(one)
+
+pub p6() -> Int
+=
+  let g: fn(Int) -> Int = one
+  g(0)

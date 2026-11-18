@@ -1,0 +1,21 @@
+-- test: the label of a reading of `Clock.now` covers the work of every ancestor of its function, not only its own body (ADR 0116 amendment of 2026-11-09, C1 item 1): `stamp` handles only `public` data, but `show`, which calls it after work on a `secret` parameter, is its ancestor, so its reading is `secret` and its print is U4003
+-- spec: spec/14 §3
+-- expect: error U4003 at src/leak.una:13:18
+module leak
+
+work(n: secret Int) -> secret Int = n * n
+
+stamp() -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  @console.print("{now} ms")
+
+pub show(n: secret Int) -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  stamp()
+  let squared = work(n)
+  stamp()

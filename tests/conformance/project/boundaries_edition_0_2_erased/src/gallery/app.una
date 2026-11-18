@@ -1,0 +1,12 @@
+-- test: the twin of boundaries_edition_0_2 without its [boundaries] table, which every edition accepts
+-- spec: spec/13 §7
+-- expect: ok
+module gallery.app
+
+import gallery.store (Files)
+import gallery.thumbnailer (thumbnail)
+
+pub show(path: Text) -> Text
+  uses @user_files: Files[read]
+=
+  thumbnail(path) with @files = @user_files

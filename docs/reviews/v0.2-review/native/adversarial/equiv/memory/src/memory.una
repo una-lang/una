@@ -1,0 +1,9 @@
+module memory
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit xs: List[Text] = []
+  for i in 0..<40000
+    xs = xs.append(item: "item number {i} with some padding to make it bigger")
+  @console.print("{xs.len}")

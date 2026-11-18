@@ -1,0 +1,53 @@
+-- test: a task's value and how it ended cross from compiled code to the runtime as two words, in order, for a value beyond a machine word and for a failure with a payload, in a block and in a `together for` (#424)
+-- spec: spec/19 §6
+-- grant: console
+-- expect: run-output "4611686018427400249 13835058055282176057"
+-- expect: run-output "[4611686018427400249, 9223372036854788153, 13835058055282176057]"
+-- expect: run-output "Bad 4098"
+module together_two_words
+
+pub kind Oops = | Bad(code: Int)
+
+--- A value no other task returns, past the range of a machine word for `i` from 2 on.
+big(i: Int) -> Int = i * 4611686018427387904 + 12345
+
+--- `big(i)`, or a failure with the payload `4096 + i` when `i` is 2.
+maybe(i: Int) -> Int
+  fails Oops
+=
+  if i == 2
+    fail Bad(code: 4096 + i)
+  big(i)
+
+--- Two tasks, the second failing.
+pick() -> Int
+  fails Oops
+=
+  together
+    let x = maybe(1)
+      if error pass
+    let y = maybe(2)
+      if error pass
+  x + y
+
+--- The payload of a failure.
+describe(e: Oops) -> Text
+=
+  when e
+    is Bad(code) -> "Bad {code}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  together
+    let a = big(1)
+    let b = big(3)
+  let words = together for i in 1..3
+    big(i)
+  let tried = attempt pick()
+  let outcome = when tried
+    is Ok(n) -> "ok {n}"
+    is Err(e) -> describe(e)
+  @console.print("{a} {b}")
+  @console.print("{words}")
+  @console.print(outcome)

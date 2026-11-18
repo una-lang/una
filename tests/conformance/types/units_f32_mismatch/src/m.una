@@ -1,0 +1,10 @@
+-- test: subtracting an F32 of seconds from an F32 of meters is U2028 at the operation (ADR 0120 rule 62)
+-- spec: spec/25 §9
+-- expect: error U2028 at src/m.una:10:62
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub bad(a: F32 of Meter, b: F32 of Second) -> F32 of Meter = a - b

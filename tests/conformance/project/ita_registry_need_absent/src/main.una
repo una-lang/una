@@ -1,0 +1,6 @@
+-- test: a registry need whose locked release is in neither the vendor directory nor Itaoca is U7011 alone, and is not mounted
+-- spec: spec/30 §14
+-- expect: error U7011 at ita.lock:17:1
+module main
+
+pub one() -> Int = 1

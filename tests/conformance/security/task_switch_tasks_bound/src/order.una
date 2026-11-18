@@ -1,0 +1,35 @@
+-- test: how many tasks a `tasks` statement runs at once orders their effects, so a bound that `secret` data decide is U4002, though no check point stands under a raised program counter (spec/27 §8 rule 5, #1684, review M2)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:24:17
+module order
+
+noop() -> Unit = unit
+
+spin2() -> Unit
+=
+  for i in 0..<2000
+    noop()
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let b = bit(k, key: key)
+  tasks at most abs(b) + 1 at once
+    start spin2()
+    start spin2()
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

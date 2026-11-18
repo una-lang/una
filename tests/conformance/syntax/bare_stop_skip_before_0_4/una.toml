@@ -1,0 +1,4 @@
+[package]
+name = "bare_stop_skip_before_0_4"
+version = "0.1.0"
+edition = "0.3"

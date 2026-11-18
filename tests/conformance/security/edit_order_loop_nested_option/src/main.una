@@ -1,0 +1,18 @@
+-- test: label order shape `loop-nested-option` (#323, review #330): the read sees the solved label, whatever the order
+-- spec: spec/17 §6
+-- expect: error U4003 at src/main.una:17:20
+module main
+
+-- review: rejected (U4003). Leaks on main and at 2e0ff81 (nested position, E-1); a fix of nested positions must reject it
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit o = None
+  o = Some([0])
+  for i in 0..<2
+    let seen = o.or_else(default: [])
+    @console.print("{seen}")
+    o = Some([s.len])

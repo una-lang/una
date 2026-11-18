@@ -1,0 +1,39 @@
+-- Adversarial: generic `!=`, nested generic, field of a generic kind, `when` on `Option[T]`, two type parameters, argument order, lists and kinds as type arguments
+-- Expected: U4001 at each public result
+-- Observed: U4001 at 25:41, 27:41, 29:40, 31:38, 33:39, 35:40, 37:47, 39:47; held
+module g01_generic_variants
+
+kind Box[T]
+  value: T
+
+same[T](a: T, b: T) -> Bool = a == b
+
+differ[T](a: T, b: T) -> Bool = a != b
+
+nested[T](a: T, b: T) -> Bool = same(a, b: b)
+
+boxed[T](b: Box[T], y: T) -> Bool = b.value == y
+
+opt[T](o: Option[T], y: T) -> Bool
+=
+  when o
+    is Some(v) -> v == y
+    is None -> false
+
+pair[T, U](a: T, b: T, c: U) -> Bool = a == b
+
+pub p_differ(pin: secret Int) -> Bool = differ(pin, b: 1234)
+
+pub p_nested(pin: secret Int) -> Bool = nested(pin, b: 1234)
+
+pub p_boxed(pin: secret Int) -> Bool = boxed(Box(value: pin), y: 1234)
+
+pub p_opt(pin: secret Int) -> Bool = opt(Some(pin), y: 1234)
+
+pub p_pair(pin: secret Int) -> Bool = pair(pin, b: 1234, c: 0)
+
+pub p_order(pin: secret Int) -> Bool = same(1234, b: pin)
+
+pub p_lists(pins: List[secret Int]) -> Bool = same(pins, b: [1234])
+
+pub p_box_label(x: Box[secret Int]) -> Bool = same(x, b: Box(value: 1))

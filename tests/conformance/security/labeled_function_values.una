@@ -1,0 +1,18 @@
+-- test: the label of a function value raises the result of its call, a pure one may be called under any label, and a lambda parameter's written type bounds the labels it receives (R-006)
+-- spec: spec/10 §5
+-- expect: error U4001 at 10:47
+-- expect: error U4001 at 14:51
+-- expect: error U4001 at 18:63
+module labeled_function_values
+
+pub raised(f: secret fn(Int) -> Int) -> secret Int = f(1)
+
+pub hidden(f: secret fn(Int) -> Int) -> Int = f(1)
+
+pub apply(f: fn(secret Int) -> Int, x: secret Int) -> Int = f(x)
+
+pub annotated(x: secret Int) -> Int = apply(fn(y: Int) -> y, x)
+
+pub kept(x: secret Int) -> Int = apply(fn(y: secret Int) -> 0, x)
+
+pub leaked(x: secret Int) -> Int = apply(fn(y: secret Int) -> y, x)

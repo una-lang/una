@@ -1,0 +1,8 @@
+[package]
+name = "rv_link_chain"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "chain"
+grants = ["console", "files:./box:read,write"]

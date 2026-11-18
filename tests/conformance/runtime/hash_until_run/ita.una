@@ -1,0 +1,8 @@
+ita hash_until_run
+  version 0.1.0
+  edition 0.5
+
+run
+  entry stopping
+  grants
+    console

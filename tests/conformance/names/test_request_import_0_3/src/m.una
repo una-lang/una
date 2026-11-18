@@ -1,0 +1,8 @@
+-- test: `test_request`, `test_exchange` and `TestRequestError` are names of `std.testing` from edition 0.4 only: in edition 0.3 an import of one is U1001, as an unknown name is (spec/14 §4, ADR 0123 rule 21)
+-- spec: spec/14 §4
+-- expect: error U1001 at src/m.una:6:21
+module m
+
+import std.testing (test_request)
+
+pub one() -> Int = 1

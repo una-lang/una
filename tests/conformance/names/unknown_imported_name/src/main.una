@@ -1,0 +1,8 @@
+-- test: an import of a name the module does not declare is unresolved
+-- spec: spec/02 §1
+-- expect: error U1001 at src/main.una:6:11
+module main
+
+import a (two)
+
+pub three() -> Int = 3

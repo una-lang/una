@@ -1,0 +1,18 @@
+-- test: with public writes only, how many of a list of files exist stays public (S-14 twin)
+-- spec: spec/07 §7
+-- expect: ok
+module main
+
+exists(name: Text) -> Bool
+  uses @files: Files[read]
+=
+  let r = attempt @files.read(name)
+  is_ok(r)
+
+pub probe(name: Text) -> Unit
+  uses @files: Files[read, write]
+  uses @console: Console[print]
+=
+  let w = attempt @files.write(name, content: "x")
+  let found = ["a.txt", "b.txt", "c.txt"].filter(keep: fn(n) -> exists(n))
+  @console.print("{found.len} of the files exist")

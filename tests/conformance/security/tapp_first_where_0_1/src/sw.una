@@ -1,0 +1,20 @@
+-- test: in edition 0.1, a function value given a value of a type parameter, or a decision on such values (#253, review of #343): leak (U4003): first_where applies a public predicate to the decided element
+-- spec: spec/07 §7
+-- expect: error U4001 at src/sw.una:13:59
+-- expect: error U4003 at src/sw.una:15:14
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, pred: fn(T) -> Bool) -> Unit
+  uses @log: Log[write]
+=
+  let found = [if a == b then p else q].first_where(keep: pred)
+  let n = if found.is_some() then 1 else 0
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], pred: fn(xs) -> xs.len > 0)

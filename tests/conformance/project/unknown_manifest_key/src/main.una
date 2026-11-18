@@ -1,0 +1,6 @@
+-- test: unknown keys of una.toml are rejected
+-- spec: spec/13 §7
+-- expect: error U7002 at una.toml:5:1
+module main
+
+pub one() -> Int = 1

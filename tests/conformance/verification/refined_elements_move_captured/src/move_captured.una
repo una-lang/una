@@ -1,0 +1,14 @@
+-- test: movement captured: a lambda that returns a captured `List[Int]` where its type's result is `List[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_captured.una:13:25
+module move_captured
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn() -> List[Pos]) -> Int = f().len
+
+pub moved(ints: List[Int], ps: List[Pos]) -> Int
+=
+  let a = apply(fn() -> ps)
+  let b = apply(fn() -> ints)
+  a + b

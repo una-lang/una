@@ -1,0 +1,8 @@
+-- test: an import of a module the package does not have is unresolved
+-- spec: spec/02 §1
+-- expect: error U1001 at src/main.una:6:8
+module main
+
+import events.missing (seats)
+
+pub one() -> Int = 1

@@ -1,0 +1,42 @@
+module report
+
+import release (shown_total)
+import std.host (FileError)
+
+--- How many valid readings, and their sum.
+pub kind Summary
+  count: internal Nat
+  sum: internal Int
+
+--- Add one line: a valid integer counts, anything else is skipped.
+add_line(edit summary: internal Summary, line: internal Text) -> Unit
+  ensures summary.count >= old(summary).count
+  ensures summary.count <= old(summary).count + 1
+=
+  let parsed = attempt line.trim().parse_int()
+  summary = when parsed
+    is Ok(value) -> Summary(count: summary.count + 1, sum: summary.sum + value)
+    else -> summary
+
+--- The number of valid readings in `text`, one per line, and their sum.
+pub summarize(text: internal Text) -> internal Summary
+  ensures result.count >= 0
+=
+  let edit summary: internal Summary = Summary(count: 0, sum: 0)
+  for line in text.split(on: "\n")
+    add_line(edit summary, line)
+  summary
+
+example "blank and non-numeric lines are skipped"
+  do summarize("12\n7\nx\n-3\n\n40\n")
+  expect result == Summary(count: 4, sum: 56)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+  fails FileError
+=
+  let text = @files.read("readings.txt")
+    if error pass
+  let summary = summarize(text)
+  @console.print("{shown_total(summary.count)} valid readings, sum {shown_total(summary.sum)}")

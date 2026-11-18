@@ -1,0 +1,23 @@
+trusted module release
+
+import std.time (millisecond)
+
+pub capability Tool
+  op run(x: internal Int) -> internal Int
+
+call_it(f: fn(internal Int) -> internal Int, x: internal Int) -> internal Int = f(x)
+
+pub handler with_fn(f: fn(internal Int) -> internal Int) for Tool
+  op run(x) = call_it(f: f, x: x)
+
+pub policy key_of
+  from internal Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+reveal_it(t: internal Int) -> Int
+  uses @tool: Tool[run]
+=
+  @tool.run(t)

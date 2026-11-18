@@ -1,0 +1,11 @@
+-- test: in edition 0.1, Map, Entry and empty_map are ordinary names (spec/21, Editions)
+-- spec: spec/21 §1
+-- expect: ok
+module names
+
+pub kind Map
+  size: Int
+
+pub kind Entry = Key | Value
+
+pub empty_map() -> Int = 0

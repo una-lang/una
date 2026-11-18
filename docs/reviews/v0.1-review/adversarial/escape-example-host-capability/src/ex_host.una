@@ -1,0 +1,20 @@
+-- Adversarial: an example installs a handler whose own `uses` is the host `Console`.
+-- Expected: U3014 (spec/08 §2 rule 1). Observed: U3014 at the `given` handler. Held.
+module ex_host
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(line) = @console.print(line)
+
+pub greet() -> Unit
+  uses @log: Log[write]
+=
+  @log.write("hello")
+
+example "the handler reaches the console"
+  given @log = to_console()
+  do greet()
+  expect result == unit

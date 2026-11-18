@@ -1,0 +1,3 @@
+module app.types
+
+pub kind Phone = Text where it.len == 11

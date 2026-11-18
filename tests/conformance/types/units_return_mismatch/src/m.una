@@ -1,0 +1,14 @@
+-- test: a result of another unit than the declared one is U2028
+-- spec: spec/25 §2
+-- expect: error U2028 at src/m.una:14:45
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub bad(t: Int of Second) -> Int of Meter = t

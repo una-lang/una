@@ -1,0 +1,15 @@
+-- test: a function declares at most one error kind
+-- spec: spec/02 §3
+-- expect: error U1001 at 9:24
+-- expect: error U0102 at 13:3
+module repeated_fails
+
+pub kind ParseError = Empty | TooLong
+
+pub kind FormatError = Malformed
+
+pub parse_code(raw: Text) -> Text
+  fails ParseError
+  fails FormatError
+=
+  if raw == "" then fail Empty else raw

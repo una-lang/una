@@ -1,0 +1,10 @@
+-- test: ADR 0067 adversarial check of #231, L31_secretfn_filter: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l31.una:10:3
+-- expect: error U4001 at src/l31.una:10:19
+module l31
+
+pub leak(xs: List[Int], c: secret Bool) -> Int
+=
+  let p = if c then fn(x: Int) -> x > 0 else fn(x: Int) -> x < 0
+  xs.filter(keep: p).len

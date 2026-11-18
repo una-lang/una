@@ -1,0 +1,4 @@
+-- test: in edition 0.1, which is frozen, a kind, a variant or a capability may still take the name of a built-in type: the edition 0.2 rule of ADR 0079 does not apply (#130)
+-- spec: spec/03 §1
+-- expect: tier0-ok
+module about

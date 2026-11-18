@@ -1,0 +1,4 @@
+[package]
+name = "fixed_literal_constructor_rules"
+version = "0.1.0"
+edition = "0.2"

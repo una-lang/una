@@ -1,0 +1,20 @@
+-- test: `Option` is covariant at a lambda result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 14:40
+module sweep_variance_option_lambda
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub lam_0(v: Option[secret Int]) -> Int
+=
+  let f: fn() -> Option[Int] = fn() -> v
+  0
+
+pub lam_1(v: Option[Int]) -> Int
+=
+  let f: fn() -> Option[secret Int] = fn() -> v
+  0

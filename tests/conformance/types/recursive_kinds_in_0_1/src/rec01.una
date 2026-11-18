@@ -1,0 +1,8 @@
+-- test: edition 0.1 keeps spec/03 §2 rule 5: a kind contains itself only through `List` or `Option` (ADR 0060)
+-- spec: spec/03 §2
+-- expect: error U2002 at src/rec01.una:6:45
+module rec01
+
+pub kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr)
+
+pub kind Tree = | Node(value: Int, children: List[Tree])

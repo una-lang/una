@@ -1,0 +1,10 @@
+ita serve_section_bad_reply
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    serve "http://127.0.0.1:8080"
+
+serve
+  module srv

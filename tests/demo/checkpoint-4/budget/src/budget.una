@@ -1,0 +1,8 @@
+module budget
+
+--- True, but not within a budget of one solver step.
+pub total(a: Int, b: Int, c: Int) -> Int
+  requires a >= 0 and b >= 0 and c >= 0
+  ensures result >= a
+=
+  a + b + c

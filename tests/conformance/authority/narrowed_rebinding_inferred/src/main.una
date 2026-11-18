@@ -1,0 +1,28 @@
+-- test: a private caller with inferred `uses` that narrows its binding infers the listed operations, and a callee that needs another is U3002 at the call (ADR 0093 rule 4, ADR 0097)
+-- spec: spec/05 §4
+-- expect: error U3002 at src/main.una:23:3
+module main
+
+capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+
+reader(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+
+writer(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  let data = @files.read(path)
+  @files.write(path, data: data)
+
+relay(path: Text) -> Unit
+=
+  writer(path) with @files = @user_files[read]
+
+pub save(path: Text) -> Unit
+  uses @user_files: Files[read, write]
+=
+  relay(path)

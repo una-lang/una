@@ -1,0 +1,22 @@
+-- test: nested blocks indent by two spaces per level
+-- spec: spec/01 §2
+-- expect: tier0-ok
+module nested_blocks
+
+pub kind Size = Small | Large
+
+pub sign(x: Int) -> Int
+=
+  if x < 0
+    -1
+  else if x == 0
+    0
+  else
+    1
+
+pub size(x: Int) -> Size
+=
+  let magnitude = when x
+    in 0..9 -> Small
+    else -> Large
+  magnitude

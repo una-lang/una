@@ -1,0 +1,14 @@
+-- test: `10 / m` has the unit `1 / Meter`, so returning it as meters is U2028
+-- spec: spec/25 §3
+-- expect: error U2028 at src/m.una:14:44
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub bad(m: Int of Meter) -> Int of Meter = 10 / m

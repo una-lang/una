@@ -1,0 +1,25 @@
+-- test: ADR 0067 recheck of #231, P07c_user_hof_generic_elems: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/p07c.una:24:30
+-- expect: error U4002 at src/p07c.una:24:30
+module p07c
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+find[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T]
+  uses of keep
+=
+  xs.first_where(keep)
+
+lg(x: Int) -> Bool
+  uses @log: Log[write]
+=
+  @log.write(0)
+  x > 3
+
+pub leak(xs: List[secret Int]) -> Unit
+  uses @log: Log[write]
+=
+  let found = find(xs, keep: lg)
+  unit

@@ -1,0 +1,8 @@
+-- test: a variant is not a type
+-- spec: spec/03 §2
+-- expect: error U2002 at 8:15
+module variant_as_type
+
+pub kind Shape = Circle(radius: Int) | Dot
+
+pub radius(c: Circle) -> Int = 0

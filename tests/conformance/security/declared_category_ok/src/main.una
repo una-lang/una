@@ -1,0 +1,6 @@
+-- test: a label category that una.toml declares under [labels] categories is accepted; an undeclared one is U4007 (positive twin, #11)
+-- spec: spec/07 §2
+-- expect: ok
+module main
+
+pub keep(t: secret[PII] Text) -> secret[PII] Text = t

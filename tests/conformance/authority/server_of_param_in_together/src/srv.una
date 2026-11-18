@@ -1,0 +1,26 @@
+-- test: a `uses of` parameter called in a branch of `together`, in a program that serves, is U3033 at the call, since a caller outside the branch may pass a lambda that replies (spec/31 §1, ADR 0123 rule 5)
+-- spec: spec/31 §1
+-- expect: error U3033 at src/srv.una:19:13
+-- expect: error U3033 at src/srv.una:20:13
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+send(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 204, headers: [], body: ""))
+    if error use unit
+
+run_both(f: fn() -> Unit) -> Unit
+  uses of f
+=
+  together
+    let a = f()
+    let b = f()
+  unit
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  run_both(f: fn() -> send(exchange))

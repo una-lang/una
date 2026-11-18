@@ -1,0 +1,6 @@
+-- test: an integer literal with a leading zero is malformed
+-- spec: spec/01 §6
+-- expect: error U0007 at 6:22
+module integer_leading_zero
+
+pub seven() -> Int = 007

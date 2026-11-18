@@ -1,0 +1,13 @@
+-- test: the state's labels are compared at every position of its type, so a `secret` element of an `Option` that `init` returns may not reach an unlabeled element of `step`'s state parameter (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:10:22
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Option[secret Int] = Some(42)
+
+pub step(edit state: Option[Int], input: Tick) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{state}")

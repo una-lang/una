@@ -1,0 +1,7 @@
+ita serve_section_errors
+  version 0.1.0
+  edition 0.4
+
+serve
+  within 0
+  ticks 10

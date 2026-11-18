@@ -1,0 +1,6 @@
+module c
+
+import a (Meter)
+import b (length)
+
+pub bad(x: Int of Meter) -> Int of Meter = x + length()

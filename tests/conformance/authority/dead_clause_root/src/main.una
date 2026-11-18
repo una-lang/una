@@ -1,0 +1,18 @@
+-- test: a dead `if error fail` gives a private helper an error kind, so its callers report U3007; U3025 is reported at the clause with them (ADR 0100 rule 4)
+-- spec: spec/06 §3
+-- expect: error U3025 at src/main.una:13:5
+-- expect: error U3007 at src/main.una:16:26
+-- expect: error U3007 at src/main.una:18:26
+module main
+
+kind E = | Bad
+
+helper(n: Int) -> Int
+=
+  let x = n + 1
+    if error fail Bad
+  x
+
+pub one(n: Int) -> Int = helper(n)
+
+pub two(n: Int) -> Int = helper(n + 1)

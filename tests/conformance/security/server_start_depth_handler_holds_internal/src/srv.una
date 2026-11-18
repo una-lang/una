@@ -1,0 +1,41 @@
+-- test: the twin of `server_start_depth_handler_holds_secret` with an `internal` key: accepted (spec/31 §1, #1682)
+-- spec: spec/31 §1
+-- expect: ok
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+deep(n: internal Int) -> internal Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+answer(exchange: internal Exchange, key: internal Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(exchange.request.body.len)
+  let masked: internal Int = key * 2 + 1
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
+    if error use unit
+
+capability Runner
+  op go() -> Unit
+
+handler running(exchanges: internal List[Exchange], key: internal Int) for Runner
+  uses @server: HttpServer[reply]
+  op go() =
+    tasks
+      for exchange in exchanges
+        start answer(exchange, key: key)
+
+use_runner() -> Unit
+  uses @r: Runner[go]
+=
+  @r.go()
+
+pub serve_all(exchanges: internal List[Exchange], key: internal Int) -> Unit
+  uses @server: HttpServer[reply]
+=
+  use_runner() with @r = running(exchanges, key: key)

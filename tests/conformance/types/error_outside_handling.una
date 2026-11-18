@@ -1,0 +1,6 @@
+-- test: error appears only in the fail or use part of an if error clause
+-- spec: spec/02 §8
+-- expect: error U2013 at 6:30
+module error_outside_handling
+
+pub current(x: Int) -> Int = error

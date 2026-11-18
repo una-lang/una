@@ -1,0 +1,35 @@
+-- test: at, to_int, is_digits and trim behave at their edge cases as their contracts state (review control)
+-- spec: spec/14 §1
+-- grant: console
+-- expect: run-output "at -1 None at 3 None at 0 Some(10)"
+-- expect: run-output "to_int arabic None plus None empty None -0 Some(0) dash None"
+-- expect: run-output "to_int big Some(123456789012345678901234567890) lead Some(7) neg Some(-12)"
+-- expect: run-output "digits empty true arabic false trim 1 3"
+-- expect: run-output "abs 5 min -4 max 3 sum 2 fold -60"
+-- Promoted from the v0.1 review, adversarial `runtime-prelude-contracts`.
+module prelude_edge_cases
+
+show_opt(o: Option[Int]) -> Text
+=
+  when o
+    is Some(v) -> "Some({v})"
+    is None -> "None"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [10, 20, 30]
+  let arabic = "\u{663}"
+  let plus = "+5"
+  let empty = ""
+  let neg_zero = "-0"
+  let dash = "-"
+  let spaced = "\u{2003}x\u{3000}"
+  let big = "123456789012345678901234567890"
+  let lead = "007"
+  let neg = "-12"
+  @console.print("at -1 {show_opt(at(xs, index: -1))} at 3 {show_opt(at(xs, index: 3))} at 0 {show_opt(at(xs, index: 0))}")
+  @console.print("to_int arabic {show_opt(to_int(arabic))} plus {show_opt(to_int(plus))} empty {show_opt(to_int(empty))} -0 {show_opt(to_int(neg_zero))} dash {show_opt(to_int(dash))}")
+  @console.print("to_int big {show_opt(to_int(big))} lead {show_opt(to_int(lead))} neg {show_opt(to_int(neg))}")
+  @console.print("digits empty {is_digits(empty)} arabic {is_digits(arabic)} trim {trim(spaced).len} {spaced.len}")
+  @console.print("abs {abs(-5)} min {min(3, b: -4)} max {max(3, b: -4)} sum {sum([1, -2, 3])} fold {fold(xs, initial: 0, step: fn(acc, x) -> acc - x)}")

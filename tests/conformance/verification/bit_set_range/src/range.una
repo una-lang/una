@@ -1,0 +1,44 @@
+-- test: in edition 0.5, `add` and `with` on a `BitSet` require their item in its range, `0 <= i and i < b.size`, and the set operations require operands of one size, each a `precondition` obligation: proven from the size `empty_bit_set` gives, which every update keeps, and from a guard; refuted outside the range and for two sizes; unknown when only a product bounds the item; and `empty_bit_set` requires a size of at least 0 (ADR 0119 rule 14)
+-- spec: spec/28 §9
+-- expect: error U5001 at src/range.una:26:20
+-- expect: error U5001 at src/range.una:29:65
+-- expect: error U5002 at src/range.una:34:37
+-- expect: error U5001 at src/range.una:36:61
+-- expect: error U5001 at src/range.una:44:28
+module range
+
+import std.collections (BitSet, empty_bit_set)
+
+pub proven(i: Int) -> Bool
+=
+  let edit b = empty_bit_set(size: 100)
+  edit b.add(item: 12)
+  edit b.add(item: 99)
+  edit b.add(item: 0)
+  edit b.remove(item: 500)
+  if 0 <= i and i < b.size
+    edit b.add(item: i)
+  b.has(item: 13)
+
+pub refuted_high() -> Bool
+=
+  let edit b = empty_bit_set(size: 100)
+  edit b.add(item: 100)
+  b.has(item: 100)
+
+pub refuted_low() -> BitSet = empty_bit_set(size: 8).with(item: -1)
+
+pub unknown(a: Nat, b: Nat) -> BitSet
+  requires a < 2 and b < 4
+=
+  empty_bit_set(size: 8).with(item: a * b)
+
+pub sizes() -> BitSet = empty_bit_set(size: 8).union(other: empty_bit_set(size: 9))
+
+pub same_size() -> Bool
+=
+  let a = empty_bit_set(size: 8).with(item: 1)
+  let c = empty_bit_set(size: 8).with(item: 7)
+  a.union(other: c).is_subset(of: a.intersection(other: c).difference(other: a))
+
+pub negative() -> BitSet = empty_bit_set(size: -1)

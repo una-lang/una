@@ -1,0 +1,27 @@
+-- test: precise `τ_conc` of a `for ever within` (ADR 0116 C, `spec/27 §11`): the loop runs in the block of a `tasks` statement, beside a started task that works on a `secret`, so `τ_conc` at the loop is `secret`, above the `internal` failure of `Http` (U4001 at the loop)
+-- spec: spec/27 §11
+-- expect: error U4001 at src/poll.una:23:5
+module poll
+
+import std.time (millisecond)
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- Work on `key`, which a started task runs.
+churn(key: secret Int) -> Unit
+=
+  let spent = crunch(key)
+  unit
+
+--- Starts `churn(key)`, and polls beside it, in the block of the `tasks` statement.
+pub serve(key: secret Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  tasks
+    start churn(key)
+    for ever within 100 * millisecond
+      let reading = attempt @http.get(url, headers: [], key_name: None)
+      stop
+    unit
+  unit

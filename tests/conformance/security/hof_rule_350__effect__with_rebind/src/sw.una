@@ -1,0 +1,36 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: the call under a with clause that rebinds the capability
+-- spec: spec/07 §7
+-- expect: error U4002 at src/sw.una:31:3
+-- expect: error U4001 at src/sw.una:31:41
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+apply_eff[U](x: U, f: fn(U) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  f(x)
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  apply_eff(if a == b then p else q, f: k) with @log = @log
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len))

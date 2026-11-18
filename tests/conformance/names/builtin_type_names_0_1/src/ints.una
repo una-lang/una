@@ -1,0 +1,3 @@
+module ints
+
+pub kind Int = Small | Large

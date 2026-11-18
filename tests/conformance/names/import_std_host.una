@@ -1,0 +1,20 @@
+-- test: the host capabilities and their failure kinds can be imported from std.host
+-- spec: spec/10 §11
+-- expect: ok
+module import_std_host
+
+import std.host (Console, FileError, Files)
+
+--- Reads a file and passes its failure on.
+pub load(path: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  @files.read(path)
+    if error pass
+
+--- Greets.
+pub greet() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")

@@ -1,0 +1,25 @@
+-- test: a driven step that a part of a `together` block reaches takes `conc(step)`, `κ` of that block (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`): its sibling tasks work on `public` data, so the tick needs no label; the preview gave it `⊤`
+-- spec: spec/26 §2
+-- expect: ok
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+=
+  count = count + 1
+
+once(n: Int) -> Int
+=
+  let edit count = n
+  step(edit count, input: Tick(at: 0, missed: 0))
+  count
+
+pub both() -> Int
+=
+  together
+    let a = once(1)
+    let b = once(2)
+  a + b

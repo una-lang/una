@@ -1,0 +1,36 @@
+-- expect: accept: control: the callee calls an annotated lambda through let_when and writes it
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+logger[U](x: U, f: fn(U) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(f(x))
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let w = when Some(p)
+    is Some(z) -> fn(x: T) -> k(x)
+    is None -> fn(x: T) -> 0
+  logger(p, f: w)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

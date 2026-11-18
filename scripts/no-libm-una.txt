@@ -1,0 +1,32 @@
+# The C math library's names that the `una` binary alone may leave undefined (#1277): the
+# imports of the Z3 solver built into it (ADR 0124 rule 1), which is C++ and calls the platform's
+# math library in its search heuristics (restart schedules, local search, lookahead scores), in
+# its own floating-point model and in the C++ library's text formatting, never in a value of a
+# Una program. scripts/no-libm.sh reads this list for `una` only: the
+# release `libuna_rt.a` and every executable that `una build` links stay strict against
+# scripts/no-libm.txt, so none of these names is reachable from emitted code. Each name here
+# must be on scripts/no-libm.txt, and each one `una` imports must be imported by the Z3 library
+# it was linked with (UNA_Z3_LIB); a name of scripts/no-libm.txt that `una` imports and this
+# list does not hold fails the check. One name per line; `#` starts a comment, which says where
+# Z3 calls it (`nm -A -u` of the library of supply-chain/z3.lock: 2026-10-31, macOS arm64;
+# 2026-11-11, Linux aarch64, #1951). A name need not be imported on every platform: the check
+# ties only the names `una` imports.
+exp  # sat_local_search, sat_solver
+exp2  # luby, pb_card, pb_pb, sat_lookahead, smt_lookahead (macOS only: clang writes `pow(2.0, x)` as `exp2`; the Linux build imports pow there)
+log  # fpa2bv_converter, luby, pdd_solver, sat_solver, sls_arith_lookahead, sls_bv_engine, sls_bv_lookahead
+log2  # parallel_tactical, smt_parallel
+pow  # sat_lookahead, sat_prob, sat_solver, sls_arith_base
+#
+# Linux, glibc and GCC's libstdc++ (#1951). The `std::format` of libstdc++ 13 formats a
+# floating-point value in its header (`std::__format::__formatter_fp<char>::format<T>`, which
+# calls `frexp` for `double`, `frexpf` for `float`, `frexpl` for `long double`), so each Z3
+# object that instantiates it imports the three; Apple's libc++ formats through `std::to_chars`
+# in the dylib and its Z3 imports none of them. `remainder` is `hwf_manager::rem` of Z3's
+# hardware floating-point numbers (hwf.cpp, the floating-point theory's constants); Z3 imports
+# it on both platforms, but ld64 drops each unreferenced function of an object and GNU ld keeps
+# the whole text section of hwf.cpp.o (Z3 is not built with -ffunction-sections), so only the
+# Linux `una` imports it.
+frexp  # libstdc++ <format> in array_decl_plugin, ast, bv_decl_plugin, datatype_decl_plugin, dl_decl_plugin, seq_decl_plugin
+frexpf  # libstdc++ <format> in the same objects as frexp
+frexpl  # libstdc++ <format> in the same objects as frexp
+remainder  # hwf (hwf_manager::rem)

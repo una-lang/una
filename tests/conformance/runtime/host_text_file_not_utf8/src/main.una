@@ -1,0 +1,23 @@
+-- test: a file whose content is not valid UTF-8 aborts the run at the read, where it used to be a failure a public branch could see; a valid file reads as before (S-16)
+-- spec: spec/14 §3
+-- grant: console
+-- grant: files:data:read
+-- expect: run-output "plain.txt: valid"
+-- expect: error U6005 at src/main.una:13:19
+module main
+
+show(name: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let r = attempt @files.read(name)
+  when r
+    is Ok(t) -> @console.print("{name}: valid")
+    is Err(e) -> @console.print("{name}: not valid")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  show("plain.txt")
+  show("legacy.txt")

@@ -1,0 +1,10 @@
+-- test: a `uses of` parameter is only called or passed on: stored in a list it would escape the charge of its effects, so it is U3006, as when bound with `let` (spec/05 §9 rules 6 and 9, ADR 0062, ADR 0092)
+-- spec: spec/05 §9
+-- expect: error U3006 at src/main.una:9:13
+module main
+
+pub stored(f: fn(Int) -> Unit) -> Int
+  uses of f
+=
+  let fs = [f]
+  fs.len

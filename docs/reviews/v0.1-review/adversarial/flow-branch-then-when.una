@@ -1,0 +1,15 @@
+-- Adversarial: sum chosen by a secret branch, then a 'when' in a 'let'
+-- Expected: U4001
+-- Observed: U4001 at 15:3
+-- Verdict: Pass
+module flow_branch_then_when
+
+kind Tier = Low | High
+
+pub leak(flag: secret Bool) -> Int
+=
+  let t = if flag then High else Low
+  let n = when t
+    is Low -> 0
+    is High -> 1
+  n + 0

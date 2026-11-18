@@ -1,0 +1,14 @@
+-- test: `abs` takes a unitless value: on meters it is U2028
+-- spec: spec/25 §4
+-- expect: error U2028 at src/m.una:14:39
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub bad(d: Int of Meter) -> Int = abs(d)

@@ -1,0 +1,18 @@
+trusted module events.keys
+
+import events.types (Phone)
+
+pub policy attendee_key
+  from secret[PII] Phone
+  to internal Hashed
+  via hmac_phone
+  purpose "attendee lookup and audit correlation"
+  owner privacy
+
+hmac_phone(phone: secret[PII] Phone) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let pepper = "phone_pepper"
+  @keys.hmac(key_name: pepper, data: phone)
+    if error pass

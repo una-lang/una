@@ -1,0 +1,148 @@
+-- test: ADR 0067 adversarial check of #231, L_chain70: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/chain70.una:148:34
+module chain70
+
+f0[T](a: T, b: T) -> Int = f1(a, b: b)
+
+f1[T](a: T, b: T) -> Int = f2(a, b: b)
+
+f2[T](a: T, b: T) -> Int = f3(a, b: b)
+
+f3[T](a: T, b: T) -> Int = f4(a, b: b)
+
+f4[T](a: T, b: T) -> Int = f5(a, b: b)
+
+f5[T](a: T, b: T) -> Int = f6(a, b: b)
+
+f6[T](a: T, b: T) -> Int = f7(a, b: b)
+
+f7[T](a: T, b: T) -> Int = f8(a, b: b)
+
+f8[T](a: T, b: T) -> Int = f9(a, b: b)
+
+f9[T](a: T, b: T) -> Int = f10(a, b: b)
+
+f10[T](a: T, b: T) -> Int = f11(a, b: b)
+
+f11[T](a: T, b: T) -> Int = f12(a, b: b)
+
+f12[T](a: T, b: T) -> Int = f13(a, b: b)
+
+f13[T](a: T, b: T) -> Int = f14(a, b: b)
+
+f14[T](a: T, b: T) -> Int = f15(a, b: b)
+
+f15[T](a: T, b: T) -> Int = f16(a, b: b)
+
+f16[T](a: T, b: T) -> Int = f17(a, b: b)
+
+f17[T](a: T, b: T) -> Int = f18(a, b: b)
+
+f18[T](a: T, b: T) -> Int = f19(a, b: b)
+
+f19[T](a: T, b: T) -> Int = f20(a, b: b)
+
+f20[T](a: T, b: T) -> Int = f21(a, b: b)
+
+f21[T](a: T, b: T) -> Int = f22(a, b: b)
+
+f22[T](a: T, b: T) -> Int = f23(a, b: b)
+
+f23[T](a: T, b: T) -> Int = f24(a, b: b)
+
+f24[T](a: T, b: T) -> Int = f25(a, b: b)
+
+f25[T](a: T, b: T) -> Int = f26(a, b: b)
+
+f26[T](a: T, b: T) -> Int = f27(a, b: b)
+
+f27[T](a: T, b: T) -> Int = f28(a, b: b)
+
+f28[T](a: T, b: T) -> Int = f29(a, b: b)
+
+f29[T](a: T, b: T) -> Int = f30(a, b: b)
+
+f30[T](a: T, b: T) -> Int = f31(a, b: b)
+
+f31[T](a: T, b: T) -> Int = f32(a, b: b)
+
+f32[T](a: T, b: T) -> Int = f33(a, b: b)
+
+f33[T](a: T, b: T) -> Int = f34(a, b: b)
+
+f34[T](a: T, b: T) -> Int = f35(a, b: b)
+
+f35[T](a: T, b: T) -> Int = f36(a, b: b)
+
+f36[T](a: T, b: T) -> Int = f37(a, b: b)
+
+f37[T](a: T, b: T) -> Int = f38(a, b: b)
+
+f38[T](a: T, b: T) -> Int = f39(a, b: b)
+
+f39[T](a: T, b: T) -> Int = f40(a, b: b)
+
+f40[T](a: T, b: T) -> Int = f41(a, b: b)
+
+f41[T](a: T, b: T) -> Int = f42(a, b: b)
+
+f42[T](a: T, b: T) -> Int = f43(a, b: b)
+
+f43[T](a: T, b: T) -> Int = f44(a, b: b)
+
+f44[T](a: T, b: T) -> Int = f45(a, b: b)
+
+f45[T](a: T, b: T) -> Int = f46(a, b: b)
+
+f46[T](a: T, b: T) -> Int = f47(a, b: b)
+
+f47[T](a: T, b: T) -> Int = f48(a, b: b)
+
+f48[T](a: T, b: T) -> Int = f49(a, b: b)
+
+f49[T](a: T, b: T) -> Int = f50(a, b: b)
+
+f50[T](a: T, b: T) -> Int = f51(a, b: b)
+
+f51[T](a: T, b: T) -> Int = f52(a, b: b)
+
+f52[T](a: T, b: T) -> Int = f53(a, b: b)
+
+f53[T](a: T, b: T) -> Int = f54(a, b: b)
+
+f54[T](a: T, b: T) -> Int = f55(a, b: b)
+
+f55[T](a: T, b: T) -> Int = f56(a, b: b)
+
+f56[T](a: T, b: T) -> Int = f57(a, b: b)
+
+f57[T](a: T, b: T) -> Int = f58(a, b: b)
+
+f58[T](a: T, b: T) -> Int = f59(a, b: b)
+
+f59[T](a: T, b: T) -> Int = f60(a, b: b)
+
+f60[T](a: T, b: T) -> Int = f61(a, b: b)
+
+f61[T](a: T, b: T) -> Int = f62(a, b: b)
+
+f62[T](a: T, b: T) -> Int = f63(a, b: b)
+
+f63[T](a: T, b: T) -> Int = f64(a, b: b)
+
+f64[T](a: T, b: T) -> Int = f65(a, b: b)
+
+f65[T](a: T, b: T) -> Int = f66(a, b: b)
+
+f66[T](a: T, b: T) -> Int = f67(a, b: b)
+
+f67[T](a: T, b: T) -> Int = f68(a, b: b)
+
+f68[T](a: T, b: T) -> Int = f69(a, b: b)
+
+f69[T](a: T, b: T) -> Int = f70(a, b: b)
+
+f70[T](a: T, b: T) -> Int = if a == b then 1 else 0
+
+pub leak(s: secret Int) -> Int = f0(s, b: 0)

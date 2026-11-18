@@ -1,0 +1,41 @@
+-- test: an `if error` clause on an expression that cannot fail is U3025 in edition 0.3: arithmetic, a call of a function without `fails`, an operation without `fails`, and a clause after `attempt` (ADR 0100 rule 1)
+-- spec: spec/06 §3
+-- expect: error U3025 at src/main.una:25:5
+-- expect: error U3025 at src/main.una:27:5
+-- expect: error U3025 at src/main.una:34:5
+-- expect: error U3025 at src/main.una:40:5
+module main
+
+kind LookupError = Missing | Unavailable
+
+capability Log
+  op write(line: Text) -> Unit
+
+double(n: Int) -> Int = n * 2
+
+risky(n: Int) -> Int
+  fails LookupError
+=
+  if n < 0 then fail Missing else n
+
+pub next(n: Int) -> Int
+  fails LookupError
+=
+  let x = n + 1
+    if error fail Unavailable
+  let y = double(x)
+    if error use 0
+  y
+
+pub logged(n: Int) -> Int
+  uses @log: Log[write]
+=
+  @log.write(line: "next")
+    if error pass
+  n
+
+pub tried(n: Int) -> Bool
+=
+  let r = attempt risky(n)
+    if error use Ok(0)
+  r.is_ok()

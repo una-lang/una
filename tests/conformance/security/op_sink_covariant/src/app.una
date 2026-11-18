@@ -1,0 +1,66 @@
+-- test: an operation argument's sink bounds only its covariant positions: a function whose parameter carries the declared label is accepted under `accepts public`, a lower or different parameter label is U4001, and a labeled result or an invariant argument still exceeds the sink (issue #84, R3-001)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/app.una:46:12
+-- expect: error U4001 at src/app.una:51:12
+-- expect: error U4003 at src/app.una:56:11
+-- expect: error U4003 at src/app.una:61:13
+-- expect: error U4003 at src/app.una:66:11
+module app
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Probe
+  op apply(f: fn(internal[Location] Int) -> Int) -> Int
+  op give(f: fn() -> Int) -> Int
+  op nested(f: fn(fn(Int) -> Int) -> Int) -> Int
+  op open(s: Sink[internal Int]) -> Int
+
+exact(x: internal[Location] Int) -> Int = 0
+
+wider(x: secret[Location] Int) -> Int = 0
+
+plain(x: Int) -> Int = x
+
+level(x: internal Int) -> Int = 0
+
+secret_result() -> secret Int = 1
+
+apply_secret(g: fn(secret Int) -> Int) -> Int = 0
+
+made() -> Sink[internal Int] = Sink(eat: fn(x: internal Int) -> 0)
+
+pub by_exact() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(exact)
+
+pub by_wider() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(wider)
+
+pub by_plain() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(plain)
+
+pub by_level() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(level)
+
+pub by_result() -> Int
+  uses @p: Probe[give]
+=
+  @p.give(secret_result)
+
+pub by_nested() -> Int
+  uses @p: Probe[nested]
+=
+  @p.nested(apply_secret)
+
+pub by_invariant() -> Int
+  uses @p: Probe[open]
+=
+  @p.open(made())

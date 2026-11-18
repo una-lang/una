@@ -1,0 +1,17 @@
+module m
+
+pub kind Oops = | Bad
+
+fetch(x: Int) -> Int
+  fails Oops
+=
+  if x > 0 then x else fail Bad
+
+pub use_it(x: Int, c: Bool) -> Int
+=
+  if c
+    let v = fetch(x)
+      if error use 0
+    v + 1
+  else
+    0

@@ -1,0 +1,12 @@
+-- test: label order shape `list-of-lists-accepted` (#323, review #330): public flows into open positions check
+-- spec: spec/17 §6
+-- expect: ok
+module main
+
+pub f(v: internal Int) -> internal Int
+=
+  let edit xss = []
+  xss = xss.append(item: [1])
+  xss = xss.append(item: [v])
+  let first = xss.first().or_else(default: [])
+  first.first().or_else(default: 0)

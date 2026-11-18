@@ -1,0 +1,18 @@
+-- test: a reflect predicate weighs its body at each distinct application, since the solver expands it at each: one product applied to one value is decided, and the same predicate applied to two values weighs 8, U5002 before solving
+-- spec: spec/29 §8
+-- expect: error U5002 at src/m.una:16:11
+module m
+
+pub kind Unit01 = F64 where it.ieee_ge(other: 0.0) and it <= 1.0
+
+pub predicate reflect unit_square(x: F64) -> Bool = (x * x) <= 1.0
+
+pub one(a: Unit01) -> Unit01
+  ensures unit_square(result)
+=
+  a
+
+pub two(a: Unit01, b: Unit01) -> Unit01
+  ensures unit_square(a) and unit_square(b)
+=
+  a

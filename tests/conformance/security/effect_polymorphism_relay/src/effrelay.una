@@ -1,0 +1,81 @@
+-- test: an argument for an `of` parameter of the prelude runs under its raised program counter whatever its form: a parameter passed on, written or inferred, is U4002, and a named function that can fail is U4002, over `map`, `filter`, `fold` and `first_where`; over a public list it passes (spec/07 §7 rule 9, ADR 0062 E4)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/effrelay.una:19:29
+-- expect: error U4002 at src/effrelay.una:25:32
+-- expect: error U4002 at src/effrelay.una:31:43
+-- expect: error U4001 at src/effrelay.una:37:38
+-- expect: error U4002 at src/effrelay.una:37:38
+-- expect: error U4002 at src/effrelay.una:42:29
+-- expect: error U4002 at src/effrelay.una:58:26
+-- expect: error U4002 at src/effrelay.una:65:26
+-- expect: error U4002 at src/effrelay.una:72:26
+module effrelay
+
+pub kind Oops = Bad | Worse
+
+relay(pins: secret List[Int], f: fn(Int) -> Unit) -> Unit
+  uses of f
+=
+  let done = pins.map(each: f)
+  unit
+
+relay_filter(pins: secret List[Int], f: fn(Int) -> Bool) -> Unit
+  uses of f
+=
+  let kept = pins.filter(keep: f)
+  unit
+
+relay_fold(pins: secret List[Int], f: fn(Int, Int) -> Int) -> Unit
+  uses of f
+=
+  let total = pins.fold(initial: 0, step: f)
+  unit
+
+relay_first(pins: List[secret Int], f: fn(Int) -> Bool) -> Unit
+  uses of f
+=
+  let found = pins.first_where(keep: f)
+  unit
+
+inferred(pins: secret List[Int], f: fn(Int) -> Unit) -> Unit
+=
+  let done = pins.map(each: f)
+  unit
+
+pos(x: Int) -> Int
+  fails Oops
+=
+  if x > 0 then x else fail Bad
+
+always(x: Int) -> Int
+  fails Oops
+=
+  fail Bad
+
+probe(pins: secret List[Int]) -> Unit
+  fails Oops
+=
+  let d = pins.map(each: pos)
+    if error pass
+  unit
+
+probe_always(pins: secret List[Int]) -> Unit
+  fails Oops
+=
+  let d = pins.map(each: always)
+    if error pass
+  unit
+
+relay_fails(pins: secret List[Int], f: fn(Int) -> Int) -> Unit
+  fails of f
+=
+  let d = pins.map(each: f)
+    if error pass
+  unit
+
+public_ok(xs: List[Int]) -> Unit
+  fails Oops
+=
+  let d = xs.map(each: pos)
+    if error pass
+  unit

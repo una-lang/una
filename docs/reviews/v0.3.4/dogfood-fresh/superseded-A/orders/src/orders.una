@@ -1,0 +1,68 @@
+module orders
+
+pub kind OrderError = NotJson | BadShape
+
+--- One order line: a name and a quantity.
+pub kind Line
+  name: Text
+  qty: Int
+
+--- The fields of a JSON object, or BadShape.
+fields_of(doc: Json) -> Map[Text, Json]
+  fails OrderError
+=
+  when doc
+    is Object(fields) -> fields
+    else -> fail BadShape
+
+--- One line read from its JSON object.
+line_of(doc: Json) -> Line
+  fails OrderError
+=
+  let fields = fields_of(doc)
+    if error pass
+  let name_json = fields.get(key: "name")
+    if none fail BadShape
+  let qty_json = fields.get(key: "qty")
+    if none fail BadShape
+  let name = when name_json
+    is Str(value) -> value
+    else -> fail BadShape
+  let qty = when qty_json
+    is Number(value) -> value
+    else -> fail BadShape
+  Line(name: name, qty: qty)
+
+--- The summary of an order: how many lines, their names in order, and the total quantity.
+pub summarize(text: Text) -> Text
+  fails OrderError
+=
+  let doc = text.parse_json()
+    if error fail NotJson
+  let fields = fields_of(doc)
+    if error pass
+  let lines_json = fields.get(key: "lines")
+    if none fail BadShape
+  let items = when lines_json
+    is Array(items) -> items
+    else -> fail BadShape
+  let edit names: List[Json] = []
+  let edit total = 0
+  for item in items
+    let line = line_of(item)
+      if error pass
+    names = names.append(item: Str(line.name))
+    total = total + line.qty
+  let edit out: Map[Text, Json] = empty_map()
+  edit out.set(key: "count", value: Number(items.len))
+  edit out.set(key: "names", value: Array(names))
+  edit out.set(key: "total", value: Number(total))
+  Object(out).to_json()
+
+example "two lines are counted, named and totalled"
+  do summarize("\{\"lines\": [\{\"name\": \"a\", \"qty\": 2\}, \{\"name\": \"b\", \"qty\": 3\}]\}")
+  expect result == "\{\"count\":2,\"names\":[\"a\",\"b\"],\"total\":5\}"
+
+example "text that is not JSON fails"
+  do summarize("nope")
+  expect fails NotJson

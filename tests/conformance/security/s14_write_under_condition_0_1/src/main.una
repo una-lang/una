@@ -1,0 +1,24 @@
+-- test: in edition 0.1, a write that a helper performs, called under an `internal` condition, decides a later read too: the helper can be entered under its effects' bound (S-14)
+-- spec: spec/07 §7
+-- expect: error U4003 at src/main.una:23:17
+-- expect: error U4003 at src/main.una:24:18
+module main
+
+mark() -> Unit
+  uses @files: Files[write]
+=
+  let w = attempt @files.write("marker.txt", content: "")
+  unit
+
+pub probe(flag: internal Bool) -> Unit
+  uses @files: Files[read, write]
+  uses @console: Console[print]
+=
+  let marked = if flag
+    mark()
+  else
+    unit
+  let r = attempt @files.read("marker.txt")
+  when r
+    is Ok(v) -> @console.print("the flag was set")
+    is Err(e) -> @console.print("the flag was not set")

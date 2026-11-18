@@ -1,0 +1,16 @@
+module k1
+
+kind Point
+  x: I64
+  y: I64
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit total: I64 = 0
+  let edit k: I64 = 0
+  for i in 0..<5000000
+    let p = Point(x: k, y: 3)
+    total = total.wrapping_add(by: p.x).wrapping_add(by: p.y)
+    k = k.wrapping_add(by: 1)
+  @console.print("{total}")

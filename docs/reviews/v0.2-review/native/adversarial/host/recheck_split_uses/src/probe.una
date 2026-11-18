@@ -1,0 +1,15 @@
+module probe
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @reader: Files[read]
+  uses @writer: Files[write]
+=
+  @console.print("main started")
+  @writer.write("data/out.txt", content: "written")
+    if error use unit
+  let back = attempt @reader.read("data/out.txt")
+  let shown = when back
+    is Ok -> "read ok"
+    is Err -> "read failed"
+  @console.print(shown)

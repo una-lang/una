@@ -1,0 +1,25 @@
+trusted module release
+
+import std.limit (Limit, limiter)
+import std.time (minute)
+
+pub policy key_of
+  from internal Int
+  to Int
+  via reveal_it
+  purpose "a test"
+  owner privacy
+
+--- The `via` function: whether `acquire` finds a token becomes its result.
+reveal_it(t: internal Int) -> Int
+=
+  let got = took() with @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  got
+
+took() -> internal Int
+  uses @gate: Limit[acquire]
+=
+  let got = attempt @gate.acquire()
+  when got
+    is Ok(done) -> 1
+    is Err(failure) -> 0

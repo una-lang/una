@@ -1,0 +1,22 @@
+-- test: one derived from clause lists every requirement
+-- spec: spec/02 §3
+-- expect: error U0102 at 20:3
+module repeated_derived_from
+
+requirement SEATS_1
+  text "Seat counts are reported as computed"
+  source human
+  owner box_office
+  status active
+
+requirement SEATS_2
+  text "Seat counts are reported as computed"
+  source human
+  owner box_office
+  status active
+
+pub seats(x: Int) -> Int
+  derived from SEATS_1
+  derived from SEATS_2
+=
+  x

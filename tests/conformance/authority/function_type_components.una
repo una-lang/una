@@ -1,0 +1,47 @@
+-- test: uses and fails of function types are compared at parameters, results and lambda annotations, and a call of a function value performs its effects and failures (R-001)
+-- spec: spec/05 §9
+-- expect: error U3003 at 29:13
+-- expect: error U3003 at 34:7
+-- expect: error U3009 at 36:57
+-- expect: error U3007 at 38:56
+-- expect: error U3003 at 40:73
+module function_type_components
+
+kind Boom = | Exploded
+
+capability Log
+  op write(line: Text) -> Unit
+
+run(f: fn(fn(Text) -> Unit uses @log: Log[write]) -> Unit) -> Unit
+  uses @log: Log[write]
+=
+  unit
+
+pure_only(g: fn(Text) -> Unit) -> Unit = g("x")
+
+make() -> fn(Int) -> Int = fn(x) -> x
+
+safe(f: fn(Int) -> Int) -> Int = f(1)
+
+pub annotated() -> Unit
+  uses @log: Log[write]
+=
+  run(fn(g: fn(Text) -> Unit) -> g("x"))
+
+pub named() -> Unit
+  uses @log: Log[write]
+=
+  run(pure_only)
+
+pub failing(f: fn(Int) -> Int fails Boom) -> Int = safe(f)
+
+pub not_handled(f: fn(Int) -> Int fails Boom) -> Int = f(1)
+
+pub effect_in_pure(f: fn(Text) -> Unit uses @log: Log[write]) -> Unit = f("x")
+
+pub passed_on(f: fn(Int) -> Int fails Boom) -> Int
+  fails Boom
+=
+  let n = f(1)
+    if error pass
+  n

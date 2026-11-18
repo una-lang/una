@@ -1,0 +1,16 @@
+-- test: a module uses checked at most checked_per_module times
+-- spec: spec/06 §6
+-- expect: error U7003 at src/app/parse.una:16:3
+module app.parse
+
+pub kind ParseError = Empty | TooLong
+
+pub nonempty(raw: Text) -> Text
+  fails ParseError
+=
+  checked(raw, raw.len > 0) else fail Empty
+
+pub short(raw: Text) -> Text
+  fails ParseError
+=
+  checked(raw, raw.len < 80) else fail TooLong

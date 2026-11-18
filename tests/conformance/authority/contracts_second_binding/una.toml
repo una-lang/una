@@ -1,0 +1,7 @@
+[package]
+name = "case"
+version = "0.1.0"
+edition = "0.3"
+
+[contracts]
+"shop.update" = ["@catalog: Catalog[price, set_price where not dry_run, journal where not dry_run]"]

@@ -1,0 +1,4 @@
+[package]
+name = "secret_function_passed_for_of"
+version = "0.1.0"
+edition = "0.2"

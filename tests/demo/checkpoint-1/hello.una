@@ -1,0 +1,4 @@
+-- Checkpoint 1: a well-formed module checks without output.
+module hello
+
+pub greeting(name: Text) -> Text = "hello {name}"

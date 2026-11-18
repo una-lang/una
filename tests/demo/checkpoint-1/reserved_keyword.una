@@ -1,0 +1,4 @@
+-- Checkpoint 1: a keyword from another language, with the Una alternative (U0103).
+module reserved_keyword
+
+pub sign(x: Int) -> Int = match x

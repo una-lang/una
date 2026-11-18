@@ -1,0 +1,4 @@
+[package]
+name = "hof_user_generic__failure__callee_inferred"
+version = "0.1.0"
+edition = "0.1"

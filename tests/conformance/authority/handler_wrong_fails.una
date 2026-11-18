@@ -1,0 +1,17 @@
+-- test: handler op fails with another kind (review control)
+-- spec: spec/05 §9
+-- expect: error U3009 at 16:23
+module handler_wrong_fails
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+kind Other = | Nope
+
+handler bad() for Store
+  op find(key) = fail Nope
+  op count() = 0

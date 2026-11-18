@@ -1,0 +1,41 @@
+module redirects
+
+--- A response as one line: its status and its body parsed and written back as JSON.
+line(name: Text, r: internal Response) -> internal Text
+=
+  let parsed = attempt parse_json(r.body)
+  let body = when parsed
+    is Ok(j) -> j.to_json()
+    is Err -> "unparsed"
+  "{name} {r.status} {body}"
+
+--- A request's outcome as one line.
+fetch(name: Text, url: Text, headers: List[Header], key: Option[Text]) -> internal Text
+  uses @http: Http[get]
+=
+  let r = attempt @http.get(url, headers: headers, key_name: key)
+  when r
+    is Ok(response) -> line(name, r: response)
+    is Err(e) -> "{name} failed {e}"
+
+pub main() -> Unit
+  uses @http: Http[get]
+  uses @files: Files[write]
+  fails FileError
+=
+  let plain: List[Header] = []
+  let cookie = [Header(name: "Cookie", value: "c=1"), Header(name: "X-Other", value: "y")]
+  let auth = [Header(name: "authorization", value: "Basic eDp5"), Header(name: "proxy-authorization", value: "p")]
+  let r0 = fetch("key-chain", url: "http://127.0.0.1:8765/chain", headers: plain, key: Some("k"))
+  let r1 = fetch("cookie-chain", url: "http://127.0.0.1:8765/chain", headers: cookie, key: None)
+  let r2 = fetch("auth-other", url: "http://127.0.0.1:8765/to-other", headers: auth, key: None)
+  let r3 = fetch("key-and-auth", url: "http://127.0.0.1:8765/json", headers: auth, key: Some("k"))
+  let r4 = fetch("unknown-key", url: "http://127.0.0.1:8765/json", headers: plain, key: Some("nope"))
+  let r5 = fetch("chunked", url: "http://127.0.0.1:8765/chunked", headers: plain, key: None)
+  let r6 = fetch("bad-utf8", url: "http://127.0.0.1:8765/bad-utf8", headers: plain, key: None)
+  let r7 = fetch("big", url: "http://127.0.0.1:8765/big", headers: plain, key: None)
+  let r8 = fetch("denied", url: "http://127.0.0.1:8766/json", headers: plain, key: None)
+  let r9 = fetch("bad-url", url: "ftp://127.0.0.1:8765/json", headers: plain, key: None)
+  let lines = [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9]
+  @files.write("result.txt", content: lines.join(separator: "\n"))
+    if error pass

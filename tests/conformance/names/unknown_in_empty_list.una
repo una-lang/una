@@ -1,0 +1,6 @@
+-- test: an unknown function given an empty list reports only the name
+-- spec: spec/10 §1
+-- expect: error U1001 at 6:18
+module unknown_in_empty_list
+
+pub f() -> Int = total(items: [])

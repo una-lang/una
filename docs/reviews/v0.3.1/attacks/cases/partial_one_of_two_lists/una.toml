@@ -1,0 +1,4 @@
+[package]
+name = "partial_one_of_two_lists"
+version = "0.1.0"
+edition = "0.1"

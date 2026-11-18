@@ -1,0 +1,4 @@
+-- Checkpoint 1: valid code that is not in canonical form (U7001); `una fmt` fixes it.
+module not_canonical
+
+pub   total(a: Int,b: Int) -> Int = a+b

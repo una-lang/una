@@ -1,0 +1,8 @@
+ita f32_run
+  version 0.1.0
+  edition 0.5
+
+run
+  entry floats32
+  grants
+    console

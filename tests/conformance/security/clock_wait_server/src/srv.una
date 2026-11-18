@@ -1,0 +1,25 @@
+-- test: in a program that performs an operation of `HttpServer`, a reading of `Clock.now` carries `L_srv`, at least `internal` (ADR 0116 amendment of 2026-11-09, C1 item 3, What it breaks), so a wait loop that stops once the clock has passed a `public` deadline stops on `internal` data (U4002, spec/26 §3 rule 6): how many iterations run would follow the serve threads' timing. Its twin `clock_wait_server_within` waits with a `within` instead (#1891)
+-- spec: spec/26 §3
+-- expect: error U4002 at src/srv.una:16:7
+module srv
+
+import std.host (HttpServer)
+
+pause(ms: Int) -> Unit
+  uses @clock: Clock[now]
+  diverges
+=
+  let start = @clock.now()
+  for ever
+    let now = @clock.now()
+    if now >= start + ms
+      stop
+
+pub main() -> Unit
+  uses @server: HttpServer[next, close]
+  uses @clock: Clock[now]
+  diverges
+=
+  let first = attempt @server.next()
+  pause(1500)
+  @server.close()

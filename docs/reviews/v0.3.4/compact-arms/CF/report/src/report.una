@@ -1,0 +1,45 @@
+module report
+
+import release (shown_summary)
+
+--- How many lines held a valid reading, and the sum of those readings.
+pub kind Summary
+  count: internal Nat
+  sum: internal Int
+
+--- The readings of a text with one integer per line; blank lines and lines that are not
+--- integers are skipped. There are never more valid readings than lines.
+pub summarize(lines: internal List[internal Text]) -> internal Summary
+  ensures result.count <= lines.len
+=
+  let parsed = lines.map(each: fn(line) -> to_int(trim(line)))
+  let valid = parsed.filter(keep: fn(o) -> o.is_some())
+  let values = valid.map(each: fn(o) -> o.or_else(default: 0))
+  Summary(count: valid.len, sum: values.sum())
+
+--- The line the program prints.
+pub describe(s: internal Summary) -> internal Text = "{s.count} valid readings, sum {s.sum}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let read = attempt @files.read("readings.txt")
+  when read
+    is Ok(text) ->
+      let newline = "\n"
+      let summary = summarize(text.split(on: newline))
+      @console.print(shown_summary(describe(summary)))
+    is Err(e) -> @console.print("cannot read data/readings.txt")
+
+example "blank lines and words are skipped"
+  do summarize(["12", "7", "x", "-3", "", "40"])
+  expect result == Summary(count: 4, sum: 56)
+
+example "no lines give no readings"
+  do summarize([])
+  expect result.count == 0 and result.sum == 0
+
+example "the printed line"
+  do describe(Summary(count: 4, sum: 56))
+  expect result == "4 valid readings, sum 56"

@@ -1,0 +1,56 @@
+-- test: each branch is verified with the facts known before the block, its written refinement is an obligation there, and its facts hold after the join; a `together for` task over a range knows the bounds of its variable, and one over a list only the type of its element (spec/19 §4)
+-- spec: spec/19 §4
+-- expect: error U5001 at src/together_facts.una:42:18
+-- expect: error U5001 at src/together_facts.una:55:18
+module together_facts
+
+pub kind Pos = Int where it > 0
+
+--- A positive number, one more than `n`.
+next(n: Pos) -> Pos
+  ensures result == n + 1
+=
+  n + 1
+
+pub joined(a: Int, b: Int) -> Int
+  ensures result == a + 1 + b * 2
+=
+  together
+    let x = a + 1
+    let y = b * 2
+  x + y
+
+pub through_calls(a: Pos, b: Pos) -> Int
+  ensures result == a + b + 2
+=
+  together
+    let x = next(a)
+    let y = next(b)
+  x + y
+
+pub from_context(a: Int) -> Int
+  requires a > 0
+=
+  together
+    let p: Pos = a
+    let q: Pos = a + 1
+  p + q
+
+pub refuted(a: Int) -> Int
+=
+  together
+    let p: Pos = a
+    let q = a
+  p + q
+
+pub in_range(n: Int) -> List[Int]
+=
+  together for i in 1..n
+    let k: Pos = i
+    k
+
+pub over_list(xs: List[Int]) -> List[Int]
+=
+  together for x in xs
+    let k: Pos = x
+    k

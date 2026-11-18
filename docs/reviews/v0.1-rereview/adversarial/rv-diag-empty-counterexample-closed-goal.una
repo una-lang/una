@@ -1,0 +1,16 @@
+-- Adversarial: a refuted refinement whose goal has no free variable but is not a literal, as
+-- `zero(1) > 0`. R-021 asked that a ground goal get no empty counterexample line (spec/13 §3,
+-- "when applicable"); the fix covers literal goals such as `0 > 0` only.
+-- Expected: U5001 without a `counterexample:` line, as for `inv(0)`.
+-- Observed: U5001 with an empty "counterexample: " note, and the JSON `bindings` list is empty.
+module rv_diag_empty_counterexample_closed_goal
+
+pub kind Pos = Int where it > 0
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub zero(x: Int) -> Int = 0
+
+pub closed_call() -> Int = inv(zero(1))
+
+pub literal() -> Int = inv(0)

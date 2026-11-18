@@ -1,0 +1,6 @@
+-- test: a carriage return not followed by a line feed is rejected
+-- spec: spec/01 §1
+-- expect: error U0001 at 6:9
+module lone_carriage_return
+
+-- firstsecond

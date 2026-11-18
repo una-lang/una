@@ -1,0 +1,9 @@
+-- test: in edition 0.5 a package function `to_f32` whose first parameter has an integer type, `F64` or a type parameter, and one `to_decimal` whose first parameter is an F32, are U1002; `to_f32` on another type is accepted
+-- spec: spec/29 §18
+-- expect: error U1002 at src/m.una:9:5
+-- expect: error U1002 at src/a.una:3:5
+-- expect: error U1002 at src/b.una:3:5
+-- expect: error U1002 at src/d.una:3:5
+module m
+
+pub to_f32(n: Int) -> Int = n

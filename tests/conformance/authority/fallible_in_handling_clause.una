@@ -1,0 +1,18 @@
+-- test: fallible op inside an `if error use` clause (review control)
+-- spec: spec/04 §4
+-- expect: error U3013 at 17:18
+module fallible_in_handling_clause
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Option[Int]
+  uses @store: Store[find]
+=
+  let v = @store.find(1)
+    if error use @store.find(2)
+  v

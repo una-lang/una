@@ -1,0 +1,3 @@
+module a
+
+helper() -> Int = 1

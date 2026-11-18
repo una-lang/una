@@ -1,0 +1,35 @@
+-- test: U3002 at a call whose callee needs an operation the attenuated binding lacks, while another binding permits it; the repair ranks are checked by a unit test of una-check (final review F-002, issue #69)
+-- spec: spec/05 §9
+-- expect: error U3002 at 21:3
+-- expect: error U3002 at 28:10
+-- expect: error U3004 at 34:25
+module attenuated_binding_repair_call
+
+pub capability Shelf
+  op stock(count: Int) -> Unit
+  op unstock(count: Int) -> Unit
+
+pub put_back(count: Int) -> Unit
+  uses @front: Shelf[unstock]
+=
+  @front.unstock(count)
+
+pub by_call(count: Int) -> Unit
+  uses @front: Shelf[stock]
+  uses @back: Shelf[unstock]
+=
+  put_back(count)
+
+pub two_permit(count: Int) -> Unit
+  uses @front: Shelf[stock]
+  uses @side: Shelf[unstock]
+  uses @back: Shelf[unstock]
+=
+  @front.unstock(count)
+
+pub in_lambda(count: Int) -> Unit
+  uses @front: Shelf[stock]
+  uses @back: Shelf[unstock]
+=
+  let f = fn(n: Int) -> @front.unstock(n)
+  f(count)

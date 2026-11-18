@@ -1,0 +1,48 @@
+-- test: a function with a `secret` parameter declared under `List` or a generic `Box` at an operation argument is compared as at a call argument (final review F-001)
+-- spec: spec/07 §7
+-- expect: error U4001 at 43:15
+-- expect: error U4001 at 48:14
+module op_argument_fn_components
+
+pub kind Pos = Int where it > 0
+
+pub kind Bad = Broke | Other
+
+kind Box[T]
+  value: T
+
+capability Runner
+  op refined(f: fn(Int) -> Pos) -> Int
+  op pure(f: fn() -> Int) -> Int
+  op listed(fs: List[fn(secret Int) -> Int]) -> Int
+  op boxed(b: Box[fn(secret Int) -> Int]) -> Int
+
+handler running(pin: secret Int) for Runner
+  op refined(f) = 100 / f(1)
+  op pure(f) = f()
+  op listed(fs) = fs.fold(initial: 0, step: fn(acc: Int, f: fn(secret Int) -> Int) -> f(pin))
+  op boxed(b) = b.value(pin)
+
+zero(x: Int) -> Int = 0
+
+ident(x: Int) -> Int = x
+
+failing() -> Int
+  fails Bad
+=
+  fail Broke
+
+pub by_refined() -> Int
+  uses @run: Runner[refined]
+=
+  @run.refined(zero)
+
+pub by_list() -> Int
+  uses @run: Runner[listed]
+=
+  @run.listed([ident])
+
+pub by_box() -> Int
+  uses @run: Runner[boxed]
+=
+  @run.boxed(Box(value: ident))

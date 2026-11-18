@@ -1,0 +1,25 @@
+-- Adversarial: Euclidean `/` and `mod` for every sign combination and huge operands.
+-- Expected: remainder non-negative, e.g. -7 / 2 = -4, 7 / -2 = -3, -7 / -2 = 4, all mod 1
+-- (spec/11 §4); integers never overflow (spec/03 §1).
+-- Observed: all as expected with `una run --grant console`. Held.
+module rt1
+
+show(a: Int, b: Int) -> Text
+  requires b != 0
+=
+  "{a} / {b} = {a / b}, {a} mod {b} = {a mod b}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(show(7, b: 2))
+  @console.print(show(-7, b: 2))
+  @console.print(show(7, b: -2))
+  @console.print(show(-7, b: -2))
+  @console.print(show(-8, b: -2))
+  @console.print(show(0, b: -3))
+  @console.print(show(-1, b: 100000000000000000000000000000))
+  @console.print(show(-100000000000000000000000000001, b: -100000000000000000000000000000))
+  @console.print("lit {-7 / 2} {-7 mod 2} {7 / -2} {7 mod -2} {-7 / -2} {-7 mod -2}")
+  @console.print("big {99999999999999999999999999999999 * 99999999999999999999999999999999}")
+  @console.print("neg {-(-9223372036854775808)} {-9223372036854775808 - 1} {9223372036854775807 + 1}")

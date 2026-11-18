@@ -1,0 +1,5 @@
+module b
+
+pub measure Meter
+
+pub length() -> Int of Meter = 5

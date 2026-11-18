@@ -1,0 +1,23 @@
+-- test: expect fails after a do expression that cannot fail is U1001 at the variant, whatever variants are in scope; a do line that can fail is checked as before
+-- spec: spec/10 §12
+-- expect: error U1001 at 19:16
+module expect_fails_after_do_that_cannot_fail
+
+kind Bad = | Oops
+
+kind E = | Boom
+
+pub safe(x: Int) -> Int = x
+
+pub risky(x: Int) -> Int
+  fails E
+=
+  if x > 0 then x else fail Boom
+
+example "a do line that cannot fail"
+  do safe(1)
+  expect fails Oops
+
+example "a do line that can fail"
+  do risky(0)
+  expect fails Boom

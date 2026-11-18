@@ -1,0 +1,7 @@
+module m
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let result = 3
+  @console.print("result: {result}")

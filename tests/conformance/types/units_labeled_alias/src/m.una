@@ -1,0 +1,10 @@
+-- test: a label of an alias's base stays on a measured type: `secret` under `of` still cannot flow into a public result (U4001), as without the unit
+-- spec: spec/25 §2
+-- expect: error U4001 at src/m.una:10:43
+module m
+
+pub measure Meter
+
+pub kind S = secret Int
+
+pub leak(x: S of Meter) -> Int of Meter = x

@@ -1,0 +1,6 @@
+{"completion":{"ok":"unit"},"output":["the block failed"]}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":1}
+{"outcome":{"kind":"unanswered","status":503},"seq":2,"task":"s1.1"}
+{"outcome":{"kind":"cancelled"},"seq":3,"task":"s1.1"}
+{"args":{"line":"\"the block failed\""},"capability":"Console","instance":"host:Console","op":"print","outcome":{"kind":"ok","value":"unit"},"seq":4}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"close","outcome":{"kind":"ok","value":"unit"},"seq":5}

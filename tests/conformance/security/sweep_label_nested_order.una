@@ -1,0 +1,59 @@
+-- test: nested kinds and generics holding a secret: ordering and `in` on values read from it are secret, and the kind itself cannot be ordered (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 31:60
+-- expect: error U4001 at 33:59
+-- expect: error U2001 at 35:65
+-- expect: error U4001 at 35:65
+-- expect: error U4001 at 39:62
+-- expect: error U4001 at 41:61
+-- expect: error U2001 at 43:67
+-- expect: error U4001 at 43:67
+-- expect: error U4001 at 47:41
+-- expect: error U4001 at 49:40
+-- expect: error U2001 at 51:46
+-- expect: error U4001 at 51:46
+module sweep_label_nested_order
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab_boxed_list(x: Box[List[secret Int]]) -> secret Int = x.value.sum()
+
+pub ordered_boxed_list(x: Box[List[secret Int]]) -> Bool = grab_boxed_list(x) < 5
+
+pub ranged_boxed_list(x: Box[List[secret Int]]) -> Bool = grab_boxed_list(x) in 0..10
+
+pub kind_ordered_boxed_list(x: Box[List[secret Int]]) -> Bool = x < Box(value: [2])
+
+grab_option_box(x: Option[Box[secret Int]]) -> secret Int = x.or_else(default: Box(value: 0)).value
+
+pub ordered_option_box(x: Option[Box[secret Int]]) -> Bool = grab_option_box(x) < 5
+
+pub ranged_option_box(x: Option[Box[secret Int]]) -> Bool = grab_option_box(x) in 0..10
+
+pub kind_ordered_option_box(x: Option[Box[secret Int]]) -> Bool = x < Some(Box(value: 2))
+
+grab_wallet(x: Wallet) -> secret Int = x.acct.pin
+
+pub ordered_wallet(x: Wallet) -> Bool = grab_wallet(x) < 5
+
+pub ranged_wallet(x: Wallet) -> Bool = grab_wallet(x) in 0..10
+
+pub kind_ordered_wallet(x: Wallet) -> Bool = x < Wallet(acct: Acct(id: 1, pin: 2))
+
+pub ordered_boxed_list_twin(x: Box[List[secret Int]]) -> secret Bool = grab_boxed_list(x) < 5
+
+pub ranged_option_box_twin(x: Option[Box[secret Int]]) -> secret Bool = grab_option_box(x) in 0..10
+
+pub ordered_wallet_twin(x: Wallet) -> secret Bool = grab_wallet(x) < 5
+
+pub public_ordered_wallet_twin(x: Wallet) -> Bool = x.acct.id < 5

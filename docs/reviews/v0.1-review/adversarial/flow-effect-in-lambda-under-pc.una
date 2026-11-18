@@ -1,0 +1,18 @@
+-- Adversarial: effectful lambda argument under a secret pc
+-- Expected: U4002 (spec/07 §3.4)
+-- Observed: U4002 at 16:5
+-- Verdict: Pass
+module flow_effect_in_lambda_under_pc
+
+each(lines: List[Text], write: fn(Text) -> Unit uses @console: Console[print]) -> Unit
+  uses @console: Console[print]
+=
+  unit
+
+pub leak(flag: secret Bool) -> Unit
+  uses @console: Console[print]
+=
+  if flag
+    each(["a"], write: fn(l) -> @console.print(l))
+  else
+    unit

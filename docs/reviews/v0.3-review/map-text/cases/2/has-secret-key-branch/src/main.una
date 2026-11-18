@@ -1,0 +1,45 @@
+-- expect: U4001 or U4003 on each leak (spec/21 §3 rules 2, 3); controls accepted
+module main
+
+pub leak_has(m: Map[Text, Int], k: secret Text) -> Bool = m.has(key: k)
+
+pub leak_get_tag(m: Map[Text, Int], k: secret Text) -> Bool
+=
+  let v = m.get(key: k)
+  v is Some
+
+pub leak_len_after_set(k: secret Text) -> Int
+=
+  let edit m: Map[Text, Int] = empty_map()
+  edit m.set(key: "a", value: 1)
+  edit m.set(key: k, value: 2)
+  m.len
+
+pub leak_keys(k: secret Text) -> List[Text]
+=
+  let m: Map[Text, Int] = empty_map().with(key: k, value: 1)
+  m.keys()
+
+pub leak_value_into_public(m: Map[Text, secret Int]) -> Int
+=
+  let v = m.get(key: "a")
+    if none use 0
+  v
+
+pub leak_branch(m: Map[Text, Int], k: secret Text) -> Int = if m.has(key: k) then 1 else 0
+
+pub leak_without_len(m: Map[Text, Int], k: secret Text) -> Int = m.without(key: k).len
+
+pub leak_entries_count(k: secret Text) -> Int
+=
+  let m = empty_map().with(key: "a", value: 1).with(key: k, value: 2)
+  let edit n = 0
+  for e in m.entries()
+    n = n + 1
+  n
+
+pub control_has(m: Map[Text, Int], k: secret Text) -> secret Bool = m.has(key: k)
+
+pub control_secret_value_len(m: Map[Text, secret Int]) -> Int = m.len
+
+pub control_public(m: Map[Text, Int], k: Text) -> Bool = m.has(key: k)

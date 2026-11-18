@@ -1,0 +1,14 @@
+-- test: `wrapping_mul` multiplies the units, so its result is not meters: U2028
+-- spec: spec/25 §4
+-- expect: error U2028 at src/m.una:14:61
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub bad(a: I32 of Meter, b: I32 of Meter) -> I32 of Meter = a.wrapping_mul(by: b)

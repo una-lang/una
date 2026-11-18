@@ -1,0 +1,43 @@
+-- Adversarial: a hard link inside the grant to a file outside it. A hard link is not a
+-- symbolic link, so D9 does not apply; the grant confines paths, not inodes.
+-- Setup (from this directory): `mkdir -p box outside && echo secret > outside/secret.txt &&
+-- ln outside/secret.txt box/hard`
+-- Expected: the spec is silent (spec/14 §3 and ADR 0038 D9 speak only of symbolic links).
+-- Observed (`una run`): read hard ok, write hard ok; outside/secret.txt now reads
+-- `written by probe`. A file outside the grant was read and overwritten through its inode.
+-- Verdict: Minor (spec gap, finding RV2-1)
+module hard
+
+describe(e: FileError) -> Text
+=
+  when e
+    is NotFound -> "notfound"
+    is Denied -> "denied"
+    is Io -> "io"
+
+show_read(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let a = attempt @files.read(path)
+  let status = when a
+    is Ok(t) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("read [{path}]: {status}")
+
+show_write(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[write]
+=
+  let a = attempt @files.write(path, content: "written by probe")
+  let status = when a
+    is Ok(u) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("write [{path}]: {status}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  show_read("hard")
+  show_write("hard")

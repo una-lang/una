@@ -1,0 +1,37 @@
+-- test: a named function whose `uses` carry a condition is not a function value: not in a list, not bound with `let`, not as an argument; a lambda that calls it is (ADR 0092 rule 1, spec/05 §9 rule 6)
+-- spec: spec/05 §9
+-- expect: error U3006 at src/main.una:20:13
+-- expect: error U3006 at src/main.una:26:11
+-- expect: error U3006 at src/main.una:32:16
+module main
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub guarded(n: Int) -> Unit
+  uses @log: Log[write where n > 0]
+=
+  if n > 0
+    @log.write(n)
+  unit
+
+pub in_list() -> Int
+=
+  let fs = [guarded]
+  fs.len
+
+pub by_let(n: Int) -> Unit
+  uses @log: Log[write]
+=
+  let f = guarded
+  f(n)
+
+pub as_argument(xs: List[Int]) -> List[Unit]
+  uses @log: Log[write]
+=
+  xs.map(each: guarded)
+
+pub wrapped(xs: List[Int]) -> List[Unit]
+  uses @log: Log[write]
+=
+  xs.map(each: fn(n) -> guarded(n))

@@ -1,0 +1,20 @@
+-- test: a generic function parameter passed on for a parameter that an `of` clause names keeps the symbolic labels of its type parameters, as it does for any other parameter: the prelude's `filter`, `map`, `first_where` and `fold`, and a user function, accept it (spec/07 §7 rule 8, ADR 0062, #210)
+-- spec: spec/07 §7
+-- expect: ok
+module passon
+
+pub count_where[T](xs: List[T], keep: fn(T) -> Bool) -> Int = xs.filter(keep).len
+
+pub mapped[T, U](xs: List[T], each: fn(T) -> U) -> List[U] = xs.map(each)
+
+pub found[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T] = xs.first_where(keep)
+
+pub folded[T](xs: List[T], step: fn(Int, T) -> Int) -> Int = xs.fold(initial: 0, step)
+
+apply[T](xs: List[T], keep: fn(T) -> Bool) -> Bool
+  uses of keep
+  fails of keep
+=
+  true
+
+pub applied[T](xs: List[T], keep: fn(T) -> Bool) -> Bool = apply(xs, keep)

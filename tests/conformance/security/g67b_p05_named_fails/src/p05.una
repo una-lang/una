@@ -1,0 +1,22 @@
+-- test: ADR 0067 recheck of #231, P05_named_fails: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/p05.una:20:36
+module p05
+
+kind Boom = | Exploded
+
+check(x: Int) -> secret Bool
+  fails Boom
+=
+  if x == 7
+    fail Exploded
+  x < secret_threshold()
+
+secret_threshold() -> secret Int = 3
+
+pub leak(xs: List[Int]) -> Bool
+  fails Boom
+=
+  let found = xs.first_where(keep: check)
+    if error pass
+  true

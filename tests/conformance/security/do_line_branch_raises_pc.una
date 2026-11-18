@@ -1,0 +1,17 @@
+-- test: a branch inside a `do` line raises the program counter as anywhere else, so a call that can fail under a secret condition is U4002
+-- spec: spec/07 §7
+-- expect: error U4002 at 16:28
+module do_line_branch_raises_pc
+
+pub kind Bad = | TooBig
+
+pub risky(n: Int) -> Int
+  fails Bad
+=
+  fail TooBig
+
+pub secret_flag() -> secret Bool = true
+
+example "a failing call under a secret branch"
+  do if secret_flag() then risky(1) else 0
+  expect fails TooBig

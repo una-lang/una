@@ -14,13 +14,13 @@ Include the smallest program that shows the problem, the command you ran, what y
 
 ## What is in this repository
 
-The public tree holds the compiler's sources (`crates/`), the specification (`docs/spec/`), the guides (`docs/guide/`), the standard library listing (`docs/std/`), the compiler's design notes (`docs/compiler/`), the examples, the validation records of each release (`docs/validation/`), the security documents, the formal development (`formal/`), the fuzz targets and the pinned supply-chain inputs. The maintainers keep the rest, which is not in this tree: the architecture decision records, the roadmap and plan, the review records, the test suites (the conformance cases and the integration tests of each crate; the unit tests inside `crates/*/src` are here), and the scripts for validation, release and the website. Where a document names one of those, it says it is kept by the maintainers.
+The public tree holds the compiler's sources (`crates/`), the specification (`docs/spec/`), the guides (`docs/guide/`), the standard library listing (`docs/std/`), the compiler's design notes (`docs/compiler/`), the test suites (`tests/` and the integration tests of each crate), the scripts that build, validate and release `una` (`scripts/`), the examples, the validation records of each release (`docs/validation/`), the security documents, the formal development (`formal/`), the fuzz targets and the pinned supply-chain inputs. The architecture decision records (`docs/adr/`), the plan (`docs/plan/`) and the review records (`docs/reviews/`) are here too. Where a document names one of those, it says it is kept by the maintainers.
 
 ## How work flows
 
 1. **An issue first.** Every change starts as an issue, so its scope is agreed before code is written. One issue per branch and per pull request.
-2. **The specification first.** [`docs/spec/`](docs/spec/) defines the language, and when the code and the specification disagree, the specification wins. A change to the language is first agreed in the issue, as a proposal that the maintainers record as an architecture decision; the specification is updated in the same change as the implementation.
-3. **Implement**, following [`docs/compiler/conventions.md`](docs/compiler/conventions.md). The maintainers add the tests that encode a rule, and a fix is accepted with a regression test that fails before it; describe the case in the pull request.
+2. **The specification first.** [`docs/spec/`](docs/spec/) defines the language, and when the code and the specification disagree, the specification wins. A change to the language starts as an architecture decision record: copy [`docs/adr/0000-template.md`](docs/adr/0000-template.md) to `docs/adr/NNNN-short-title.md` with status `Proposed`. It is implemented only once it is `Accepted`, and the specification is updated in the same change as the implementation.
+3. **Implement**, following [`docs/compiler/conventions.md`](docs/compiler/conventions.md). Write the tests that encode a rule before implementing it: a language rule gets conformance cases in [`tests/conformance/`](tests/conformance/), positive and negative, in the format of [`docs/compiler/testing.md`](docs/compiler/testing.md), and a fix gets a regression test that fails before it.
 4. **Check locally**, then open the pull request.
 
 Branches are named `dev/<issue>-<topic>`, for example `dev/6-integration-rule`. Every commit references its issue (`Refs #6`), and the pull request closes it (`Closes #6`, one keyword per issue). Each pull request adds one changelog fragment, `changelog.d/<issue>-<slug>.md`: a single line that is one bullet, `- **What changed** (#<issue>, …). Details.`, and never edits [`CHANGELOG.md`](CHANGELOG.md) itself. Two pull requests then never change the same lines. The maintainers assemble the fragments at each release.
@@ -33,7 +33,8 @@ You need the Rust toolchain pinned in `rust-toolchain.toml` and the Z3 library t
 eval "$(scripts/z3-library.sh --export)"
 cargo build --release -p una-cli -p una-rt
 cargo fmt --all --check
-cargo clippy --workspace --locked -- -D warnings
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo nextest run --workspace --locked   # the test suites; `cargo test --workspace --locked` runs them too
 ```
 
 These commands are known to pass on macOS arm64, the platform of the maintainers' validation; on other platforms `cargo clippy` may report warnings that are not yet fixed. The public tree has no continuous-integration workflow.

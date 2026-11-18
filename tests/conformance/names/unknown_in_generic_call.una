@@ -1,0 +1,11 @@
+-- test: an unknown name given to a generic call reports only the name
+-- spec: spec/10 §1
+-- expect: error U1001 at 8:20
+module unknown_in_generic_call
+
+pub f() -> Int
+=
+  let found = Some(missing)
+  when found
+    is Some(n) -> n
+    is None -> 0

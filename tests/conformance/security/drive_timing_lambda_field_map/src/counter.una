@@ -1,0 +1,16 @@
+-- test: a lambda stored in a field of a kind and passed from there to `map` is not a lambda written at the call, so its code is not known there and in the preview the driven step has the top timing label (spec/26 §2 rule 5 item 4, ADR 0116 IF5 item 4, IF7)
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:13:34
+module counter
+
+import std.drive (Tick)
+
+kind Holder
+  run: fn(Int) -> Int
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+=
+  let h = Holder(run: fn(x: Int) -> x + 1)
+  count = [count].map(each: h.run).len

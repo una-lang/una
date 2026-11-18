@@ -1,0 +1,53 @@
+-- test: an invariant kind argument at an annotated let, a return, a constructor field and a list element
+-- spec: spec/07 §7
+-- expect: error U4001 at 18:50
+-- expect: error U4001 at 22:29
+-- expect: error U4001 at 32:21
+-- expect: error U4001 at 37:36
+-- expect: error U4001 at 39:17
+module rv_gen_kind_contravariant_flows
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+kind Holder
+  s: Sink[secret Int]
+
+made() -> Sink[Int] = Sink(eat: fn(x: Int) -> x)
+
+returned() -> Sink[secret Int] = Sink(eat: fn(x: Int) -> x)
+
+pub by_let(pin: secret Int) -> Int
+=
+  let s: Sink[secret Int] = made()
+  s.eat(pin)
+
+pub by_return(pin: secret Int) -> Int
+=
+  let s = returned()
+  s.eat(pin)
+
+pub by_field(pin: secret Int) -> Int
+=
+  let h = Holder(s: made())
+  h.s.eat(pin)
+
+pub by_list(pin: secret Int) -> Int
+=
+  let ss: List[Sink[secret Int]] = [made()]
+  let s = ss.first()
+    if none use made()
+  0
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let raw = @env.get("PIN")
+    if none use ""
+  let pin: secret Int = to_int(raw)
+    if none use 0
+  let a = by_let(pin)
+  let b = by_return(pin)
+  let c = by_field(pin)
+  @console.print("pin is {a} {b} {c}")

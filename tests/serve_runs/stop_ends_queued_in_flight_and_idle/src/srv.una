@@ -1,0 +1,27 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Answers `next` with `body`, or nothing when it failed.
+answer(next: Result[internal Exchange, ServeError], body: Text) -> Unit
+  uses @server: HttpServer[reply]
+=
+  when next
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: body))
+        if error use unit
+    is Err(failure) -> unit
+
+--- A host stop with a request in flight, one queued, one partly read and two idle connections:
+--- the program's second `next` fails with `Interrupted`, it answers the first, which drains with
+--- `Connection: close`; the queued one and the one still being read are answered `503` with
+--- `Retry-After: 1`; the idle ones are closed without an answer; the run ends with exit code 0
+--- (ADR 0123 rule 18, `spec/31 §6` rule 9).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  answer(first, body: "first")
+  answer(second, body: "second")
+  @server.close()

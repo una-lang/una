@@ -1,0 +1,49 @@
+module stock
+
+import release (api_token)
+
+--- The `count` field of a JSON object, or nothing.
+count_of(doc: internal Json) -> internal Option[internal Int]
+=
+  when doc
+    is Object(fields) -> count_field(fields.get(key: "count"))
+    else -> None
+
+count_field(found: internal Option[internal Json]) -> internal Option[internal Int]
+=
+  when found
+    is Some(value) -> number_of(value)
+    else -> None
+
+number_of(value: internal Json) -> internal Option[internal Int]
+=
+  when value
+    is Number(n) -> Some(n)
+    else -> None
+
+--- The stock level of `item`, or nothing when the request or the response fails.
+pub stock_level(item: Text, token: secret Text) -> internal Option[internal Int]
+  uses @http: Http[get]
+=
+  let response = attempt @http.get("https://inventory.example.com/v1/items/{item}", headers: [Header(name: "X-Api-Token", value: api_token(token))], key_name: None)
+  when response
+    is Ok(r) -> if r.status == 200 then parse_count(r.body) else None
+    else -> None
+
+parse_count(body: internal Text) -> internal Option[internal Int]
+=
+  let doc = body.parse_json()
+    if error use Null
+  count_of(doc)
+
+pub handler fake_inventory(count: Int) for Http
+  op get(url, headers, key_name) = Response(status: 200, body: "\{\"count\": {count}\}", headers: [])
+  op post(url, headers, key_name, body) = Response(status: 500, body: "", headers: [])
+  op put(url, headers, key_name, body) = Response(status: 500, body: "", headers: [])
+  op delete(url, headers, key_name) = Response(status: 500, body: "", headers: [])
+
+example "the stand-in API answers a count of 7"
+  given @http = fake_inventory(count: 7)
+  do stock_level("widget", token: "t0ken")
+  expect result == Some(7)
+  expect performed @http.get

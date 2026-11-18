@@ -1,0 +1,10 @@
+-- test: a type argument inferred from a value of a refined kind is its base, so the result of the call is not assumed refined (R-012)
+-- spec: spec/12 §3
+-- expect: error U5001 at 10:24
+module inferred_type_argument_takes_base
+
+pub kind Pos = Int where it > 0
+
+pub id[T](x: T) -> T = x
+
+pub g(p: Pos) -> Pos = id(p)

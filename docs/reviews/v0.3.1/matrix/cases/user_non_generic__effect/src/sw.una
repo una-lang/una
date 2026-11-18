@@ -1,0 +1,33 @@
+-- expect: reject: a non-generic callee with an Int parameter
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+log_int(n: Int, f: fn(Int) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  f(n)
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write], h: fn(Int) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  log_int(if a == b then 1 else 0, f: h)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len), h: fn(n) -> @log.write(n))

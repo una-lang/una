@@ -1,0 +1,7 @@
+{"at":1,"connection":1,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 9\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello oneHTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 9\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello twoHTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello threeHTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 10\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello four"}
+{"at":1,"closed":true,"connection":1}
+{"at":101,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello tick0"}
+{"at":201,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello tick1"}
+{"at":301,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nhello tick2"}
+{"at":401,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 11\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\nhello tick3"}
+{"at":401,"closed":true,"connection":2}

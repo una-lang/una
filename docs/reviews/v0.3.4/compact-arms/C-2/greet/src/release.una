@@ -1,0 +1,10 @@
+trusted module release
+
+pub policy shown
+  from internal Text
+  to public Text
+  via copy
+  purpose "show the user name in a greeting"
+  owner ops
+
+copy(t: internal Text) -> public Text = t

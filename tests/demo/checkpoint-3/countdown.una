@@ -1,0 +1,18 @@
+module countdown
+
+pub kind Launch = Go | Hold(reason: Text)
+
+decide(fuel: Int) -> Launch = if fuel >= 100 then Go else Hold(reason: "fuel at {fuel}%")
+
+steps(n: Int) -> List[Int] = if n <= 0 then [] else steps(n - 1).append(item: n)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let count = steps(3).fold(initial: "liftoff", step: fn(text, n) -> "{n} {text}")
+  @console.print("countdown: {count}")
+  let decision = decide(97)
+  let shown = when decision
+    is Go -> "go"
+    is Hold(reason) -> "hold, {reason}"
+  @console.print("launch: {shown}")

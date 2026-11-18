@@ -1,0 +1,27 @@
+-- test: a driven step called in a branch of `together` beside work on a `secret` takes `conc(step)`, `κ` of that block, `secret` (ADR 0116 amendment of 2026-10-25, C, `spec/27 §11`): the time of a step depends on the work beside it, so the `public` tick is U4001
+-- spec: spec/26 §2
+-- expect: error U4001 at src/counter.una:10:34
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+pub step(edit count: Int, input: Tick) -> Unit
+=
+  count = count + 1
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+once(n: Int) -> Int
+=
+  let edit count = n
+  step(edit count, input: Tick(at: 0, missed: 0))
+  count
+
+pub both(key: secret Int) -> Int
+=
+  together
+    let a = once(1)
+    let b = crunch(key)
+  a

@@ -1,0 +1,18 @@
+-- test: the data of Keys.hmac accepts every label, and the result keeps it (R-014)
+-- spec: spec/07 §7
+-- expect: ok
+module hmac_data_any_label
+
+pub digest(phone: secret Text) -> secret Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "pepper", data: phone)
+    if error pass
+
+pub plain(name: Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "pepper", data: name)
+    if error pass

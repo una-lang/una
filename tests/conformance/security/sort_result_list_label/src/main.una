@@ -1,0 +1,8 @@
+-- test: `sort` labels every position of its result, the list itself included, with the join of all its elements (spec/07 §7 rule 8, ADR 0066): a conservative over-approximation, since the sorted list's length is in fact as public as the unsorted one's, so `.len` of a sorted list of secrets is rejected as a public `Int` while the unsorted list's length stays public
+-- spec: spec/07 §7
+-- expect: error U4001 at src/main.una:6:51
+module main
+
+pub count_sorted(pins: List[secret Int]) -> Int = sort(pins).len
+
+pub count_unsorted(pins: List[secret Int]) -> Int = pins.len

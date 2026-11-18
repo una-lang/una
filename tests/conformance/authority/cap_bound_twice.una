@@ -1,0 +1,13 @@
+-- test: a header binds each capability reference once
+-- spec: spec/05 §1
+-- expect: error U1002 at 11:8
+module cap_bound_twice
+
+capability Log
+  op write(line: Text) -> Unit
+
+pub note(line: Text) -> Unit
+  uses @log: Log[write]
+  uses @log: Log[write]
+=
+  @log.write(line)

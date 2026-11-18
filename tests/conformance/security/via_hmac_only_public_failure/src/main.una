@@ -1,0 +1,14 @@
+-- test: the failure of a policy whose via only calls Keys.hmac with a literal key name, passed on, is public (ADR 0098)
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (key_of)
+
+pub passes(t: secret Text) -> Unit
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let k = key_of(t)
+    if error pass
+  unit

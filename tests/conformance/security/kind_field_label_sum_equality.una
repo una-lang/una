@@ -1,0 +1,23 @@
+-- test: equality on a sum kind with a secret variant field is secret, alone and in a list
+-- spec: spec/07 §7
+-- expect: error U4001 at 15:36
+-- expect: error U4001 at 17:32
+-- expect: error U4001 at 19:40
+-- expect: error U4001 at 21:38
+-- expect: error U4001 at 23:32
+module g07_eq_variants
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Wrap[T]
+  value: T
+
+pub opt(pin: secret Int) -> Bool = Some(pin) == Some(1234)
+
+pub summed(g: Guess) -> Bool = g == Hit(pin: 1234)
+
+pub wrapped(pin: secret Int) -> Bool = Wrap(value: pin) == Wrap(value: 1234)
+
+pub lists(gs: List[Guess]) -> Bool = gs == [Hit(pin: 1234)]
+
+pub differ(g: Guess) -> Bool = g != Miss

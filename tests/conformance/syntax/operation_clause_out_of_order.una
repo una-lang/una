@@ -1,0 +1,11 @@
+-- test: operation clauses follow the canonical order
+-- spec: spec/02 §4
+-- expect: error U0102 at 11:5
+module operation_clause_out_of_order
+
+pub kind StoreError = Timeout | Corrupted
+
+pub capability Store
+  op put(value: Int) -> Int
+    fails StoreError
+    ensures result == value

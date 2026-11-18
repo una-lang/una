@@ -1,0 +1,21 @@
+module many_tasks
+
+down(n: Int) -> Int = if n <= 0 then 0 else down(n - 1) + 1
+
+row(i: Int) -> Int
+=
+  let xs = together for j in 1..64
+    down(j) + i
+  xs.len
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let rows = together for i in 1..64
+    row(i)
+  let edit total = 0
+  for r in rows
+    total = total + r
+  let flat = together for k in 1..3000
+    k * 2
+  @console.print("total = {total} {flat.len}")

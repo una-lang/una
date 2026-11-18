@@ -1,0 +1,12 @@
+trusted module release
+
+pub kind Pos = Int where it > 0
+
+pub policy lower
+  from internal Int
+  to public Pos
+  via pass_through
+  purpose "show a count"
+  owner ops
+
+pass_through(n: internal Pos) -> public Int = n

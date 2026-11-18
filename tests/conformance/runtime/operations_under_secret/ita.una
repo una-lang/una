@@ -1,0 +1,8 @@
+ita operations_under_secret
+  version 0.1.0
+  edition 0.4
+
+run
+  entry operations
+  grants
+    console

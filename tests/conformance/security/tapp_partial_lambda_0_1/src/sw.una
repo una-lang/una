@@ -1,0 +1,20 @@
+-- test: in edition 0.1, a function value given a value of a type parameter, or a decision on such values (#253, review of #343): leak (U4003): a lambda bound by let wraps k, and receives the decision
+-- spec: spec/07 §7
+-- expect: error U4001 at src/sw.una:14:19
+-- expect: error U4003 at src/sw.una:15:14
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let wrapped = fn(x: T) -> k(x) + 1
+  let n = wrapped(if a == b then p else q)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

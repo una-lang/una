@@ -1,0 +1,16 @@
+-- test: prelude `contains` over a secret list returns a public Bool; runtime demo leaks an env var (R-005)
+-- spec: spec/14 §1
+-- expect: error U4001 at 7:37
+-- expect: error U4003 at 16:18
+module prelude_contains
+
+pub leak(pin: secret Int) -> Bool = [pin].contains(item: 1234)
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let pin = @env.get("PIN")
+    if none use ""
+  let guess = [pin].contains(item: "1234")
+  @console.print("pin is 1234: {guess}")

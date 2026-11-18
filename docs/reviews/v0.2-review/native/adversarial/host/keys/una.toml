@@ -1,0 +1,11 @@
+[package]
+name = "keys-probe"
+version = "0.1.0"
+edition = "0.2"
+
+[trusted]
+modules = ["keyprobe.reveal"]
+
+[run]
+entry = "keyprobe.main"
+grants = ["console", "env", "clock", "keys:k1.toml", "keys:k2.toml"]

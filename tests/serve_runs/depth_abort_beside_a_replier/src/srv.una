@@ -1,0 +1,39 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+deep(n: Int) -> Int = if n == 0 then 0 else deep(n - 1) + 1
+
+--- Holds a reply right and runs past the call depth: the task ends alone, and the host answers
+--- its right `500` (ADR 0117 rule 7, ADR 0123 rule 4.5).
+drown(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let d = deep(1000000)
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "never"))
+    if error use unit
+
+--- Answers its request.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "answered"))
+    if error use unit
+
+--- A task that ends alone past its depth while holding a right, beside a task that replies:
+--- the same events in the same order in both engines, under the depths of `una run`.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  let answered = when first
+    is Ok(one) ->
+      when second
+        is Ok(two) ->
+          tasks
+            start drown(one)
+            start answer(two)
+        is Err(failure) -> unit
+    is Err(failure) -> unit
+  @server.close()

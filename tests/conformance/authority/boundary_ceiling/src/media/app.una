@@ -1,0 +1,12 @@
+-- test: a grant counts every operation its binding permits: rebinding a read-write binding into a boundary whose ceiling is read is U3021, though the callee needs only read (ADR 0093 rules 5 and 13)
+-- spec: spec/05 §4
+-- expect: error U3021 at src/media/app.una:12:3
+module media.app
+
+import media.resize (notify, shrink, size_of)
+import media.store (Files, Net)
+
+pub preview(path: Text) -> Text
+  uses @files: Files[read, write]
+=
+  shrink(path) with @files = @files

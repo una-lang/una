@@ -1,0 +1,12 @@
+-- test: a refined kind over a function type is U2002, not an internal error or a silent pass, so no unchecked function passes as the kind
+-- spec: spec/03 §3
+-- expect: error U2002 at 8:35
+module refined_fn_kind_passed_unchecked
+
+pub predicate opaque good(f: fn(Int) -> Int) -> Bool = true
+
+pub kind F = fn(Int) -> Int where good(it)
+
+pub g(f: F) -> Int = f(1)
+
+pub h(x: fn(Int) -> Int) -> Int = g(x)

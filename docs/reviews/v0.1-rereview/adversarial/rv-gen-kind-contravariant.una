@@ -1,0 +1,21 @@
+-- Adversarial: a user generic kind whose parameter sits in a function parameter (`eat: fn(T) -> Int`) is compared covariantly, so a `Sink[Int]` built from `fn(x: Int) -> x` flows into `Sink[secret Int]`; calling it on a secret returns a public Int equal to the secret; runtime prints the PIN
+-- Expected: U4001 at the argument of `use_sink` (spec/07 §1 T6, §7 rule 2 contravariance through function parameters; ADR 0038 D1 "never drop a label")
+-- Observed: accepted (exit 0) at 4ea31cf and 85787d7; `PIN=4321 una run --grant console --grant env` prints `pin is 4321`
+-- Verdict: Critical
+module rv_gen_kind_contravariant
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+use_sink(s: Sink[secret Int], pin: secret Int) -> Int = s.eat(pin)
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let raw = @env.get("PIN")
+    if none use ""
+  let pin: secret Int = to_int(raw)
+    if none use 0
+  let shown = use_sink(Sink(eat: fn(x: Int) -> x), pin: pin)
+  @console.print("pin is {shown}")

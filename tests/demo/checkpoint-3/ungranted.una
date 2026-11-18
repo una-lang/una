@@ -1,0 +1,9 @@
+module ungranted
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  let started = if now > 0 then "yes" else "no"
+  @console.print("clock started: {started}")

@@ -1,0 +1,8 @@
+-- test: in edition 0.2, a `measure` declaration is the parse error it always was; edition 0.3 accepts it, and its erasure twin is units_edition_0_2_erased (spec/13 §7, crates/una-cli/tests/editions.rs)
+-- spec: spec/25 §1
+-- expect: error U0101 at src/m.una:6:13
+module m
+
+pub measure Meter
+
+pub f(x: Int) -> Int = x

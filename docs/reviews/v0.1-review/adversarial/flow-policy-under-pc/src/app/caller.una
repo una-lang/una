@@ -1,0 +1,14 @@
+-- Adversarial: policy called under a secret pc
+-- Expected: U4002 (spec/07 §5.2)
+-- Observed: U4001 at src/app/caller.una:11:6; U4002 at src/app/caller.una:12:5
+-- Verdict: Pass
+module app.caller
+
+import app.keys (mask)
+
+pub pick(flag: secret Bool, t: secret[PII] Text) -> internal Text
+=
+  if flag
+    mask(t)
+  else
+    ""

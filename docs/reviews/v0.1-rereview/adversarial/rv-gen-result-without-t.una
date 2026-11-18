@@ -1,0 +1,17 @@
+-- Adversarial: generic results whose declared type does not mention the type parameter (`Bool`, `Int`), through one and two levels of generic calls and a `fold` whose accumulator counts matches
+-- Expected: U4001 at each public result (spec/07 §7 rule 8, the D3 raise of the declared result; ADR 0038 D3)
+-- Observed: U4001 at each of the three public results (13, 15, 17) (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_result_without_t
+
+same[T](a: T, b: T) -> Bool = a == b
+
+outer[U](a: U, b: U) -> Bool = same(a, b: b)
+
+has[T](xs: List[T], x: T) -> Bool = xs.contains(item: x)
+
+pub direct(pin: secret Int) -> Bool = same(pin, b: 1234)
+
+pub nested(pin: secret Int) -> Bool = outer(pin, b: 1234)
+
+pub contained(pin: secret Int) -> Bool = has([1234], x: pin)

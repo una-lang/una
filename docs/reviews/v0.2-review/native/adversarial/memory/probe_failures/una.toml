@@ -1,0 +1,8 @@
+[package]
+name = "probe_failures"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "fprobe"
+grants = ["console"]

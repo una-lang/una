@@ -1,0 +1,11 @@
+module lib.y
+
+pub capability Gauge
+  op read() -> Int
+    ensures result >= 10
+
+pub measure() -> Int
+  uses @g: Gauge[read]
+=
+  let r = @g.read()
+  100 / (r - 5)

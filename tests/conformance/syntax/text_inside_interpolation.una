@@ -1,0 +1,6 @@
+-- test: a text literal inside an interpolation is rejected
+-- spec: spec/01 §6
+-- expect: error U0006 at 6:39
+module text_inside_interpolation
+
+pub greeting() -> Text = "hello {trim(" world ")}"

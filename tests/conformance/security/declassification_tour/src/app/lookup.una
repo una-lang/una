@@ -1,0 +1,22 @@
+-- test: a policy in a trusted module lowers a secret phone to an internal key
+-- spec: spec/07 §5
+-- expect: tier0-ok
+module app.lookup
+
+import app.keys (phone_key)
+import app.types (Phone)
+
+pub kind LookupError = | Unavailable
+
+pub capability Directory
+  op find(key: internal Hashed) -> Option[Text]
+    accepts internal
+
+pub name_for(phone: secret[PII] Phone) -> Option[Text]
+  uses @directory: Directory[find]
+  uses @keys: Keys[hmac]
+  fails LookupError
+=
+  let key = phone_key(phone)
+    if error fail Unavailable
+  @directory.find(key)

@@ -1,0 +1,37 @@
+-- test: units of measure: declared base and derived units, measured types, arithmetic within one unit, products and quotients, constants that take a unit, `convert()` up a scale, `measured()` and `magnitude()`, comparisons, interpolation, a refined measured kind and a list of measured values, all accepted
+-- spec: spec/25 §1, §2, §3, §5
+-- expect: ok
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub kind Speed = Int of Meter / Second in 0..300
+
+pub total(a: Int of Meter, b: Int of Meter) -> Int of Meter = a + b - 1
+
+pub area(a: Int of Meter, b: Int of Meter) -> Int of Meter * Meter = a * b
+
+pub doubled(a: Int of Meter) -> Int of Meter = 2 * a + 2 * 3
+
+pub up(k: Int of Kilometer) -> Int of Meter = k.convert()
+
+pub tag(n: Int) -> Int of Gram = n.measured()
+
+pub raw(g: Int of Gram) -> Int = g.magnitude()
+
+pub longer(a: Int of Meter, b: Int of Meter) -> Bool = a > b or a == 0
+
+pub said(a: Int of Meter) -> Text = "{a}"
+
+pub speed(d: Int of Meter, t: Int of Second) -> Int of Meter / Second
+  requires t > 0
+=
+  d / t
+
+pub lengths(xs: List[Int of Meter]) -> Int of Meter = xs.map(each: fn(x) -> x.magnitude()).sum().measured()

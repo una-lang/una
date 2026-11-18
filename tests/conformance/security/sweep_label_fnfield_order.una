@@ -1,0 +1,24 @@
+-- test: a kind whose field is a function type: ordering a kind with a function field is rejected by construction, and ordering its result is secret (label sweep)
+-- spec: spec/07 §7
+-- expect: error U2001 at 16:37
+-- expect: error U4001 at 18:31
+-- expect: error U4001 at 20:43
+module sweep_label_fnfield_order
+
+kind Src
+  get: fn() -> secret Int
+
+kind Feed[T]
+  get: fn() -> T
+
+make(pin: secret Int) -> Src = Src(get: fn() -> pin)
+
+pub kinds(s: Src, t: Src) -> Bool = s < t
+
+pub ordered(s: Src) -> Bool = s.get() < 5
+
+pub ranged(f: Feed[secret Int]) -> Bool = f.get() in 0..10
+
+pub ordered_twin(s: Src) -> secret Bool = s.get() < 5
+
+pub ranged_twin(f: Feed[secret Int]) -> secret Bool = f.get() in 0..10

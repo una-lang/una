@@ -1,0 +1,18 @@
+module main
+
+fun probe(note: internal Text) : Unit uses {files ↦ Files[write], console ↦ Console[print]} fails FileError =
+  let r: Result[Unit, FileError] =
+    attempt
+      let %t0: Unit = files.write("note.txt", note) in
+      %t0
+  in
+  let shown: Text =
+    case r of
+      Ok(v) ⇒
+        "written"
+      Err(e) ⇒
+        "failed"
+  in
+  let _: Unit = console.print(shown) in
+  let %t2: Unit = files.write("other.txt", note) in
+  %t2

@@ -1,0 +1,14 @@
+-- test: a kind whose parameter is only in data positions is covariant at a return (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 12:45
+module sweep_variance_box_return
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub ret_0(v: Box[secret Int]) -> Box[Int] = v
+
+pub ret_1(v: Box[Int]) -> Box[secret Int] = v

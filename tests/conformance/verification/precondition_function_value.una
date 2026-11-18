@@ -1,0 +1,16 @@
+-- test: a function with a `requires` passed as a function value is U5001, and the lambda its repair describes checks (issue #76, UI-007)
+-- spec: spec/12 §3
+-- expect: error U5001 at 14:29
+module precondition_function_value
+
+pub same(a: Int, b: Int) -> Int
+  requires a == b
+  ensures result == 0
+=
+  a - b
+
+pub apply(f: fn(Int, Int) -> Int) -> Int = f(1, 2)
+
+pub passed() -> Int = apply(same)
+
+pub wrapped() -> Int = apply(fn(a, b) -> if a == b then same(a, b) else 0)

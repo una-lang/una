@@ -1,0 +1,19 @@
+## PR 3dc582b
+callee-effect-pure-callback  U4002 
+callee-fail-pure-callback    U4002x2 
+eff-annotated-lambda         U4002 
+eff-decision-inside-hof      U4002 
+eff-generic-callback-value   U3006 U4001 U4002 
+eff-inferred-lambda          U4002 
+eff-shape-decided            U4002 
+effect-user-hof-0.2          U4001 
+effect-user-hof              U4002 
+fail-user-hof-0.2            U4001 
+fail-user-hof                U4002x2 
+let-annotation-direct-0.2    U4001 
+let-annotation-direct        ok   S="" -> 0      S=x -> 1 
+mixed-params-lambda          U4002 
+ok-user-hof-no-decision      ok   S="" -> 0      S=x -> 0 
+prelude-annotated-lambda-if  U4003 
+prelude-annotated-lambda-parens U4003 
+prelude-annotated-lambda     U4003 

@@ -1,0 +1,21 @@
+-- test: `convert()` with no expected unit is U2030
+-- spec: spec/25 §5
+-- expect: error U2030 at src/m.una:20:11
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub measure Hour = 3600000 * Millisecond
+
+pub measure Millisecond
+
+pub bad(k: Int of Kilometer) -> Bool
+=
+  let x = k.convert()
+  true

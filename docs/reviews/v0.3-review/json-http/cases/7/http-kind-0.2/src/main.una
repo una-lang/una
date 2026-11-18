@@ -1,0 +1,4 @@
+module main
+
+pub kind Response
+  status: Int

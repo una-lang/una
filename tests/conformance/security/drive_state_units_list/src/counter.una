@@ -1,0 +1,14 @@
+-- test: units are compared in the element of a list: `List[Int of Second]` may not reach `List[Int of Millisecond]` (spec/26 §2, issue #1647)
+-- spec: spec/26 §2
+-- expect: error U2028 at src/counter.una:14:22
+module counter
+
+import std.drive (Tick)
+import std.time (Millisecond, Second)
+
+pub init() -> List[Int of Second]
+=
+  let start: Int of Second = 7.measured()
+  [start]
+
+pub step(edit state: List[Int of Millisecond], input: Tick) -> Unit = unit

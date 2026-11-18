@@ -1,0 +1,6 @@
+-- test: a label category that una.toml does not declare
+-- spec: spec/07 §2
+-- expect: error U4007 at 6:20
+module undeclared_category
+
+pub keep(t: secret[PII] Text) -> secret Text = t

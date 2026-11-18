@@ -1,0 +1,17 @@
+-- Adversarial: a kind named `Box_Int` next to the generic `Box[Int]`; both would mangle to
+-- `u!Kind_t_Box_Int` if kind names could contain `_`, merging two field functions with
+-- different result sorts.
+-- Expected: U1005 (kinds are UpperCamelCase without `_`, spec/01 §4), which keeps sort names
+-- injective.
+-- Observed: U1005 "kind `Box_Int` must be UpperCamelCase" (exit 1). Type parameters and variants
+-- follow the same rule.
+-- Verdict: Held
+module t
+
+pub kind Box[T]
+  item: T
+
+pub kind Box_Int
+  item: Bool
+
+pub f(b: Box[Int], c: Box_Int) -> Int = b.item

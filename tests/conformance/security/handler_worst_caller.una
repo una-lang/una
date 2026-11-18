@@ -1,0 +1,52 @@
+-- test: a handler for an operation that accepts internal may fail, return fixed values and call effects bounded by internal, but not call effects that accept only public (R-003)
+-- spec: spec/07 §7
+-- expect: error U4002 at 35:19
+module handler_worst_caller
+
+kind StoreError = | Full
+
+capability Store
+  op put(value: Text) -> Int
+    fails StoreError
+    accepts internal
+
+capability Vault
+  op keep(value: Text) -> Unit
+    accepts internal
+
+handler failing() for Store
+  op put(value) = fail Full
+
+handler fixed() for Store
+  op put(value) = 7
+
+handler vaulting() for Store
+  uses @vault: Vault[keep]
+  op put(value) = kept(value)
+
+kept(value: internal Text) -> Int
+  uses @vault: Vault[keep]
+=
+  @vault.keep(value)
+  1
+
+handler printing() for Store
+  uses @console: Console[print]
+  op put(value) = printed()
+
+printed() -> Int
+  uses @console: Console[print]
+=
+  @console.print("put")
+  1
+
+handler checking() for Store
+  op put(value) =
+    let n = risky(value.len)
+      if error pass
+    n
+
+risky(n: internal Int) -> Int
+  fails StoreError
+=
+  if 1 > 0 then fail Full else 0

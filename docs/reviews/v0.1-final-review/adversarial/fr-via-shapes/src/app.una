@@ -1,0 +1,13 @@
+-- Adversarial: ADR 0047 and D-169: a `via` whose result is an alias of `to` with no `where`, whose parameter is an alias with its own `where`, a different refined kind, and a generic `via`
+-- Expected: U4005 for the tighter alias, the other kind and the generic; the plain alias accepted (D-169)
+-- Observed: as expected; the messages say "a `Int`" and `fn(?) -> ?`
+-- Verdict: Held
+module app
+
+import release (Pos, from_small, from_tight, generic_via)
+
+pub tight() -> Pos = from_tight(10)
+
+pub small() -> Pos = from_small(10)
+
+pub any(n: internal Int) -> Int = generic_via(n)

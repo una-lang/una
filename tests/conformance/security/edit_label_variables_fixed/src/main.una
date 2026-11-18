@@ -1,0 +1,21 @@
+-- test: annotated bindings, determined positions and the top label stay fixed
+-- spec: spec/17 §6
+-- expect: error U4001 at src/main.una:15:39
+-- expect: error U4001 at src/main.una:17:7
+-- expect: error U4001 at src/main.una:20:10
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit annotated: Map[Text, Int] = empty_map()
+  edit annotated.set(key: "a", value: s.len)
+  let edit n = 0
+  n = s.len
+  let edit xs = []
+  if s.len > 1
+    xs = [1]
+  @console.print("{annotated.len} {n} {xs.len}")

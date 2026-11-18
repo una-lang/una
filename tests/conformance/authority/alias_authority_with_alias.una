@@ -1,0 +1,95 @@
+-- test: authority matrix for a kind alias of an effectful function type: `with` rebinding, a handler installed for the capability, and a handler's own `uses`; every cell gives the same diagnostics as its twin `alias_authority_with_inline` (#15)
+-- spec: spec/05 §4, §5
+-- expect: error U3002 at 51:3
+-- expect: error U3001 at 56:17
+-- expect: error U3003 at 80:23
+module alias_authority_with_alias
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+capability Audit
+  op note(line: Text) -> Unit
+
+capability Runner
+  op run(line: Text) -> Unit
+
+kind Writer = fn(Text) -> Unit uses @log: Log[write]
+
+kind AnyLog = fn(Text) -> Unit uses @log: Log
+
+kind Auditor = fn(Text) -> Unit uses @audit: Audit
+
+handler quiet() for Log
+  op write(line) = unit
+  op flush() = unit
+
+handler logged() for Runner
+  uses @log: Log[write]
+  op run(line) = @log.write(line)
+
+each(w: Writer) -> Unit
+  uses @log: Log[write]
+=
+  w("a")
+
+every(w: AnyLog) -> Unit
+  uses @log: Log
+=
+  w("b")
+
+-- `with` rebinding: the callee's `@log` is the caller's `@main`, attenuated, and must permit what the type needs.
+pub rebound(w: Writer) -> Unit
+  uses @main: Log
+=
+  each(w) with @log = @main
+
+pub rebound_narrow(w: AnyLog) -> Unit
+  uses @main: Log[write]
+=
+  every(w) with @log = @main
+
+pub rebound_lambda() -> Unit
+  uses @main: Log
+=
+  each(fn(t) -> @main.write(t)) with @log = @main
+
+-- A handler installed for the capability the type names.
+pub handled() -> Unit
+=
+  each(fn(t) -> unit) with @log = quiet()
+
+pub handled_all() -> Unit
+=
+  every(fn(t) -> unit) with @log = quiet()
+
+-- A handler whose own `uses` the caller must hold, and whose operation runs a function of the type.
+pub runner_needs_log() -> Unit
+  uses @log: Log[write]
+=
+  go() with @runner = logged()
+
+go() -> Unit
+  uses @runner: Runner
+=
+  @runner.run("c")
+
+pub runner_without_log() -> Unit
+=
+  go() with @runner = logged()
+
+run_logged(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  go() with @runner = logged()
+
+pub handler_lambda() -> Unit
+  uses @log: Log[write]
+=
+  each(fn(t) -> run_logged(t))
+
+pub handler_lambda_unheld() -> Unit
+  uses @log: Log[flush]
+=
+  each(fn(t) -> run_logged(t)) with @log = quiet()

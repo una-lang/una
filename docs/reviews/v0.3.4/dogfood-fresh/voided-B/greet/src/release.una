@@ -1,0 +1,11 @@
+trusted module release
+
+--- Lets the greeting show the user name that the environment gives.
+pub policy shown_name
+  from internal Text
+  to public Text
+  via as_shown
+  purpose "greet the user by the name the environment gives"
+  owner greet_owner
+
+as_shown(name: internal Text) -> public Text = name

@@ -1,0 +1,5 @@
+module gallery.store
+
+pub capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit

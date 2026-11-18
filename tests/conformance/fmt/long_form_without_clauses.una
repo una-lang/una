@@ -1,0 +1,8 @@
+-- test: a function without clauses and a one-line body uses the short form
+-- spec: spec/04 §1
+-- expect: error U7001 at 6:1
+module long_form_without_clauses
+
+pub one() -> Int
+=
+  1

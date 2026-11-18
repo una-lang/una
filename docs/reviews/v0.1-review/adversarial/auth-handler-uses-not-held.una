@@ -1,0 +1,31 @@
+-- Adversarial: 'with' installs a handler whose own 'uses' the installer lacks
+-- Expected: U3001/U3003
+-- Observed: U3003 at 31:27
+-- Verdict: Pass (U3003)
+module auth_handler_uses_not_held
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+capability Log
+  op write(line: Text) -> Unit
+
+handler logged(n: Int) for Store
+  uses @log: Log[write]
+  op find(key) = None
+  op count() =
+    @log.write("count")
+    n
+
+counted() -> Int
+  uses @store: Store[count]
+=
+  @store.count()
+
+pub run() -> Int
+=
+  counted() with @store = logged(n: 1)

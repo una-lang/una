@@ -1,0 +1,7 @@
+{"completion":{"aborted":"IntText { span: Some(Span { file: FileId(2), start: 959, end: 962 }) }"},"output":[]}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":1,"task":"s1.2"}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":2,"task":"s1.1"}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"close","outcome":{"kind":"ok","value":"unit"},"seq":3,"task":"s1.2"}
+{"outcome":{"kind":"unanswered","status":503},"seq":4,"task":"s1.2"}
+{"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"aborted"},"seq":5,"task":"s1.1"}
+{"outcome":{"kind":"unanswered","status":503},"seq":6,"task":"s1.1"}

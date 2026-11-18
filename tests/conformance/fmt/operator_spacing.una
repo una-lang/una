@@ -1,0 +1,6 @@
+-- test: binary operators have one space on each side
+-- spec: spec/01 §7
+-- expect: error U7001 at 6:1
+module operator_spacing
+
+pub seven() -> Int = 1+2*3

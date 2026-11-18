@@ -1,0 +1,9 @@
+-- test: a tab after spaces in indentation is rejected
+-- spec: spec/01 §2
+-- expect: error U0002 at 9:3
+module tab_after_spaces_in_indentation
+
+pub double(x: Int) -> Int
+  requires x >= 0
+=
+  	x * 2

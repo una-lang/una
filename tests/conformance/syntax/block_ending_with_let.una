@@ -1,0 +1,8 @@
+-- test: the last line of a block is its value, not a let
+-- spec: spec/02 §6
+-- expect: error U0101 at 8:3
+module block_ending_with_let
+
+pub double(x: Int) -> Int
+=
+  let doubled = x * 2

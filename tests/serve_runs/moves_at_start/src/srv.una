@@ -1,0 +1,29 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "from the task"))
+    if error use unit
+
+--- Starts the task, then replies itself before the task runs: the right moved, so this reply is
+--- `NotHeld` and sends nothing.
+handle(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  tasks
+    start answer(exchange)
+    @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "from main"))
+      if error use unit
+
+--- `start` moves the reply right to its task (`spec/31 §1` rule 3 items 2 and 4).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let next = attempt @server.next()
+  let handled = when next
+    is Ok(exchange) -> handle(exchange)
+    is Err(failure) -> unit
+  @server.close()

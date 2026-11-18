@@ -1,0 +1,25 @@
+-- test: precise `τ_conc` (ADR 0116 F, item 7): a branch that calls `map` has `κ = ⊤`, even with a lambda written at the call, so `report(n)` in the sibling branch runs beside `⊤` work and its printed value carries it (U4003 at the print)
+-- spec: spec/27 §11
+-- expect: error U4003 at src/report.una:16:18
+module report
+
+import std.time (millisecond)
+
+step(n: Int) -> Int = n + 1
+
+--- Prints whether `step(n)` met its deadline: the value carries the deadline's timing label.
+report(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let v = step(n) within 10 * millisecond
+    if error use 0
+  @console.print("{v}")
+
+--- One branch calls `map`, the other `report(n)`.
+pub both(xs: List[Int], n: Int) -> List[Int]
+  uses @console: Console[print]
+=
+  together
+    let ys = xs.map(each: fn(x: Int) -> x + 1)
+    let r = report(n)
+  ys

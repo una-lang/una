@@ -1,0 +1,6 @@
+-- test: the editions are 0.1, 0.2, 0.3, 0.4 and 0.5, and any other is U7002 (ADR 0056, spec/13 §7)
+-- spec: spec/13 §7
+-- expect: error U7002 at una.toml:4:11
+module main
+
+pub one() -> Int = 1

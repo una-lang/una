@@ -1,0 +1,10 @@
+-- test: requirement identifiers end with an underscore and a number
+-- spec: spec/01 §4
+-- expect: error U1005 at 6:13
+module requirement_id_convention
+
+requirement EVENTS3
+  text "Events without seats are shown as sold out"
+  source human
+  owner box_office
+  status active

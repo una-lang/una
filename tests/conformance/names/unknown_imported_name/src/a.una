@@ -1,0 +1,3 @@
+module a
+
+pub one() -> Int = 1

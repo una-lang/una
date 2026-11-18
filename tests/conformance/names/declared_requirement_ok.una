@@ -1,0 +1,26 @@
+-- test: derived from names a requirement the package declares, and a generated requirement stays proposed; neither is U1006 or U1007 (positive twin, #11)
+-- spec: spec/08 §1
+-- expect: ok
+module declared_requirement_ok
+
+requirement EVENTS_3
+  text "An event with no remaining seats is always shown as sold out"
+  source policy "Box Office Handbook 2.1"
+  owner box_office
+  status active
+
+requirement EVENTS_4
+  text "Events without seats are shown as sold out"
+  source generated "task 41"
+  owner box_office
+  status proposed
+
+pub sold_out(remaining: Int) -> Bool
+  derived from EVENTS_3
+=
+  remaining < 1
+
+pub none_left(remaining: Int) -> Bool
+  derived from EVENTS_4
+=
+  remaining < 1

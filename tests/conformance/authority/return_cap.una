@@ -1,0 +1,13 @@
+-- test: capability returned (review control)
+-- spec: spec/05 §6
+-- expect: error U3005 at 13:3
+module return_cap
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+leak() -> Unit
+  uses @log: Log[write]
+=
+  @log

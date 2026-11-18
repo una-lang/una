@@ -1,0 +1,59 @@
+module sw
+
+cap Log {
+  op write(n: Int) : Unit accepts public
+}
+
+handler to_console() for Log uses {console ↦ Console[print]} {
+  op write(n) =
+    let %t0: Text = to_text(n) in
+    let %t1: Text = concat(%t0) in
+    let %t2: Unit = console.print(%t1) in
+    %t2
+}
+
+fun g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: label(T*) Bool = ==(a, b) in
+  let %t1: label(T) + label(T*) T =
+    if %t0 then
+      p
+    else
+      q
+  in
+  let %t2: List[label(T) + label(T*) T] = [%t1] in
+  let %t4: fn(label(T) + label(T*) T) -> Int =
+    λ(x: label(T) T).
+      let %t3: Int = k(x) in
+      %t3
+  in
+  let ns: List[Int] = prelude.map[label(T) + label(T*) T, Int](%t2, %t4) in
+  let %t6: Int = prelude.sum(ns) in
+  let %t7: Unit = log.write(%t6) in
+  %t7
+
+fun main() : Unit uses {console ↦ Console[print], env ↦ Env[get]} =
+  let %t1: Option[internal Text] = env.get("S") in
+  let s: internal Text =
+    case %t1 of
+      Some(%t2) ⇒
+        %t2
+      else ⇒
+        ""
+  in
+  with log = sw.to_console() in
+  let %t3: internal Int = len(s) in
+  let %t4: Unit = sw.run(%t3) in
+  %t4
+
+fun run(v: internal Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: List[internal Int] = [v] in
+  let %t1: List[internal Int] = [0] in
+  let %t2: List[internal Int] = [] in
+  let %t3: List[internal Int] = [1] in
+  let %t5: fn(List[internal Int]) -> Int =
+    λ(xs: List[internal Int]).
+      let %t4: Int = len(xs) in
+      %t4
+  in
+  let %t6: internal Unit = sw.g[List[internal Int]](%t0, %t1, %t2, %t3, %t5) in
+  %t6

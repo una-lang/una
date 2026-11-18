@@ -1,0 +1,15 @@
+-- test: `via` function called directly by another function of the trusted module (review control)
+-- spec: spec/07 §7
+-- expect: error U4005 at src/app/keys.una:15:46
+trusted module app.keys
+
+pub policy mask
+  from secret[PII] Text
+  to Text
+  via masked
+  purpose "show the last digits"
+  owner privacy
+
+masked(t: secret[PII] Text) -> Text = t
+
+pub unaudited(t: secret[PII] Text) -> Text = masked(t)

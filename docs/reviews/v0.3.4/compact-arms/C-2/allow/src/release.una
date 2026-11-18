@@ -1,0 +1,11 @@
+trusted module release
+
+--- An HMAC under the `pepper` key reveals nothing about the address to whoever lacks the key.
+pub policy keyed_hash
+  from secret Hashed
+  to internal Hashed
+  via as_keyed
+  purpose "compare an e-mail address with the allowlist only as its HMAC under the pepper key"
+  owner security_team
+
+as_keyed(h: secret Hashed) -> internal Hashed = h

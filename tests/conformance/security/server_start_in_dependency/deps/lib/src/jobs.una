@@ -1,0 +1,11 @@
+module jobs
+
+--- Starts each job, when the key allows it.
+pub spawn(jobs: internal List[fn() -> Unit], key: secret Int) -> Unit
+=
+  tasks
+    for job in jobs
+      if key > 0
+        start job()
+      else
+        unit

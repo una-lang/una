@@ -1,0 +1,14 @@
+-- Adversarial: 'trusted module' header without the una.toml listing
+-- Expected: U7005 (spec/07 §7.5)
+-- Observed: U7005 at src/app/keys.una:5:1
+-- Verdict: Pass
+trusted module app.keys
+
+pub policy mask
+  from secret[PII] Text
+  to internal Text
+  via masked
+  purpose "show the last digits"
+  owner privacy
+
+masked(t: secret[PII] Text) -> internal Text = t

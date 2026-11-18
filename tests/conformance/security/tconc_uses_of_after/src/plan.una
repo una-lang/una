@@ -1,0 +1,40 @@
+-- test: the twin of `tconc_uses_of`: the same call runs after the `together`, so the `within` of `plan_route` is `public` (ADR 0116 F, items 1 and 7, as for `tconc_function_value_after`)
+-- spec: spec/27 §11
+-- expect: ok
+module plan
+
+import std.time (millisecond)
+
+pub kind PlanError = | TimedOut
+
+step(n: Int) -> Int = n + 1
+
+--- A deadline over `public` work, whose `TimedOut` it passes on.
+plan_route(n: Int) -> Int
+  fails PlanError
+=
+  let v = step(n) within 10 * millisecond
+    if error pass
+  v
+
+route(n: Int) -> Int
+=
+  let r = plan_route(n)
+    if error use 0
+  r
+
+run_with(f: fn(Int) -> Int, n: Int) -> Int
+  uses of f
+=
+  f(n)
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- The function value runs after the `together`, beside nothing.
+pub both(key: secret Int, n: Int) -> secret Int
+=
+  together
+    let a = crunch(key)
+    let c = step(n)
+  let b = run_with(route, n: 3)
+  a

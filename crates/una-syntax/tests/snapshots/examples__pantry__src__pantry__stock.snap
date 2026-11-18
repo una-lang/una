@@ -1,0 +1,106 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module pantry.stock)
+(kind pub Measure (doc "--- How an item is measured.") (sum Grams Pieces Milliliters))
+(kind pub Label (doc "--- A shelf label, as printed on the shelf.") (alias {Text}))
+(kind pub Item (record (name {Text}) (amount {Nat}) (measure {Measure})))
+(kind pub Bin [T]
+  (doc "--- A labeled group of anything: a shelf of items, a box of jars.")
+  (record (label {Label}) (entries {List[T]})))
+(kind pub NonEmpty [T]
+  (doc "--- A list with at least one entry.")
+  (alias {List[T]} (where (> (. it len) 0))))
+(fn pub restock
+  (doc "--- Adds `added` to an item.")
+  ((item {Item}) (added {Nat}))
+  {Item}
+  (ensures (== (. result amount) (+ (. item amount) added)))
+  (block
+    (call Item
+      (name: (. item name))
+      (amount: (+ (. item amount) added))
+      (measure: (. item measure)))))
+(fn pub use_up
+  (doc "--- Takes `used` from an item that has enough of it.")
+  ((item {Item}) (used {Nat}))
+  {Item}
+  (requires (<= used (. item amount)))
+  (ensures (== (. result amount) (- (. item amount) used)))
+  (block
+    (call Item (name: (. item name)) (amount: (- (. item amount) used)) (measure: (. item measure)))))
+(fn pub missing
+  (doc "--- The items that have run out.")
+  ((items {List[Item]}))
+  {List[Item]}
+  (ensures (<= (. result len) (. items len)))
+  (block (method items filter (keep: (fn (i) (== (. i amount) 0))))))
+(fn pub shopping_list
+  (doc "--- The names of the items to buy, in pantry order.")
+  ((items {List[Item]}))
+  {List[Text]}
+  (ensures (<= (. result len) (. items len)))
+  (block (method (call missing items) map (each: (fn (i) (. i name))))))
+(fn pub total
+  (doc "--- How much of one measure the pantry holds.")
+  ((items {List[Item]}) (measure {Measure}))
+  {Int}
+  (method items fold
+    (initial: 0)
+    (step: (fn (sum i) (if (== (. i measure) measure) (+ sum (. i amount)) sum)))))
+(fn pub find
+  (doc "--- The item called `name`, when the pantry has it.")
+  ((items {List[Item]}) (name {Text}))
+  {Option[Item]}
+  (method items first_where (keep: (fn (i) (== (. i name) name)))))
+(fn pub amount_of
+  (doc "--- The amount left of `name`, zero when the pantry has none.")
+  ((items {List[Item]}) (name {Text}))
+  {Nat}
+  (block (when (call find items name) (arm (is Some item) (. item amount)) (arm (is None) 0))))
+(fn pub count_where [T]
+  (doc "--- How many entries of a bin satisfy `keep`.")
+  ((bin {Bin[T]}) (keep {fn(T) -> Bool}))
+  {Nat}
+  (ensures (<= result (. (. bin entries) len)))
+  (block (. (method (. bin entries) filter keep) len)))
+(fn pub average
+  (doc "--- The average of some counts, rounded down.")
+  ((counts {NonEmpty[Int]}))
+  {Int}
+  (/ (method counts sum) (. counts len)))
+(example "restocking adds to the amount"
+  (do (call restock (call Item (name: "rice") (amount: 200) (measure: Grams)) (added: 300)))
+  (expect (== (. result amount) 500)))
+(example "using up takes from the amount"
+  (do (call use_up (call Item (name: "eggs") (amount: 6) (measure: Pieces)) (used: 4)))
+  (expect (== (. result amount) 2)))
+(example "the shopping list names what ran out"
+  (do
+    (call shopping_list
+      (list
+        (call Item (name: "rice") (amount: 0) (measure: Grams))
+        (call Item (name: "eggs") (amount: 6) (measure: Pieces))
+        (call Item (name: "oil") (amount: 0) (measure: Milliliters)))))
+  (expect (== result (list "rice" "oil"))))
+(example "totals count one measure only"
+  (do
+    (call total
+      (list
+        (call Item (name: "rice") (amount: 500) (measure: Grams))
+        (call Item (name: "flour") (amount: 200) (measure: Grams))
+        (call Item (name: "eggs") (amount: 6) (measure: Pieces)))
+      (measure: Grams)))
+  (expect (== result 700)))
+(example "an item the pantry does not have amounts to zero"
+  (do
+    (call amount_of (list (call Item (name: "eggs") (amount: 6) (measure: Pieces))) (name: "milk")))
+  (expect (== result 0)))
+(example "a bin counts the entries that match"
+  (do
+    (call count_where (call Bin (label: "jars") (entries: (list 3 0 5))) (keep: (fn (n) (> n 0)))))
+  (expect (== result 2)))
+(example "the average of three counts is rounded down"
+  (do (call average (list 2 4 10)))
+  (expect (== result 5)))

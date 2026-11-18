@@ -1,0 +1,8 @@
+-- test: policy passed as a function value (unaudited) (review control)
+-- spec: spec/07 §5
+-- expect: error U2001 at src/app/caller.una:8:68
+module app.caller
+
+import app.keys (mask)
+
+pub every(ts: List[secret[PII] Text]) -> List[Text] = ts.map(each: mask)

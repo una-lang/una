@@ -1,0 +1,17 @@
+-- test: no label rule checks a policy's `via` body, so its writes count at the cap, `internal`: one that runs only when its argument is "a" labels the reads, which would otherwise say whether the hidden text was "a" (S-14, the review of #439)
+-- spec: spec/07 §7
+-- expect: error U4003 at src/app/main.una:16:17
+-- expect: error U4003 at src/app/main.una:17:18
+module app.main
+
+import app.keys (reveal)
+
+pub probe(hidden: internal Text) -> Unit
+  uses @files: Files[read, write]
+  uses @console: Console[print]
+=
+  let shown = reveal(hidden)
+  let r = attempt @files.read("marker.txt")
+  when r
+    is Ok(v) -> @console.print("SET")
+    is Err(e) -> @console.print("NOT SET")

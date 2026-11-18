@@ -1,0 +1,10 @@
+ita clock_wait_server
+  version 0.1.0
+  edition 0.4
+
+run
+  entry srv
+  grants
+    console
+    clock
+    serve "http://127.0.0.1:8080"

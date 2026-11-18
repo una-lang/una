@@ -1,0 +1,69 @@
+-- test: each construction site of a refined position is a `refinement` obligation: a list literal's elements, `Some`, `Ok`, `append`, `set`, `or_else`, a map's `with` and `set`, `map`'s and `fold`'s functions, and the body of a `together for` (ADR 0103 rule 3)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/construction.una:21:44
+-- expect: error U5001 at src/construction.una:23:64
+-- expect: error U5001 at src/construction.una:25:42
+-- expect: error U5001 at src/construction.una:30:37
+-- expect: error U5001 at src/construction.una:37:10
+-- expect: error U5001 at src/construction.una:43:35
+-- expect: error U5001 at src/construction.una:49:3
+-- expect: error U5001 at src/construction.una:49:27
+-- expect: error U5001 at src/construction.una:54:33
+-- expect: error U5001 at src/construction.una:60:44
+-- expect: error U5001 at src/construction.una:63:44
+-- expect: error U5001 at src/construction.una:68:5
+module construction
+
+pub kind Pos = Int where it > 0
+
+kind Oops = | Bad
+
+pub literal(p: Pos, n: Int) -> List[Pos] = [p, n, 3]
+
+pub some(p: Pos, n: Int) -> List[Option[Pos]] = [Some(p), Some(n), None]
+
+pub ok(n: Int) -> Result[Pos, Oops] = Ok(n)
+
+pub appended(ps: List[Pos], p: Pos, n: Int) -> List[Pos]
+=
+  let a = ps.append(item: p)
+  let b: List[Pos] = a.append(item: n)
+  b
+
+pub replaced(ps: List[Pos], n: Int) -> List[Pos]
+=
+  let edit out: List[Pos] = ps
+  if out.len > 0
+    edit out.set(index: 0, item: n)
+  out
+
+pub defaulted(o: Option[Pos], p: Pos, n: Int) -> Pos
+=
+  let a: Pos = o.or_else(default: p)
+  let b: Pos = o.or_else(default: n)
+  a + b
+
+pub inserted(m: Map[Text, Pos], p: Pos, n: Int) -> Map[Text, Pos]
+=
+  let a = m.with(key: "a", value: p)
+  a.with(key: "b", value: n)
+
+pub set_in(m: Map[Text, Pos], n: Int) -> Map[Text, Pos]
+=
+  let edit out: Map[Text, Pos] = m
+  edit out.set(key: "a", value: n)
+  out
+
+pub mapped(xs: List[Int]) -> List[Pos]
+=
+  let a: List[Pos] = xs.map(each: fn(x) -> if x > 0 then x else 1)
+  let b: List[Pos] = xs.map(each: fn(x) -> x)
+  a
+
+pub folded(ps: List[Pos], p: Pos) -> Pos = ps.fold(initial: p, step: fn(acc, x) -> acc - x)
+
+pub tasks(xs: List[Int]) -> List[Pos]
+=
+  let out: List[Pos] = together for x in xs
+    x
+  out

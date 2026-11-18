@@ -1,0 +1,19 @@
+-- test: a generic writer called under an `internal` condition labels the reads like any other (S-14, from a review)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/main.una:19:3
+module main
+
+mark[T](x: T) -> T
+  uses @files: Files[write]
+=
+  let w = attempt @files.write("marker.txt", content: "")
+  x
+
+pub probe(flag: internal Bool) -> Bool
+  uses @files: Files[read, write]
+=
+  if flag
+    let n = mark(1)
+    unit
+  let r = attempt @files.read("marker.txt")
+  is_ok(r)

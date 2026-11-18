@@ -1,0 +1,8 @@
+[package]
+name = "native__big_int_product"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

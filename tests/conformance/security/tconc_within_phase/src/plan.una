@@ -1,0 +1,39 @@
+-- test: precise `τ_conc` (ADR 0116 P2, the correction of IF6): the part that holds the site counts too, since its own work on `key` before the `within` decides which work of its sibling the deadline overlaps, so the `public` failure `TimedOut` would reveal `key` (U4002 at `if error pass`)
+-- spec: spec/27 §11
+-- expect: error U4002 at src/plan.una:29:5
+module plan
+
+import std.time (millisecond)
+
+pub kind PlanError = | TimedOut
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+plan(n: Int) -> Int = n + 1
+
+--- Public work that runs for a while.
+busy(n: Int) -> Int
+=
+  let edit acc = n
+  for i in 0..1000
+    acc = acc + 1
+  acc
+
+--- Its own work on `key` decides when `plan(n)` starts, and so which work of the sibling it
+--- overlaps (ADR 0116 P2).
+warm_then_plan(key: secret Int, n: Int) -> Int
+  fails PlanError
+=
+  let spent = crunch(key)
+  let value = plan(n) within 10 * millisecond
+    if error pass
+  value
+
+pub both(key: secret Int, n: Int) -> Int
+  fails PlanError
+=
+  together
+    let a = warm_then_plan(key, n)
+      if error pass
+    let b = busy(n)
+  b

@@ -1,0 +1,6 @@
+-- test: kind names are UpperCamelCase
+-- spec: spec/01 §4
+-- expect: error U1005 at 6:10
+module kind_name_convention
+
+pub kind Seat_Count = Int in 0..5000

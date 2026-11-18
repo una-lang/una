@@ -1,0 +1,34 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): rule: `attempt` of a lambda: attempt applies to one call only (U2001)
+-- spec: spec/07 §7
+-- expect: error U2001 at src/sw.una:25:32
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let attempt_lambda = attempt (fn(x: T) -> k(x))
+  let n = when attempt_lambda
+    is Ok(f) -> [if a == b then p else q].map(each: f).sum()
+    is Err(e) -> 0
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

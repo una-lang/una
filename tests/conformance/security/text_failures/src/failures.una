@@ -1,0 +1,127 @@
+-- test: whether parse_int fails on a secret, and where, is secret: attempt's Ok or Err, the payload of Err itself, read through when, a failure in its place and the value that replaces it all carry the argument's labels, each with a control, and a public text's failure stays public; a failure relayed through fails of keeps the rules of ADR 0062 and 0067, which reject a callback failing on secret elements or over a secret length (spec/22 §5 rule 2)
+-- spec: spec/22 §5
+-- expect: error U4001 at src/failures.una:21:3
+-- expect: error U4001 at src/failures.una:40:8
+-- expect: error U4001 at src/failures.una:42:18
+-- expect: error U4002 at src/failures.una:56:5
+-- expect: error U4001 at src/failures.una:64:3
+-- expect: error U4001 at src/failures.una:95:31
+-- expect: error U4002 at src/failures.una:103:31
+-- expect: error U4001 at src/failures.una:112:8
+-- expect: error U4001 at src/failures.una:115:12
+-- expect: error U4001 at src/failures.una:116:29
+module failures
+
+pub kind Bad = Other | Worse
+
+--- Whether a secret parses, through `attempt`.
+pub ok_tag(s: secret Text) -> Bool
+=
+  let r = attempt s.parse_int()
+  r is Ok
+
+pub ok_tag_control(s: secret Text) -> secret Bool
+=
+  let r = attempt s.parse_int()
+  r is Ok
+
+position(e: secret ParseError) -> secret Int
+=
+  when e
+    is NotADigit(at) -> at
+    is Empty -> -1
+    is NoDigits -> -2
+    is TooLong -> -3
+
+--- Where a secret fails to parse, through the payload of `Err`.
+pub err_position(s: secret Text) -> Int
+=
+  let r = attempt s.parse_int()
+  when r
+    is Ok(n) -> 0
+    is Err(e) -> position(e)
+
+pub err_position_control(s: secret Text) -> secret Int
+=
+  let r = attempt s.parse_int()
+  when r
+    is Ok(n) -> 0
+    is Err(e) -> position(e)
+
+--- Whether a secret parses, through a failure of the caller.
+pub relayed(s: secret Text) -> secret Int
+  fails Bad
+=
+  let n = s.parse_int()
+    if error fail Other
+  n
+
+--- Whether a secret parses, through the value that replaces the failure.
+pub used(s: secret Text) -> Int
+=
+  let n = s.parse_int()
+    if error use 0
+  n
+
+pub used_control(s: secret Text) -> secret Int
+=
+  let n = s.parse_int()
+    if error use 0
+  n
+
+--- A public text's failure stays public.
+pub public_tag(t: Text) -> Bool
+=
+  let r = attempt t.parse_int()
+  r is Ok
+
+lucky(x: Int) -> Int
+  fails Bad
+=
+  if x == 7
+    fail Other
+  x
+
+always(x: Int) -> Int
+  fails Bad
+=
+  fail Worse
+
+--- A failure relayed through `fails of` keeps the rules of ADR 0062 and 0067: a callback
+--- that fails on a secret element is rejected where it is passed...
+pub on_elements(pins: List[secret Int]) -> Int
+  fails Bad
+=
+  let mapped = pins.map(each: lucky)
+    if error pass
+  0
+
+--- ...and so is one that fails over a list whose length is secret.
+pub on_length(pins: secret List[Int]) -> Int
+  fails Bad
+=
+  let mapped = pins.map(each: always)
+    if error pass
+  0
+
+--- The position in a failure's payload is labeled itself: read through `when` and
+--- returned, it is as secret as the text.
+pub where_failed(s: secret Text) -> Int
+=
+  let r = attempt s.parse_int()
+  when r
+    is Ok(n) -> 0
+    is Err(e) ->
+      when e
+        is NotADigit(at) -> at
+        else -> -1
+
+pub where_failed_control(s: secret Text) -> secret Int
+=
+  let r = attempt s.parse_int()
+  when r
+    is Ok(n) -> 0
+    is Err(e) ->
+      when e
+        is NotADigit(at) -> at
+        else -> -1

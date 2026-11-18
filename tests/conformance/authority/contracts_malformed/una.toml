@@ -1,0 +1,17 @@
+[package]
+name = "case"
+version = "0.1.0"
+edition = "0.3"
+
+[contracts]
+"shop.nope" = ["@catalog: Catalog[price, set_price where not dry_run, journal where not dry_run]"]
+"shop.helper" = ["@catalog: Catalog[price]"]
+"shop.update" = [
+  "catalog Catalog[price]",
+  "@catalog: Catalog",
+  "@log: Lgo[write]",
+  "@log: Log[erase]",
+  "@log: Log[write gives internal[Service]]",
+  "@catalog: Catalog[price, set_price where not dryrun, journal where not dry_run]",
+  "@catalog: Catalog[price]",
+]

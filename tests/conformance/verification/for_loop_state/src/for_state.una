@@ -1,0 +1,86 @@
+-- test: a loop body is checked once with the updated bindings fresh at their declared types: no fact about them reaches the body or survives the loop, their refinements are the invariant, the context of the loop is kept, and the loop variable of a range lies in it (spec/17 §4, §5 rule 3); a failure that hinges on the forgotten facts is unknown (ADR 0071 D3)
+-- spec: spec/17 §4, §5
+-- expect: error U5002 at src/for_state.una:14:11
+-- expect: error U5002 at src/for_state.una:26:18
+-- expect: error U5001 at src/for_state.una:43:9
+-- expect: error U5001 at src/for_state.una:72:18
+-- expect: error U5001 at src/for_state.una:85:17
+module for_state
+
+pub kind Pos = Int where it > 0
+
+--- A fact about an updated binding does not survive the loop: only its type does.
+pub after_loop(xs: List[Int]) -> Int
+  ensures result == 5
+=
+  let edit n = 5
+  for x in xs
+    n = n + 0
+  n
+
+--- Nor does it reach the body: there `n` is any `Int`.
+pub in_body(xs: List[Int]) -> Unit
+=
+  let edit n = 5
+  for x in xs
+    let p: Pos = n
+    n = p
+  unit
+
+--- The refinement of an updated binding is the invariant, before and after the loop.
+pub invariant(xs: List[Int]) -> Pos
+=
+  let edit n: Pos = 1
+  for x in xs
+    n = n + 1
+  n
+
+--- A rebind that breaks the invariant is refuted.
+pub broken(xs: List[Int]) -> Pos
+=
+  let edit n: Pos = 1
+  for x in xs
+    n = n - 1
+  n
+
+--- A binding the loop does not update keeps its facts, and so does the path condition.
+pub context(xs: List[Int], m: Int) -> Int
+=
+  let k = 5
+  let edit total = 0
+  if m > 0
+    for x in xs
+      let a: Pos = k
+      let b: Pos = m
+      total = total + a + b
+  total
+
+--- The loop variable of a range lies in the range.
+pub indices(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 0..<n
+    let j: Pos = i + 1
+    total = total + j
+  total
+
+--- But not beyond its upper bound.
+pub inclusive(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 0..n
+    let j: Pos = n - i
+    total = total + j
+  total
+
+loosen(edit n: Int) -> Unit
+=
+  n = 0
+
+--- An `edit` call in the body rebinds with the obligation of the invariant.
+pub through_call(xs: List[Int]) -> Pos
+=
+  let edit p: Pos = 1
+  for x in xs
+    loosen(edit p)
+  p

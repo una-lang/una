@@ -1,0 +1,10 @@
+-- test: range arms that miss values are refuted at the when keyword
+-- spec: spec/12 §3
+-- expect: error U5001 at 8:3
+module exhaustive_refuted
+
+pub band(percent: Int) -> Text
+=
+  when percent
+    in 0..<50 -> "fail"
+    in 50..100 -> "pass"

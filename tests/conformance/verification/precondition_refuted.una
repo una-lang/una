@@ -1,0 +1,11 @@
+-- test: a call that may break the callee's requires is refuted at the call
+-- spec: spec/12 §3
+-- expect: error U5001 at 11:28
+module precondition_refuted
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+pub halve(n: Int) -> Int = half(n - 1)

@@ -1,0 +1,4 @@
+[package]
+name = "user_map_recursive"
+version = "0.1.0"
+edition = "0.1"

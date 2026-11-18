@@ -1,0 +1,11 @@
+module greet
+
+import release (shown)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let name = @env.get("USER")
+    if none use "stranger"
+  @console.print("Hello, {shown(name)}! Your user name has {shown(name).len} letters.")

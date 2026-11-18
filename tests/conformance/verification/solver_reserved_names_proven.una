@@ -1,0 +1,21 @@
+-- test: binders named like words the solver reserves, and a discarded statement, are verified
+-- spec: spec/12 §4
+-- expect: ok
+module solver_reserved_names_proven
+
+capability Log
+  op write(line: Text) -> Unit
+
+pub larger(as: Int, xor: Int, distinct: Int) -> Int
+  requires as > 0
+  ensures result > 0
+=
+  if xor > distinct then as else as + 1
+
+pub logged(n: Int) -> Int
+  requires n > 0
+  ensures result > 0
+  uses @log: Log[write]
+=
+  @log.write("picked")
+  n

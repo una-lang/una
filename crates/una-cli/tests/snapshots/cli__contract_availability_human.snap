@@ -1,0 +1,9 @@
+---
+source: crates/una-cli/tests/cli.rs
+expression: stdout(&output)
+---
+--- Availability bands from the Box Office Handbook 2.1.
+pub availability(e: Event) -> Availability
+  ensures e.remaining < 1 implies result is SoldOut
+  derived from EVENTS_3
+-- requirement EVENTS_3 (active): "An event with no remaining seats is always shown as sold out"

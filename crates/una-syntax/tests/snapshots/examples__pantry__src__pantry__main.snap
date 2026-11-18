@@ -1,0 +1,29 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module pantry.main)
+(import pantry.stock Grams Item Milliliters Pieces shopping_list total)
+(fn stock
+  (doc "--- What the pantry holds this morning.")
+  ()
+  {List[Item]}
+  (list
+    (call Item (name: "rice") (amount: 0) (measure: Grams))
+    (call Item (name: "flour") (amount: 700) (measure: Grams))
+    (call Item (name: "eggs") (amount: 6) (measure: Pieces))
+    (call Item (name: "oil") (amount: 0) (measure: Milliliters))))
+(fn pub main
+  ()
+  {Unit}
+  (uses @console {Console[print]})
+  (block
+    (let items (call stock))
+    (let needed (call shopping_list items))
+    (let line
+      (method needed fold
+        (initial: "")
+        (step: (fn (line name) (if (== line "") name (text line ", " name))))))
+    (@console.print (text "to buy: " line))
+    (let grams (call total items (measure: Grams)))
+    (@console.print (text "grams in stock: " grams))))

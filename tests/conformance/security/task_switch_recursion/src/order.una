@@ -1,0 +1,32 @@
+-- test: a recursion whose depth a `secret` value decides ends at a branch on it, so its recursive call is a check point under a `secret` program counter: U4002 in a program that starts tasks, with no labeled loop (spec/27 §8 rule 5, #1684); this rule is also what closes the depth channel of started tasks above `internal`, a task that ends alone past `--task-depth` (#1677), so an amendment that withdraws it must keep a depth rule
+-- spec: spec/27 §8
+-- expect: error U4002 at src/order.una:11:9
+module order
+
+deep(n: secret Int) -> secret Int
+=
+  if n <= 0
+    0
+  else
+    1 + deep(n - 1)
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let r = deep(bit(k, key: key) * 3000)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

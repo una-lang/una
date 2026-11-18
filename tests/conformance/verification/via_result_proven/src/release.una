@@ -1,0 +1,12 @@
+trusted module release
+
+pub kind Pos = Int where it > 0
+
+pub policy lower
+  from internal Int
+  to public Pos
+  via at_least_one
+  purpose "show a count"
+  owner ops
+
+at_least_one(n: internal Int) -> public Pos = if n > 0 then n else 1

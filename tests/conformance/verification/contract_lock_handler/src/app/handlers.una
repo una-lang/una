@@ -1,0 +1,9 @@
+module app.handlers
+
+import app.caps (Log, Store)
+
+relay(n: Int) -> Unit = @log.write(n)
+
+pub handler forwarding() for Store
+  uses @log: Log[write]
+  op put(n) = relay(n)

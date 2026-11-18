@@ -1,0 +1,39 @@
+-- test: in a package without boundaries, a value of a kind with a field of function type given to a prelude function that applies a function argument, as `fold`'s `initial` or as the receiver of `map`, is not code known at the call, so the timing label of a `within` around it is `⊤` and `if error pass` is U4002; a kind with no function field there keeps it accepted (ADR 0116 IF5 item 4, issue #1023, issue #1436)
+-- spec: spec/26 §2
+-- expect: error U4002 at src/kinds.una:22:5
+-- expect: error U4002 at src/kinds.una:30:5
+module kinds
+
+import std.time (millisecond)
+
+pub kind E = | TimedOut
+
+kind Holder
+  run: fn(Int) -> Int
+
+kind Plain
+  step: Int
+
+pub held_initial(n: Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> x + 1)
+  let kept = [n].fold(initial: h, step: fn(acc: Holder, x: Int) -> acc) within 10 * millisecond
+    if error pass
+  n
+
+pub held_receiver(n: Int) -> Int
+  fails E
+=
+  let hs = [Holder(run: fn(x: Int) -> x + 1)]
+  let a = hs.map(each: fn(h: Holder) -> n).len within 10 * millisecond
+    if error pass
+  a
+
+pub plain_initial(n: Int) -> Int
+  fails E
+=
+  let p = Plain(step: 1)
+  let kept = [n].fold(initial: p, step: fn(acc: Plain, x: Int) -> acc) within 10 * millisecond
+    if error pass
+  kept.step

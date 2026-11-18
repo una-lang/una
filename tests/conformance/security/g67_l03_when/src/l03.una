@@ -1,0 +1,15 @@
+-- test: ADR 0067 adversarial check of #231, L03_when: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l03.una:15:34
+module l03
+
+kind Tier = Low | High
+
+tiered[T](a: T, b: T) -> Int
+=
+  let t = if a == b then High else Low
+  when t
+    is Low -> 0
+    is High -> 1
+
+pub leak(s: secret Int) -> Int = tiered(s, b: 0)

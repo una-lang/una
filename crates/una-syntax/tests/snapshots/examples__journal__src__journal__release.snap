@@ -1,0 +1,13 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module trusted journal.release)
+(policy pub length_band
+  (doc "--- How long a text is, in whole hundreds of characters, and nothing of what it says.")
+  (from {confidential[Private] Text})
+  (to {public Nat})
+  (via hundreds)
+  (purpose "show how much was written without showing what")
+  (owner journal_owner))
+(fn hundreds ((text {confidential[Private] Text})) {public Nat} (/ (. text len) 100))

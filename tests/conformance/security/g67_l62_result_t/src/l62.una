@@ -1,0 +1,10 @@
+-- test: ADR 0067 adversarial check of #231, L62_result_t: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l62.una:10:35
+module l62
+
+kind Why = | Differ
+
+check_eq[T](a: T, b: T) -> Result[T, Why] = if a == b then Ok(a) else Err(Differ)
+
+pub leak(s: secret Int) -> Bool = check_eq(s, b: 0) is Ok

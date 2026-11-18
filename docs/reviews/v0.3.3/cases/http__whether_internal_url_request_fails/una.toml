@@ -1,0 +1,8 @@
+[package]
+name = "http__whether_internal_url_request_fails"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

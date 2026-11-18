@@ -1,0 +1,68 @@
+-- test: a call with an `edit` or `take` argument is the whole expression of a statement or `let`, not an operand, an argument, a condition, a lambda body, a one-line function body, a parenthesized expression or a `when` arm (spec/17 §3 rule 5)
+-- spec: spec/17 §3
+-- expect: error U3013 at src/memeffect.una:23:11
+-- expect: error U3013 at src/memeffect.una:29:12
+-- expect: error U3013 at src/memeffect.una:35:25
+-- expect: error U3013 at src/memeffect.una:41:6
+-- expect: error U3013 at src/memeffect.una:50:37
+-- expect: error U3013 at src/memeffect.una:55:12
+-- expect: error U3013 at src/memeffect.una:61:4
+-- expect: error U3013 at src/memeffect.una:67:13
+module memeffect
+
+next(edit n: Int) -> Int
+=
+  n = n + 1
+  n
+
+eat(take xs: List[Int]) -> Int = xs.len
+
+pub in_operand() -> Int
+=
+  let edit n = 1
+  let m = next(edit n) + 1
+  m
+
+pub in_argument() -> Int
+=
+  let xs = [1]
+  let m = [eat(take xs)].len
+  m
+
+pub in_lambda() -> Int
+=
+  let xs = [1]
+  let f = fn(x: Int) -> eat(take xs)
+  0
+
+pub in_condition() -> Int
+=
+  let edit n = 1
+  if next(edit n) > 1 then 1 else 0
+
+pub whole_line() -> Int
+=
+  let edit n = 1
+  let m = next(edit n)
+  n = next(edit n)
+  m + n
+
+pub line_body(edit n: Int) -> Int = next(edit n)
+
+pub in_parentheses() -> Int
+=
+  let edit n = 1
+  let m = (next(edit n))
+  m + n
+
+pub statement_in_parentheses() -> Int
+=
+  let edit n = 1
+  (next(edit n))
+
+pub when_arm(k: Int) -> Int
+=
+  let edit n = 1
+  when k
+    is 1 -> next(edit n)
+    else -> n

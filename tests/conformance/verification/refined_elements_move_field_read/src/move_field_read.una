@@ -1,0 +1,16 @@
+-- test: movement field_read: a `List[Int]` field read into a `let` annotated `List[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_field_read.una:15:22
+module move_field_read
+
+pub kind Pos = Int where it > 0
+
+pub kind Bag
+  ints: List[Int]
+  poss: List[Pos]
+
+pub moved(bag: Bag) -> Int
+=
+  let a: List[Pos] = bag.poss
+  let b: List[Pos] = bag.ints
+  a.len + b.len

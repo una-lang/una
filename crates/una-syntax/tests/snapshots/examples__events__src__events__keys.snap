@@ -1,0 +1,18 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module trusted events.keys)
+(import events.types Phone)
+(policy pub attendee_key
+  (from {secret[PII] Phone})
+  (to {internal Hashed})
+  (via hmac_phone)
+  (purpose "attendee lookup and audit correlation")
+  (owner privacy))
+(fn hmac_phone
+  ((phone {secret[PII] Phone}))
+  {internal Hashed}
+  (uses @keys {Keys[hmac]})
+  (fails KeyError)
+  (block (handled (@keys.hmac (key_name: "phone_pepper") (data: phone)) (if-error-pass))))

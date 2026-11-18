@@ -1,0 +1,20 @@
+-- test: a kind whose parameter is only in data positions is covariant at a lambda result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 14:37
+module sweep_variance_box_lambda
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub lam_0(v: Box[secret Int]) -> Int
+=
+  let f: fn() -> Box[Int] = fn() -> v
+  0
+
+pub lam_1(v: Box[Int]) -> Int
+=
+  let f: fn() -> Box[secret Int] = fn() -> v
+  0

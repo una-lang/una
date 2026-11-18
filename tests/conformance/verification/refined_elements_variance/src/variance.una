@@ -1,0 +1,56 @@
+-- test: a collection flows into a refined position by variance: covariant through `Option`, `Result`, `Map` and a covariant kind, contravariant through a function's parameter, and invariant through a kind whose parameter is in a function type (ADR 0103 rule 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/variance.una:34:25
+-- expect: error U5001 at src/variance.una:35:31
+-- expect: error U5001 at src/variance.una:36:28
+-- expect: error U5001 at src/variance.una:37:28
+-- expect: error U5001 at src/variance.una:38:22
+-- expect: error U5001 at src/variance.una:48:33
+-- expect: error U5001 at src/variance.una:54:23
+-- expect: error U5001 at src/variance.una:55:25
+module variance
+
+pub kind Pos = Int where it > 0
+
+kind Oops = | Bad
+
+pub kind Box[T]
+  value: T
+
+pub kind Cell[T]
+  get: fn() -> T
+  put: fn(T) -> Int
+
+pub widen(o: Option[Pos], r: Result[Pos, Oops], m: Map[Pos, Pos], b: Box[Pos]) -> Int
+=
+  let o2: Option[Int] = o
+  let r2: Result[Int, Oops] = r
+  let m2: Map[Int, Int] = m
+  let b2: Box[Int] = b
+  m2.len
+
+pub narrow(o: Option[Int], r: Result[Int, Oops], m: Map[Text, Int], k: Map[Int, Text], b: Box[Int]) -> Int
+=
+  let o2: Option[Pos] = o
+  let r2: Result[Pos, Oops] = r
+  let m2: Map[Text, Pos] = m
+  let k2: Map[Pos, Text] = k
+  let b2: Box[Pos] = b
+  0
+
+takes_int(xs: List[Int]) -> Int = xs.len
+
+takes_pos(xs: List[Pos]) -> Int = xs.len
+
+pub parameters() -> Int
+=
+  let f: fn(List[Pos]) -> Int = takes_int
+  let g: fn(List[Int]) -> Int = takes_pos
+  0
+
+pub invariant(p: Pos, c: Cell[Int]) -> Int
+=
+  let mine: Cell[Pos] = Cell(get: fn() -> p, put: fn(x) -> x)
+  let up: Cell[Int] = mine
+  let down: Cell[Pos] = c
+  0

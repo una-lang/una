@@ -1,0 +1,13 @@
+-- test: in edition 0.1, the text functions and ParseError of edition 0.2 are ordinary names: a package may declare them, and they are not in scope otherwise (ADR 0070 X9)
+-- spec: spec/22 §1
+-- expect: error U1001 at src/names.una:13:30
+module names
+
+pub kind ParseError = Bad | Worse
+
+--- In edition 0.1, the text functions of edition 0.2 are ordinary names.
+pub split(t: Text) -> List[Text] = [t]
+
+pub parts(t: Text) -> Int = split(t).len
+
+pub upper(t: Text) -> Text = to_upper(t)

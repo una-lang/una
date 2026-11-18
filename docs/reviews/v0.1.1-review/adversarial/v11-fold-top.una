@@ -1,0 +1,28 @@
+-- Adversarial: a fold whose accumulator's shape is decided by a secret element through control flow: an `Option` from a `secret` initial value, a `Bool` with `or`, a list appended under a test, and the same from a public `None`
+-- Expected: U4001 at each public use: the accumulator `U` must keep its own top label, which ADR 0051's fold rule (top of `xs` and `step`) would otherwise replace
+-- Observed: U4001 at all four; the result keeps `U`'s label, and the public-initial form is rejected at `step`
+-- Verdict: Held
+module v11_fold_top
+
+pub any_big(xs: List[secret Int]) -> Bool
+=
+  let init: secret Option[Int] = None
+  let found = xs.fold(initial: init, step: fn(acc, x) -> if x > 3 then Some(1) else acc)
+  found.is_some()
+
+pub any_big_bool(xs: List[secret Int]) -> Bool
+=
+  let init: secret Bool = false
+  let found = xs.fold(initial: init, step: fn(acc, x) -> acc or x > 3)
+  found
+
+pub any_big_list(xs: List[secret Int]) -> Int
+=
+  let init: secret List[Int] = []
+  let kept = xs.fold(initial: init, step: fn(acc, x) -> if x > 3 then acc.append(item: 1) else acc)
+  kept.len
+
+pub any_big_public_init(xs: List[secret Int]) -> Bool
+=
+  let found = xs.fold(initial: None, step: fn(acc, x) -> if x > 3 then Some(1) else acc)
+  found.is_some()

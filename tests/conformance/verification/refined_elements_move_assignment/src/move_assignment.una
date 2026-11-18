@@ -1,0 +1,13 @@
+-- test: movement assignment: a `List[Int]` assigned to an editable binding annotated `List[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_assignment.una:12:9
+module move_assignment
+
+pub kind Pos = Int where it > 0
+
+pub moved(ints: List[Int], ps: List[Pos]) -> Int
+=
+  let edit out: List[Pos] = ps
+  out = ps
+  out = ints
+  out.len

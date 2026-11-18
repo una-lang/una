@@ -1,0 +1,35 @@
+-- test: recursive and mutually recursive kinds: field labels reach equality through the recursion, and variance takes the least solution (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 25:30
+-- expect: error U4001 at 27:34
+-- expect: error U4001 at 31:54
+-- expect: error U4001 at 33:49
+module sweep_label_recursive_kinds
+
+kind Tree = Leaf | Node(pin: secret Int, rest: List[Tree])
+
+kind Forest
+  trees: List[Tree]
+
+kind Chain[T]
+  value: T
+  next: Option[Chain[T]]
+
+kind Ping[T]
+  pong: Option[Pong[T]]
+
+kind Pong[T]
+  eat: fn(T) -> Int
+  ping: Option[Ping[T]]
+
+pub trees(a: Tree) -> Bool = a == Leaf
+
+pub forests(f: Forest) -> Bool = f == Forest(trees: [])
+
+pub chain_up(c: Chain[Int]) -> Chain[secret Int] = c
+
+pub chain_down(c: Chain[secret Int]) -> Chain[Int] = c
+
+pub ping_up(p: Ping[Int]) -> Ping[secret Int] = p
+
+pub ping_same(p: Ping[secret Int]) -> Ping[secret Int] = p

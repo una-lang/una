@@ -1,0 +1,110 @@
+-- test: a handler granted on by name to a call into a boundary is charged where it is installed, and so are the handlers its own `uses` resolve to there: U3021 for `uses` outside the ceiling, U3024 for a reachable release, through a lambda, a function named as a value, an installation's arguments, a handler's operation and an example's `given` (ADR 0093 rule 15); a handler within the ceiling that releases nothing is accepted
+-- spec: spec/05 §4
+-- expect: error U3021 at src/media/app.una:81:25
+-- expect: error U3024 at src/media/app.una:85:25
+-- expect: error U3021 at src/media/app.una:90:27
+-- expect: error U3021 at src/media/app.una:95:24
+-- expect: error U3021 at src/media/app.una:100:25
+-- expect: error U3024 at src/media/app.una:104:26
+-- expect: error U3021 at src/media/app.una:108:16
+module media.app
+
+import media.log (Disk, Log, Net)
+import media.release (reveal)
+import media.render (show)
+
+handler noisy() for Log
+  uses @net: Net[post]
+  op write(n) = @net.post(n)
+
+handler heavy() for Log
+  uses @disk: Disk[put]
+  op write(n) = @disk.put(n)
+
+handler leaky() for Net
+  uses @disk: Disk[put]
+  op post(n) = @disk.put(n)
+
+handler talker() for Net
+  op post(n) = reveal(n)
+
+handler relay(cb: fn(Int) -> Int) for Log
+  op write(n) = cb(n)
+
+handler store() for Disk
+  op put(n) = n
+
+handler wrap() for Net
+  uses @log: Log[write]
+  op post(n) = forward(n)
+
+forward(n: Int) -> Int
+  uses @log: Log[write]
+=
+  show(n) with @log = @log
+
+middle(n: Int) -> Int
+  uses @net: Net[post]
+=
+  forward(n) with @log = noisy()
+
+apply(n: Int, f: fn(Int) -> Int uses @log: Log[write]) -> Int
+  uses @log: Log[write]
+=
+  f(n)
+
+captures(n: Int) -> Int
+  uses @log: Log[write]
+=
+  apply(n, f: fn(m) -> forward(m))
+
+names(n: Int) -> Int
+  uses @log: Log[write]
+=
+  apply(n, f: forward)
+
+pinged(n: Int) -> Int
+  uses @net: Net[post]
+=
+  @net.post(n)
+
+hosted(n: Int) -> Int
+  uses @log: Log[write]
+=
+  pinged(n) with @net = wrap()
+
+spill(n: Int) -> Int = reveal(n)
+
+pub upstream(n: Int) -> Int
+  uses @disk: Disk[put]
+=
+  middle(n) with @net = leaky()
+
+pub upstream_release(n: Int) -> Int
+=
+  middle(n) with @net = talker()
+
+pub by_lambda(n: Int) -> Int
+  uses @disk: Disk[put]
+=
+  captures(n) with @log = heavy()
+
+pub by_named(n: Int) -> Int
+  uses @disk: Disk[put]
+=
+  names(n) with @log = heavy()
+
+pub through_handler(n: Int) -> Int
+  uses @disk: Disk[put]
+=
+  hosted(n) with @log = heavy()
+
+pub given_value(n: Int) -> Int
+=
+  forward(n) with @log = relay(cb: spill)
+
+test "a handler given to the example and granted on by name"
+  given @disk = store()
+  given @log = heavy()
+  do forward(1)
+  expect result == 1

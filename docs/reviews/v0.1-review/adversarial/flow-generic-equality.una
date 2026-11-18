@@ -1,0 +1,18 @@
+-- Adversarial: '==' on a type parameter inside a generic function returns an unlabeled Bool; instantiated with secret/internal data; runtime demo prints an internal env var comparison to Console
+-- Expected: U4001 (spec/07 §3.1, §7.1, T6)
+-- Observed: accepted (exit 0)
+-- Verdict: CRITICAL
+module flow_generic_equality
+
+same[T](a: T, b: T) -> Bool = a == b
+
+pub leak(pin: secret Int) -> Bool = same(pin, b: 1234)
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let pin = @env.get("PIN")
+    if none use ""
+  let guess = same(pin, b: "1234")
+  @console.print("pin is 1234: {guess}")

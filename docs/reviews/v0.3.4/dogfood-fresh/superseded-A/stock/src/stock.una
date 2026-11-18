@@ -1,0 +1,50 @@
+module stock
+
+import token (api_token_header)
+
+--- The stock level of an item, from the inventory API, or `None` when the request, its status or its answer fails.
+pub stock_level(item: Text, token: secret Text) -> internal Option[internal Int]
+  uses @http: Http[get]
+=
+  let auth = Header(name: "X-Api-Token", value: api_token_header(token))
+  let r = attempt @http.get("https://inventory.example.com/v1/items/{item}", headers: [auth], key_name: None)
+  when r
+    is Ok(response) -> if response.status == 200 then count_of(response.body) else None
+    is Err(e) -> None
+
+--- The `count` field of a JSON object, when it is an integer.
+count_of(body: internal Text) -> internal Option[internal Int]
+=
+  let doc = body.parse_json()
+    if error use Null
+  when doc
+    is Object(fields) ->
+      let value = fields.get(key: "count")
+        if none use Null
+      when value
+        is Number(n) -> Some(n)
+        else -> None
+    else -> None
+
+--- A stand-in for the inventory API: a GET with the token `token` in `X-Api-Token` answers 200 with `answer`, any other GET 401.
+handler inventory_answering(token: Text, answer: Text) for Http
+  op get(url, headers, key_name) = if headers.contains(item: Header(name: "X-Api-Token", value: token)) then Response(status: 200, headers: [], body: answer) else Response(status: 401, headers: [], body: "")
+  op post(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op put(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op delete(url, headers, key_name) = Response(status: 405, headers: [], body: "")
+
+example "the count of the API's answer is the stock level"
+  given @http = inventory_answering(token: "t0k3n", answer: "\{\"count\": 7\}")
+  do stock_level("widget", token: "t0k3n")
+  expect result == Some(7)
+  expect performed @http.get
+
+example "a rejected token gives nothing"
+  given @http = inventory_answering(token: "t0k3n", answer: "\{\"count\": 7\}")
+  do stock_level("widget", token: "wrong")
+  expect result == None
+
+example "an answer without a count gives nothing"
+  given @http = inventory_answering(token: "t0k3n", answer: "\{\"items\": 7\}")
+  do stock_level("widget", token: "t0k3n")
+  expect result == None

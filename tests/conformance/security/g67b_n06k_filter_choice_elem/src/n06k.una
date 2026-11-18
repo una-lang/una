@@ -1,0 +1,13 @@
+-- test: ADR 0067 recheck of #231, N06k_filter_choice_elem: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/n06k.una:11:8
+-- expect: error U4001 at src/n06k.una:12:19
+module n06k
+
+keepeq[U](xs: List[U], y: U) -> List[U] = xs.filter(keep: fn(x) -> x == y)
+
+pub leak(s: secret Int) -> Int
+=
+  when keepeq([[s], [5, 5]], y: [5, 5]).first
+    is Some(v) -> v.len
+    is None -> 0

@@ -1,0 +1,39 @@
+-- test: a run's trace renders an operation's outcome at its label, so a failure that a binding labels with `gives` is redacted and the same handler's failure through a binding that gives no label stays in clear; the program's output is unchanged, so this case's output alone does not encode the rule: the test `s45_a_gives_labeled_answer_is_redacted_and_a_public_one_stays_in_clear` in `crates/una-cli/tests/outcome_redaction.rs` runs this program for several values and compares whole traces in both engines (spec/11 §5, S-45)
+-- spec: spec/11 §5
+-- expect: run-output "done"
+module outcomes
+
+pub kind Lookup = | NotFound
+
+capability Store
+  op owner(file: Text) -> Text
+    fails Lookup
+
+handler names() for Store
+  op owner(file) =
+    if file == "missing"
+      fail NotFound
+    else
+      "ana"
+
+labeled(s: internal Int) -> Unit
+  uses @store: Store[owner gives internal]
+=
+  let a = attempt @store.owner("missing")
+  let b = attempt @store.owner("found")
+  unit
+
+plain() -> Unit
+  uses @store: Store[owner]
+=
+  let a = attempt @store.owner("missing")
+  let b = attempt @store.owner("found")
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: internal Int = 2
+  labeled(s) with @store = names()
+  plain() with @store = names()
+  @console.print("done")

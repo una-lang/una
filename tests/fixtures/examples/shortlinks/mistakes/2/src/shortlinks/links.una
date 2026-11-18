@@ -1,0 +1,123 @@
+module shortlinks.links
+
+requirement LINKS_1
+  text "A slug has 3 to 16 characters and never starts with a dash"
+  source generated "task 17: short link rules"
+  owner web_team
+  status proposed
+
+--- A slug, checked once where it enters the program.
+pub kind Slug = Text where valid_slug(it)
+
+pub kind SlugError = | Malformed
+
+pub kind LinkError = BadSlug | Unknown(slug: Text) | StoreDown
+
+pub kind StoreError = | Offline
+
+--- Format check only. The solver sees an opaque symbol; `checked` establishes it.
+pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and t.len <= 16 and not starts_with(t, prefix: "-")
+
+--- Where short links are kept.
+pub capability Links
+  op put(slug: Slug, target: Text) -> Unit
+    fails StoreError
+  op get(slug: Slug) -> Option[Text]
+    fails StoreError
+
+--- The only way to obtain a Slug from untrusted text.
+pub parse_slug(raw: Text) -> Slug
+  fails SlugError
+  derived from LINKS_1
+=
+  let text = trim(raw)
+  checked(text, valid_slug(it)) else fail Malformed
+
+--- Stores a short link and returns its slug.
+pub shorten(raw: Text, target: Text) -> Slug
+  uses @links: Links[put]
+  fails LinkError
+=
+  let slug = checked(raw, valid_slug(it)) else fail BadSlug
+  @links.put(slug, target)
+    if error fail StoreDown
+  slug
+
+--- Where a short link leads.
+pub resolve(raw: Text) -> Text
+  uses @links: Links[get]
+  fails LinkError
+=
+  let slug = parse_slug(raw)
+    if error fail BadSlug
+  let target = @links.get(slug)
+    if error fail StoreDown
+    if none fail Unknown(slug: raw)
+  target
+
+--- Resolves a short link, with the failure as a value rather than a failure.
+pub try_resolve(raw: Text) -> Result[Text, LinkError]
+  uses @links: Links[get]
+=
+  attempt resolve(raw)
+
+--- Where a short link leads, or the home page when it cannot be resolved.
+pub resolve_or_home(raw: Text) -> Text
+  uses @links: Links[get]
+=
+  let outcome = try_resolve(raw)
+  when outcome
+    is Ok(target) -> target
+    is Err -> "/"
+
+--- Where a checked slug leads, or the home page when the store is down or has no such slug.
+pub lookup(slug: Slug) -> Text
+  uses @links: Links[get]
+=
+  let found = @links.get(slug)
+    if error use None
+    if none use "/"
+  found
+
+--- A store holding one link.
+pub handler one_link(saved: Text, leads_to: Text) for Links
+  op put(slug, target) = unit
+  op get(slug) = if slug == saved then Some(leads_to) else None
+
+--- A store that cannot be reached.
+pub handler offline_links() for Links
+  op put(slug, target) = fail Offline
+  op get(slug) = fail Offline
+
+example "a short link leads to its target"
+  given @links = one_link(saved: "docs", leads_to: "https://example.org/docs")
+  do resolve("docs")
+  expect result == "https://example.org/docs"
+  expect performed @links.get
+
+example "a malformed slug is rejected before the store is asked"
+  given @links = one_link(saved: "docs", leads_to: "https://example.org/docs")
+  do resolve("-x")
+  expect fails BadSlug
+  expect not performed @links.get
+
+example "an unknown slug fails"
+  given @links = one_link(saved: "docs", leads_to: "https://example.org/docs")
+  do resolve("blog")
+  expect fails Unknown
+
+example "an attempt reports a failure as a value"
+  given @links = offline_links()
+  do try_resolve("docs")
+  expect result is Err
+
+example "without a store the home page is shown"
+  given @links = offline_links()
+  do resolve_or_home("docs")
+  expect result == "/"
+
+example "a slug is stored"
+  given @links = one_link(saved: "docs", leads_to: "https://example.org/docs")
+  do shorten(" news ", target: "https://example.org/news")
+  expect result == "news"
+  expect performed @links.put

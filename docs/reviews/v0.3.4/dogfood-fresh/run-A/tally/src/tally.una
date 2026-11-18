@@ -1,0 +1,51 @@
+module tally
+
+--- One vote counted: afterwards the candidate is a key of the map.
+add_vote(edit counts: Map[Text, Int], candidate: Text) -> Unit
+  ensures counts.has(key: candidate)
+=
+  let seen = counts.get(key: candidate)
+    if none use 0
+  edit counts.set(key: candidate, value: seen + 1)
+
+--- The votes per candidate, in ascending order of the candidates' names.
+pub tally(votes: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for vote in votes
+    add_vote(edit counts, candidate: vote)
+  counts
+
+--- The votes of a candidate the map is known to hold.
+pub votes_for(counts: Map[Text, Int], candidate: Text) -> Int
+  requires counts.has(key: candidate)
+=
+  let n = counts.get(key: candidate)
+    if none use 0
+  n
+
+--- The votes counted with one more for `candidate`: the candidate is then always in the map.
+pub tally_with(votes: List[Text], candidate: Text) -> Map[Text, Int]
+  ensures result.has(key: candidate)
+=
+  let edit counts = tally(votes)
+  add_vote(edit counts, candidate)
+  counts
+
+--- How many votes `candidate` has once one more vote for it is counted.
+pub votes_after_one_more(votes: List[Text], candidate: Text) -> Int
+=
+  let counts = tally_with(votes, candidate)
+  votes_for(counts, candidate)
+
+example "votes are counted per candidate"
+  do tally(["ana", "bo", "ana", "cy", "ana"])
+  expect result == empty_map().with(key: "ana", value: 3).with(key: "bo", value: 1).with(key: "cy", value: 1)
+
+example "no votes give an empty map"
+  do tally([])
+  expect result.len == 0
+
+example "one more vote is counted on top of the others"
+  do votes_after_one_more(["bo", "ana", "bo"], candidate: "bo")
+  expect result == 3

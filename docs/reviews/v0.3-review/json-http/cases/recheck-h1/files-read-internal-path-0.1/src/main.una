@@ -1,0 +1,8 @@
+module main
+
+g(p: internal Text) -> internal Text
+  uses @files: Files[read, write]
+  fails FileError
+=
+  @files.read(p)
+    if error pass

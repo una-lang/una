@@ -1,0 +1,72 @@
+-- test: nested kinds and generics holding a secret: as a capability operation argument it exceeds a public sink (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4003 at 31:15
+-- expect: error U4003 at 49:15
+-- expect: error U4003 at 67:15
+module sweep_label_nested_sink
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab_boxed_list(x: Box[List[secret Int]]) -> secret Int = x.value.sum()
+
+capability AuditBoxedList
+  op note(x: Box[List[secret Int]]) -> Unit
+    accepts public
+  op keep(x: Box[List[secret Int]]) -> Unit
+    accepts secret
+
+pub sunk_boxed_list(x: Box[List[secret Int]]) -> Unit
+  uses @audit: AuditBoxedList[note]
+=
+  @audit.note(x)
+
+pub kept_boxed_list(x: Box[List[secret Int]]) -> Unit
+  uses @audit: AuditBoxedList[keep]
+=
+  @audit.keep(x)
+
+grab_option_box(x: Option[Box[secret Int]]) -> secret Int = x.or_else(default: Box(value: 0)).value
+
+capability AuditOptionBox
+  op note(x: Option[Box[secret Int]]) -> Unit
+    accepts public
+  op keep(x: Option[Box[secret Int]]) -> Unit
+    accepts secret
+
+pub sunk_option_box(x: Option[Box[secret Int]]) -> Unit
+  uses @audit: AuditOptionBox[note]
+=
+  @audit.note(x)
+
+pub kept_option_box(x: Option[Box[secret Int]]) -> Unit
+  uses @audit: AuditOptionBox[keep]
+=
+  @audit.keep(x)
+
+grab_wallet(x: Wallet) -> secret Int = x.acct.pin
+
+capability AuditWallet
+  op note(x: Wallet) -> Unit
+    accepts public
+  op keep(x: Wallet) -> Unit
+    accepts secret
+
+pub sunk_wallet(x: Wallet) -> Unit
+  uses @audit: AuditWallet[note]
+=
+  @audit.note(x)
+
+pub kept_wallet(x: Wallet) -> Unit
+  uses @audit: AuditWallet[keep]
+=
+  @audit.keep(x)
