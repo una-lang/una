@@ -356,13 +356,10 @@ impl<'p, 'a> Checker<'p, 'a> {
         &mut self,
         span: Span,
         id: &str,
-        ids: &BTreeSet<&'a str>,
+        names: &conventions::RequirementNames<'_>,
         cited: Option<&Vec<Span>>,
     ) {
-        let suggestion =
-            conventions::unused_requirement(conventions::requirement_name(id), &|name| {
-                ids.contains(name)
-            });
+        let suggestion = names.unused(conventions::requirement_name(id));
         let mut diagnostic = self.make(
             Code::U1005,
             span,
@@ -901,6 +898,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 }
             }
         }
+        let mut names = None;
         for module in &self.package.modules {
             for decl in &module.tree.decls {
                 let DeclKind::Requirement(requirement) = &decl.kind else {
@@ -908,7 +906,10 @@ impl<'p, 'a> Checker<'p, 'a> {
                 };
                 let id = self.name(&requirement.id);
                 if !conventions::requirement(id) {
-                    self.requirement_convention(requirement.id.span, id, &ids, cited.get(id));
+                    // Read once, on the first identifier that breaks the convention (#1474).
+                    let names =
+                        names.get_or_insert_with(|| conventions::RequirementNames::new(&ids));
+                    self.requirement_convention(requirement.id.span, id, names, cited.get(id));
                 }
                 self.lower_convention(&requirement.owner, "owner");
                 match first.get(id) {
