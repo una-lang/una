@@ -1183,7 +1183,8 @@ fn unbundling_respects_the_root_version_floor() {
 /// ADR 0122, amendment of 2026-11-09 (L3): unbundling refuses a bundle whose root chain holds
 /// the floor's version with another digest than the one stored, a fork of the root chain
 /// (U7010), and writes nothing; with the same digest, or a floor of the earlier form, it
-/// unbundles, and the floor is not replaced by its equal version.
+/// unbundles; a floor with a digest is kept as it is, and a floor of the earlier form takes the
+/// digest of the root chain the unbundling verified at its version (#1970).
 #[test]
 fn unbundling_refuses_a_fork_at_the_floor_version() {
     let b = bundled();
@@ -1213,17 +1214,45 @@ fn unbundling_refuses_a_fork_at_the_floor_version() {
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
     assert!(done.notes.is_empty(), "{:?}", done.notes);
     assert!(store.contains(&b.expected.digest).unwrap());
-    // The earlier form: compared by version, unbundled, and kept as it is.
+    // The earlier form, as release 0.3 writes it: compared by version, unbundled, and given the
+    // digest of the verified chain's version.
     let store = Itaoca {
         root: scratch("unbundle-root-old-form"),
     };
     let dir = store.root.join("registry").join(&id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("root-version"), "1\n").unwrap();
-    bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
+    // A bundle that does not verify (a registry file changed in its copy) records no digest:
+    // the floor of the earlier form is kept as it is.
+    let mut files = b.files.clone();
+    let tile = files
+        .keys()
+        .find(|path| path.starts_with("tile/entries/"))
+        .unwrap()
+        .clone();
+    let entry = files.get_mut(&tile).unwrap();
+    let middle = entry.len() / 2;
+    entry[middle] ^= 1;
+    let tampered = bundle_of(&b, &b.archive, &b.provenance, &files);
+    assert!(
+        bundle::unbundle(
+            &tampered,
+            &store,
+            std::slice::from_ref(&b.expected),
+            &no_place
+        )
+        .is_err()
+    );
     assert_eq!(
         std::fs::read_to_string(dir.join("root-version")).unwrap(),
         "1\n"
+    );
+    let done =
+        bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
+    assert!(done.notes.is_empty(), "{:?}", done.notes);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("root-version")).unwrap(),
+        format!("1 {first}\n")
     );
     // A floor line of neither form: unavailable (U7013), nothing written.
     let store = Itaoca {
