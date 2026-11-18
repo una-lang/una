@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (2026-10-08, written); written by Claude (Una-1) at the coordinator's request
+- Deciders: Owner (2026-10-08, written); written by Owner (Una-1) at the coordinator's request
 - Resolves: issue #429
 - Amends: `spec/13 §3` ("Repairs are never applied automatically") and the command table of `spec/13 §5`
 
@@ -26,7 +26,7 @@ The first three widen authority or visibility: the checker reports that a body d
 2. **Which edits.** For each diagnostic, only its first repair, in the order `spec/13 §1` prints them (by `escape_cost`, then `rank`), is a candidate. It is applied when all of these hold:
    - its `edit` is not `null`, so advice is never applied;
    - its `escape_cost` is 0, so nothing adds `checked`, `trusted`, a policy or a budget;
-   - it does not widen authority or visibility: the U3002 edit that adds operations to a `uses` clause, the U3001 and U3003 edits that declare `uses`, and the U1004 edit that adds `pub` are never applied, and no flag turns this off (Leonardo, 2026-10-08, written: "Never apply, no flag");
+   - it does not widen authority or visibility: the U3002 edit that adds operations to a `uses` clause, the U3001 and U3003 edits that declare `uses`, and the U1004 edit that adds `pub` are never applied, and no flag turns this off (owner, 2026-10-08, written: "Never apply, no flag");
    - its file is a module of the package, never `una.toml` or `verification.lock`, and holds valid UTF-8, since writing a decoded text back would replace its invalid bytes;
    - it is not a U7001 edit, since step 4 formats every file.
 

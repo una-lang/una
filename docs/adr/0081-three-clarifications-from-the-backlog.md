@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: the coordinator session, on Leonardo's behalf, under the delegation of 2026-10-06 (decisions N-60 and N-61, on the backlog triage of 2026-10-08), on a proposal by Claude (Una-1)
+- Deciders: the coordinator session, on the owner's behalf, under the delegation of 2026-10-06 (decisions N-60 and N-61, on the backlog triage of 2026-10-08), on a proposal by Owner (Una-1)
 - Resolves: issues #8 (v0.1 review R-023), #14 (v0.1 review R-045) and #85 (round-3 re-review note R3-N1)
 
 ## Context

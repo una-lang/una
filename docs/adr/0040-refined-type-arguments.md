@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-30
-- Deciders: Leonardo (answer E5 A to the v0.1 review, on 2026-09-30), on the reviewer's recommendation
+- Deciders: Owner (answer E5 A to the v0.1 review, on 2026-09-30), on the reviewer's recommendation
 - Resolves: review finding R-012
 
 ## Context

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-30
-- Deciders: Leonardo (answer E5 A to the re-review, 2026-09-30), on a proposal by Claude (v0.1 closure run)
+- Deciders: Owner (answer E5 A to the re-review, 2026-09-30), on a proposal by Owner (v0.1 closure run)
 - Source: review finding R-020, decision D-048
 
 ## Context

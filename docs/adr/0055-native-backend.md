@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (coordinator)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (coordinator)
 - Resolves: issue #108 (epic #19; implementation #26)
 - Amends: `spec/11 §1`, `spec/13 §5` and `§6`, `docs/compiler/architecture.md §7`
 
@@ -48,7 +48,7 @@ The memory model of v0.2 (mutable value semantics, no mutable aliasing) and fixe
 7. **Capabilities stay second-class.** Handlers and `with` compile to explicit environment passing, as Core IR states them (`spec/09`).
 8. **No optimizer beyond Cranelift's own** in v0.2. An LLVM backend for release builds comes later.
 9. **Dependencies.** `una-codegen` and `una-rt` may depend on `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-object` and `target-lexicon`. No crate in the standard library or on the allowlist of `architecture.md §7` emits machine code.
-10. **Scope and spec.** Leonardo opened the v0.2 scope on 2026-10-01, in parallel with Gate 1.
+10. **Scope and spec.** the owner opened the v0.2 scope on 2026-10-01, in parallel with Gate 1.
     - The charter gains §5b, which lists the native backend, fixed-width integers and the memory model.
     - The backlog moves their rows to "Opened for v0.2".
     - `spec/16` (Normative, v0.2) states the native backend, and `spec/11 §1` and `spec/13` refer to it in paragraphs marked v0.2.

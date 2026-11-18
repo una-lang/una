@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (closure)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (closure)
 - Resolves: issue #84 (round-3 review finding R3-001)
 - Amends: ADR 0050 rule 2 and `spec/07 §7` rule 4; supersedes D-164
 

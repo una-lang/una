@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Deciders: Owner (accepted on 2026-09-29), on a proposal by Owner (overnight run)
 - Amended by: ADR 0038 D1 and D2 (rule 9, escaping lambdas: second-class type arguments; rule 11, function arguments: S-Fun at every flow and T-App), on 2026-09-30
 
 ## Context
@@ -45,4 +45,4 @@ Decision log entries: D-071 to D-080, D-085 and D-087 (`docs/history/v0.1/open-d
 
 ## Amendment (2026-10-08): one code for an undeclared operation
 
-Rule 5 is amended by ADR 0082 (Leonardo, 2026-10-08, written). After `expect performed @x.op` or `expect not performed @x.op`, an `op` that the capability of `@x` does not declare is U1001, not U3002, with the message and the closest-operation edit of a call in a body (`spec/10 §11`). It applies in every edition. U3002 keeps its meaning in bodies and calls: an operation the capability declares and the binding does not permit. `spec/05 §9` rule 5 states the amended rule.
+Rule 5 is amended by ADR 0082 (owner, 2026-10-08, written). After `expect performed @x.op` or `expect not performed @x.op`, an `op` that the capability of `@x` does not declare is U1001, not U3002, with the message and the closest-operation edit of a call in a body (`spec/10 §11`). It applies in every edition. U3002 keeps its meaning in bodies and calls: an operation the capability declares and the binding does not permit. `spec/05 §9` rule 5 states the amended rule.

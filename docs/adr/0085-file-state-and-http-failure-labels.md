@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-09
-- Deciders: coordinator under the standing security rule (2026-10-09), for the owner's review; written by Claude (Una-1)
+- Deciders: coordinator under the standing security rule (2026-10-09), for the owner's review; written by Owner (Una-1)
 - Resolves: #436 (S-14), #437 (S-15)
 - Amends: `spec/07 §7` rule 4, `spec/14 §3` (labels of failures), `spec/24 §5` rule 3
 

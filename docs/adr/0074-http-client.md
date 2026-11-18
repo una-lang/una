@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-07
-- Deciders: the coordinator under the owner's delegation (2026-10-07, N-26), pending Leonardo's review; proposal by Claude (Una-2)
+- Deciders: the coordinator under the owner's delegation (2026-10-07, N-26), pending the owner's review; proposal by Owner (Una-2)
 - Resolves: issue #239 (Beta)
 - Amends: a new chapter `spec/24-http.md`; `spec/14 §3` (host capabilities), `spec/13 §5` (grants and flags), `spec/11 §5` (traces), `spec/16 §3` (executables); `docs/compiler/architecture.md §7` (dependencies)
 
@@ -167,7 +167,7 @@ One client serves both engines: a new crate `una-http`, called by the interprete
 
 ## Amendment of 2026-10-07: implementation decisions (N-28)
 
-Decided by the coordinator under the owner's delegation (N-28), pending Leonardo's review; raised by Claude (Una-2) while implementing.
+Decided by the coordinator under the owner's delegation (N-28), pending the owner's review; raised by Owner (Una-2) while implementing.
 
 1. **The credential stays with its origin.** `key_name` sends its key only to the origin of the request the program made. A redirect to another origin, granted or not, carries no `Authorization`.
 2. **`HttpError` gains `BadRequest`**, for a request header the client must refuse:
@@ -182,7 +182,7 @@ Decided by the coordinator under the owner's delegation (N-28), pending Leonardo
 
 ## Amendment of 2026-10-07: independent check (N-30)
 
-Decided by the coordinator under the owner's delegation (N-30), pending Leonardo's review; found by the coordinator's independent check of the implementation.
+Decided by the coordinator under the owner's delegation (N-30), pending the owner's review; found by the coordinator's independent check of the implementation.
 
 1. **Traces redact the prelude's labeled fields in both engines.** The interpreter reads the field types of the prelude's kinds from their declarations, as the executable does, so `Header.value` is `<redacted:internal>` in every trace.
 2. **The program's credentials stay with their origin too.** A redirect to another origin drops `Authorization`, `Cookie` and `Proxy-Authorization`, in any letter case, besides the key of `key_name` (amendment N-28, item 1). A request with both `key_name` and an `Authorization` header is `BadRequest`.
@@ -194,25 +194,25 @@ Decided by the coordinator under the owner's delegation (N-30), pending Leonardo
 
 ## Amendment of 2026-10-07: no private keys in the repository (N-31)
 
-Decided by the coordinator under the owner's delegation (N-31), pending Leonardo's review.
+Decided by the coordinator under the owner's delegation (N-31), pending the owner's review.
 
 The test certificate authority of H8 is not kept in the repository's test fixtures. The TLS tests make it, and the server certificates it signs, once per test process with `rcgen`, a dev-dependency of `una-http` outside the trusted base. They write only the authority's certificate to a temporary file for the debug-only hook. The repository and its history hold no private key, which a secret scanner would flag.
 
 ## Amendment of 2026-10-07: the residual of H7 (N-32)
 
-Decided by the coordinator under the owner's delegation (N-32), pending Leonardo's review.
+Decided by the coordinator under the owner's delegation (N-32), pending the owner's review.
 
 H7 reads: an executable that never uses `Http` carries no TLS logic. On macOS up to 64 KiB of the TLS library's assembly primitives may remain, unreachable (amendment N-30, item 7). The size test enforces at most 64 KiB on macOS and none on Linux.
 
 ## Amendment of 2026-10-07: credentials across a chain (N-35)
 
-Decided by the coordinator under the owner's delegation (N-35), pending Leonardo's review; found by the coordinator's recheck.
+Decided by the coordinator under the owner's delegation (N-35), pending the owner's review; found by the coordinator's recheck.
 
 Once a redirect leaves the request's origin, the key of `key_name` and the program's `Authorization`, `Cookie` and `Proxy-Authorization` stay dropped for the rest of the chain, as browser `fetch` does. A chain A → B → A does not send them to A at its last hop, whose path B chose.
 
 ## Amendment of 2026-10-07: failures labeled by their arguments (N-39, N-40)
 
-Decided by the coordinator under the owner's delegation (N-39, N-40), pending Leonardo's review; found by the cross-review of v0.3.0 (#308, H-1), fixed by #310.
+Decided by the coordinator under the owner's delegation (N-39, N-40), pending the owner's review; found by the cross-review of v0.3.0 (#308, H-1), fixed by #310.
 
 1. **Whether a request fails reveals its arguments** (N-39). `Denied`, `BadUrl` and `BadRequest` depend on the URL, the headers and the key name, which accept `internal`. So the failure of an `Http` operation, its tag and payload, is labeled by the join of those arguments' labels, as N-27 labels the failure of a prelude function. `attempt` gives a `Result` with that label, `if error use` runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`. The body decides nothing and does not count. The rule is general (`spec/07 §7` rule 4): the path of `Files` and the key name of `Keys.hmac` decide their failures, each capped at what the operation accepts, so only `Files.write`, which accepts an `internal` path, changes.
 2. **Header values abort instead of failing** (N-40). `Header.value` is declared `internal`, so the checker cannot tell a public value from an `internal` one: counting it would label every request's failure. The headers decide through the list's labels and the names only. A value with a control character other than a tab is no longer `BadRequest`: the run aborts with U6004 at the operation, before the URL is read and before anything is sent, in both engines, with the exit status, trace and redaction of U6003. An abort is outside the noninterference model (`spec/07 §1`), which is termination-insensitive: it reveals at most one bit per run, not one per request. A full disk failing a write is resource exhaustion, outside the model too.

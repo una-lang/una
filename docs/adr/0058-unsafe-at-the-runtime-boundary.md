@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (Una-2)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (Una-2)
 - Resolves: the blocker of issue #111 (native slice 1)
 - Amends: ADR 0055 rule 5, `docs/compiler/conventions.md §1`, `docs/compiler/architecture.md §2`
 

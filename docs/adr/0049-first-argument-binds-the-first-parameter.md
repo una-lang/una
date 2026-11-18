@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-30
-- Deciders: Leonardo (answer A to issue #68, relayed by the coordinator session, 2026-09-30)
+- Deciders: Owner (answer A to issue #68, relayed by the coordinator session, 2026-09-30)
 - Resolves: issue #68 (UI-009, found by the Gate 1 task builders)
 - Amends: `spec/04 §3` rules 2 and 3; ADR 0024 rule 12; switches D-064 to its option B
 

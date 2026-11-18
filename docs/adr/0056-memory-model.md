@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (coordinator)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (coordinator)
 - Resolves: issue #109 (epic #18; implementation #29, #81, #82, #30)
 - Amends: `spec/01 §5`, `spec/02`, `spec/04`, `spec/07 §7`, `spec/09`, `spec/10`, `spec/11`, `spec/12`, `spec/13 §4` and `§7`, `spec/14 §1`, the guide's keyword section
 
@@ -15,7 +15,7 @@ The main goal of v0.2 is native performance (ADR 0055). Efficient programs need 
 - verification stays in QF_UFLIA, with no quantifiers;
 - information flow is checked by typing.
 
-Leonardo decided the memory model in four rounds on 2026-10-01 (V2-1 to V2-16). This ADR states those decisions and the rules that follow from them.
+The owner decided the memory model in four rounds on 2026-10-01 (V2-1 to V2-16). This ADR states those decisions and the rules that follow from them.
 
 ## Decision
 

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-06
-- Deciders: Leonardo (accepted on 2026-10-06, M9 changed to std BTreeMap on the coordinator's proposal), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-06, M9 changed to std BTreeMap on the coordinator's proposal), on a proposal by Owner (Una-1)
 - Resolves: issue #236 (Beta, epic #235)
 - Amends: a new chapter `spec/21-maps.md`; `spec/03 §1`, `spec/12 §4`, `spec/14 §1`, `spec/16 §4`, `spec/20 §1`; the guides with the implementation
 
@@ -19,7 +19,7 @@ What a design must keep:
 - **Verification.** QF_UFLIA, no quantifiers (`spec/12`). A list is a sort with `len`.
 - **Edition 0.2 only.** Edition `0.1` keeps its language.
 
-The proposal asked ten questions, M1 to M10, each with options and a recommendation A. Leonardo answered them on 2026-10-06: A for M1 to M8 and M10, and for M9 the standard library's `BTreeMap`, which the coordinator proposed. The other options stay below, marked as not chosen.
+The proposal asked ten questions, M1 to M10, each with options and a recommendation A. The owner answered them on 2026-10-06: A for M1 to M8 and M10, and for M9 the standard library's `BTreeMap`, which the coordinator proposed. The other options stay below, marked as not chosen.
 
 ## Decision
 
@@ -110,7 +110,7 @@ The proposal asked ten questions, M1 to M10, each with options and a recommendat
 
 ### M9. Native representation
 
-**Chosen: Rust's standard ordered map, `std::collections::BTreeMap`** (Leonardo, 2026-10-06, on the coordinator's proposal).
+**Chosen: Rust's standard ordered map, `std::collections::BTreeMap`** (owner, 2026-10-06, on the coordinator's proposal).
 - The interpreter and the native runtime keep a map in a `BTreeMap` over the keys' order: O(log n) per lookup, insertion and removal.
 - A native update happens in place when the map is uniquely held (#30), and on a copy otherwise.
 - The standard library is already in the trusted base, so no runtime code of its own is added. Listing in key order needs no extra work.

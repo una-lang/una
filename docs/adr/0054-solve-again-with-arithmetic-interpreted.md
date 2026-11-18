@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: the coordinator session, on Leonardo's behalf (issue #104, moved into v0.1.2 on 2026-10-01 as a fix of ADR 0053's stated consequence), on a proposal by Claude (closure); the zero-divisor rule and "never proven" are the proposal's choices, for the review
+- Deciders: the coordinator session, on the owner's behalf (issue #104, moved into v0.1.2 on 2026-10-01 as a fix of ADR 0053's stated consequence), on a proposal by Owner (closure); the zero-divisor rule and "never proven" are the proposal's choices, for the review
 - Resolves: issue #104 (v0.1.2 review finding V12-001)
 - Amends: ADR 0053 rules 1 and 3, and `spec/12 §6`
 
@@ -37,7 +37,7 @@ It also counted a zero divisor as disagreeing, even in an arm the model never ta
 
 ## Amendment of 2026-10-08: a counterexample that divides by zero
 
-- Deciders: the coordinator session, on Leonardo's behalf, under the delegation of 2026-10-06 (decision N-61, issue #399), on finding V-1 of the deferred review of this ADR (`docs/reviews/v0.3.3/repairs-and-0054.md`, #124).
+- Deciders: the coordinator session, on the owner's behalf, under the delegation of 2026-10-06 (decision N-61, issue #399), on finding V-1 of the deferred review of this ADR (`docs/reviews/v0.3.3/repairs-and-0054.md`, #124).
 
 **Context.** Rule 2 lets any value agree at a zero divisor, which keeps the obligation sound: a run that reaches the division fails there, and that division's own obligation reports it. The model is no run, though, and U5001 showed it as one.
 - `divided(a, b) = a / b` with `ensures result == 7` was refuted with the counterexample `a = -1, b = 0, result = 0`.

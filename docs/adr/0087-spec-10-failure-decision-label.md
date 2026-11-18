@@ -2,7 +2,7 @@
 
 - Status: Accepted (coordinator, 2026-10-10, for the owner's review)
 - Date: 2026-10-10
-- Deciders: coordinator, for the owner's review; written by Claude (Una-1)
+- Deciders: coordinator, for the owner's review; written by Owner (Una-1)
 - Resolves: #479
 - Amends: `spec/10`, by an appended correction section (§13); no accepted text is edited
 

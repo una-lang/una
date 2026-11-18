@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-07
-- Deciders: the coordinator under the owner's delegation (2026-10-07, N-43), pending Leonardo's review; proposal by Claude (Una-1)
+- Deciders: the coordinator under the owner's delegation (2026-10-07, N-43), pending the owner's review; proposal by Owner (Una-1)
 - Resolves: issue #323, finding M-1 of the v0.3.0 cross-review of maps and text (#309)
 - Amends: `spec/17 §2` rule 4 and `§6` rule 1
 

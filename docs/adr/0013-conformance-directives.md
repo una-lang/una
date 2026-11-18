@@ -2,8 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-09-28
-- Deciders: Leonardo
-- Amended: 2026-09-28, D6 (Deciders: Leonardo)
+- Deciders: Owner
+- Amended: 2026-09-28, D6 (Deciders: Owner)
 
 ## Context
 

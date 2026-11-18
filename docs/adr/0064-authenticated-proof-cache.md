@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: Leonardo (accepted on 2026-10-02), on a proposal by Claude (Una-2)
+- Deciders: Owner (accepted on 2026-10-02), on a proposal by Owner (Una-2)
 - Resolves: issue #44 (v0.1 review R-018)
 - Supersedes: ADR 0041 rule 1; rules 2 and 3 stay
 - Amends: `00-charter.md §3`, `spec/12 §9`, `spec/13 §6`

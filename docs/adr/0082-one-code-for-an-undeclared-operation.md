@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (2026-10-08, written); proposed by Claude (Una-1) at the coordinator's request
+- Deciders: Owner (2026-10-08, written); proposed by Owner (Una-1) at the coordinator's request
 - Resolves: issue #42 (v0.1 review R-028)
 - Amends: ADR 0028 rule 5 (by a dated amendment) and `spec/05 §9` rule 5
 
@@ -77,7 +77,7 @@ U3002 stays at the example and U1001 in the body, but each message says what the
 
 ## Decision
 
-**A**, as recommended, with no edition gate (Leonardo, 2026-10-08, written):
+**A**, as recommended, with no edition gate (owner, 2026-10-08, written):
 - `expect performed @x.op` and `expect not performed @x.op` give U1001 for an `op` that the capability of `@x` does not declare, with the message and the closest-operation edit of a call in a body, in both editions.
 - U3010 for a handler's operation stays as it is.
 - U3002 is no longer given at an example; in bodies and calls its meaning is unchanged.

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (closure)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (closure)
 - Resolves: issue #89
 - Amends: `spec/14 §1` "Result labels" and `spec/07 §7` rule 8 (ADR 0038 D3.4)
 
@@ -73,4 +73,4 @@ The prelude functions of "Result labels" fall into two groups.
 
 ## Amendment (2026-10-06)
 
-ADR 0067, accepted by Leonardo on 2026-10-06, takes alternative C for edition `0.2`. A call of a user generic function raises each position of its result only by the type arguments whose symbolic labels its body can put there, which replaces D-137. The predicate of `filter` and `first_where` raises the result's top label instead of being rejected (#41). Edition `0.1` keeps this ADR's rules unchanged.
+ADR 0067, accepted by the owner on 2026-10-06, takes alternative C for edition `0.2`. A call of a user generic function raises each position of its result only by the type arguments whose symbolic labels its body can put there, which replaces D-137. The predicate of `filter` and `first_where` raises the result's top label instead of being rejected (#41). Edition `0.1` keeps this ADR's rules unchanged.

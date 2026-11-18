@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: Leonardo (accepted on 2026-10-02), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-02), on a proposal by Owner (Una-1)
 - Resolves: issue #43 (backlog row "Language server (LSP)", design D)
 - Amends: `spec/13 §5` (a command), `compiler/architecture.md §2` and `§7`
 
@@ -23,7 +23,7 @@ What exists:
 - **Dependencies** beyond the allowlist need an ADR (`compiler/architecture.md §7`).
 - **Editions.** A package has edition `0.1` or `0.2`. The Gate 1 benchmark stays on `0.1`.
 
-The proposal asked six questions: the binary (L1), the protocol (L2), the features (L3), when the checks run (L4), the solver and the cache (L5) and the editions (L6). Leonardo answered them on 2026-10-02, each with option A. The other options are under "Alternatives considered".
+The proposal asked six questions: the binary (L1), the protocol (L2), the features (L3), when the checks run (L4), the solver and the cache (L5) and the editions (L6). The owner answered them on 2026-10-02, each with option A. The other options are under "Alternatives considered".
 
 ## Decision
 

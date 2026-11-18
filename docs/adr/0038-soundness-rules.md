@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-30
-- Deciders: Leonardo
+- Deciders: Owner
 - Resolves: review findings R-001 to R-011 (Critical); escalation D-093
 - Amended by: 0045 (D1: the consistency check runs in every build, not only in debug builds); 0046 (D3.1: labels through user generic kinds follow the variance of each parameter); 0047 (D5: a `via` function requires nothing beyond `from`); 0048 (D9: hard links are out of model); 0051 (D3.4: the structural prelude functions label each position of their result with what it holds)
 

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (closure)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (closure)
 - Resolves: issue #72 (UI-004), the open part; final review note F-008
 - Amends: `spec/12 §6` (statuses) and `§7` (counterexamples)
 - Amended by: ADR 0054 (rules 1 and 3: a disagreeing model is solved once more with the arithmetic interpreted; by a zero divisor, any value agrees), on 2026-10-01

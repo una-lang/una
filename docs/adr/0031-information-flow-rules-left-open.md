@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Deciders: Owner (accepted on 2026-09-29), on a proposal by Owner (overnight run)
 - Amended by: ADR 0038 D4 (rules 4 and 5: the effect floor of handler operation bodies), on 2026-09-30
 - Amended by: 0046 (rule 2: user kind arguments follow the variance of each parameter)
 

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: coordinator under Leonardo's standing authorization for alpha releases (2026-10-02), on a proposal by Claude (Una-2)
+- Deciders: coordinator under the owner's standing authorization for alpha releases (2026-10-02), on a proposal by Owner (Una-2)
 - Resolves: the release of `v0.2.0-alpha.1` (#26)
 - Amends: ADR 0035 rule 3
 

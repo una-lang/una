@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (coordinator)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (coordinator)
 - Resolves: issue #110 (epic #20; implementation #28)
 - Amends: ADR 0004 (its v0.2 consequences), `spec/03 §1`, `spec/12 §3`, `spec/13 §4` and `§7`, `spec/14 §1`
 
@@ -10,7 +10,7 @@
 
 ADR 0004 made `Int` an unbounded mathematical integer. In the interpreter it is arbitrary precision, in the SMT encoding it is `Int`, and division and remainder are Euclidean. ADR 0004 left fixed-width integers to v0.2.
 
-The goal of v0.2 is native performance (ADR 0055), and some programs need an exact width: bytes, protocols, hashing and, later, FFI. Leonardo decided FW-1 to FW-4 on 2026-10-01. A constraint holds throughout: verification stays in QF_UFLIA (`spec/12 §2`), with no bitvectors.
+The goal of v0.2 is native performance (ADR 0055), and some programs need an exact width: bytes, protocols, hashing and, later, FFI. The owner decided FW-1 to FW-4 on 2026-10-01. A constraint holds throughout: verification stays in QF_UFLIA (`spec/12 §2`), with no bitvectors.
 
 ## Decision
 
@@ -58,7 +58,7 @@ Binary built-in methods label their argument, as every call does (charter P5): `
 
 ## Amendment (2026-10-06)
 
-The body of a `reflect` predicate computes integers exactly, as clauses do, and keeps the typing of code that runs (Leonardo, 2026-10-06, on issue #180, from the independent v0.2 native review #176, INT-1):
+The body of a `reflect` predicate computes integers exactly, as clauses do, and keeps the typing of code that runs (owner, 2026-10-06, on issue #180, from the independent v0.2 native review #176, INT-1):
 
 - no `overflow` obligation and no U2022 in the body;
 - U2001 still applies, since operands of different integer types do not mix in code;

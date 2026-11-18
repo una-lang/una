@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (fix request F-0001-02)
+- Deciders: Owner (accepted on 2026-09-29), on a proposal by Owner (fix request F-0001-02)
 
 ## Context
 

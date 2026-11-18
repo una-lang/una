@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: Leonardo (accepted on 2026-10-02), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-02), on a proposal by Owner (Una-1)
 - Resolves: issue #21 (spec), for backlog row "Structured concurrency (`together`, tasks, cancellation)", issue #32
 - Amends: `00-charter.md §5b`, `spec/01 §5`, `spec/02 §6`, `spec/07 §1`, `spec/09 §2`, `spec/10 §10`, `spec/11 §1`, `§5`, `spec/12 §3`, `spec/13 §4`, `§6`, `spec/14 §3`, `spec/16 §4`, `§5`, `spec/17 §9`, `plan/backlog.md`; a new chapter `spec/19-structured-concurrency.md`
 
@@ -20,7 +20,7 @@ Una runs one thread today, and every part of the design leans on that:
 - **Runtimes.** Interpreter values are `Rc`. `una-rt` keeps its heap and state in thread-locals, counts references non-atomically (`spec/16 §4` rule 1, ADR 0055 NB-2), and appends then patches trace events in place.
 - **Scope.** `together`, `parallel` and `actor` are reserved "for v0.2 (concurrency)", and `async` and `await` are rejected in favor of it (`spec/01 §5`, ADR 0014). Charter §5b does not yet open concurrency for v0.2; row #32 is "Deferred".
 
-So concurrency has to answer four questions at once: what a program may share between tasks, what the trace and the guarantees become, how a failure stops the other tasks, and what the runtimes must change. The proposal asked eight questions, C1 to C8, each with options and a recommendation A. Leonardo answered them on 2026-10-02: C1 to C7 with option A, and C8 A, which follows from C3 A. The other options stay below, marked as not chosen. Everything applies in edition `0.2` only.
+So concurrency has to answer four questions at once: what a program may share between tasks, what the trace and the guarantees become, how a failure stops the other tasks, and what the runtimes must change. The proposal asked eight questions, C1 to C8, each with options and a recommendation A. The owner answered them on 2026-10-02: C1 to C7 with option A, and C8 A, which follows from C3 A. The other options stay below, marked as not chosen. Everything applies in edition `0.2` only.
 
 ## Decision
 
@@ -148,7 +148,7 @@ Rules that follow:
     - U2024: a `together` body with a statement other than `let`, or fewer than two branches (C1);
     - a `together` with branches written as an expression stays U0101, with a message that points to `together for` (C1).
 12. **The report.** The authority section lists a function's effects as today. Effects in tasks are the function's effects.
-13. **Scope.** This ADR opens concurrency for v0.2: charter §5b gains it, and row #32 moves to "Opened for v0.2", as Leonardo decided on 2026-10-02. Timeouts and deadlines stay with temporal contracts (row #62, v0.4). Actors and channels stay out.
+13. **Scope.** This ADR opens concurrency for v0.2: charter §5b gains it, and row #32 moves to "Opened for v0.2", as the owner decided on 2026-10-02. Timeouts and deadlines stay with temporal contracts (row #62, v0.4). Actors and channels stay out.
 
 ## Consequences
 

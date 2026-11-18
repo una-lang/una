@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-06
-- Deciders: Leonardo (accepted on 2026-10-06, with in-place concatenation on the coordinator's proposal), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-06, with in-place concatenation on the coordinator's proposal), on a proposal by Owner (Una-1)
 - Resolves: issue #237 (Beta, epic #235)
 - Amends: a new chapter `spec/22-text.md`; `spec/14 §1`, `spec/16 §4`; the guides with the implementation
 
@@ -19,7 +19,7 @@ What a design must keep:
 - **Verification.** QF_UFLIA. `Text` is an uninterpreted sort with `len` (`spec/12 §4`), and a contract is a hypothesis after a call.
 - **Edition 0.2 only.** Edition `0.1` keeps its prelude.
 
-The proposal asked nine questions, X1 to X9, each with options and a recommendation A. Leonardo answered them on 2026-10-06, each with option A, and added X10 on the coordinator's proposal. The other options stay below, marked as not chosen.
+The proposal asked nine questions, X1 to X9, each with options and a recommendation A. The owner answered them on 2026-10-06, each with option A, and added X10 on the coordinator's proposal. The other options stay below, marked as not chosen.
 
 ## Decision
 
@@ -131,7 +131,7 @@ m is the byte length of the other text argument. Space is O(result) for each fun
 
 ### X10. Appending in place
 
-Added by Leonardo on 2026-10-06, on the coordinator's proposal.
+Added by the owner on 2026-10-06, on the coordinator's proposal.
 
 - Una has no `+` on `Text`: a program builds a text with interpolation.
 - An assignment that rebinds a text binding to an interpolation beginning with that binding, as `acc = "{acc}, {item}"`, appends to it. It does so in place when the binding's text is uniquely held, in both engines, in amortized O(1) per scalar value appended, and updates the cached count and ASCII flag as it goes. A shared text is copied first.

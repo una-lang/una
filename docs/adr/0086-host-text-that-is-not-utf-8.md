@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-09
-- Deciders: coordinator under the standing security rule (2026-10-09), for the owner's review; written by Claude (Una-1)
+- Deciders: coordinator under the standing security rule (2026-10-09), for the owner's review; written by Owner (Una-1)
 - Resolves: #460 (S-16)
 - Amends: `spec/14 §3` (host text; `Files` rules 6 and 7), `spec/13 §1` (U6005, and its explanation without an example), `spec/13 §5` (`aborted`), `spec/07 §1` (aborts), `spec/16 §3` (stderr)
 

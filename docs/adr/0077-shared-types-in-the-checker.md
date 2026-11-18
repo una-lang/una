@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (2026-10-08, written), on a proposal by Claude (Una-2)
+- Deciders: Owner (2026-10-08, written), on a proposal by Owner (Una-2)
 - Resolves: issue #335 (follow-up to #331, decision N-47)
 
 ## Context

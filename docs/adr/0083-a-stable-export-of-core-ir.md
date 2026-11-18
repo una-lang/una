@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (2026-10-08, written); proposal by Claude (Una-2), for M0 of the formal track (`docs/plan/formal-track.md`, #46)
+- Deciders: Owner (2026-10-08, written); proposal by Owner (Una-2), for M0 of the formal track (`docs/plan/formal-track.md`, #46)
 
 ## Context
 

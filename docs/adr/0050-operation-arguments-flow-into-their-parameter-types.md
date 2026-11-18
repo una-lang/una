@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (reviewer)
+- Deciders: Owner (accepted on 2026-10-01), on a proposal by Owner (reviewer)
 - Resolves: final review finding F-001 (escalation E1, option A), issue #77
 - Amends: `spec/07 §7` rule 4, `spec/10 §5` (T-Op) and ADR 0046 rule 3
 - Amended by: ADR 0052 (rule 2: the sink of an operation argument bounds only the labels at its covariant positions, superseding D-164), on 2026-10-01

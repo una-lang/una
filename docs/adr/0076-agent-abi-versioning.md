@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (2026-10-08, written); the wording about key position was clarified by the coordinator, following the stated intent of the chosen option; proposal by Claude (Una-1)
+- Deciders: Owner (2026-10-08, written); the wording about key position was clarified by the coordinator, following the stated intent of the chosen option; proposal by Owner (Una-1)
 - Resolves: issue #370
 - Amends: the preamble of `spec/13`
 

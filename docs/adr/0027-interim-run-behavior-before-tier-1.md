@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo
+- Deciders: Owner
 
 ## Context
 

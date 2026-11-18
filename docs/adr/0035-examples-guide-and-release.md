@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Deciders: Owner (accepted on 2026-09-29), on a proposal by Owner (overnight run)
 - Amended by: the owner's closure instruction of 2026-09-30 ("the macOS release archive must build in CI on the closure pull request"): rule 3's archives are also packed and checked by `ci.yml` on each runner, Linux on every push and macOS on pull requests and pushes to `main` (R-035); ADR 0059 (rule 3: the archive also ships `lib/libuna_rt.a`, and its check builds `examples/hello` natively), on 2026-10-02
 
 ## Context
@@ -38,7 +38,7 @@ Decision log entries: D-127 to D-130 (`docs/history/v0.1/open-decisions.md`).
 
 ## Amendment (2026-10-02)
 
-Rule 3's note on CI follows the runner rule of ADR 0030, which changes to spare the Actions minutes of the private repository (#151, Leonardo, 2026-10-02):
+Rule 3's note on CI follows the runner rule of ADR 0030, which changes to spare the Actions minutes of the private repository (#151, the owner, 2026-10-02):
 - `push` triggers CI only on `main` and on release tags, and a branch is tested by the run of its pull request, so no change runs twice.
 - Linux runs every time.
 - macOS runs on pushes to `main`, on release tags and on manual runs. On a pull request, it runs only when the pull request touches what differs between the targets: the native backend (`crates/una-codegen`, `crates/una-rt`, `una build`), the release scripts, the workflows or `Cargo.lock`.
@@ -48,7 +48,7 @@ Rule 3's note on CI follows the runner rule of ADR 0030, which changes to spare 
 
 ## Amendment (2026-10-02): local CI and releases
 
-While GitHub Actions is unavailable (Leonardo, 2026-10-02, #156), a Mac runs the checks and builds the releases:
+While GitHub Actions is unavailable (owner, 2026-10-02, #156), a Mac runs the checks and builds the releases:
 - **Checks.** `scripts/local-ci.sh` runs `ci.yml`'s steps on the host, and with `--linux` in a `linux/amd64` container of CI's Ubuntu image. A full local run on the merged tree, with fmt, clippy with warnings denied and `cargo test --workspace --locked`, is the check before a merge.
 - **Releases.** `scripts/local-release.sh <tag>` builds rule 3's two archives from a clean checkout of the tag's commit: `aarch64-apple-darwin` natively, and `x86_64-unknown-linux-gnu` in that container. Each is built with `scripts/release.sh` and checked with `scripts/check-release.sh`. The script prints the `gh release create` command, and the release notes say that the archives were built locally and from which commit.
 

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: Leonardo (accepted on 2026-10-02), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-02), on a proposal by Owner (Una-1)
 - Resolves: issue #36 (backlog row "Effect polymorphism", design D)
 - Amends: `spec/02 §2`, `spec/04 §5`, `§6`, `spec/05 §8`, `§9`, `spec/07 §7`, `spec/13 §6`, `spec/14 §1`
 
@@ -20,7 +20,7 @@ The constraints that stay:
 - **Inference for private functions only** (ADR 0007). Public headers are the review boundary.
 - **Effects under a raised program counter** are checked against their sinks (`spec/07 §7` rule 4, U4002, U4003).
 
-The proposal asked five questions: the form (E1), failing lambdas (E2), inference (E3), information flow (E4) and error kinds (E5). Leonardo answered them on 2026-10-02, each with option A. The other options are under "Alternatives considered". The coordinator assigned U3017 to U3019. Everything below applies in edition `0.2` only. Edition `0.1` keeps today's rules and the pure prelude signatures.
+The proposal asked five questions: the form (E1), failing lambdas (E2), inference (E3), information flow (E4) and error kinds (E5). The owner answered them on 2026-10-02, each with option A. The other options are under "Alternatives considered". The coordinator assigned U3017 to U3019. Everything below applies in edition `0.2` only. Edition `0.1` keeps today's rules and the pure prelude signatures.
 
 ## Decision
 

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (2026-10-08, written); proposal by Claude (Una-1), from the cross-feature review of edition 0.2 (#177, O-1 and O-2)
+- Deciders: Owner (2026-10-08, written); proposal by Owner (Una-1), from the cross-feature review of edition 0.2 (#177, O-1 and O-2)
 - Resolves: issue #9 (v0.1 review R-025), and observation O-2 of `docs/reviews/v0.3.3/FINDINGS.md`
 - Amends: `spec/11 §5`, `spec/13 §1` and `§5`
 
@@ -70,7 +70,7 @@ Three outputs show values that labeled code computed, and today they redact diff
 
 ## Decision
 
-**C**, with the additive `redacted` and `label` keys rather than a schema bump (Leonardo, 2026-10-08, written):
+**C**, with the additive `redacted` and `label` keys rather than a schema bump (owner, 2026-10-08, written):
 - Traces are unchanged: they redact by static label and by declared field labels.
 - In a package of edition `0.2`, `una test` renders an example's result and every value in its failure `reason` without redaction at any position. A `Hashed` keeps `hashed:<hex>`, as traces and diagnostics show it; only interpolation writes `<hashed>`.
 - In a package of edition `0.1`, those values are unchanged: field redaction, as before.

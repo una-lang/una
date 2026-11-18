@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-30
-- Deciders: Leonardo (answer E3 A to the re-review, 2026-09-30), on a proposal by Claude (v0.1 closure run), with the re-review's three amendments
+- Deciders: Owner (answer E3 A to the re-review, 2026-09-30), on a proposal by Owner (v0.1 closure run), with the re-review's three amendments
 - Source: ADR 0037 rule 10; fix request 0001, "Needs review" R-2; re-review finding N-006
 - Amends: ADR 0038 D1 (the consistency check runs in every build)
 

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Deciders: Owner (accepted on 2026-09-29), on a proposal by Owner (overnight run)
 
 ## Context
 

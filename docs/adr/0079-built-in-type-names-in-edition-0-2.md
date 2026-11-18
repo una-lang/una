@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-08
-- Deciders: the coordinator under the owner's delegation (2026-10-08, N-56), for the owner's review; proposal by Claude (Una-1)
+- Deciders: the coordinator under the owner's delegation (2026-10-08, N-56), for the owner's review; proposal by Owner (Una-1)
 - Resolves: issue #130
 - Amends: `spec/03 §1`
 

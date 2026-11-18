@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-07
-- Deciders: the coordinator, under Leonardo's delegation (decisions N-07, 2026-10-06, and N-13, 2026-10-07, which narrowed D3), on a proposal by Claude (Una-1)
+- Deciders: the coordinator, under the owner's delegation (decisions N-07, 2026-10-06, and N-13, 2026-10-07, which narrowed D3), on a proposal by Owner (Una-1)
 - Resolves: issue #260 (Beta), pre-tag finding S-1
 - Amends: `spec/17 §5` rule 3; `spec/12 §6`; the guide §11 with the implementation
 

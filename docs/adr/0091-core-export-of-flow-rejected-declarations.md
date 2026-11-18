@@ -2,7 +2,7 @@
 
 - Status: Accepted (coordinator, by the owner's delegation, 2026-10-11, for his review)
 - Date: 2026-10-11
-- Deciders: Leonardo (by delegation to the coordinator, 2026-10-11), on a proposal by Claude (Una-2)
+- Deciders: Owner (by delegation to the coordinator, 2026-10-11), on a proposal by Owner (Una-2)
 - Resolves: #514
 - Amends: `spec/13` (the `una core` command, §3, and the Core export, §8)
 

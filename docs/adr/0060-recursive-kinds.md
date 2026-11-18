@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: Leonardo (accepted on 2026-10-02), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-02), on a proposal by Owner (Una-1)
 - Resolves: issue #38 (backlog row "Recursive kinds with a base variant", v0.1 review R-045)
 - Amends: `spec/03 §2` rule 5, `spec/10 §12` rule 8, `spec/11 §7`, `spec/12 §4`
 
@@ -26,7 +26,7 @@ What already holds:
 
 One new fact: values can be deeper than the call depth. With `for` loops (#81), a program builds a list of a million nodes without a single call. A runtime that releases, compares or renders such a value by recursion overflows its native stack. The interpreter of #81 uses worklists, and `tests/conformance/runtime/for_loop_deep_values` covers it.
 
-Leonardo took R1 to R5 below on 2026-10-02, each as recommended. The coordinator answered the code question: U2002, with no new code.
+The owner took R1 to R5 below on 2026-10-02, each as recommended. The coordinator answered the code question: U2002, with no new code.
 
 ## Decision
 

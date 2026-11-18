@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-07
-- Deciders: the coordinator under the owner's delegation (2026-10-07), pending Leonardo's review; proposal by Claude (Una-2)
+- Deciders: the coordinator under the owner's delegation (2026-10-07), pending the owner's review; proposal by Owner (Una-2)
 - Resolves: issue #262 (pre-tag review v0.2.0, area 3d, finding 3d-2)
 - Amends: `spec/16 §4` rule 7, `spec/17 §7` rule 3
 
@@ -69,7 +69,7 @@ The language already allows the update in place. `spec/17 §7` rule 3 lets a bac
 
 ## Amendment of 2026-10-07: function values (N-42)
 
-Decided by the coordinator under the owner's delegation (N-42), pending Leonardo's review; found by the in-place review of v0.3.0 (#311, IP-1 and IP-2), fixed by #312.
+Decided by the coordinator under the owner's delegation (N-42), pending the owner's review; found by the in-place review of v0.3.0 (#311, IP-1 and IP-2), fixed by #312.
 
 "Not affected: closures" (D2) left a call through a function value copying a list or a text at every call, in both engines: `acc = f(acc, i)` with `f` a named function passed as a value, or a lambda, and `fold` with a list or text state natively. It is replaced by:
 

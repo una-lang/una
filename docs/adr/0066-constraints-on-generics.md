@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-02
-- Deciders: Leonardo (accepted on 2026-10-02), on a proposal by Claude (Una-1)
+- Deciders: Owner (accepted on 2026-10-02), on a proposal by Owner (Una-1)
 - Resolves: issue #37 (backlog row "Traits or constraints on generics", design D)
 - Amends: `00-charter.md §5b`, `spec/01 §5`, `spec/02 §3`, `spec/03 §1`, `§2`, `spec/07 §7`, `spec/10 §12`, `spec/12 §4`, `spec/13 §4`, `§5`, `§7`, `spec/14 §1`, `spec/16 §4`, `spec/18 §6b`, `plan/backlog.md`; a new chapter `spec/20-constraints-on-generics.md`; ADR 0060 gains an amendment
 
@@ -25,7 +25,7 @@ What the design must respect:
 - **Effects.** An effectful function type is second-class (`spec/05 §6`, ADR 0062), so it can be no field of a dictionary value.
 - **Reserved words.** `trait` and `impl` are "reserved for v0.2 (constraints on generics)" (`spec/01 §5`).
 
-The proposal asked eight questions, G1 to G8, each with options and a recommendation A. Leonardo answered them on 2026-10-02, each with option A. The other options stay below, marked as not chosen. Everything applies in edition `0.2` only.
+The proposal asked eight questions, G1 to G8, each with options and a recommendation A. The owner answered them on 2026-10-02, each with option A. The other options stay below, marked as not chosen. Everything applies in edition `0.2` only.
 
 ## Decision
 
@@ -152,7 +152,7 @@ Rules that follow:
     - U2026: an operation on a type parameter that its constraint does not allow, `==` without `Eq` among them (G3), with a repair that adds the constraint;
     - U2027: an unknown constraint name after `:`.
 12. **The report.** A function's constraints appear in its contract: `una.contract/1` gains a `constraints` list, an additive key that changes the meaning of no other key, so the schema keeps its version. The authority and information sections of the report are unchanged.
-13. **Scope.** This ADR opens constraints on generics for v0.2: charter §5b gains them, and row #37 moves to "Opened for v0.2", as Leonardo decided on 2026-10-02.
+13. **Scope.** This ADR opens constraints on generics for v0.2: charter §5b gains them, and row #37 moves to "Opened for v0.2", as the owner decided on 2026-10-02.
 14. **The specification** is `spec/20`.
 
 ## Consequences

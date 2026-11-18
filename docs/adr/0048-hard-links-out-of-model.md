@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-30
-- Deciders: Leonardo (answer E4 A to the re-review, 2026-09-30), on the reviewer's recommendation
+- Deciders: Owner (answer E4 A to the re-review, 2026-09-30), on the reviewer's recommendation
 - Resolves: re-review finding N-013
 - Amends: ADR 0038 D9
 

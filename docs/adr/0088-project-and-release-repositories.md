@@ -1,8 +1,8 @@
 # 0088. The project repository and the public release repository
 
-- Status: Accepted (Leonardo, 2026-10-10, with minisign and the neutral-text change)
+- Status: Accepted (Owner, 2026-10-10, with minisign and the neutral-text change)
 - Date: 2026-10-10
-- Deciders: Leonardo
+- Deciders: Owner
 - Resolves: #483
 - Related: #246 (public launch), #242 (signed macOS binaries)
 
