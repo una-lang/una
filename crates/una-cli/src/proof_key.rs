@@ -370,6 +370,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_real_file_of_another_user_is_refused_as_not_owned_1896() {
+        // #1896: the owner is compared before the mode, so a regular file of another user is
+        // `NotOwned` whatever its mode. `/etc/passwd` belongs to the superuser; run as the
+        // superuser, there is no other user's file to name and the case does not apply.
+        use std::os::unix::fs::MetadataExt;
+        let foreign = Path::new("/etc/passwd");
+        let owner = std::fs::metadata(foreign).unwrap().uid();
+        if effective_uid() != Some(owner) {
+            assert_eq!(read_or_make(foreign), Err(Refusal::NotOwned));
+        }
+    }
+
     #[test]
     fn a_key_is_made_once_read_after_and_never_shown() {
         let dir = std::env::temp_dir().join(format!("una-proof-key-{}", std::process::id()));
