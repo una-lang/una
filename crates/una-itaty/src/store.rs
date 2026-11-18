@@ -10,6 +10,11 @@
 //! maps `checkpoint` to `checkpoint/latest` ([`FileStore`]). A store has one writer: a
 //! [`FileStore`] holds an exclusive lock on the file `.lock` of its directory, a name no store
 //! path can have, while it is open, and a second one refuses to open.
+//!
+//! HTTP reads a file through [`Store::reader`], in bounded parts: a [`FileStore`] keeps the
+//! file it opened, and since a write renames a new file into place rather than changing the
+//! old one, a reader gives the bytes of one version whole, the version it opened, even when
+//! the path is written or removed while it reads.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,6 +29,23 @@ pub const MAX_PATH: usize = 512;
 /// Why a store refuses or fails.
 pub type Error = String;
 
+/// A file opened for reading in bounded parts: its length when it was opened, and a reader of
+/// at most that many bytes.
+pub struct Opened {
+    /// The file's length when it was opened.
+    pub length: u64,
+    /// Its bytes, at most `length` of them.
+    pub reader: Box<dyn io::Read + Send>,
+}
+
+impl std::fmt::Debug for Opened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Opened")
+            .field("length", &self.length)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The registry's storage. Implementations are shared between the registry, which writes,
 /// and the HTTP endpoints, which read, so they are `Send + Sync`.
 pub trait Store: Send + Sync {
@@ -33,6 +55,16 @@ pub trait Store: Send + Sync {
     fn put(&self, path: &str, bytes: &[u8]) -> Result<(), Error>;
     /// Removes the file at `path`, if any.
     fn remove(&self, path: &str) -> Result<(), Error>;
+    /// The file at `path` opened for reading in bounded parts, `None` when there is no file,
+    /// refused past `limit` bytes. The default reads the file whole through [`Store::get`];
+    /// [`FileStore`] keeps the open file instead, so its reader holds no more than the
+    /// caller's buffer.
+    fn reader(&self, path: &str, limit: usize) -> Result<Option<Opened>, Error> {
+        Ok(self.get(path, limit)?.map(|bytes| Opened {
+            length: bytes.len() as u64,
+            reader: Box::new(io::Cursor::new(bytes)),
+        }))
+    }
     /// Whether a file is at `path`.
     fn exists(&self, path: &str) -> Result<bool, Error> {
         Ok(self.get(path, usize::MAX)?.is_some())
@@ -168,6 +200,32 @@ impl Store for FileStore {
         Ok(Some(bytes))
     }
 
+    /// The open file, read at most to the length it had when opened. A write renames a new
+    /// file into place, so the open file keeps the bytes of the version it opened.
+    fn reader(&self, path: &str, limit: usize) -> Result<Option<Opened>, Error> {
+        let file = self.file(path)?;
+        no_links(&self.root, &file)?;
+        let handle = match fs::File::open(&file) {
+            Ok(handle) => handle,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("cannot read `{path}`: {e}")),
+        };
+        let meta = handle
+            .metadata()
+            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("the store path `{path}` is not a file"));
+        }
+        let length = meta.len();
+        if length > limit as u64 {
+            return Err(format!("`{path}` is larger than {limit} bytes"));
+        }
+        Ok(Some(Opened {
+            length,
+            reader: Box::new(handle.take(length)),
+        }))
+    }
+
     fn put(&self, path: &str, bytes: &[u8]) -> Result<(), Error> {
         let file = self.file(path)?;
         no_links(&self.root, &file)?;
@@ -290,5 +348,46 @@ mod tests {
         assert!(store.get("a/b", 4).is_err());
         store.remove("a/b").unwrap();
         assert_eq!(store.get("a/b", 5).unwrap(), None);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "una-itaty-store-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn a_reader_gives_the_version_it_opened_whole() {
+        let dir = temp_dir("reader");
+        let store = FileStore::open(&dir).unwrap();
+        let old: Vec<u8> = (0..(1 << 20)).map(|i| (i % 251) as u8).collect();
+        store.put("blobs/x", &old).unwrap();
+        let mut opened = store.reader("blobs/x", 1 << 20).unwrap().unwrap();
+        assert_eq!(opened.length, 1 << 20);
+        let mut first = [0u8; 10];
+        opened.reader.read_exact(&mut first).unwrap();
+        // The path is replaced, then removed, while the reader is half way.
+        store.put("blobs/x", b"new").unwrap();
+        store.remove("blobs/x").unwrap();
+        let mut rest = Vec::new();
+        opened.reader.read_to_end(&mut rest).unwrap();
+        assert_eq!([&first[..], &rest[..]].concat(), old);
+        // A missing file, a file past the limit, and the memory store's default.
+        assert!(store.reader("blobs/x", 10).unwrap().is_none());
+        store.put("blobs/y", b"hello").unwrap();
+        assert!(store.reader("blobs/y", 4).is_err());
+        let memory = MemoryStore::new();
+        memory.put("a", b"hello").unwrap();
+        let mut opened = memory.reader("a", 5).unwrap().unwrap();
+        let mut bytes = Vec::new();
+        opened.reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!((opened.length, bytes), (5, b"hello".to_vec()));
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
