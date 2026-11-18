@@ -1,0 +1,30 @@
+-- test: a narrowed rebinding lists only operations that the binding it narrows permits: U3002 for another, U1001 for one its capability does not declare (ADR 0093 rule 4)
+-- spec: spec/05 §4
+-- expect: error U3002 at src/main.una:25:48
+-- expect: error U1001 at src/main.una:30:48
+module main
+
+capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+
+reader(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+
+writer(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  let data = @files.read(path)
+  @files.write(path, data: data)
+
+pub show(path: Text) -> Text
+  uses @user_files: Files[read]
+=
+  reader(path) with @files = @user_files[read, write]
+
+pub shown(path: Text) -> Text
+  uses @user_files: Files[read]
+=
+  reader(path) with @files = @user_files[read, delete]

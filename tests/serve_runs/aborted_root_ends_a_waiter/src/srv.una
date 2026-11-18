@@ -1,0 +1,39 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Waits for one request and answers it.
+waiter() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  let got = attempt @server.next()
+  when got
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "waiter"))
+        if error use unit
+    is Err(failure) -> unit
+
+--- Aborts the run: an integer of more than 4300 digits written as text.
+bomb() -> Unit
+=
+  let edit big = 1
+  for i in 1..2000
+    big = big * 1000
+  let shown = "{big}"
+  unit
+
+--- The root takes a request, then aborts inside a `tasks` statement while its task waits in
+--- `next`: the root unwinds through the statement, which cancels the task, so its `next` ends
+--- `interrupted` and the task `cancelled`; the root's right gets the stopped task's `503`
+--- (`spec/27 §7`, ADR 0123 rules 4.5 and 4.7), in both engines.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let ended = when first
+    is Ok(one) ->
+      tasks
+        start waiter()
+        bomb()
+    is Err(failure) -> unit
+  @server.close()

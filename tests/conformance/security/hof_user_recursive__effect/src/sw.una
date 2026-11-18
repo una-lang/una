@@ -1,0 +1,41 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: a recursive generic callee calls the callback
+-- spec: spec/07 §7
+-- expect: error U4002 at src/sw.una:36:3
+-- expect: error U4001 at src/sw.una:36:44
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+repeat[U](n: Int, x: U, f: fn(U) -> Unit uses @log: Log[write]) -> Unit
+  requires n >= 0
+  uses @log: Log[write]
+=
+  if n > 0
+    f(x)
+    repeat(n - 1, x: x, f: f)
+  else
+    unit
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  repeat(2, x: if a == b then p else q, f: k)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len))

@@ -1,0 +1,45 @@
+-- test: a `with` that installs a handler whose own `uses` take a conditioned binding is charged where it is installed: the handler's condition must imply the context's; inside the handler, its operations are charged against its own header (ADR 0092 rule 3, spec/05 §3)
+-- spec: spec/05 §3
+-- expect: error U5001 at src/installs.una:30:15
+-- expect: error U5001 at src/installs.una:40:25
+module installs
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub capability Store
+  op put(n: Int) -> Unit
+
+handler forwarding() for Store
+  uses @log: Log[write]
+  op put(n) = @log.write(n)
+
+pub write_unless(n: Int, quiet: Bool) -> Unit
+  uses @log: Log[write where not quiet]
+=
+  if not quiet
+    @log.write(n)
+  unit
+
+handler careful(quiet: Bool) for Store
+  uses @log: Log[write where not quiet]
+  op put(n) = write_unless(n, quiet: quiet)
+
+handler careless(quiet: Bool) for Store
+  uses @log: Log[write where not quiet]
+  op put(n) = @log.write(n)
+
+save(n: Int) -> Unit
+  uses @store: Store[put]
+=
+  @store.put(n)
+
+pub unguarded(n: Int, dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  save(n) with @store = forwarding()
+
+pub promised(n: Int, dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  save(n) with @store = careful(dry)

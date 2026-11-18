@@ -1,0 +1,25 @@
+-- test: a generic kind instantiated with a secret type: `==` and `!=` are labeled with the declared field labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 21:38
+-- expect: error U4001 at 23:38
+module sweep_label_generic_eq
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Box[secret Int]) -> secret Int = x.value
+
+pub eq(x: Box[secret Int]) -> Bool = x == Box(value: 2)
+
+pub ne(x: Box[secret Int]) -> Bool = x != Box(value: 2)
+
+pub eq_twin(x: Box[secret Int]) -> secret Bool = x == Box(value: 2)

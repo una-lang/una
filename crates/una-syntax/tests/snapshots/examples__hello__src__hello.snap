@@ -1,0 +1,6 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module hello)
+(fn pub main () {Unit} (uses @console {Console[print]}) (block (@console.print "Hello, Una")))

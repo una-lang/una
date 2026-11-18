@@ -1,0 +1,8 @@
+-- test: a derived unit defined in terms of itself is U2029
+-- spec: spec/25 §1
+-- expect: error U2029 at src/m.una:6:9
+module m
+
+measure A = 2 * B
+
+measure B = 3 * A

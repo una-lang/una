@@ -1,0 +1,27 @@
+-- test: the twin of `tconc_for_ever_within_tasks`: the started task works on `public` data, so the loop's timing label is `internal`, from `ρ` of `Http`, which the failure of `Http.get` carries
+-- spec: spec/27 §11
+-- expect: ok
+module poll
+
+import std.time (millisecond)
+
+crunch_open(n: Int) -> Int = n * 3
+
+--- Work on `public` data, which a started task runs.
+churn_open(n: Int) -> Unit
+=
+  let spent = crunch_open(n)
+  unit
+
+--- Starts `churn_open(m)`, and polls beside it, in the block of the `tasks` statement.
+pub serve(m: Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  tasks
+    start churn_open(m)
+    for ever within 100 * millisecond
+      let reading = attempt @http.get(url, headers: [], key_name: None)
+      stop
+    unit
+  unit

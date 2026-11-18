@@ -1,0 +1,8 @@
+module gallery.thumbnailer
+
+import gallery.store (Files)
+
+pub thumbnail(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)

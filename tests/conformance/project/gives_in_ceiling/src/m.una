@@ -1,0 +1,13 @@
+-- test: a boundary's ceiling names operations only, so `gives` in it is U7002 (ADR 0094 rule 1)
+-- spec: spec/05 §3
+-- expect: error U7002 at una.toml:10:14
+module m
+
+pub capability Files
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub refusal(file: Text) -> Text
+  uses @service_files: Files[owner]
+=
+  @service_files.owner(file)

@@ -1,0 +1,6 @@
+-- test: return is not a keyword in Una
+-- spec: spec/01 §5
+-- expect: error U0103 at 6:29
+module reserved_keyword_return
+
+pub double(x: Int) -> Int = return x * 2

@@ -1,0 +1,43 @@
+-- test: a path that ends in fail never returns, so a rebind on it does not reach the return obligation, while a path that rebinds and returns is still checked, and a failing call leaves its edit argument unchanged for a caller that handles it (spec/12 §3, spec/17 §7, #274)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/paths.una:34:3
+module paths
+
+pub kind Bad = Wrong | Worse
+
+--- A path that rebinds and then fails never returns, so the return obligation ignores it.
+pub risky(edit ys: List[Int], k: Int) -> Unit
+  ensures ys.len == old(ys).len
+  fails Bad
+=
+  if k > 1
+    ys = ys.append(item: k)
+    fail Wrong
+  unit
+
+pub flagged(edit p: List[Int], flag: Bool) -> Unit
+  ensures p.len == old(p).len
+  fails Bad
+=
+  if flag
+    p = []
+    fail Worse
+  unit
+
+--- A path that rebinds and returns is still checked.
+pub grows(edit ys: List[Int], k: Int) -> Unit
+  ensures ys.len == old(ys).len
+  fails Bad
+=
+  if k > 1
+    ys = ys.append(item: k)
+  unit
+
+--- A failing call leaves its `edit` argument unchanged for the caller (`spec/17 §7`).
+pub caller(xs: List[Int]) -> List[Int]
+  ensures result.len == xs.len
+=
+  let edit ys = xs
+  risky(edit ys, k: 3)
+    if error use unit
+  ys

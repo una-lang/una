@@ -1,0 +1,10 @@
+-- test: a constructor gives every field
+-- spec: spec/04 §3
+-- expect: error U2009 at 10:25
+module missing_field
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub origin() -> Point = Point(x: 0)

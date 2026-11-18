@@ -1,0 +1,31 @@
+-- test: a kind whose field is a function type: interpolating a kind with a function field is rejected by construction, and interpolating its result is a secret argument of Console (label sweep)
+-- spec: spec/07 §7
+-- expect: error U2001 at 18:20
+-- expect: error U4003 at 23:18
+module sweep_label_fnfield_interp
+
+kind Src
+  get: fn() -> secret Int
+
+kind Feed[T]
+  get: fn() -> T
+
+make(pin: secret Int) -> Src = Src(get: fn() -> pin)
+
+pub kinds(s: Src) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s}")
+
+pub results(s: Src) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s.get()}")
+
+pub results_twin(s: PubSrc) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s.get()}")
+
+kind PubSrc
+  get: fn() -> Int

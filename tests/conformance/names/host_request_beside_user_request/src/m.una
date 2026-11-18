@@ -1,0 +1,15 @@
+-- test: edition 0.4 reserves no name for the server: a kind of the package named `Request` stands beside an import of `Reply` from `std.host` (spec/31 §1, ADR 0123 rule 0)
+-- spec: spec/31 §1
+-- expect: ok
+module m
+
+import std.host (Reply)
+
+--- A request of the package's own protocol.
+pub kind Request
+  path: Text
+
+--- The reply to it.
+pub answer(request: Request) -> Reply = if request.path == "/" then Reply(status: 200, headers: [],
+  body: "home"
+) else Reply(status: 404, headers: [], body: "")

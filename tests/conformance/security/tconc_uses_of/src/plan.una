@@ -1,0 +1,39 @@
+-- test: precise `τ_conc` through a `uses of` parameter (ADR 0116 P1): a branch calls `run_with(route, n: 3)`, which calls its `uses of` parameter, beside a branch that works on a `secret`, so the `within` of `plan_route` runs beside a part whose `κ` is `⊤`, and passing its `TimedOut` on is U4002
+-- spec: spec/27 §11
+-- expect: error U4002 at src/plan.una:17:5
+module plan
+
+import std.time (millisecond)
+
+pub kind PlanError = | TimedOut
+
+step(n: Int) -> Int = n + 1
+
+--- A deadline over `public` work, whose `TimedOut` it passes on.
+plan_route(n: Int) -> Int
+  fails PlanError
+=
+  let v = step(n) within 10 * millisecond
+    if error pass
+  v
+
+route(n: Int) -> Int
+=
+  let r = plan_route(n)
+    if error use 0
+  r
+
+run_with(f: fn(Int) -> Int, n: Int) -> Int
+  uses of f
+=
+  f(n)
+
+crunch(key: secret Int) -> secret Int = key * 3
+
+--- A branch runs `route` as a function value, beside a branch that works on `key`.
+pub both(key: secret Int, n: Int) -> secret Int
+=
+  together
+    let a = crunch(key)
+    let b = run_with(route, n: 3)
+  a

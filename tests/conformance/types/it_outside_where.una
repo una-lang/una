@@ -1,0 +1,6 @@
+-- test: it appears only in where clauses and the predicate of checked
+-- spec: spec/02 §8
+-- expect: error U2013 at 6:30
+module it_outside_where
+
+pub current(x: Int) -> Int = it

@@ -1,0 +1,38 @@
+-- test: interpolation writes no bytes of a hash: a `Hashed` reached through a type parameter, alone or inside a record, a list or an `Option`, is `<hashed>` in both engines (ADR 0068, amendment of 2026-10-06; spec/11 §5)
+-- spec: spec/11 §5
+-- grant: console
+-- grant: keys:keys.toml
+-- expect: run-output "<hashed> R(<hashed>) [<hashed>] Some(<hashed>)"
+-- expect: test-pass
+module hashed.main
+
+import hashed.reveal (shown)
+import std.testing (fake_hash)
+
+pub kind R
+  h: internal Hashed
+
+--- `x` as interpolation writes it.
+written[T: Eq](x: T) -> Text = "{x}"
+
+--- A hash from `@keys`.
+made() -> internal Hashed
+  uses @keys: Keys[hmac]
+=
+  let h = @keys.hmac("k", data: "d")
+    if error pass
+  h
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let h = made()
+    if error pass
+  let line = "{written(h)} {written(R(h: h))} {written([h])} {written(Some(h))}"
+  @console.print(shown(line))
+
+example "a hash through a type parameter"
+  do written(fake_hash(1))
+  expect result == "<hashed>"

@@ -1,0 +1,11 @@
+-- test: with `within`, the driver's tasks are cut by a deadline whose timing label, raised by the serve threads beside them (`L_srv`), is above `internal`, so the auto-answer would reveal it: U4003 at the `within` line (spec/31 §7, ADR 0123 rule 16 and IF6)
+-- spec: spec/31 §7
+-- expect: error U4003 at ita.una:11:10
+module srv
+
+import std.host (Reply, Request)
+
+--- Answers every request with 200.
+pub handle(request: internal Request) -> internal Reply = Reply(status: 200, headers: [],
+  body: "ok"
+)

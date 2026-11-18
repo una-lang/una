@@ -1,0 +1,10 @@
+-- test: a constructor names only fields of its kind
+-- spec: spec/04 §3
+-- expect: error U2009 at 10:43
+module unknown_field
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub origin() -> Point = Point(x: 0, y: 0, z: 0)

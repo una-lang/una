@@ -59,6 +59,6 @@ Use the assigned issue as the scope. Read the charter, identify the package edit
 
 ## Conventions
 
-- Code blocks tagged `una` in the spec are illustrative fragments and may omit module headers or surrounding declarations. Complete, tested programs live in `examples/` and `guide/una-for-agents.md`.
+- Code blocks tagged `una` in the spec are illustrative fragments and may omit module headers or surrounding declarations. Complete, tested programs live in `examples/`, `tests/conformance/` and `guide/una-for-agents.md`.
 - Formal rules use LaTeX in `$$` blocks.
 - Section references use the form `spec/03 §4`.

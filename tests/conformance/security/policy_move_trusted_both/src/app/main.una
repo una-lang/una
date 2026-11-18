@@ -1,0 +1,14 @@
+-- test: U4004 offers moving a policy only into a module trusted in both header and una.toml (ADR 0095)
+-- spec: spec/07 §6
+-- expect: error U4004 at src/app/main.una:7:12
+-- expect: error U7005 at src/app/keys.una:1:1
+module app.main
+
+pub policy reveal
+  from secret Text
+  to Text
+  via shown
+  purpose "show a digest"
+  owner privacy
+
+shown(t: secret Text) -> Text = t

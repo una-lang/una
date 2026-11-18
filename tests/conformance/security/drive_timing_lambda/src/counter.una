@@ -1,0 +1,18 @@
+-- test: a driven step that calls `map`, `filter` or `fold` only with lambdas written at the call, directly, nested, or in a function it calls, has the timing label of what those lambdas capture and run, here `public`, not the top label, and its `input` needs no label (spec/26 §2 rule 5 item 4, ADR 0116 IF5 item 4, IF7)
+-- spec: spec/26 §2
+-- expect: ok
+module counter
+
+import std.drive (Tick)
+
+pub init() -> Int = 0
+
+total(xs: List[Int], by: Int) -> Int = xs.fold(initial: 0,
+  step: fn(acc: Int, x: Int) -> acc + x * by
+)
+
+pub step(edit count: Int, input: Tick) -> Unit
+=
+  let next = [count].map(each: fn(x: Int) -> x + count)
+  let kept = next.filter(keep: fn(x: Int) -> [x].map(each: fn(y: Int) -> y + count).len > 0)
+  count = count + kept.len + total(next, by: count)

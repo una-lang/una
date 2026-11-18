@@ -1,0 +1,9 @@
+-- test: contracts call only predicates
+-- spec: spec/03 §3
+-- expect: error U2014 at 7:12
+module call_in_requires
+
+pub shift(x: Int) -> Int
+  requires abs(x) < 100
+=
+  x

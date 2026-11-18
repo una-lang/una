@@ -1,0 +1,6 @@
+-- test: a division by a value that may be zero is refuted at the division
+-- spec: spec/12 §3
+-- expect: error U5001 at 6:46
+module division_refuted
+
+pub average(total: Int, count: Int) -> Int = total / count

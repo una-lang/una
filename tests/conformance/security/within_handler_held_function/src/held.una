@@ -1,0 +1,269 @@
+-- test: a handler that a `within` reaches counts by what its operation bodies run and by its parameters (ADR 0116 IF5 item 3, issue #1436): a parameter whose type holds a function, a field of a kind, a `List`, an `Option` or a nested kind, makes the timing label `⊤` whether or not the body calls it, and so does a call of a function value in an operation body, directly, in a lambda written there, through `map` or through a function it calls, a function the operation receives included; so `if error pass` is U4002 and an operation that accepts `public` data under the deadline U4003, also when the site reaches the capability through `together` or `start`; in a program that starts tasks, the check point that `secret` data decide there is also U4002 (spec/27 §8 rule 5, #1684)
+-- spec: spec/27 §5
+-- expect: error U4003 at src/held.una:71:11
+-- expect: error U4002 at src/held.una:72:5
+-- expect: error U4003 at src/held.una:86:11
+-- expect: error U4002 at src/held.una:87:5
+-- expect: error U4003 at src/held.una:101:11
+-- expect: error U4002 at src/held.una:102:5
+-- expect: error U4003 at src/held.una:116:11
+-- expect: error U4002 at src/held.una:117:5
+-- expect: error U4003 at src/held.una:131:11
+-- expect: error U4002 at src/held.una:132:5
+-- expect: error U4003 at src/held.una:146:11
+-- expect: error U4002 at src/held.una:147:5
+-- expect: error U4003 at src/held.una:161:11
+-- expect: error U4002 at src/held.una:162:5
+-- expect: error U4003 at src/held.una:176:11
+-- expect: error U4002 at src/held.una:177:5
+-- expect: error U4003 at src/held.una:191:11
+-- expect: error U4002 at src/held.una:192:5
+-- expect: error U4003 at src/held.una:208:11
+-- expect: error U4002 at src/held.una:209:5
+-- expect: error U4003 at src/held.una:223:11
+-- expect: error U4002 at src/held.una:224:5
+-- expect: error U4002 at src/held.una:259:11
+-- expect: error U4002 at src/held.una:260:5
+-- expect: error U4002 at src/held.una:267:11
+-- expect: error U4002 at src/held.una:268:5
+-- expect: error U4002 at src/held.una:44:3
+module held
+
+import std.time (millisecond)
+
+pub kind E = | TimedOut
+
+kind Holder
+  run: fn(Int) -> Int
+
+kind Outer
+  inner: Holder
+
+burn(k: secret Int) -> Unit
+=
+  for i in 0..k
+    unit
+
+wait(x: Int, k: secret Int) -> Int
+=
+  burn(k)
+  x
+
+apply(h: Holder, x: Int) -> Int = h.run(x)
+
+choose(o: Option[fn(Int) -> Int], key: Int) -> Int
+=
+  when o
+    is Some(f) -> f(key)
+    is None -> key
+
+-- A field of a kind, called in the operation's body.
+capability FieldStore
+  op get(key: Int) -> Int
+
+handler field_held(h: Holder) for FieldStore
+  op get(key) = h.run(key)
+
+pub by_field(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = @s.get(n) with @s = field_held(h: h) within 10 * millisecond
+    if error pass
+  a
+
+-- A list of functions, applied in a lambda written in the operation's body.
+capability ListStore
+  op get(key: Int) -> Int
+
+handler list_held(fs: List[fn(Int) -> Int]) for ListStore
+  op get(key) = fs.fold(initial: key, step: fn(acc: Int, f: fn(Int) -> Int) -> f(acc))
+
+pub by_list(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let fs = [fn(x: Int) -> wait(x, k: key)]
+  let a = @s.get(n) with @s = list_held(fs: fs) within 10 * millisecond
+    if error pass
+  a
+
+-- An `Option` of a function.
+capability OptionStore
+  op get(key: Int) -> Int
+
+handler option_held(o: Option[fn(Int) -> Int]) for OptionStore
+  op get(key) = choose(o, key: key)
+
+pub by_option(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let o = Some(fn(x: Int) -> wait(x, k: key))
+  let a = @s.get(n) with @s = option_held(o: o) within 10 * millisecond
+    if error pass
+  a
+
+-- A kind nested in a kind.
+capability NestedStore
+  op get(key: Int) -> Int
+
+handler nested_held(o: Outer) for NestedStore
+  op get(key) = o.inner.run(key)
+
+pub by_nested(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let o = Outer(inner: Holder(run: fn(x: Int) -> wait(x, k: key)))
+  let a = @s.get(n) with @s = nested_held(o: o) within 10 * millisecond
+    if error pass
+  a
+
+-- The field given to `map`.
+capability MapStore
+  op get(key: Int) -> Int
+
+handler map_held(h: Holder) for MapStore
+  op get(key) = [key].map(each: h.run).len
+
+pub by_map(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = @s.get(n) with @s = map_held(h: h) within 10 * millisecond
+    if error pass
+  a
+
+-- The holder passed to a function that calls it.
+capability PassStore
+  op get(key: Int) -> Int
+
+handler pass_held(h: Holder) for PassStore
+  op get(key) = apply(h, x: key)
+
+pub by_pass(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = @s.get(n) with @s = pass_held(h: h) within 10 * millisecond
+    if error pass
+  a
+
+-- The function stored in a new kind, then called through it.
+capability StoreStore
+  op get(key: Int) -> Int
+
+handler store_held(h: Holder) for StoreStore
+  op get(key) = Holder(run: h.run).run(key)
+
+pub by_store(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = @s.get(n) with @s = store_held(h: h) within 10 * millisecond
+    if error pass
+  a
+
+-- A function given to the operation, which the handler calls.
+capability Runner
+  op run(f: fn(Int) -> Int, x: Int) -> Int
+
+handler direct_runner() for Runner
+  op run(f, x) = f(x)
+
+pub by_argument(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let g = fn(x: Int) -> wait(x, k: key)
+  let a = @r.run(g, x: n) with @r = direct_runner() within 10 * millisecond
+    if error pass
+  a
+
+-- A function given to the operation, which the handler gives to `map`.
+capability MapRunner
+  op run(f: fn(Int) -> Int, x: Int) -> Int
+
+handler map_runner() for MapRunner
+  op run(f, x) = [x].map(each: f).len
+
+pub by_argument_map(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let g = fn(x: Int) -> wait(x, k: key)
+  let a = @r.run(g, x: n) with @r = map_runner() within 10 * millisecond
+    if error pass
+  a
+
+-- A function given to the operation, which the handler passes to a function that calls it.
+capability PassRunner
+  op run(f: fn(Int) -> Int, x: Int) -> Int
+
+handler pass_runner() for PassRunner
+  op run(f, x) = call_it(f, x: x)
+
+call_it(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub by_argument_pass(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let g = fn(x: Int) -> wait(x, k: key)
+  let a = @r.run(g, x: n) with @r = pass_runner() within 10 * millisecond
+    if error pass
+  a
+
+-- The holder is never called: its type alone does not bound what it may run.
+capability UnusedStore
+  op get(key: Int) -> Int
+
+handler unused_held(h: Holder) for UnusedStore
+  op get(key) = key
+
+pub by_unused(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = @s.get(n) with @s = unused_held(h: h) within 10 * millisecond
+    if error pass
+  a
+
+-- The capability used through `together` and through `tasks` with `start`.
+capability TaskStore
+  op get(key: Int) -> Int
+
+handler task_held(h: Holder) for TaskStore
+  op get(key) = h.run(key)
+
+spread(n: Int) -> Int
+  uses @s: TaskStore[get]
+=
+  together
+    let a = @s.get(n)
+    let b = n
+  a + b
+
+poke(n: Int) -> Unit
+  uses @s: TaskStore[get]
+=
+  let a = @s.get(n)
+  unit
+
+started(n: Int) -> Int
+  uses @s: TaskStore[get]
+=
+  tasks
+    start poke(n)
+  n
+
+pub by_together(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = spread(n) with @s = task_held(h: h) within 10 * millisecond
+    if error pass
+  a
+
+pub by_start(n: Int, key: secret Int) -> Int
+  fails E
+=
+  let h = Holder(run: fn(x: Int) -> wait(x, k: key))
+  let a = started(n) with @s = task_held(h: h) within 10 * millisecond
+    if error pass
+  a

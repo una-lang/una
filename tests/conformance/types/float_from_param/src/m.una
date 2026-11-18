@@ -1,0 +1,6 @@
+-- test: in edition 0.3, `from` is an argument label only: a parameter named `from` stays a syntax error
+-- spec: spec/29 §3
+-- expect: error U0101 at src/m.una:6:7
+module m
+
+pub f(from: Int) -> Int = 0

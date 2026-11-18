@@ -1,0 +1,69 @@
+---
+source: crates/una-diag/tests/json_shape.rs
+expression: pretty
+---
+{
+  "schema": "una.diagnostics/1",
+  "diagnostics": [
+    {
+      "schema": "una.diagnostic/1",
+      "code": "U5001",
+      "severity": "error",
+      "domain": "verification",
+      "message": "postcondition of availability is refuted",
+      "primary": {
+        "file": "src/events/seating.una",
+        "start": {
+          "line": 27,
+          "col": 18
+        },
+        "end": {
+          "line": 27,
+          "col": 21
+        }
+      },
+      "related": [
+        {
+          "file": "src/events/seating.una",
+          "start": {
+            "line": 23,
+            "col": 11
+          },
+          "end": {
+            "line": 23,
+            "col": 52
+          },
+          "message": "ensures clause"
+        }
+      ],
+      "obligation": {
+        "id": "ob-3f09a1c2e7b4",
+        "kind": "postcondition",
+        "goal": "e.remaining < 1 implies result is SoldOut",
+        "status": "refuted"
+      },
+      "counterexample": {
+        "bindings": [
+          {
+            "name": "e.remaining",
+            "value": 0
+          },
+          {
+            "name": "result",
+            "value": "Few"
+          }
+        ]
+      },
+      "repairs": [
+        {
+          "rank": 1,
+          "escape_cost": 0,
+          "description": "add the arm 'in 0..0 -> SoldOut' before 'in 0..<20' or adjust the ensures clause",
+          "edit": null
+        }
+      ],
+      "explain": "una explain U5001"
+    }
+  ],
+  "fixable": 0
+}

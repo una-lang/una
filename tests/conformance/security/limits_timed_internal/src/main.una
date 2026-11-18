@@ -1,0 +1,24 @@
+-- test: a grant of `run grants` with limits is accepted when `L_lim`, the timing label of every `Http` request, is at most `internal` (ADR 0117 IF4): `RateLimited` is then `internal`, as every failure of a request is, and is handled like one
+-- spec: spec/27 §9
+-- expect: ok
+module main
+
+--- Whether a request got an answer; `RateLimited` when the limit's queue was full.
+fetch(url: Text) -> internal Bool
+  uses @http: Http[get]
+=
+  let outcome = attempt @http.get(url, headers: [], key_name: None)
+  when outcome
+    is Ok(response) -> true
+    is Err(failure) ->
+      when failure
+        is RateLimited -> false
+        else -> false
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @http: Http[get]
+=
+  let first = fetch("https://api.example.com/a")
+  let second = fetch("https://api.example.com/b")
+  @console.print("done")

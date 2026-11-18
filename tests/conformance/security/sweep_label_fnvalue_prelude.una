@@ -1,0 +1,59 @@
+-- test: function values: prelude results over function values carry their labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 21:3
+-- expect: error U4001 at 26:3
+-- expect: error U4001 at 32:3
+-- expect: error U4001 at 37:3
+module sweep_label_fnvalue_prelude
+
+low(x: Int) -> Int = x
+
+high(x: Int) -> Int = x + 1
+
+pick(pin: secret Int) -> secret fn(Int) -> Int = if pin > 0 then low else high
+
+is_pin[T](x: T, y: T) -> Int = if x == y then 1 else 0
+
+pub first_value(pin: secret Int) -> Int
+=
+  let f = [pick(pin)].first()
+    if none use low
+  f(1)
+
+pub mapped(pin: secret Int) -> List[Int]
+=
+  let f = fn(x: Int) -> x + pin
+  [f].map(each: fn(g) -> g(1))
+
+pub at_value(pin: secret Int) -> Int
+=
+  let f = [low, high].at(index: pin)
+    if none use low
+  f(1)
+
+pub or_else_value(pin: secret Int, o: Option[fn(Int) -> Int]) -> Int
+=
+  let f = o.or_else(default: pick(pin))
+  f(1)
+
+pub first_value_twin(pin: secret Int) -> secret Int
+=
+  let f = [pick(pin)].first()
+    if none use low
+  f(1)
+
+pub mapped_twin(n: Int) -> List[Int]
+=
+  let f = fn(x: Int) -> x + n
+  [f].map(each: fn(g) -> g(1))
+
+pub at_value_twin(pin: secret Int) -> secret Int
+=
+  let f = [low, high].at(index: pin)
+    if none use low
+  f(1)
+
+pub or_else_value_twin(pin: secret Int, o: Option[fn(Int) -> Int]) -> secret Int
+=
+  let f = o.or_else(default: pick(pin))
+  f(1)

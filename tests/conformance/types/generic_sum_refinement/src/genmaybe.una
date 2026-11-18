@@ -1,0 +1,22 @@
+-- test: a refined kind as the type argument of a user generic sum is rejected (R-012)
+-- spec: spec/03 §3
+-- expect: error U2002 at src/genmaybe.una:12:16
+module genmaybe
+
+-- Promoted from the v0.1 review, adversarial package `verify-generic-sum-refinement`.
+
+pub kind Pos = Int where it > 0
+
+pub kind Maybe[T] = Has(v: T) | Nothing
+
+recip(m: Maybe[Pos]) -> Int
+=
+  when m
+    is Has(v) -> 100 / v
+    is Nothing -> 0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = recip(Has(v: 0))
+  @console.print("q = {q}")

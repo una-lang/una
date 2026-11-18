@@ -1,0 +1,25 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module health)
+(import std.host Method Reply Request)
+(import std.testing test_request)
+(fn pub handle
+  (doc "--- Answers `GET /health` with 200, and every other request with 404.")
+  ((request {internal Request}))
+  {internal Reply}
+  (block
+    (if
+      (and (is (. request method) Get) (== (. request segments) (list "health")))
+      (block (call Reply (status: 200) (headers: (list)) (body: "ok")))
+      (block (call Reply (status: 404) (headers: (list)) (body: ""))))))
+(example "the health endpoint answers ok"
+  (do (call handle (call test_request (method: Get) (target: "/health") (body: ""))))
+  (expect (== (. result status) 200)))
+(example "every other path is not found"
+  (do (call handle (call test_request (method: Get) (target: "/other") (body: ""))))
+  (expect (== (. result status) 404)))
+(example "a request of another method is not found"
+  (do (call handle (call test_request (method: Post) (target: "/health") (body: ""))))
+  (expect (== (. result status) 404)))

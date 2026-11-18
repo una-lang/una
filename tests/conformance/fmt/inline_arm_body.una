@@ -1,0 +1,11 @@
+-- test: an arm whose body is one line is written on one line
+-- spec: spec/02 §6
+-- expect: error U7001 at 9:1
+module inline_arm_body
+
+pub sign(x: Int) -> Int
+=
+  when x
+    in 0..9 ->
+      1
+    else -> 0

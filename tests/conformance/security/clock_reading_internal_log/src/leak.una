@@ -1,0 +1,15 @@
+-- test: an `internal` reading of `Clock.now` may go where `internal` data may (ADR 0116 amendment of 2026-11-09, migration item 3): `Files.write` accepts `internal` content, so a program that reads the environment logs its elapsed time to a file
+-- spec: spec/14 §3
+-- expect: ok
+module leak
+
+pub main() -> Unit
+  uses @clock: Clock[now]
+  uses @env: Env[get]
+  uses @files: Files[write]
+=
+  let start = @clock.now()
+  let mode = @env.get("MODE")
+  let stop = @clock.now()
+  let written = attempt @files.write("logs/time.txt", content: "{stop - start} ms")
+  unit

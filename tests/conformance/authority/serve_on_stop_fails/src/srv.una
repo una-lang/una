@@ -1,0 +1,19 @@
+-- test: `on_stop` of the served module handles every failure it meets, since the host has no caller to give a failure to (spec/31 §7, ADR 0123 rule 16)
+-- spec: spec/31 §7
+-- expect: error U3029 at src/srv.una:17:3
+module srv
+
+import std.host (Reply, Request)
+
+pub kind Stop = | Failed
+
+--- Answers every request with 200.
+pub handle(request: internal Request) -> internal Reply = Reply(status: 200, headers: [],
+  body: "ok"
+)
+
+--- Stops.
+pub on_stop() -> Unit
+  fails Stop
+=
+  fail Failed

@@ -1,0 +1,12 @@
+-- test: a wrapping method of a measured fixed-width value is outside the refinement language in a `requires` clause, as on an unmeasured one: U2014
+-- spec: spec/03 §3
+-- expect: error U2014 at src/m.una:9:12
+module m
+
+pub measure Meter
+
+pub f(a: I32 of Meter, b: I32 of Meter) -> I32 of Meter
+  requires a.wrapping_add(by: b) > a
+  ensures result == b
+=
+  a

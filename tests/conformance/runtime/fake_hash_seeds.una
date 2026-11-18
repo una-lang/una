@@ -1,0 +1,40 @@
+-- test: `fake_hash` gives equal values for equal seeds and different values for different seeds: zero, a seed and its negation, seeds that differ only in sign or only in magnitude, and seeds of more than 64 bits (spec/14 §4)
+-- spec: spec/14 §4
+-- expect: test-pass
+module conformance.runtime.fake_hash_seeds
+
+import std.testing (fake_hash)
+
+pub same(a: internal Hashed, b: internal Hashed) -> internal Bool = a == b
+
+example "equal seeds give equal values"
+  do same(fake_hash(0), b: fake_hash(0 - 0))
+  expect result == true
+
+example "a large seed equals itself"
+  do same(fake_hash(18446744073709551616 * 18446744073709551616), b: fake_hash(340282366920938463463374607431768211456))
+  expect result == true
+
+example "a negative large seed equals itself"
+  do same(fake_hash(0 - 18446744073709551617), b: fake_hash(-18446744073709551617))
+  expect result == true
+
+example "a seed and its negation differ"
+  do same(fake_hash(1), b: fake_hash(-1))
+  expect result == false
+
+example "zero and one differ"
+  do same(fake_hash(0), b: fake_hash(1))
+  expect result == false
+
+example "a large seed and its negation differ"
+  do same(fake_hash(18446744073709551617), b: fake_hash(-18446744073709551617))
+  expect result == false
+
+example "seeds past 64 bits that differ by one differ"
+  do same(fake_hash(18446744073709551616), b: fake_hash(18446744073709551617))
+  expect result == false
+
+example "a small seed and a large one with the same low bits differ"
+  do same(fake_hash(1), b: fake_hash(18446744073709551617))
+  expect result == false

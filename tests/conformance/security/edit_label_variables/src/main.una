@@ -1,0 +1,41 @@
+-- test: an un-annotated editable binding's open label positions are solved over its assignments
+-- spec: spec/17 §2
+-- expect: ok
+module main
+
+--- How often each item occurs.
+pub tally[T: Ord](xs: List[T]) -> Map[T, Int]
+=
+  let edit m = empty_map()
+  for x in xs
+    let n = m.get(key: x)
+      if none use 0
+    edit m.set(key: x, value: n + 1)
+  m
+
+--- The items of each key, in order.
+pub group_by[K: Ord, T](xs: List[T], key: fn(T) -> K) -> Map[K, List[T]]
+=
+  let edit m = empty_map()
+  for x in xs
+    let k = key(x)
+    let seen = m.get(key: k)
+      if none use []
+    edit m.set(key: k, value: seen.append(item: x))
+  m
+
+--- The last item of each key.
+pub index_by[K: Ord, T](xs: List[T], key: fn(T) -> K) -> Map[K, T]
+=
+  let edit m = empty_map()
+  for x in xs
+    edit m.set(key: key(x), value: x)
+  m
+
+example "tally counts each item"
+  do tally(["a", "b", "a"]).get(key: "a")
+  expect result == Some(2)
+
+example "group_by keeps the order of the items"
+  do group_by([1, 2, 3, 4], key: fn(n) -> n / 2).get(key: 1)
+  expect result == Some([2, 3])

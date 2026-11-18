@@ -1,0 +1,120 @@
+-- test: a task cannot assign an outer binding, pass it as `edit` or `take`, as an argument or a receiver, in a nested block, a nested `together`, a `for` loop or a `together for` body (U2023); a lambda in a task captures it too; a branch does not see its siblings; a body needs two or more `let` branches and nothing else (U2024) (spec/19 §1, §2)
+-- spec: spec/19 §1, §2
+-- expect: error U2023 at src/together_rules.una:35:7
+-- expect: error U2023 at src/together_rules.una:46:23
+-- expect: error U2023 at src/together_rules.una:54:22
+-- expect: error U2023 at src/together_rules.una:63:12
+-- expect: error U2023 at src/together_rules.una:76:27
+-- expect: error U2023 at src/together_rules.una:89:7
+-- expect: error U3013 at src/together_rules.una:96:35
+-- expect: error U2023 at src/together_rules.una:96:45
+-- expect: error U1001 at src/together_rules.una:104:13
+-- expect: error U2024 at src/together_rules.una:109:3
+-- expect: error U2024 at src/together_rules.una:116:3
+module together_rules
+
+pub kind Tally
+  count: Int
+
+bump(edit n: Int) -> Int
+=
+  n = n + 1
+  n
+
+eat(take xs: List[Int]) -> Int = xs.len
+
+add(edit t: Tally, by: Int) -> Unit
+=
+  t.count = t.count + by
+
+pub assigned(a: Int) -> Int
+=
+  let edit total = 0
+  together
+    let x = if a > 0
+      total = 1
+      a
+    else
+      0
+    let y = a
+  total + x + y
+
+pub edited(a: Int) -> Int
+=
+  let edit total = 0
+  together
+    let x = bump(edit total)
+    let y = a
+  x + y
+
+pub taken(a: Int) -> Int
+=
+  let items = [1, 2]
+  together
+    let x = eat(take items)
+    let y = a
+  x + y
+
+pub receiver(a: Int) -> Int
+=
+  let edit t = Tally(count: 0)
+  together
+    let x = if a > 0
+      edit t.add(by: 1)
+      a
+    else
+      0
+    let y = a
+  x + y
+
+pub nested(a: Int) -> Int
+=
+  let edit total = 0
+  together
+    let x = if a > 0
+      together
+        let p = bump(edit total)
+        let q = a
+      p + q
+    else
+      0
+    let y = a
+  x + y
+
+pub looped(xs: List[Int]) -> List[Int]
+=
+  let edit total = 0
+  together for x in xs
+    for y in xs
+      total = total + y
+    x
+
+pub in_lambda(xs: List[Int]) -> Int
+=
+  let edit total = 0
+  together
+    let x = xs.map(each: fn(v) -> bump(edit total))
+    let y = 1
+  x.len + y
+
+pub siblings(a: Int) -> Int
+=
+  together
+    let x = a + 1
+    let y = x + 1
+  y
+
+pub one_branch(a: Int) -> Int
+=
+  together
+    let x = a + 1
+  x
+
+pub not_a_let(a: Int) -> Int
+=
+  let edit total = 0
+  together
+    let x = a
+    total = 2
+    let y = a
+  x + y

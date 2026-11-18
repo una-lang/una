@@ -1,0 +1,25 @@
+-- test: effect inside a `with` handler argument (review control)
+-- spec: spec/04 §4
+-- expect: error U3013 at 25:35
+module effect_in_with_arg
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+handler rows(n: Int) for Store
+  op find(key) = None
+  op count() = n
+
+counted() -> Int
+  uses @store: Store[count]
+=
+  @store.count()
+
+pub run() -> Int
+  uses @outer: Store[count]
+=
+  counted() with @store = rows(n: @outer.count())

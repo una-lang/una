@@ -1,0 +1,9 @@
+ita clock_reading_internal_print
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    env
+    console
+    clock

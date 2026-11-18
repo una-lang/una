@@ -1,0 +1,6 @@
+-- test: parameters have distinct names
+-- spec: spec/02 §3
+-- expect: error U1002 at 6:17
+module duplicate_parameter
+
+pub add(x: Int, x: Int) -> Int = x

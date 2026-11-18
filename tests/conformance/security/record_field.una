@@ -1,0 +1,9 @@
+-- test: secret value stored in a public record field (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 9:47
+module record_field
+
+kind Card
+  pin: Int
+
+pub wrap(pin: secret Int) -> Card = Card(pin: pin)

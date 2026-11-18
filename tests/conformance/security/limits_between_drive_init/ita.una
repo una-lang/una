@@ -1,0 +1,12 @@
+ita limits_between_drive_init
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    http "https://api.example.com" get
+      at most 1 per minute
+
+drive
+  module counter
+  ticks 4

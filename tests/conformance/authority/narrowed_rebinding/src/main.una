@@ -1,0 +1,24 @@
+-- test: `with @x = @y[ops]` grants `@y` restricted to `ops`, which a callee that needs only them accepts (ADR 0093 rule 4)
+-- spec: spec/05 §4
+-- expect: ok
+module main
+
+capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+
+reader(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+
+writer(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  let data = @files.read(path)
+  @files.write(path, data: data)
+
+pub show(path: Text) -> Text
+  uses @user_files: Files[read, write]
+=
+  reader(path) with @files = @user_files[read]

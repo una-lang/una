@@ -1,0 +1,51 @@
+-- test: labels flow through generics, fields, patterns, branches, lambdas and sinks
+-- spec: spec/07 §3
+-- expect: tier0-ok
+module ifc_tour
+
+kind Account
+  owner: Text
+  balance: secret Int
+
+kind Band = Low | High(amount: secret Int)
+
+capability Ledger
+  op record(amount: Int) -> Unit
+    accepts secret
+
+pub total(accounts: List[Account]) -> secret Int
+=
+  let zero: secret Int = 0
+  accounts.map(each: fn(a) -> a.balance).fold(initial: zero, step: fn(sum, x) -> sum + x)
+
+pub first_balance(accounts: List[Account]) -> secret Option[secret Int] = accounts.map(each: fn(a) -> a.balance).first()
+
+pub owners(accounts: List[Account]) -> secret List[Text] = accounts.map(each: fn(a) -> a.owner)
+
+pub band(amount: secret Int) -> secret Band = if amount > 1000 then High(amount) else Low
+
+pub amount_of(band: Band) -> secret Int
+=
+  when band
+    is High(amount) -> amount
+    is Low -> 0
+
+pub count(accounts: List[Account]) -> Int = accounts.len
+
+pub keep(amount: secret Int) -> Unit
+  uses @ledger: Ledger[record]
+=
+  if amount > 0
+    @ledger.record(amount)
+  else
+    unit
+
+handler memory() for Ledger
+  op record(amount) = unit
+
+pub secret_total() -> secret Int = 7
+
+example "expect lines see labeled values"
+  given @ledger = memory()
+  do keep(secret_total())
+  expect performed @ledger.record

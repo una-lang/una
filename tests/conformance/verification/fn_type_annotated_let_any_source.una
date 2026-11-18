@@ -1,0 +1,60 @@
+-- test: an annotated let of a refined function type is an obligation whatever its right side is: call, field read, generic call, variable, prelude call, constructor field, in both directions
+-- spec: spec/12 §3
+-- expect: error U5001 at 27:27
+-- expect: error U5001 at 32:27
+-- expect: error U5001 at 37:27
+-- expect: error U5001 at 42:27
+-- expect: error U5001 at 47:27
+-- expect: error U5001 at 52:27
+-- expect: error U5001 at 59:27
+module fn_type_annotated_let_any_source
+
+pub kind Pos = Int where it > 0
+
+pub kind Holder
+  run: fn(Int) -> Int
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub zero(x: Int) -> Int = 0
+
+pub make() -> fn(Int) -> Int = zero
+
+pub id[T](x: T) -> T = x
+
+pub by_call() -> Int
+=
+  let f: fn(Int) -> Pos = make()
+  inv(f(1))
+
+pub by_field(h: Holder) -> Int
+=
+  let f: fn(Int) -> Pos = h.run
+  inv(f(1))
+
+pub by_generic(g: fn(Int) -> Int) -> Int
+=
+  let f: fn(Int) -> Pos = id(g)
+  inv(f(1))
+
+pub by_variable(g: fn(Int) -> Int) -> Int
+=
+  let f: fn(Int) -> Pos = g
+  inv(f(1))
+
+pub by_prelude(g: fn(Int) -> Int) -> Int
+=
+  let f: fn(Int) -> Pos = [g].first().or_else(default: g)
+  inv(f(1))
+
+pub by_constructor() -> Int
+=
+  let f: fn(Int) -> Pos = Holder(run: zero).run
+  inv(f(1))
+
+pub taker() -> fn(Pos) -> Int = inv
+
+pub by_param() -> Int
+=
+  let f: fn(Int) -> Int = taker()
+  f(0)

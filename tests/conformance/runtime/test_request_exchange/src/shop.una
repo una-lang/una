@@ -1,0 +1,106 @@
+-- test: `test_request` reads its target by the host's own rules, with the only header `host: test`, the peer `192.0.2.1` and the listener `test`, and fails `Refused` where the host would answer `400`; `test_exchange` gives a fresh reply right, which a handler of `HttpServer` receives (spec/31 §1, spec/14 §4, ADR 0123 rule 21)
+-- spec: spec/31 §1
+-- expect: test-pass
+module shop
+
+import std.host (Exchange, HttpServer, Method, Reply, ReplyRight, Request)
+import std.testing (TestRequestError, test_exchange, test_request)
+
+--- The reply to a request: its path.
+pub route(request: internal Request) -> internal Reply = Reply(status: 200, headers: [],
+  body: "path {request.segments}"
+)
+
+--- What a test reads of a request: its target, its path, its query, its headers, its peer, its
+--- listener and its body.
+pub shown(request: Request) -> internal Text = "{request.target} {request.segments} {request.params} {request.headers} {request.peer} {request.listener} {request.body}"
+
+--- Whether a request is a `Head`.
+pub is_head(request: Request) -> internal Bool
+=
+  when request.method
+    is Head -> true
+    is Get -> false
+    is Post -> false
+    is Put -> false
+    is Patch -> false
+    is Delete -> false
+    is Options -> false
+
+--- Answers one exchange with its route.
+pub answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: exchange.right, reply: route(exchange.request))
+    if error use unit
+
+--- Whether two exchanges have distinct reply rights.
+pub distinct(a: Exchange, b: Exchange) -> internal Bool = a.right != b.right
+
+--- Whether an exchange's reply right equals itself.
+pub same(a: Exchange) -> internal Bool = a.right == a.right
+
+--- A server whose replies are accepted.
+handler accepting() for HttpServer
+  op next() = fail Closed
+  op reply(to, reply) = unit
+  op close() = unit
+
+test "a request's target is read by the host's rules"
+  do shown(test_request(method: Post, target: "/orders/a%20b?x=1&y=%C3%A9&z", body: "\{\"n\": 7\}"))
+  expect result == "/orders/a%20b?x=1&y=%C3%A9&z [\"orders\", \"a b\"] [Param(name: \"x\", value: \"1\"), Param(name: \"y\", value: \"é\"), Param(name: \"z\", value: \"\")] [Header(name: \"host\", value: \"test\")] 192.0.2.1 test \{\"n\": 7\}"
+
+test "a request routes by its segments"
+  do route(test_request(method: Get, target: "/orders/7", body: ""))
+  expect result == Reply(status: 200, headers: [], body: "path [\"orders\", \"7\"]")
+
+test "the root path is one empty segment"
+  do route(test_request(method: Get, target: "/", body: ""))
+  expect result.body == "path [\"\"]"
+
+test "the method is the one given"
+  do is_head(test_request(method: Head, target: "/", body: ""))
+  expect result
+
+test "an absolute-form target on the host test is rewritten to origin-form"
+  do shown(test_request(method: Get, target: "http://test/a//b", body: ""))
+  expect result == "/a//b [\"a\", \"\", \"b\"] [] [Header(name: \"host\", value: \"test\")] 192.0.2.1 test "
+
+test "a dot-dot segment is refused"
+  do route(test_request(method: Get, target: "/a/../b", body: ""))
+  expect fails Refused
+
+test "an encoded slash in a segment is refused"
+  do route(test_request(method: Get, target: "/a%2Fb", body: ""))
+  expect fails Refused
+
+test "a space in the target is refused"
+  do route(test_request(method: Get, target: "/a b", body: ""))
+  expect fails Refused
+
+test "a fragment is refused"
+  do route(test_request(method: Get, target: "/a#b", body: ""))
+  expect fails Refused
+
+test "the asterisk-form is refused"
+  do route(test_request(method: Options, target: "*", body: ""))
+  expect fails Refused
+
+test "an absolute-form target on another host is refused"
+  do route(test_request(method: Get, target: "http://other/a", body: ""))
+  expect fails Refused
+
+test "a handler receives the reply to a test exchange"
+  given @server = accepting()
+  do answer(test_exchange(test_request(method: Get, target: "/orders/7", body: "")))
+  expect performed @server.reply
+
+test "two test exchanges have distinct reply rights"
+  do distinct(test_exchange(test_request(method: Get, target: "/", body: "")),
+    b: test_exchange(test_request(method: Get, target: "/", body: ""))
+  )
+  expect result
+
+test "a reply right equals itself"
+  do same(test_exchange(test_request(method: Get, target: "/", body: "")))
+  expect result

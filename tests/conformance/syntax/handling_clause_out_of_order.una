@@ -1,0 +1,21 @@
+-- test: if error comes before if none
+-- spec: spec/06 §3
+-- expect: error U0102 at 20:5
+module handling_clause_out_of_order
+
+pub kind StoreError = Timeout | Corrupted
+
+pub kind LookupError = NotFound | Unavailable
+
+pub capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+
+pub lookup(key: Int) -> Int
+  uses @store: Store[find]
+  fails LookupError
+=
+  let value = @store.find(key)
+    if none fail NotFound
+    if error fail Unavailable
+  value

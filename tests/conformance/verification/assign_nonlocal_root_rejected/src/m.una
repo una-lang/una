@@ -1,0 +1,9 @@
+-- test: a function that assigns to a name that is not a local does not elaborate, and the package is rejected rather than its division going unverified: U8001
+-- spec: spec/09 §3
+-- expect: error U8001 at src/m.una:6:1
+module m
+
+pub f(x: Int, y: Int) -> Int
+=
+  abs = 0
+  x / y

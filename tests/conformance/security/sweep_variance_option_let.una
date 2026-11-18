@@ -1,0 +1,20 @@
+-- test: `Option` is covariant at an annotated `let` (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 14:24
+module sweep_variance_option_let
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub let_0(v: Option[secret Int]) -> Int
+=
+  let w: Option[Int] = v
+  0
+
+pub let_1(v: Option[Int]) -> Int
+=
+  let w: Option[secret Int] = v
+  0

@@ -1,0 +1,57 @@
+-- test: a `within` whose expression returns before its deadline gives the expression's outcome, in both engines: its value on a `let` and a statement, `Failed(error: x)` for a failure in time under `attempt`, and `x` itself under `if error pass` (spec/27 §5, ADR 0117 rule 5)
+-- spec: spec/27 §5
+-- grant: console
+-- expect: run-output "met 2"
+-- expect: run-output "statement"
+-- expect: run-output "failed in time"
+-- expect: run-output "passed Negative"
+module timed
+
+import std.time (Timed, second)
+
+pub kind CalcError = Negative | TimedOut
+
+next(n: Int) -> Int = n + 1
+
+checked_next(n: Int) -> Int
+  fails CalcError
+=
+  if n < 0 then fail Negative else n + 1
+
+pass_on(n: Int) -> Int
+  fails CalcError
+=
+  let value = checked_next(n) within 60 * second
+    if error pass
+  value
+
+describe(failure: Timed[CalcError]) -> Text
+=
+  when failure
+    is TimedOut -> "timed out"
+    is Failed(error: cause) -> "failed in time"
+
+name(failure: CalcError) -> Text
+=
+  when failure
+    is Negative -> "Negative"
+    is TimedOut -> "TimedOut"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = next(1) within 60 * second
+    if error use 0
+  @console.print("met {a}")
+  @console.print("statement") within 60 * second
+    if error use unit
+  let outcome = attempt checked_next(-1) within 60 * second
+  let shown = when outcome
+    is Ok(value) -> "ok"
+    is Err(failure) -> describe(failure)
+  @console.print(shown)
+  let passed = attempt pass_on(-5)
+  let reason = when passed
+    is Ok(value) -> "ok"
+    is Err(failure) -> name(failure)
+  @console.print("passed {reason}")

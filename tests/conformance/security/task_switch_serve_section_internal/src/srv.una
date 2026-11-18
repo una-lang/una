@@ -1,0 +1,24 @@
+-- test: the twin of `task_switch_serve_section` with an `internal` key, the bound of the rule, as every request is: accepted, a known residual of #1708 (spec/27 §8 rule 5, #1684)
+-- spec: spec/27 §8
+-- expect: ok
+module srv
+
+import std.host (Reply, Request)
+
+key() -> internal Int = 1
+
+spin(n: internal Int) -> Unit
+=
+  for i in 0..<n
+    unit
+
+pub handle(request: internal Request) -> internal Reply
+=
+  let sel = if request.segments == ["a"] then 1 else 0
+  spin(((key() + sel) mod 2) * 3000)
+  Reply(status: 200, headers: [], body: "ok")
+
+pub on_stop() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("stopped")

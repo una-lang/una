@@ -1,0 +1,32 @@
+-- test: a record with a secret field compared by ==, a generic, contains and a generic over contains
+-- spec: spec/07 §7
+-- expect: error U4001 at 22:45
+-- expect: error U4001 at 24:34
+-- expect: error U4001 at 26:35
+-- expect: error U4001 at 28:34
+-- expect: error U4001 at 30:40
+-- expect: error U4001 at 32:37
+module g05_kind_field_labels
+
+kind Account
+  id: Int
+  pin: secret Int
+
+kind Flag
+  same: Bool
+
+same[T](a: T, b: T) -> Bool = a == b
+
+found[T](xs: List[T], y: T) -> Bool = xs.contains(item: y)
+
+flagged[T](a: T, b: T) -> Flag = Flag(same: a == b)
+
+pub direct(a: Account) -> Bool = a == Account(id: 1, pin: 1234)
+
+pub generic(a: Account) -> Bool = same(a, b: Account(id: 1, pin: 1234))
+
+pub listed(a: Account) -> Bool = [a].contains(item: Account(id: 1, pin: 1234))
+
+pub generic_list(a: Account) -> Bool = found([a], y: Account(id: 1, pin: 1234))
+
+pub flag(pin: secret Int) -> Bool = flagged(pin, b: 1).same

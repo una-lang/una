@@ -1,0 +1,10 @@
+-- test: a function of the package called in method form on a measured value resolves as on any value
+-- spec: spec/25 §5
+-- expect: ok
+module m
+
+pub measure Meter
+
+pub double(x: Int of Meter) -> Int of Meter = x + x
+
+pub twice(m: Int of Meter) -> Int of Meter = m.double()

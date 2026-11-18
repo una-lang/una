@@ -1,0 +1,37 @@
+-- test: the twin of `tconc_handler_op`: the sibling branch works on `public` data, so the `within` in `h`'s operation is `public` and its `TimedOut` may be passed on
+-- spec: spec/27 §11
+-- expect: ok
+module plan
+
+import std.time (millisecond)
+
+pub kind PlanError = | TimedOut
+
+step(n: Int) -> Int = n + 1
+
+capability C
+  op get(k: Int) -> Int
+    fails PlanError
+
+--- A handler whose operation passes on the `TimedOut` of a deadline over `public` work.
+handler h() for C
+  op get(k) =
+    let v = step(k) within 10 * millisecond
+      if error pass
+    v
+
+crunch_open(n: Int) -> Int = n * 3
+
+--- A branch performs `@c.get`, which `h` serves, beside a branch that works on `m`.
+both(m: Int, n: Int) -> Int
+  uses @c: C[get]
+=
+  together
+    let a = crunch_open(m)
+    let b = @c.get(n)
+      if error use 0
+  a
+
+pub run(m: Int, n: Int) -> Int
+=
+  both(m, n) with @c = h()

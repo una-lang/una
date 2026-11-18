@@ -1,0 +1,14 @@
+-- test: ADR 0067 amendment (2026-10-06), G02_for_then_k_c: a T value decided by comparing T values goes where a value of T is expected (a lambda, a higher-order function, a function result, an `edit` binding or a field of the body), which edition 0.2 rejects in the generic body; the control, sound, is rejected there, an accepted cost, since accepting it soundly would need re-checking lambdas (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/g02_for_then_k_c.una:11:11
+module g02_for_then_k_c
+
+apply[T](xs: List[T], y: T, q: T, k: fn(T) -> Int) -> Int
+=
+  let edit r = q
+  for x in xs
+    if x == y
+      r = x
+  k(r)
+
+pub leak(s: Int) -> Int = apply([[s, s]], y: [0, 0], q: [1], k: fn(xs) -> xs.len)

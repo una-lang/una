@@ -1,0 +1,15 @@
+-- test: the erasure twin of op_condition_edition_0_2: the same program without the condition, which edition 0.2 accepts and edition 0.3 checks the same way (spec/13 §7, ADR 0092)
+-- spec: spec/13 §7
+-- expect: ok
+module main
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub run(dry_run: Bool) -> Unit
+  uses @log: Log[write]
+=
+  if not dry_run
+    @log.write(1)
+  else
+    unit

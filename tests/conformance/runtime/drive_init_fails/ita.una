@@ -1,0 +1,7 @@
+ita drive_init_fails
+  version 0.1.0
+  edition 0.4
+
+drive
+  module metronome
+  ticks 16

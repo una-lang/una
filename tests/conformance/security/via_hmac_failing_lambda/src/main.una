@@ -1,0 +1,14 @@
+-- test: a prelude function given a failing lambda keeps the policy failure at the to label (ADR 0098)
+-- spec: spec/07 §5
+-- expect: error U4002 at src/main.una:13:5
+module main
+
+import release (ViaError, key_of)
+
+pub passes(t: secret Text) -> Unit
+  uses @keys: Keys[hmac]
+  fails ViaError
+=
+  let k = key_of(t)
+    if error pass
+  unit

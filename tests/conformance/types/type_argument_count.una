@@ -1,0 +1,6 @@
+-- test: a generic type takes as many arguments as it has parameters
+-- spec: spec/03 §2
+-- expect: error U2003 at 6:14
+module type_argument_count
+
+pub size(xs: List) -> Int = 0

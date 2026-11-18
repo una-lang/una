@@ -1,0 +1,3 @@
+module options
+
+pub kind Option = Absent | Present

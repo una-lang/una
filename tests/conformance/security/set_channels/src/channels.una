@@ -1,0 +1,27 @@
+-- test: in edition 0.5, the items of a set are its shape: a `secret` item added to a set with a `public` top label is U4001 at the item, with a control, and `has` with a `secret` item carries its label to `Console` (ADR 0119 IF2)
+-- spec: spec/28 §6
+-- expect: error U4001 at src/channels.una:13:20
+-- expect: error U4003 at src/channels.una:27:18
+module channels
+
+import std.collections (Set, empty_set)
+
+--- A secret item into an editable set with a public top label.
+pub into_public(x: secret Int) -> Unit
+=
+  let edit s: Set[Int] = empty_set()
+  edit s.add(item: x)
+  unit
+
+--- The control: the set is declared with a secret top label.
+pub into_secret(x: secret Int) -> Unit
+=
+  let edit s: secret Set[Int] = empty_set()
+  edit s.add(item: x)
+  unit
+
+--- Looking a secret item up, and printing the answer.
+pub presence(s: Set[Int], x: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s.has(item: x)}")

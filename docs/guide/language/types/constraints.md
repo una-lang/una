@@ -88,7 +88,7 @@ pub fold_with[T](items: List[T], initial: T, step: fn(T, T) -> T) -> T = items.f
 pub total(items: List[Int]) -> Int = fold_with(items, initial: 0, step: fn(acc, item) -> acc + item)
 ```
 
-The runtime case `generic_fold_run`, kept by the maintainers, checks that this explicit operation sums `[1, 2, 3]` to `6`.
+The runtime case [generic_fold_run](../../../../tests/conformance/runtime/generic_fold_run/src/fold.una) checks that this explicit operation sums `[1, 2, 3]` to `6`.
 
 ## Edge cases
 

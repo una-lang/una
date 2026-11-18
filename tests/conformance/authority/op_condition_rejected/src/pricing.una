@@ -1,0 +1,66 @@
+-- test: an operation's condition has the restrictions of a `requires` clause: a `Bool` (U2001) of the refinement language (U2014: not `checked`, `attempt`, an operation or a lambda), no opaque predicate (U2016), no `result` (U2012), no `it` (U2013), over names in scope (ADR 0092 rule 1, spec/05 §3)
+-- spec: spec/05 §3
+-- expect: error U2001 at src/pricing.una:24:40
+-- expect: error U2012 at src/pricing.una:29:40
+-- expect: error U2013 at src/pricing.una:34:40
+-- expect: error U2014 at src/pricing.una:39:40
+-- expect: error U1001 at src/pricing.una:44:40
+-- expect: error U2014 at src/pricing.una:49:40
+-- expect: error U2001 at src/pricing.una:54:40
+-- expect: error U2014 at src/pricing.una:54:40
+-- expect: error U2014 at src/pricing.una:59:40
+-- expect: error U2016 at src/pricing.una:64:40
+module pricing
+
+predicate opaque positive(n: Int) -> Bool = n > 0
+
+pub kind Fault = Bad | Worse
+
+pub capability Catalog
+  op price(sku: Int) -> Int
+  op journal(note: Text) -> Unit
+
+pub not_bool(n: Int) -> Unit
+  uses @catalog: Catalog[journal where n]
+=
+  unit
+
+pub uses_result(n: Int) -> Unit
+  uses @catalog: Catalog[journal where result]
+=
+  unit
+
+pub uses_it(n: Int) -> Unit
+  uses @catalog: Catalog[journal where it > 0]
+=
+  unit
+
+pub calls_op(n: Int) -> Unit
+  uses @catalog: Catalog[journal where @catalog.price(n) > 0]
+=
+  unit
+
+pub unknown_name(n: Int) -> Unit
+  uses @catalog: Catalog[journal where m > 0]
+=
+  unit
+
+pub uses_checked(n: Int) -> Unit
+  uses @catalog: Catalog[journal where checked(n > 0, it) else fail Bad]
+=
+  unit
+
+pub uses_attempt(n: Int) -> Unit
+  uses @catalog: Catalog[journal where attempt @catalog.price(n)]
+=
+  unit
+
+pub uses_lambda(n: Int) -> Unit
+  uses @catalog: Catalog[journal where (fn(x: Int) -> x > 0)(n)]
+=
+  unit
+
+pub uses_opaque(n: Int) -> Unit
+  uses @catalog: Catalog[journal where positive(n)]
+=
+  unit

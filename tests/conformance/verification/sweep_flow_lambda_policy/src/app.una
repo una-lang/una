@@ -1,0 +1,22 @@
+-- test: a lambda result fed by a policy call checks every flow (refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/app.una:20:224
+module app
+
+import release (Pos, lower, lower_pos, mask)
+
+pub kind Holder
+  n: Int
+  p: Pos
+  s: secret Int
+  run: fn(Int) -> Int
+  pos: fn(Int) -> Pos
+  pinv: fn(Pos) -> Int
+
+pub kind Boom = | Bang
+
+pub apply_r(f: fn(Int) -> Pos) -> Int = 0
+
+pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_r(fn(x: Int) -> lower(s))
+
+pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_r(fn(x: Int) -> lower_pos(s))

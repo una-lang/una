@@ -1,0 +1,13 @@
+-- test: an arm for a variant that an earlier arm matches is unreachable
+-- spec: spec/10 §4
+-- expect: error U2008 at 13:5
+module repeated_variant_arm
+
+pub kind Level = Low | High
+
+pub rank(level: Level) -> Int
+=
+  when level
+    is Low -> 0
+    is High -> 2
+    is Low -> 1

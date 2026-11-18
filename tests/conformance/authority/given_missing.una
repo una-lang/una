@@ -1,0 +1,16 @@
+-- test: every capability of the do line comes from given
+-- spec: spec/08 §2
+-- expect: error U3001 at 15:6
+module given_missing
+
+capability Log
+  op write(line: Text) -> Unit
+
+pub note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+example "a note"
+  do note("done")
+  expect true

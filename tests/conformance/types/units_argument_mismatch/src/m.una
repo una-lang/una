@@ -1,0 +1,16 @@
+-- test: an argument of another unit than its parameter's is U2028 at the argument
+-- spec: spec/25 §2
+-- expect: error U2028 at src/m.una:16:52
+module m
+
+pub measure Meter
+
+pub measure Second
+
+pub measure Gram
+
+pub measure Kilometer = 1000 * Meter
+
+pub accept(d: Int of Meter) -> Int of Meter = d
+
+pub bad(t: Int of Second) -> Int of Meter = accept(t)

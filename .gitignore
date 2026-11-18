@@ -11,7 +11,7 @@ __pycache__/
 /fuzz/artifacts/
 
 # Not in the public tree (#2052, #2049): the maintainers keep these locally. The public tree holds
-# the compiler's sources, the specification, the guides, the examples and what builds `una`.
+# the compiler's sources and tests, the specification, the guides, the examples and what builds `una`.
 /.claude/
 /CLAUDE.md
 /.mcp.json
@@ -23,13 +23,7 @@ __pycache__/
 /docs/releases/
 /docs/adr/
 /docs/reviews/
-/tests/
-/crates/*/tests/
-/crates/una-test-cases/
 # The scripts, but the two that build the Z3 library that `una` links (README, "Build from source").
 /scripts/*
 !/scripts/z3-library.sh
 !/scripts/build-z3.sh
-
-# The test runner configuration belongs with the tests, which are not in the public tree.
-/.config/

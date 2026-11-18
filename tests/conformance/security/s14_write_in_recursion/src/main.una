@@ -1,0 +1,28 @@
+-- test: a write in mutually recursive helpers, entered under an `internal` condition, labels the reads: the program counters propagate to a fixpoint over the call graph (S-14)
+-- spec: spec/07 §7
+-- expect: error U4003 at src/main.una:27:17
+-- expect: error U4003 at src/main.una:28:18
+module main
+
+ping(n: Int) -> Unit
+  uses @files: Files[write]
+=
+  if n > 0
+    pong(n - 1)
+
+pong(n: Int) -> Unit
+  uses @files: Files[write]
+=
+  let w = attempt @files.write("marker.txt", content: "")
+  ping(n)
+
+pub probe(flag: internal Bool) -> Unit
+  uses @files: Files[read, write]
+  uses @console: Console[print]
+=
+  if flag
+    ping(3)
+  let r = attempt @files.read("marker.txt")
+  when r
+    is Ok(v) -> @console.print("set")
+    is Err(e) -> @console.print("not set")

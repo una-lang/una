@@ -1,0 +1,68 @@
+-- test: the interpreter runs the tasks of a block in branch order and those of a `together for` in element order; a failing task stops the block before the tasks after it start, so the block fails with the failure of the lowest-indexed failing task, as a sequential run does (spec/19 §6)
+-- spec: spec/19 §6
+-- grant: console
+-- expect: run-output "a"
+-- expect: run-output "bb"
+-- expect: run-output "t1"
+-- expect: run-output "t2"
+-- expect: run-output "t3"
+-- expect: run-output "x"
+-- expect: run-output "y"
+-- expect: run-output "3 3 Bad"
+module together_run
+
+pub kind Oops = Bad | Worse
+
+--- Prints `line` and returns its length.
+say(line: Text) -> Int
+  uses @console: Console[print]
+=
+  @console.print(line)
+  line.len
+
+--- Prints `line`, then fails with `Bad` when `code` is 1 and `Worse` when it is 2.
+step(line: Text, code: Int) -> Int
+  uses @console: Console[print]
+  fails Oops
+=
+  @console.print(line)
+  if code == 1
+    fail Bad
+  if code == 2
+    fail Worse
+  line.len
+
+--- The name of a failure.
+describe(e: Oops) -> Text
+=
+  when e
+    is Bad -> "Bad"
+    is Worse -> "Worse"
+
+--- Three tasks, the second and third failing.
+pick() -> Int
+  uses @console: Console[print]
+  fails Oops
+=
+  together
+    let x = step("x", code: 0)
+      if error pass
+    let y = step("y", code: 1)
+      if error pass
+    let z = step("z", code: 2)
+      if error pass
+  x + y + z
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  together
+    let a = say("a")
+    let b = say("bb")
+  let lengths = together for i in 1..3
+    say("t{i}")
+  let tried = attempt pick()
+  let outcome = when tried
+    is Ok(n) -> "ok {n}"
+    is Err(e) -> describe(e)
+  @console.print("{a + b} {lengths.len} {outcome}")

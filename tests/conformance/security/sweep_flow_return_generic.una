@@ -1,0 +1,32 @@
+-- test: a declared result fed by a generic call checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
+-- spec: spec/10 §2
+-- expect: error U4001 at 24:202
+-- expect: error U3003 at 28:213
+-- expect: error U3016 at 28:216
+-- expect: error U3009 at 32:213
+-- expect: error U3016 at 32:216
+module sweep_flow_return_generic
+
+pub kind Pos = Int where it > 0
+
+pub kind Holder
+  n: Int
+  p: Pos
+  s: secret Int
+  run: fn(Int) -> Int
+  pos: fn(Int) -> Pos
+  pinv: fn(Pos) -> Int
+
+pub kind Boom = | Bang
+
+pub id[T](x: T) -> T = x
+
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = id(s)
+
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = id(0)
+
+pub e_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> fn(Int) -> Int = id(q)
+
+pub e_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> fn(Int) -> Int = id(g)
+
+pub x_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> fn(Int) -> Int = id(z)

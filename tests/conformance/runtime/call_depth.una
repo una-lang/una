@@ -1,0 +1,15 @@
+-- test: a call beyond the maximum call depth aborts the run
+-- spec: spec/11 §7
+-- grant: console
+-- expect: run-output "starting"
+-- expect: error U6003 at 8:50
+module conformance.runtime.call_depth
+
+countdown(n: Int) -> Int = if n == 0 then 0 else countdown(n - 1)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("starting")
+  let steps = countdown(-1)
+  @console.print("finished after {steps}")

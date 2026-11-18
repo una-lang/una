@@ -1,0 +1,8 @@
+-- test: a kind contains itself only through List or Option fields
+-- spec: spec/03 §2
+-- expect: error U2002 at 8:9
+module recursive_kind
+
+pub kind Node
+  value: Int
+  next: Node

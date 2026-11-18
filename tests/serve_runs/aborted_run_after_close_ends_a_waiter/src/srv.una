@@ -1,0 +1,58 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Counts.
+busy(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + 1
+  total
+
+--- An integer of more than 4300 digits.
+huge() -> Int
+=
+  let edit big = 1
+  for i in 1..2000
+    big = big * 1000
+  big
+
+--- Takes a request, then waits in `next` again while it holds the right.
+holder() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  let got = attempt @server.next()
+  when got
+    is Ok(exchange) ->
+      let again = attempt @server.next()
+      when again
+        is Ok(other) -> unit
+        is Err(failure) -> unit
+    is Err(failure) -> unit
+
+--- Takes a request, counts so the holder runs, then closes and aborts the run at once.
+bomber() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let got = attempt @server.next()
+  when got
+    is Ok(exchange) ->
+      let n = busy(2000)
+      let big = huge()
+      @server.close()
+      let shown = "{big}"
+      unit
+    is Err(failure) -> unit
+
+--- A task waits in `next` while it holds a right; another task closes the server and aborts
+--- the run with no check point between the two. The waiter's `next` ends with the aborted run,
+--- not with a catchable `Closed`, and both held rights get the stopped tasks' `503` (`spec/31
+--- §1` rule 3 item 5, `spec/27 §7`).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  tasks
+    start holder()
+    start bomber()
+  @server.close()

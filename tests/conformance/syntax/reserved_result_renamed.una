@@ -1,0 +1,9 @@
+-- test: the repair of `let result` applied: the binding and its uses renamed to `outcome` (spec/01 §5, #206)
+-- spec: spec/01 §5
+-- expect: ok
+module reserved_result_renamed
+
+pub doubled(x: Int) -> Int
+=
+  let outcome = x + x
+  outcome

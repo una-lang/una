@@ -1,0 +1,18 @@
+-- test: the twin of `tconc_via_for_ever_within`: the handler's parameter is `public`
+-- spec: spec/07 §5
+-- expect: ok
+module main
+
+import release (key_of)
+import std.time (millisecond)
+
+--- The body of the loop calls the policy, and so runs its `via` function.
+pub poll(n: Int, url: Text) -> Unit
+  uses @http: Http[get]
+  diverges
+=
+  for ever within 100 * millisecond
+    let value = key_of(n)
+    let reading = attempt @http.get(url, headers: [], key_name: None)
+    stop
+  unit

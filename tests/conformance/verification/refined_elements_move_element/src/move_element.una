@@ -1,0 +1,11 @@
+-- test: movement element: a `List[Int]` as an element of a list literal of `List[List[Pos]]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_element.una:10:33
+module move_element
+
+pub kind Pos = Int where it > 0
+
+pub moved(ints: List[Int], ps: List[Pos]) -> Int
+=
+  let nested: List[List[Pos]] = [ps, ints]
+  nested.len

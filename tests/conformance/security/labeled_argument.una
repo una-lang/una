@@ -1,0 +1,8 @@
+-- test: a secret value passed to a public parameter
+-- spec: spec/07 §3
+-- expect: error U4001 at 8:52
+module labeled_argument
+
+pub twice(x: Int) -> Int = x * 2
+
+pub doubled(pin: secret Int) -> secret Int = twice(pin)

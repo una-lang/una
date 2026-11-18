@@ -1,0 +1,99 @@
+module greenhouse.climate
+
+requirement GREENHOUSE_1
+  text "Vents open fully whenever the air is above 35 degrees"
+  source regulation "Greenhouse Ventilation Code 4.2"
+  owner growers
+  status active
+
+--- Degrees Celsius, as far as the sensors reach.
+pub kind Celsius = Int in -40..80
+
+--- How far a vent is open.
+pub kind Percent = Int in 0..100
+
+--- A thermometer. What it reports is assumed, not proven: the build report lists it.
+pub capability Sensor
+  op read() -> Int
+    ensures result >= -40 and result <= 80
+
+--- A roof vent motor, which only takes openings it can reach.
+pub capability Vent
+  op set(open: Int) -> Unit
+    requires open in 0..100
+
+--- The opening for a temperature: closed at 20 degrees or below, fully open above 35,
+--- and in steps of six in between.
+pub opening(temperature: Celsius) -> Percent
+  ensures temperature > 35 implies result == 100
+  ensures temperature <= 20 implies result == 0
+  derived from GREENHOUSE_1
+=
+  when temperature
+    in -40..20 -> 0
+    in 21..35 -> (temperature - 20) * 6
+    in 36..80 -> 100
+
+--- Reads the air and sets the vent to match.
+pub regulate() -> Percent
+  uses @sensor: Sensor[read]
+  uses @vent: Vent[set]
+=
+  let temperature = @sensor.read()
+  let wanted = opening(temperature)
+  @vent.set(wanted)
+  wanted
+
+--- The reading of the sensor bound to `@sensor`. Its header is inferred: it is private.
+reading() -> Celsius = @sensor.read()
+
+--- The warmer of two sides of the greenhouse.
+pub warmest() -> Celsius
+  uses @north: Sensor[read]
+  uses @south: Sensor[read]
+=
+  let north = reading() with @sensor = @north
+  let south = reading() with @sensor = @south
+  max(north, b: south)
+
+--- Sets the vent for the warmer side.
+pub regulate_warmest() -> Percent
+  uses @north: Sensor[read]
+  uses @south: Sensor[read]
+  uses @vent: Vent[set]
+=
+  let temperature = warmest()
+  let wanted = opening(temperature)
+  @vent.set(wanted)
+  wanted
+
+--- A sensor that always reads `degrees`. Its operation is verified against `read`'s ensures.
+pub handler fixed_sensor(degrees: Int) for Sensor
+  op read() = degrees
+
+--- A vent that prints each setting on the console.
+pub handler printed_vent() for Vent
+  uses @console: Console[print]
+  op set(open) = @console.print("vent at {open}%")
+
+--- A vent that does nothing, for the examples.
+pub handler quiet_vent() for Vent
+  op set(open) = unit
+
+example "above 35 degrees the vent opens fully"
+  do opening(36)
+  expect result == 100
+
+example "a cold greenhouse stays closed"
+  given @sensor = fixed_sensor(degrees: 12)
+  given @vent = quiet_vent()
+  do regulate()
+  expect result == 0
+  expect performed @vent.set
+
+example "the vent follows the warmer side"
+  given @north = fixed_sensor(degrees: 18)
+  given @south = fixed_sensor(degrees: 30)
+  given @vent = quiet_vent()
+  do regulate_warmest()
+  expect result == 60

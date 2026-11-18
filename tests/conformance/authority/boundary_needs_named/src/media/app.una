@@ -1,0 +1,28 @@
+-- test: each call into a boundary is charged for the bindings its own needs name, against its own ceiling: a pure call into one boundary is not charged for a binding that another call of the statement needs, and an unnamed binding is not counted (ADR 0093 rules 3 and 5)
+-- spec: spec/05 §4
+-- expect: ok
+module media.app
+
+import media.cache (mirrored, stamp)
+import media.resize (notify, shrink, size_of)
+import media.store (Files, Net)
+
+handler memory() for Files
+  op read(path) = path
+  op write(path, data) = unit
+
+handler posting() for Files
+  uses @net: Net[post]
+  op read(path) = path
+  op write(path, data) = @net.post(data)
+
+pub record(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  stamp(size_of(path)) with @files = @files[write]
+
+pub look(path: Text) -> Text
+  uses @files: Files[read]
+  uses @net: Net[post]
+=
+  shrink(path) with @files = @files[read], @spare = posting()

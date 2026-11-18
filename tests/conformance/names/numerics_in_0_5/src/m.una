@@ -1,0 +1,14 @@
+-- test: in edition 0.5, `F32`, `Complex[F64]`, `Array[Int]`, `as_decimal` and `Rounding` are built in: the module that edition 0.4 refuses name by name is accepted (ADR 0120, ADR 0139 rule 6)
+-- spec: spec/29 §16
+-- expect: ok
+module m
+
+pub half(x: F32) -> Int = 0
+
+pub real(z: Complex[F64]) -> Int = 0
+
+pub size(a: Array[Int]) -> Int = 0
+
+pub parsed(j: Json) -> Option[Decimal[2]] = as_decimal(j, scale: 2)
+
+pub mode() -> Rounding = HalfEven

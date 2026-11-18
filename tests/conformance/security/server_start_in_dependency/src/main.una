@@ -1,0 +1,10 @@
+-- test: the checker sees the whole program, its dependencies included, so when the root imports `Exchange` a dependency's `start` that captures a function value under a `secret` program counter may move reply rights, and is U4003 there (spec/31 §1, ADR 0123 IF6); in a program that starts tasks, the check point that `secret` data decide there is also U4002 (spec/27 §8 rule 5, #1684)
+-- spec: spec/31 §1
+-- expect: error U4003 at deps/lib/src/jobs.una:9:9
+-- expect: error U4002 at deps/lib/src/jobs.una:9:15
+module main
+
+import lib.jobs (spawn)
+import std.host (Exchange)
+
+pub run(exchange: internal Exchange, key: secret Int) -> Unit = spawn(jobs: [], key: key)

@@ -1,0 +1,6 @@
+-- test: positive control: the same comparison written without a generic (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 6:37
+module generic_equality_twin
+
+pub leak(pin: secret Int) -> Bool = pin == 1234

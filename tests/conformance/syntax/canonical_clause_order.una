@@ -1,0 +1,30 @@
+-- test: every clause in canonical order is accepted
+-- spec: spec/02 §3
+-- expect: tier0-ok
+module canonical_clause_order
+
+requirement AUDIT_1
+  text "Seat counts are reported as computed"
+  source human
+  owner box_office
+  status active
+
+pub kind StoreError = Timeout | Corrupted
+
+pub capability Store
+  op put(value: Int) -> Int
+    requires value >= 0
+    ensures result == value
+    fails StoreError
+    accepts internal
+
+pub save(value: Int) -> Int
+  requires value >= 0
+  ensures result == value
+  uses @store: Store[put]
+  fails StoreError
+  derived from AUDIT_1
+=
+  let saved = @store.put(value)
+    if error pass
+  saved

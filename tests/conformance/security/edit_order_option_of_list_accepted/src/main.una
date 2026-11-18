@@ -1,0 +1,12 @@
+-- test: label order shape `option-of-list-accepted` (#323, review #330): public flows into open positions check
+-- spec: spec/17 §6
+-- expect: ok
+module main
+
+pub f(v: internal Int) -> internal Int
+=
+  let edit o = None
+  o = Some([1])
+  o = Some([v])
+  let xs = o.or_else(default: [])
+  xs.first().or_else(default: 0)

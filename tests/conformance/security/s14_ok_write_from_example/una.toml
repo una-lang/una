@@ -1,0 +1,4 @@
+[package]
+name = "s14_ok_write_from_example"
+version = "0.1.0"
+edition = "0.2"

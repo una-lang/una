@@ -1,0 +1,6 @@
+{"at":0,"bytes":"SFRUUC8xLjEgMjAwIE9LDQpEYXRlOiBUdWUsIDE0IE5vdiAyMDIzIDIyOjEzOjIwIEdNVA0KQ29udGVudC1MZW5ndGg6IDENCmNvbnRlbnQtdHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD11dGYtOA0KDQox","connection":1}
+{"at":0,"bytes":"SFRUUC8xLjEgMjAwIE9LDQpEYXRlOiBUdWUsIDE0IE5vdiAyMDIzIDIyOjEzOjIwIEdNVA0KQ29udGVudC1MZW5ndGg6IDENCmNvbnRlbnQtdHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD11dGYtOA0KDQoy","connection":2}
+{"at":500,"bytes":"SFRUUC8xLjEgMjAwIE9LDQpEYXRlOiBUdWUsIDE0IE5vdiAyMDIzIDIyOjEzOjIwIEdNVA0KQ29udGVudC1MZW5ndGg6IDENCmNvbnRlbnQtdHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD11dGYtOA0KDQoz","connection":3}
+{"at":5000,"closed":true,"connection":1}
+{"at":5000,"closed":true,"connection":2}
+{"at":5500,"closed":true,"connection":3}

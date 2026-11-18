@@ -1,0 +1,6 @@
+-- test: secret value as a list element returned as List[Int] (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 6:42
+module list_element
+
+pub wrap(pin: secret Int) -> List[Int] = [pin]

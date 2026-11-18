@@ -1,0 +1,7 @@
+module media.log
+
+pub capability Log
+  op write(n: Int) -> Int
+
+pub capability Net
+  op post(n: Int) -> Int

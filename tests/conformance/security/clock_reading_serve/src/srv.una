@@ -1,0 +1,12 @@
+-- test: in a package with a `serve` section, `L_srv` of the preview is the top label (`spec/31 §7` rule 6), and it joins every reading of `Clock.now` (ADR 0116 amendment of 2026-11-09, C1 item 3): `handle` cannot put the time in its `internal` reply (U4001)
+-- spec: spec/14 §3
+-- expect: error U4001 at src/srv.una:12:41
+module srv
+
+import std.host (Reply, Request)
+
+pub handle(request: internal Request) -> internal Reply
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  Reply(status: 200, headers: [], body: "{now}")

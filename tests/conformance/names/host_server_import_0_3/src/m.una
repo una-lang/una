@@ -1,0 +1,8 @@
+-- test: `HttpServer` and its kinds are names of `std.host` from edition 0.4 only: in edition 0.3 an import of one is U1001, as an unknown name is (spec/31 §1, ADR 0123 rule 0)
+-- spec: spec/31 §1
+-- expect: error U1001 at src/m.una:6:18
+module m
+
+import std.host (HttpServer)
+
+pub one() -> Int = 1

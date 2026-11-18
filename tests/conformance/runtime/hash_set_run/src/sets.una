@@ -1,0 +1,69 @@
+-- test: in edition 0.5, a `HashSet` holds each item once and lists its items in the order they were first added: `has`, `add`, `remove`, `with`, `without`, `items`, `.len`, the set operations and `same_items` give their results, on the empty set too; `union` lists the receiver's items then the other's it lacks, `intersection` and `difference` keep the receiver's order; lists and records are items; a set renders as `{a, b}` and keeps value semantics through a binding; both engines agree (ADR 0119 rules 8 to 12)
+-- spec: spec/28 §7
+-- grant: console
+-- expect: run-output "empty: {} 0 false [] {}"
+-- expect: run-output "built: {5, 3, 8, 1, 2} 5 true false [5, 3, 8, 1, 2]"
+-- expect: run-output "updated: {5, 8, 1, 2, 13, 3} 6 true true"
+-- expect: run-output "values: {5, 3, 8, 1, 2} {5, 3, 8, 1, 2, 21} {5, 3, 8, 2}"
+-- expect: run-output "kept: {5, 3, 8, 1, 2} {5, 3, 8, 1, 2, 34}"
+-- expect: run-output "union: {5, 3, 8, 1, 2, 6, 4} {5, 3, 8, 1, 2} {5, 3, 8, 1, 2}"
+-- expect: run-output "intersection: {5, 8, 2} {8, 2} {} {}"
+-- expect: run-output "difference: {3, 1} {6, 4} {5, 3, 8, 1, 2} {}"
+-- expect: run-output "subset: true false true true false"
+-- expect: run-output "same: true false true"
+-- expect: run-output "lists: {[\"a\"], [\"a\", \"b\"], []} 3 true"
+-- expect: run-output "points: {Point(x: 0, y: 0), Point(x: 3, y: 4)} 2"
+module sets
+
+import std.collections (HashSet, empty_hash_set)
+
+pub kind Point
+  x: Int
+  y: Int
+
+--- The set of the items of `xs`, each once, in the order of first occurrence.
+of(xs: List[Int]) -> HashSet[Int]
+=
+  let edit s: HashSet[Int] = empty_hash_set()
+  for x in xs
+    edit s.add(item: x)
+  s
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let empty: HashSet[Int] = empty_hash_set()
+  @console.print("empty: {empty} {empty.len} {empty.has(item: 1)} {empty.items()} {empty.without(item: 1)}")
+  let fib = of([5, 3, 8, 1, 2, 3, 5, 1])
+  @console.print("built: {fib} {fib.len} {fib.has(item: 3)} {fib.has(item: 4)} {fib.items()}")
+  let edit grown = fib
+  edit grown.remove(item: 3)
+  edit grown.remove(item: 4)
+  edit grown.add(item: 13)
+  edit grown.add(item: 1)
+  edit grown.add(item: 3)
+  @console.print("updated: {grown} {grown.len} {grown.has(item: 3)} {grown.has(item: 13)}")
+  let more = fib.with(item: 21)
+  let less = fib.without(item: 1)
+  @console.print("values: {fib} {more} {less}")
+  let edit copy = fib
+  edit copy.add(item: 34)
+  @console.print("kept: {fib} {copy}")
+  let evens = of([6, 4, 2, 8])
+  @console.print("union: {fib.union(other: of([6, 2, 4]))} {fib.union(other: empty)} {empty.union(other: fib)}")
+  @console.print("intersection: {fib.intersection(other: of([2, 8, 5, 13]))} {fib.intersection(other: evens)} {fib.intersection(other: empty)} {empty.intersection(other: fib)}")
+  @console.print("difference: {fib.difference(other: evens.union(other: of([5])))} {evens.difference(other: fib)} {fib.difference(other: empty)} {empty.difference(other: fib)}")
+  @console.print("subset: {of([1, 8]).is_subset(of: fib)} {evens.is_subset(of: fib)} {empty.is_subset(of: fib)} {fib.is_subset(of: fib)} {fib.is_subset(of: of([1, 8]))}")
+  @console.print("same: {fib.same_items(as: of([1, 2, 3, 5, 8]))} {fib.same_items(as: more)} {empty.same_items(as: of([]))}")
+  let none_yet: List[Text] = []
+  let edit lists: HashSet[List[Text]] = empty_hash_set()
+  edit lists.add(item: ["a"])
+  edit lists.add(item: ["a", "b"])
+  edit lists.add(item: none_yet)
+  edit lists.add(item: ["a"])
+  @console.print("lists: {lists} {lists.len} {lists.has(item: none_yet)}")
+  let edit points: HashSet[Point] = empty_hash_set()
+  edit points.add(item: Point(x: 0, y: 0))
+  edit points.add(item: Point(x: 3, y: 4))
+  edit points.add(item: Point(x: 0, y: 0))
+  @console.print("points: {points} {points.len}")

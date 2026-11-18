@@ -1,0 +1,47 @@
+-- test: a function type is contravariant in its parameters and covariant in its result at a handler result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 17:16
+-- expect: error U4001 at 23:16
+module sweep_variance_fn_handler
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Give0
+  op give(v: fn(Int) -> secret Int) -> fn(Int) -> Int
+
+handler giving0() for Give0
+  op give(v) = v
+
+capability Give1
+  op give(v: fn(Int) -> Int) -> fn(secret Int) -> Int
+
+handler giving1() for Give1
+  op give(v) = v
+
+capability Give2
+  op give(v: fn(secret Int) -> Int) -> fn(Int) -> Int
+
+handler giving2() for Give2
+  op give(v) = v
+
+capability Give3
+  op give(v: fn(Int) -> Int) -> fn(Int) -> secret Int
+
+handler giving3() for Give3
+  op give(v) = v
+
+capability Give0Twin
+  op give(v: fn(Int) -> secret Int) -> fn(Int) -> secret Int
+
+handler giving0_twin() for Give0Twin
+  op give(v) = v
+
+capability Give2Twin
+  op give(v: fn(Int) -> Int) -> fn(Int) -> Int
+
+handler giving2_twin() for Give2Twin
+  op give(v) = v

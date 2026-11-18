@@ -1,6 +1,6 @@
 # The trusted computing base: a risk profile
 
-Note on the public tree: the test suites, the scripts for validation and release, the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; paths below that name them describe the maintainers' checkout.
+Note on the public tree: the scripts for validation and release, the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; paths below that name them describe the maintainers' checkout.
 
 Every Una guarantee holds "assuming the trusted base behaves as specified" (charter §3). The build report counts part of that base: its `tcb` section lists a package's `trusted` modules with their line counts, the host capabilities it uses, the solver and the proof cache (`spec/13 §6`). Line counts do not say what a bug in a component could do, what catches it, or what is left open. This document says that for each component of the toolchain's trusted base, and ranks the open gaps.
 

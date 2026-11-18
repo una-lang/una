@@ -1,0 +1,56 @@
+-- test: a generic kind instantiated with a secret type: an `if` or `when` on a comparison of it raises the program counter (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 24:44
+-- expect: error U4003 at 30:5
+-- expect: error U4003 at 32:5
+-- expect: error U4003 at 38:16
+-- expect: error U4003 at 39:17
+module sweep_label_generic_cond
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Box[secret Int]) -> secret Int = x.value
+
+pub chosen(x: Box[secret Int]) -> Int = if x == Box(value: 2) then 1 else 0
+
+pub printed(x: Box[secret Int]) -> Unit
+  uses @console: Console[print]
+=
+  if x == Box(value: 2)
+    @console.print("hit")
+  else
+    @console.print("miss")
+
+pub matched(x: Box[secret Int]) -> Unit
+  uses @console: Console[print]
+=
+  when x == Box(value: 2)
+    is true -> @console.print("hit")
+    is false -> @console.print("miss")
+
+pub chosen_twin(x: Box[secret Int]) -> secret Int = if x == Box(value: 2) then 1 else 0
+
+pub printed_twin(x: Box[Int]) -> Unit
+  uses @console: Console[print]
+=
+  if x == Box(value: 2)
+    @console.print("hit")
+  else
+    @console.print("miss")
+
+pub matched_twin(x: Box[Int]) -> Unit
+  uses @console: Console[print]
+=
+  when x == Box(value: 2)
+    is true -> @console.print("hit")
+    is false -> @console.print("miss")

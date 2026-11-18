@@ -1,0 +1,103 @@
+-- test: a failure leaves every function and clause it crosses, with the values they hold, and handling clauses and attempt compute as the interpreter does (native slice 4 control)
+-- spec: spec/16 §4
+-- grant: console
+-- expect: run-output "deep: ok 4, err too deep: 3 level 3"
+-- expect: run-output "handled: 12 fallback, passed: missing 1"
+-- expect: run-output "closure: ok 30 refused"
+-- expect: run-output "in a handler: rewrapped 5"
+module conformance.runtime.failures_release_their_values
+
+pub kind Problem = Missing(trail: List[Text]) | TooDeep(path: List[Int], note: Text) | Refused
+
+pub kind Wrapped = | Again(inner: Problem, count: Int)
+
+--- Fails at `limit`, after making a list and a text at each level.
+pub descend(depth: Int, limit: Int, path: List[Int]) -> Int
+  fails Problem
+=
+  let here = path.append(item: depth)
+  let note = "level {depth}"
+  if depth >= limit
+    fail TooDeep(path: here, note: note)
+  else
+    if depth == 3 and limit > 9
+      here.len
+    else
+      let deeper = descend(depth + 1, limit: limit, path: here)
+        if error pass
+      deeper
+
+pub lookup(key: Text) -> Int
+  fails Problem
+=
+  let trail = [key]
+  if key == "a" then 12 else fail Missing(trail: trail)
+
+pub pass_on(key: Text) -> Int
+  fails Problem
+=
+  let found = lookup(key)
+    if error pass
+  found + 1
+
+--- Fails while a closure and what it captures are alive.
+pub scaled(n: Int) -> Int
+  fails Problem
+=
+  let label = "times {n}"
+  let factor = fn(x: Int) -> if label == "" then 0 else x * n
+  let big = factor(10)
+  if big > 50 then fail Refused else big
+
+pub rewrap(n: Int) -> Int
+  fails Wrapped
+=
+  let value = descend(0, limit: 1, path: [])
+    if error fail Again(inner: Refused, count: n)
+  value
+
+pub show(problem: Problem) -> Text
+=
+  when problem
+    is Missing(trail) -> "missing {trail.len}"
+    is TooDeep(path, note) -> "too deep: {path.len} {note}"
+    is Refused -> "refused"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let ok = attempt descend(1, limit: 10, path: [0])
+  let err = attempt descend(1, limit: 3, path: [])
+  let shown_ok = when ok
+    is Ok(value) -> "ok {value}"
+    is Err(problem) -> show(problem)
+  let shown_err = when err
+    is Ok(value) -> "ok {value}"
+    is Err(problem) -> "err {show(problem)}"
+  @console.print("deep: {shown_ok}, {shown_err}")
+  let found = lookup("a")
+    if error use 0
+  let fallback = lookup("b")
+    if error use -1
+  let label = if fallback < 0 then "fallback" else "found"
+  let passed = attempt pass_on("x")
+  let why = when passed
+    is Ok(value) -> "ok {value}"
+    is Err(problem) -> show(problem)
+  @console.print("handled: {found} {label}, passed: {why}")
+  let small = attempt scaled(3)
+  let large = attempt scaled(9)
+  let small_shown = when small
+    is Ok(value) -> "ok {value}"
+    is Err(problem) -> show(problem)
+  let large_shown = when large
+    is Ok(value) -> "ok {value}"
+    is Err(problem) -> show(problem)
+  @console.print("closure: {small_shown} {large_shown}")
+  let again = attempt rewrap(5)
+  let rewrapped = when again
+    is Ok(value) -> "ok"
+    is Err(failure) ->
+      when failure
+        is Again(inner, count) -> "rewrapped {count}"
+  @console.print("in a handler: {rewrapped}")

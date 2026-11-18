@@ -1,0 +1,20 @@
+-- test: a kind whose parameter is only in data positions is covariant at an annotated `let` (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 14:21
+module sweep_variance_box_let
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub let_0(v: Box[secret Int]) -> Int
+=
+  let w: Box[Int] = v
+  0
+
+pub let_1(v: Box[Int]) -> Int
+=
+  let w: Box[secret Int] = v
+  0

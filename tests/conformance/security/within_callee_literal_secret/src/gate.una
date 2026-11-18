@@ -1,0 +1,96 @@
+-- test: the timing label of `e within d` counts every value that the code `e` reaches computes (ADR 0116 IF5, ADR 0116 amendment of 2026-11-06, #1685): a `secret` value that a called function makes from its own literals, by a labeled binding, a labeled result or a kind with a `secret` field, or that a handler's operation makes, labels the outcome as the same value passed in from the caller does, so it cannot flow into a `public` result (U4001), and the operation the handler serves runs under the timing floor (U4003); the same code on `public` values is accepted
+-- spec: spec/27 §5
+-- expect: error U4001 at src/gate.una:66:3
+-- expect: error U4001 at src/gate.una:72:3
+-- expect: error U4001 at src/gate.una:78:3
+-- expect: error U4003 at src/gate.una:82:12
+-- expect: error U4001 at src/gate.una:84:3
+module gate
+
+import std.time (millisecond)
+
+kind Key
+  k: secret Int
+
+kind Open
+  k: Int
+
+capability Vault
+  op check() -> Bool
+
+capability Shelf
+  op check() -> Bool
+
+handler sealed() for Vault
+  op check() = idle_key(Key(k: 3000000))
+
+handler plain() for Shelf
+  op check() = idle_open(Open(k: 3000000))
+
+count(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+idle_key(key: Key) -> Bool = true
+
+idle_open(open: Open) -> Bool = true
+
+key() -> secret Int = 3000000
+
+bound() -> Bool
+=
+  let k: secret Int = 3000000
+  let r = k + 1
+  true
+
+returned() -> Bool
+=
+  let r = key() + 1
+  true
+
+built() -> Bool = idle_key(Key(k: 3000000))
+
+shown() -> Bool
+=
+  let k = 3000000
+  let r = count(k)
+  idle_open(Open(k: k))
+
+pub by_binding() -> public Bool
+=
+  let ok = bound() within 5 * millisecond
+    if error use false
+  ok
+
+pub by_result() -> public Bool
+=
+  let ok = returned() within 5 * millisecond
+    if error use false
+  ok
+
+pub by_kind() -> public Bool
+=
+  let ok = built() within 5 * millisecond
+    if error use false
+  ok
+
+pub by_handler() -> public Bool
+=
+  let ok = @vault.check() with @vault = sealed() within 5 * millisecond
+    if error use false
+  ok
+
+pub in_public() -> public Bool
+=
+  let ok = shown() within 5 * millisecond
+    if error use false
+  ok
+
+pub in_public_handler() -> public Bool
+=
+  let ok = @shelf.check() with @shelf = plain() within 5 * millisecond
+    if error use false
+  ok

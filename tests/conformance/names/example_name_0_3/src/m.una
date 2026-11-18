@@ -1,0 +1,9 @@
+-- test: in edition 0.3 `example` stays a reserved keyword, so a name `example` is still U0101 (ADR 0105 rule 2)
+-- spec: spec/01 §5
+-- expect: error U0101 at src/m.una:8:7
+module m
+
+pub add(x: Int) -> Int
+=
+  let example = x + 1
+  example

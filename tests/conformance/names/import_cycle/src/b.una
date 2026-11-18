@@ -1,0 +1,5 @@
+module b
+
+import a (one)
+
+pub two() -> Int = one() + 1

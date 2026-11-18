@@ -1,0 +1,12 @@
+-- test: handler prints its op parameter raised to `accepts secret` (review control)
+-- spec: spec/07 §7
+-- expect: error U4003 at 12:19
+module handler_param_sink
+
+capability Vault
+  op note(line: Text) -> Unit
+    accepts secret
+
+handler to_console() for Vault
+  uses @console: Console[print]
+  op note(line) = @console.print(line)

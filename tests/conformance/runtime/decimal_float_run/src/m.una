@@ -1,0 +1,16 @@
+-- test: to_decimal of an F64: None for NaN, otherwise its exact binary value rounded once; to_f64 of a decimal, on and off its fast path, correctly rounded
+-- spec: spec/29 §16
+-- grant: console
+-- expect: run-output "None Some(0.10000000000000000555) Some(0.10)"
+-- expect: run-output "19.99 1.0e-30"
+module m
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let not_a_number = nan()
+  let tenth = 0.1
+  @console.print("{not_a_number.to_decimal(scale: 2, rounding: HalfEven)} {tenth.to_decimal(scale: 20, rounding: TowardZero)} {tenth.to_decimal(scale: 2, rounding: HalfEven)}")
+  let price: Decimal[2] = 19.99
+  let tiny: Decimal[30] = 0.000000000000000000000000000001
+  @console.print("{price.to_f64()} {tiny.to_f64()}")

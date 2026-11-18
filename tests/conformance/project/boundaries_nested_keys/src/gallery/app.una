@@ -1,0 +1,12 @@
+-- test: a [boundaries] key inside another key's extent is U7002, so a module has one ceiling (ADR 0093 rule 9)
+-- spec: spec/13 §7
+-- expect: error U7002 at una.toml:8:1
+module gallery.app
+
+import gallery.store (Files)
+import gallery.thumbnailer (thumbnail)
+
+pub show(path: Text) -> Text
+  uses @user_files: Files[read, write]
+=
+  thumbnail(path) with @files = @user_files[read]

@@ -1,0 +1,33 @@
+-- test: a record kind with a secret field: ordering and `in` on values read from it are secret, and the kind itself cannot be ordered (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 23:32
+-- expect: error U4001 at 25:31
+-- expect: error U2001 at 27:37
+-- expect: error U4001 at 27:37
+module sweep_label_record_order
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Acct) -> secret Int = x.pin
+
+pub ordered(x: Acct) -> Bool = grab(x) < 5
+
+pub ranged(x: Acct) -> Bool = grab(x) in 0..10
+
+pub kind_ordered(x: Acct) -> Bool = x < Acct(id: 1, pin: 2)
+
+pub ordered_twin(x: Acct) -> secret Bool = grab(x) < 5
+
+pub ranged_twin(x: Acct) -> secret Bool = grab(x) in 0..10
+
+pub id_ordered_twin(x: Acct) -> Bool = x.id < 5

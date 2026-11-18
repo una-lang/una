@@ -1,0 +1,8 @@
+-- test: ADR 0067 adversarial check of #231, L61_option_t_presence: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l61.una:8:35
+module l61
+
+keep_if[T](a: T, b: T) -> Option[T] = if a == b then Some(a) else None
+
+pub leak(s: secret Int) -> Bool = keep_if(s, b: 0) is Some

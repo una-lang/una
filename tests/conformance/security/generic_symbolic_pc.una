@@ -1,0 +1,45 @@
+-- test: under a branch on a value of a type parameter, capability operations, calls with effects and failures are implicit flows, and a value labeled with a type parameter reaches no public sink (R-004)
+-- spec: spec/07 §7
+-- expect: error U4002 at 21:5
+-- expect: error U4002 at 29:5
+-- expect: error U4002 at 36:18
+-- expect: error U4003 at 41:18
+-- expect: error U4001 at 43:38
+module generic_symbolic_pc
+
+kind Boom = | Exploded
+
+note(line: Text) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(line)
+
+printed[T](a: T, b: T) -> Unit
+  uses @console: Console[print]
+=
+  if a == b
+    @console.print("same")
+  else
+    unit
+
+called[T](a: T, b: T) -> Unit
+  uses @console: Console[print]
+=
+  if a == b
+    note("same")
+  else
+    unit
+
+failing[T](a: T, b: T) -> Int
+  fails Boom
+=
+  if a == b then fail Exploded else 0
+
+shown[T](a: T, b: T) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{a == b}")
+
+stored[T](a: T, b: T) -> Unit = keep(a == b)
+
+keep(flag: Bool) -> Unit = unit

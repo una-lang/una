@@ -1,0 +1,84 @@
+-- test: an `edit` argument, and a binding passed at its last use and rebound from the result, move into the callee, which updates the list in place through one or more call levels; an alias taken before the call keeps its value, a list passed twice to one call is not updated under the other parameter, and a failing callee leaves the caller's value unchanged for the code that reads it after a handler or an `attempt` (ADR 0072, spec/16 §4 rule 7, spec/17 §7, #262)
+-- spec: spec/17 §7
+-- grant: console
+-- expect: run-output "edit: 0 1 2 / kept: 0 1"
+-- expect: run-output "returned: 0 1 2 / kept: 0 1"
+-- expect: run-output "deep: 0 1 2 3"
+-- expect: run-output "handled: 1 2 3 / attempt: 1 2 3 false / used: 1 2 3 / grown: 1 2 3"
+-- expect: run-output "twice: 1 2 1 2"
+module edit_moves
+
+pub kind Limit = | Full
+
+show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
+
+push_one(edit acc: List[Int], i: Int) -> Unit
+=
+  acc = acc.append(item: i)
+
+push_two(edit acc: List[Int], i: Int) -> Unit
+=
+  push_one(edit acc, i: i)
+
+push_three(edit acc: List[Int], i: Int) -> Unit
+=
+  push_two(edit acc, i: i)
+
+pushed(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)
+
+--- Appends `i`, then fails when the list has grown past three items.
+push_bounded(edit acc: List[Int], i: Int) -> Unit
+  fails Limit
+=
+  acc = acc.append(item: i)
+  if acc.len > 3
+    fail Full
+
+--- `acc` with `i` appended, or a failure when that has more than three items.
+bounded(acc: List[Int], i: Int) -> List[Int]
+  fails Limit
+=
+  let grown = acc.append(item: i)
+  if grown.len > 3
+    fail Full
+  grown
+
+--- Appends the items of `other` to `acc`.
+joined(acc: List[Int], other: List[Int]) -> List[Int]
+=
+  let edit out = acc
+  for x in other
+    out = out.append(item: x)
+  out
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit a: List[Int] = [0, 1]
+  let kept = a
+  push_one(edit a, i: 2)
+  @console.print("edit: {show(a)} / kept: {show(kept)}")
+  let edit r: List[Int] = [0, 1]
+  let kept_r = r
+  r = pushed(r, i: 2)
+  @console.print("returned: {show(r)} / kept: {show(kept_r)}")
+  let edit d: List[Int] = []
+  for i in 0..<4
+    push_three(edit d, i: i)
+  @console.print("deep: {show(d)}")
+  let edit h: List[Int] = [1, 2, 3]
+  push_bounded(edit h, i: 4)
+    if error use unit
+  let g: List[Int] = [1, 2, 3]
+  let outcome = attempt bounded(g, i: 4)
+  let ok = outcome.is_ok()
+  let edit q: List[Int] = [1, 2, 3]
+  q = bounded(q, i: 4)
+    if error use q
+  let edit s: List[Int] = [1, 2]
+  push_bounded(edit s, i: 3)
+    if error use unit
+  @console.print("handled: {show(h)} / attempt: {show(g)} {ok} / used: {show(q)} / grown: {show(s)}")
+  let edit t: List[Int] = [1, 2]
+  t = joined(t, other: t)
+  @console.print("twice: {show(t)}")

@@ -28,6 +28,8 @@ una-report = { path = "crates/una-report" }
 una-rt = { path = "crates/una-rt" }
 una-syntax = { path = "crates/una-syntax" }
 una-sys = { path = "crates/una-sys" }
+# The case lists of the tests of una-cli (#1652), a dev-dependency only.
+una-test-cases = { path = "crates/una-test-cases" }
 una-verify = { path = "crates/una-verify" }
 una-z3 = { path = "crates/una-z3" }
 # External crates, only from the allowlist of compiler/architecture.md §7.

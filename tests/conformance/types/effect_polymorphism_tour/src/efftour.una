@@ -1,0 +1,78 @@
+-- test: in edition 0.2, `map` keeps its contract with an effectful lambda, a function shares its own kind with `fails of`, passes its parameter on to `map`, and private helpers infer `uses of` and `fails of` (spec/04 §5, spec/05 §9 rule 9, ADR 0062)
+-- spec: spec/05 §9
+-- expect: ok
+module efftour
+
+pub kind Oops = Bad | Worse
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+--- Logs each name, and keeps the length of the list: `map`'s contract holds with effects.
+pub logged(names: List[Text]) -> List[Unit]
+  ensures result.len == names.len
+  uses @log: Log[write]
+=
+  let done = names.map(each: fn(n) -> @log.write(n))
+  done
+
+--- Runs `act`, failing with `Worse` on a negative input and passing the failures of `act`,
+--- which share the kind `Oops`.
+pub retry(n: Int, act: fn(Int) -> Int) -> Int
+  fails Oops
+  fails of act
+=
+  if n < 0
+    fail Worse
+  let r = act(n)
+    if error pass
+  r
+
+--- Passes its parameter on to `map`.
+pub log_each[T](xs: List[T], each: fn(T) -> Unit) -> Int
+  uses of each
+=
+  let done = xs.map(each: each)
+  done.len
+
+--- A private helper whose `uses of f` is inferred.
+twice(f: fn(Int) -> Unit) -> Unit
+=
+  f(1)
+  f(2)
+
+--- A private helper whose `uses of f` and `fails of f` are inferred.
+run_one(f: fn(Int) -> Int) -> Int
+=
+  let r = f(1)
+    if error pass
+  r
+
+pub tour(names: List[Text]) -> Int
+  uses @log: Log[write]
+  fails Oops
+=
+  let count = log_each(names, each: fn(n) -> @log.write(n))
+  twice(f: fn(n) -> @log.write("{n}"))
+  let tried = retry(1, act: fn(n) -> if n > 0 then n else fail Bad)
+    if error pass
+  let one = run_one(f: fn(n) -> if n > 0 then n else fail Worse)
+    if error pass
+  let total = names.fold(initial: 0, step: fn(sum, n) -> sum + n.len)
+  count + tried + one + total
+
+handler quiet() for Log
+  op write(line) = unit
+
+--- Nested calls whose inner lambda performs the effects.
+pub nested(rows: List[List[Text]]) -> Int
+  uses @log: Log[write]
+=
+  let done = rows.map(each: fn(row) -> row.map(each: fn(cell) -> @log.write(cell)))
+  done.len
+
+--- A lambda uses the capability that `with` binds around the call.
+pub in_with(names: List[Text]) -> Int
+=
+  let done = names.map(each: fn(n) -> @log.write(n)) with @log = quiet()
+  done.len

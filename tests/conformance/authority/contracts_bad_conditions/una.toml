@@ -1,0 +1,15 @@
+[package]
+name = "case"
+version = "0.1.0"
+edition = "0.3"
+
+[contracts]
+"shop.update" = [
+  "@catalog: Catalog[price, set_price where not dry_run, journal where not dry_run]",
+  "@a: Catalog[set_price where nope(cents)]",
+  "@b: Catalog[set_price where dry_run == Nope]",
+  "@c: Catalog[set_price where positive(cents)]",
+  "@d: Catalog[set_price where result > 0]",
+  "@e: Catalog[set_price where it > 0]",
+  "@f: Catalog[set_price where @catalog.price(sku) > 0]",
+]

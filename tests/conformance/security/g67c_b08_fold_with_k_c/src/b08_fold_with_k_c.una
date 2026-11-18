@@ -1,0 +1,8 @@
+-- test: ADR 0067 amendment (2026-10-06), B08_fold_with_k_c: a T value decided by comparing T values goes where a value of T is expected (a lambda, a higher-order function, a function result, an `edit` binding or a field of the body), which edition 0.2 rejects in the generic body; the control, sound, is rejected there, an accepted cost, since accepting it soundly would need re-checking lambdas (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/b08_fold_with_k_c.una:6:109
+module b08_fold_with_k_c
+
+apply[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int = [if a == b then p else q].fold(initial: 0, step: fn(acc, x) -> acc + k(x))
+
+pub leak(s: Int) -> Int = apply([s], b: [0], p: [], q: [1, 2], k: fn(xs) -> xs.len)

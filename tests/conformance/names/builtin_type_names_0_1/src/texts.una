@@ -1,0 +1,3 @@
+module texts
+
+pub kind Text = Short | Long

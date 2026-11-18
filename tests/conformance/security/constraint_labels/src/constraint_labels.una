@@ -1,0 +1,41 @@
+-- test: comparisons and `to_int()` on a constrained type parameter carry its symbolic label, so effects under them are rejected; `min`, `max`, `contains` and `sum` join every label of their arguments, and `sort` raises every position of its result by the labels of the list and of all its elements (spec/20 §4)
+-- spec: spec/20 §4
+-- expect: error U4001 at src/constraint_labels.una:16:47
+-- expect: error U4001 at src/constraint_labels.una:18:46
+-- expect: error U4001 at src/constraint_labels.una:20:55
+-- expect: error U4001 at src/constraint_labels.una:22:44
+-- expect: error U4001 at src/constraint_labels.una:24:52
+-- expect: error U4001 at src/constraint_labels.una:26:69
+-- expect: error U4001 at src/constraint_labels.una:32:49
+-- expect: error U4002 at src/constraint_labels.una:38:5
+module constraint_labels
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub smaller(pin: secret Int, n: Int) -> Int = min(pin, b: n)
+
+pub larger(pin: secret Int, n: Int) -> Int = max(pin, b: n)
+
+pub present(pins: List[secret Int], n: Int) -> Bool = pins.contains(item: n)
+
+pub total(bytes: List[secret U8]) -> Int = sum(bytes)
+
+pub ordered(pins: List[secret Int]) -> List[Int] = sort(pins)
+
+pub ordered_secret_list(xs: secret List[Int]) -> secret List[Int] = sort(xs)
+
+pub kept_secret_list(xs: secret List[Int]) -> secret List[Int] = xs
+
+pub less[T: Ord](a: T, b: T) -> Bool = a < b
+
+pub compared(pin: secret Int, n: Int) -> Bool = less(pin, b: n)
+
+pub logged[T: Ord](a: T, b: T) -> Unit
+  uses @log: Log[write]
+=
+  if a < b
+    @log.write("less")
+  unit
+
+pub public_sorted(xs: List[Int]) -> List[Int] = sort(xs)

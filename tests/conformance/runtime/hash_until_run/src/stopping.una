@@ -1,0 +1,27 @@
+-- test: in edition 0.5, a run whose only hash table is made through the condition of a `for until` loop reads the process key, and the table works (ADR 0119 rule 9, #1199)
+-- spec: spec/28 §1
+-- grant: console
+-- expect: run-output "until: 2"
+module stopping
+
+import std.collections (HashSet, empty_hash_set)
+
+--- How many distinct items `xs` holds.
+distinct(xs: List[Int]) -> Int
+=
+  let edit s: HashSet[Int] = empty_hash_set()
+  for x in xs
+    edit s.add(item: x)
+  s.len
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit left: Nat = 5
+  let edit m = 0
+  for until distinct([m, 2, 2]) == 1 decreases left
+    if left == 0
+      stop
+    left = left - 1
+    m = m + 1
+  @console.print("until: {m}")

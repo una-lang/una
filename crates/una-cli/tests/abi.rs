@@ -1,0 +1,1005 @@
+//! The Agent ABI of `spec/13`: the build report, `una trace`, one JSON document per command,
+//! and determinism (`compiler/testing.md §4`). Tier 1 needs Z3 at the version of
+//! `verification.lock` on the path.
+
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use pretty_assertions::assert_eq;
+use serde_json::{Value, json};
+
+fn repository() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn una_in(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(args)
+        .current_dir(repository().join(dir))
+        .output()
+        .unwrap()
+}
+
+fn una(args: &[&str]) -> Output {
+    una_in(Path::new("."), args)
+}
+
+fn stdout(output: &Output) -> &str {
+    std::str::from_utf8(&output.stdout).unwrap()
+}
+
+fn stderr(output: &Output) -> &str {
+    std::str::from_utf8(&output.stderr).unwrap()
+}
+
+fn json(output: &Output) -> Value {
+    serde_json::from_str(stdout(output)).unwrap()
+}
+
+#[test]
+fn the_report_of_the_events_example() {
+    // M9 acceptance criterion: a snapshot of `una report --json` for the events example, with
+    // a warm cache so that every result comes from it (ADR 0041).
+    let _ = una(&["--json", "report", "examples/events"]);
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    // The `native` section names the host target (ADR 0055) and the kernel variants compiled
+    // for it (ADR 0120 rule 56), which differ between runners.
+    let target = una_codegen::host_target();
+    let variants = serde_json::to_string(una_core::dense::variants::variant_names()).unwrap();
+    let text = stdout(&output)
+        .replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"")
+        .replace(
+            &format!("\"variants\":{variants}"),
+            "\"variants\":\"<host>\"",
+        )
+        // The linker of `una build` (ADR 0124 rule 28) differs between targets and versions.
+        .replace(
+            &format!("\"linker\":\"una {}\"", env!("CARGO_PKG_VERSION")),
+            "\"linker\":\"<host>\"",
+        )
+        .replace("\"linker\":\"cc\"", "\"linker\":\"<host>\"")
+        .replace("\"debuggable\":false", "\"debuggable\":\"<host>\"")
+        .replace("\"debuggable\":true", "\"debuggable\":\"<host>\"")
+        // The digest of the Z3 library linked in (ADR 0124 rule 28) differs between builds.
+        .replace(
+            &format!("\"library_sha256\":\"{}\"", una_z3::BUILD.library_sha256),
+            "\"library_sha256\":\"<build>\"",
+        );
+    insta::assert_snapshot!("report_events_json", text);
+    let report = json(&output);
+    assert_eq!(report["schema"], "una.report/2");
+    assert_eq!(
+        report["package"],
+        json!({"name": "events-example", "version": "0.1.0", "profile": "app"})
+    );
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 11, "refuted": 0, "unknown": 0, "cached": 11})
+    );
+    assert_eq!(
+        report["proven"],
+        json!({"semantic": 11, "security": "by typing", "authority": "by typing"})
+    );
+    assert_eq!(
+        report["information"]["policy_calls"][0],
+        json!({
+            "policy": "events.keys.attendee_key",
+            "purpose": "attendee lookup and audit correlation",
+            "owner": "privacy",
+            "site": {"file": "src/events/checkin.una", "start": {"line": 30, "col": 13}}
+        })
+    );
+    assert_eq!(
+        report["escapes"],
+        json!({"checked": [{"module": "events.types", "count": 1, "budget": 1}]})
+    );
+    assert_eq!(
+        report["tcb"]["trusted_modules"],
+        json!([{"module": "events.keys", "lines": 17}])
+    );
+    // ADR 0041: the proof cache is part of the Trusted zone.
+    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
+    assert_eq!(
+        report["requirements"],
+        json!([{"id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"]}])
+    );
+    assert_eq!(
+        report["coverage"],
+        json!({"pub_functions": 5, "with_ensures": 1, "with_derived_from": 1, "trivial_ensures": 0})
+    );
+    let keys: Vec<&str> = report
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    // ADR 0067 added `generic_results`, after `native`; ADR 0081 `handler_authority`, after
+    // `authority`; ADR 0122 `dependencies`, after `handler_authority`, always present; ADR 0094
+    // `premises`, after `assumptions`; ADR 0123 rule 22 `warnings`, after `out_of_model`, and
+    // `tcb.serve_grants`, `tcb.server` and `tcb.tls`, empty for a package that serves nothing;
+    // ADR 0121 rule 8 `edition`, after `package`.
+    assert_eq!(keys.len(), 20);
+    assert_eq!(report["edition"], json!({"name": "0.1", "preview": false}));
+    assert_eq!(report["warnings"], json!([]));
+    assert_eq!(report["tcb"]["serve_grants"], json!([]));
+    assert_eq!(report["tcb"]["server"], json!(null));
+    assert_eq!(report["generic_results"], json!([]));
+    assert_eq!(report["dependencies"], json!([]));
+    assert_eq!(report["tcb"]["registries"], json!([]));
+    assert_eq!(report["tcb"]["dependency_trust"], json!([]));
+    assert_eq!(report["handler_authority"], json!([]));
+    assert_eq!(report["native"]["target"], target.as_str());
+    // ADR 0124 rule 28: the linker of `una build`, and executables not debuggable by default.
+    let linker = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        format!("una {}", env!("CARGO_PKG_VERSION"))
+    } else {
+        "cc".to_owned()
+    };
+    assert_eq!(report["native"]["linker"], linker.as_str());
+    assert_eq!(report["native"]["debuggable"], linker == "cc");
+    // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
+    // `raw` is an unbounded `Int`.
+    assert_eq!(
+        report["native"]["arbitrary_precision"],
+        json!(["events.seating.clamp_seats.raw"])
+    );
+    assert_eq!(
+        report["native"]["kernels"]["variants"],
+        json!(una_core::dense::variants::variant_names())
+    );
+    assert_eq!(
+        report["native"]["kernels"]["fma_allowlist"],
+        json!(una_core::dense::variants::ALLOWLIST)
+    );
+    let output = una(&["report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout(&output).contains(
+            "\ncoverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures\n"
+        ),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("\nobligations: 11 proven, 0 refuted, 0 unknown; 11 cached\n"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("\n  proof cache: .una/cache/\n"),
+        "{}",
+        stdout(&output)
+    );
+    // ADR 0109 rule 7: the profile follows the package's name, `app` by default; ADR 0121
+    // rule 8: the edition follows, without `(preview)` for a stable one.
+    assert!(
+        stdout(&output)
+            .starts_with("package events-example 0.1.0\nprofile: app\nedition: 0.1\nlock: "),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn the_previews_of_una_version_are_the_markers_of_spec_13_section_7() {
+    // ADR 0121 rule 7 and its tests: the `preview` of `una --version` and the markers of
+    // `spec/13 §7`, which the website reads, name the same editions, so they cannot disagree.
+    // The test applies the rules of the website's reader, so a text it would refuse fails here.
+    let output = una(&["--json", "--version"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let version = json(&output);
+    let editions: Vec<&str> = version["editions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    let preview: Vec<&str> = version["preview"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    let section =
+        &spec13[spec13.find("## 7. Project files").unwrap()..spec13.find("## 8.").unwrap()];
+    // The website's reader (`website/scripts/preview/editions.mjs`, `releaseEditions`): a
+    // marker is "**Edition `X` is a preview**", with `X` quoted or not, and a marker of an
+    // edition the release does not serve is an error.
+    let mut marked: Vec<String> = Vec::new();
+    for (at, _) in section.match_indices("**Edition `") {
+        let rest = &section[at + "**Edition `".len()..];
+        let Some((name, after)) = rest.split_once('`') else {
+            continue;
+        };
+        if !after.starts_with(" is a preview**") {
+            continue;
+        }
+        let name = name.trim_matches('"');
+        assert!(
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "spec/13 §7: a preview marker names `{name}`, which is no edition"
+        );
+        assert!(
+            editions.contains(&name),
+            "spec/13 §7 names {name} a preview, but the release does not serve it"
+        );
+        marked.push(name.to_owned());
+    }
+    assert_eq!(preview, marked, "spec/13 §7 and `una --version` disagree");
+    // Every preview has every construct of the edition before it, stable or not, in the
+    // sentence the website reads (each edition quoted or not); without it the website cannot
+    // read a list that ends at the newest stable edition as "and later".
+    for (i, edition) in editions.iter().enumerate() {
+        if !preview.contains(edition) || i == 0 {
+            continue;
+        }
+        let before = editions[i - 1];
+        let found = [edition.to_string(), format!("\"{edition}\"")]
+            .iter()
+            .any(|e| {
+                [before.to_string(), format!("\"{before}\"")]
+                    .iter()
+                    .any(|b| {
+                        section.contains(&format!(
+                            "Edition `{e}` has every construct, keyword and rule of edition `{b}`"
+                        ))
+                    })
+            });
+        assert!(
+            found,
+            "spec/13 §7 does not say that edition {edition} has every construct of edition {before}"
+        );
+    }
+    // A preview edition is always newer than every stable one: editions are cumulative.
+    let first = editions.iter().position(|e| preview.contains(e)).unwrap();
+    assert!(
+        editions[first..].iter().all(|e| preview.contains(e)),
+        "{editions:?} {preview:?}"
+    );
+}
+
+#[test]
+fn the_report_names_the_edition_and_whether_it_is_a_preview() {
+    // ADR 0121 rule 8: `edition` follows `package`, in JSON and in the human form, for a
+    // stable edition (`una.toml`) and a preview one (`ita.una`).
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-report-edition");
+    let _ = std::fs::remove_dir_all(&root);
+    for (edition, preview) in [("0.2", false), ("0.4", true), ("0.5", true)] {
+        let dir = root.join(edition);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/m.una"),
+            "module m\n\npub f(x: Int) -> Int = x\n",
+        )
+        .unwrap();
+        if preview {
+            std::fs::write(
+                dir.join("ita.una"),
+                format!("ita demo\n  version 0.1.0\n  edition {edition}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("ita.lock"),
+                "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n",
+            )
+            .unwrap();
+        } else {
+            std::fs::write(
+                dir.join("una.toml"),
+                format!(
+                    "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+                ),
+            )
+            .unwrap();
+            std::fs::copy(
+                repository().join("verification.lock"),
+                dir.join("verification.lock"),
+            )
+            .unwrap();
+        }
+        let output = una_in(&dir, &["--json", "report", "."]);
+        assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+        let report = json(&output);
+        assert_eq!(
+            report["edition"],
+            json!({ "name": edition, "preview": preview })
+        );
+        let text = stdout(&output);
+        let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
+        assert!(
+            at("package") < at("edition") && at("edition") < at("lock"),
+            "{text}"
+        );
+        let output = una_in(&dir, &["report", "."]);
+        let line = if preview {
+            format!("\nedition: {edition} (preview)\nlock: ")
+        } else {
+            format!("\nedition: {edition}\nlock: ")
+        };
+        assert!(stdout(&output).contains(&line), "{}", stdout(&output));
+    }
+}
+
+#[test]
+fn the_out_of_model_list_is_the_one_of_the_spec() {
+    // R-041: `spec/07 §1`, `spec/13 §6` (the JSON example and the prose) and the report give
+    // one list, in one order; ADR 0038 D9 rule 4 adds path races to it, ADR 0048 hard
+    // links, and ADR 0065 the order of effects across `together` tasks.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let channels: Vec<String> = json(&output)["out_of_model"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|channel| channel.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        channels,
+        [
+            "timing",
+            "termination and divergence",
+            "resource consumption and allocation",
+            "stack exhaustion",
+            "external systems beyond declared signatures",
+            "races between the check and the use of a file path",
+            "hard links",
+            "order of effects across concurrent tasks",
+            "the time of a host stop",
+            "interference of the host's load with the timing of an expression",
+            "uncatchable termination",
+            "waits at limits and at `start`",
+            "which branch of `first of` wins, beyond its label",
+        ]
+    );
+    let (last, first) = channels.split_last().unwrap();
+    let prose = format!("{}, and {last}", first.join(", "));
+    let spec07 =
+        std::fs::read_to_string(repository().join("docs/spec/07-information-flow.md")).unwrap();
+    assert!(spec07.contains(&prose), "spec/07 §1 lacks: {prose}");
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    assert!(spec13.contains(&prose), "spec/13 §6 lacks: {prose}");
+    let example = format!(
+        "\"out_of_model\": {}",
+        serde_json::to_string(&channels).unwrap()
+    );
+    assert!(
+        spec13.contains(&example.replace("\",\"", "\", \"")),
+        "spec/13 §6 example lacks: {example}"
+    );
+    let output = una(&["report", "examples/events"]);
+    assert!(
+        stdout(&output).contains(&format!("\nout of model: {}\n", channels.join(", "))),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn the_obligations_of_the_events_example() {
+    // M9 acceptance criterion: a snapshot of `una obligations --json`, with a warm cache.
+    let _ = una(&["--json", "obligations", "examples/events"]);
+    let output = una(&["--json", "obligations", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    insta::assert_snapshot!("obligations_events_json", stdout(&output));
+}
+
+#[test]
+fn trivial_ensures_count_as_missing_contracts() {
+    // `spec/13 §6`, an `ensures` clause valid without any hypothesis.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-trivial");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"trivial\"\nversion = \"1.2.3\"\nedition = \"0.1\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/numbers.una"),
+        "module numbers
+
+pub same(x: Int) -> Int
+  ensures result == result
+=
+  x
+
+pub twice(x: Int) -> Int
+  ensures result == x + x
+=
+  x * 2
+
+pub bounded(x: Int) -> Int
+  ensures result >= 0 or result < 0
+  ensures result == x
+=
+  x
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    assert_eq!(
+        report["package"],
+        json!({"name": "trivial", "version": "1.2.3", "profile": "app"})
+    );
+    assert_eq!(
+        report["coverage"],
+        json!({"pub_functions": 3, "with_ensures": 2, "with_derived_from": 0, "trivial_ensures": 2})
+    );
+}
+
+#[test]
+fn a_single_file_is_named_after_its_module() {
+    // A single file has no `una.toml`; its lock is the default one.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-single");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("tally.una");
+    std::fs::write(
+        &file,
+        "module tally
+
+pub next(x: Int) -> Int
+  ensures result > x
+=
+  x + 1
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", file.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    assert_eq!(
+        report["package"],
+        json!({"name": "tally", "version": "0.0.0", "profile": "app"})
+    );
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 0})
+    );
+    assert_eq!(
+        report["coverage"],
+        json!({"pub_functions": 1, "with_ensures": 1, "with_derived_from": 0, "trivial_ensures": 0})
+    );
+    assert_eq!(report["lock"]["hash"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn report_and_trace_exit_with_1_on_an_unproven_obligation() {
+    // `spec/13 §5` exit codes, the document still prints.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-refuted");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"refuted\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/numbers.una"),
+        "module numbers
+
+requirement NUM_1
+  text \"Doubling never shrinks a number\"
+  source human
+  owner math
+  status active
+
+pub double(x: Int) -> Int
+  ensures result >= x
+  derived from NUM_1
+=
+  x * 2
+",
+    )
+    .unwrap();
+    let path = root.to_str().unwrap();
+    // The cache counts below depend on the proof-cache key, so the test has a home of its own:
+    // no other test makes or reads that key while it runs (#282).
+    let home = root.join("home");
+    let una = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", &home)
+            .env_remove("UNA_PROOF_KEY")
+            .args(args)
+            .current_dir(repository())
+            .output()
+            .unwrap()
+    };
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        json(&output)["obligations"],
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
+    );
+    let output = una(&["report", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown; 1 cached\n"));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", &home)
+        .env_remove("UNA_PROOF_KEY")
+        .args(["--json", "trace", "NUM_1"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(
+        document["functions"][0]["obligations"][0]["status"],
+        "refuted"
+    );
+    // A package that tier 0 rejects gets the diagnostic list of `una check`.
+    std::fs::write(
+        root.join("src/numbers.una"),
+        "module numbers\n\npub double(x: Int) -> Int = \"two\"\n",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(json(&output)["schema"], "una.diagnostics/1");
+}
+
+#[test]
+fn trace_lists_the_functions_derived_from_a_requirement() {
+    // `spec/08 §1`,
+    let events = Path::new("examples/events");
+    let output = una_in(events, &["trace", "EVENTS_3"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.starts_with("requirement EVENTS_3 (active)\n  text \"An event with no remaining seats is always shown as sold out\"\n  source policy \"Box Office Handbook 2.1\"\n  owner box_office\nevents.seating.availability\n  ensures e.remaining < 1 implies result is SoldOut\n"), "{text}");
+    assert!(text.contains(" postcondition e.remaining < 1 implies result is SoldOut\n"));
+    let output = una_in(events, &["--json", "trace", "EVENTS_3"]);
+    assert_eq!(output.status.code(), Some(0));
+    insta::assert_snapshot!("trace_events_json", stdout(&output));
+    let document = json(&output);
+    assert_eq!(document["schema"], "una.trace/1");
+    assert_eq!(
+        document["functions"][0]["function"],
+        "events.seating.availability"
+    );
+    assert!(
+        document["functions"][0]["obligations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["status"] == "proven")
+    );
+    let output = una_in(events, &["trace", "NOPE_1"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        stderr(&output),
+        "error: the package has no requirement `NOPE_1`\n"
+    );
+}
+
+#[test]
+fn every_command_prints_one_json_document_with_its_schema() {
+    // `spec/13 §5`, `--json` for every command, one document on stdout and
+    // nothing on stderr.
+    let events = Path::new("examples/events");
+    let cases: Vec<(&Path, Vec<&str>, &str)> = vec![
+        (
+            Path::new("."),
+            vec!["--json", "check", "examples/events"],
+            "una.diagnostics/1",
+        ),
+        (
+            Path::new("."),
+            vec!["--json", "fmt", "--check", "examples/events"],
+            "una.diagnostics/1",
+        ),
+        (
+            Path::new("."),
+            vec!["--json", "fix", "--dry-run", "examples/events"],
+            "una.fix/1",
+        ),
+        (
+            Path::new("."),
+            vec!["--json", "run", "examples/hello"],
+            "una.run/1",
+        ),
+        (
+            Path::new("."),
+            vec!["--json", "test", "examples/events"],
+            "una.test/1",
+        ),
+        (
+            Path::new("."),
+            vec!["--json", "obligations", "examples/events"],
+            "una.obligations/1",
+        ),
+        (
+            events,
+            vec!["--json", "contract", "events.checkin.check_in"],
+            "una.contract/1",
+        ),
+        (events, vec!["--json", "trace", "EVENTS_3"], "una.trace/1"),
+        (
+            Path::new("."),
+            vec!["--json", "report", "examples/events"],
+            "una.report/2",
+        ),
+        (
+            Path::new("."),
+            vec!["--json", "explain", "U5001"],
+            "una.explain/1",
+        ),
+        (Path::new("."), vec!["--json", "--version"], "una.version/1"),
+    ];
+    for (dir, args, schema) in cases {
+        let output = una_in(dir, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stderr(&output), "", "{args:?}");
+        let text = stdout(&output);
+        assert_eq!(text.matches('\n').count(), 1, "{args:?}: one line");
+        let document: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(document["schema"], schema, "{args:?}");
+        assert!(
+            text.starts_with("{\"schema\":"),
+            "{args:?}: schema comes first"
+        );
+    }
+}
+
+#[test]
+fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
+    // `compiler/testing.md §4`, for every command with a document, on the examples. Each
+    // command runs once before the compared runs, so all of them read a warm proof cache: a
+    // run that proves (a cold cache, as in a fresh checkout) reports `obligations.cached` 0
+    // and `tcb.solver_confinement`, since a solver child ran (`spec/13 §3`), which a run that
+    // reads every result from the cache does not (#1287). That difference is the cache's, and
+    // `a_cold_and_a_warm_report_differ_only_by_the_cache` pins it to those keys.
+    let events = Path::new("examples/events");
+    let commands: Vec<(&Path, Vec<&str>)> = vec![
+        (Path::new("."), vec!["--json", "report", "examples/events"]),
+        (
+            Path::new("."),
+            vec!["--json", "obligations", "examples/events"],
+        ),
+        (Path::new("."), vec!["--json", "test", "examples/events"]),
+        (Path::new("."), vec!["--json", "run", "examples/hello"]),
+        (
+            events,
+            vec!["--json", "contract", "events.checkin.check_in"],
+        ),
+        (events, vec!["--json", "trace", "EVENTS_3"]),
+    ];
+    for (dir, args) in commands {
+        let _ = una_in(dir, &args);
+        let first = una_in(dir, &args);
+        let second = una_in(dir, &args);
+        let single = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(&args)
+            .env("RAYON_NUM_THREADS", "1")
+            .current_dir(repository().join(dir))
+            .output()
+            .unwrap();
+        assert_eq!(first.stdout, second.stdout, "{args:?}");
+        assert_eq!(first.stdout, single.stdout, "{args:?}");
+    }
+}
+
+/// Copies the package at `from` to `to`, without its proof cache (`.una/`).
+fn copy_package(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if name == ".una" {
+            continue;
+        }
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_package(&entry.path(), &to.join(&name));
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), to.join(&name)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_cold_and_a_warm_report_differ_only_by_the_cache() {
+    // #1287: the report of a package with no proof cache proves every obligation and the next
+    // one reads them all from the cache. They differ in `obligations.cached` and, since only
+    // the first started solver children, in `tcb.solver_confinement` (and, under an outer
+    // sandbox, `tcb.solver_outer_denied`), and in nothing else (`spec/13 §3`).
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-cold-warm");
+    let _ = std::fs::remove_dir_all(&root);
+    copy_package(&repository().join("examples/events"), &root);
+    let report = |label: &str| {
+        let output = una_in(&root, &["--json", "report", "."]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{label}: {}",
+            stderr(&output)
+        );
+        json(&output)
+    };
+    let mut cold = report("cold");
+    let mut warm = report("warm");
+    let proven = cold["obligations"]["proven"].clone();
+    assert!(proven.as_u64().is_some_and(|n| n > 0), "{proven}");
+    assert_eq!(cold["obligations"]["cached"], json!(0));
+    assert_eq!(warm["obligations"]["cached"], proven);
+    let confinement = cold["tcb"]["solver_confinement"].clone();
+    assert!(
+        confinement == json!("own") || confinement == json!("outer"),
+        "a cold report names how the solver children were confined: {confinement}"
+    );
+    assert_eq!(warm["tcb"].get("solver_confinement"), None);
+    assert_eq!(warm["tcb"].get("solver_outer_denied"), None);
+    for report in [&mut cold, &mut warm] {
+        report["obligations"]["cached"] = json!("<cache>");
+        let tcb = report["tcb"].as_object_mut().unwrap();
+        tcb.remove("solver_confinement");
+        tcb.remove("solver_outer_denied");
+    }
+    assert_eq!(cold, warm);
+}
+
+/// The `premises` of a report, by id: what each premise is used for.
+fn premises_used_for(report: &Value) -> Vec<(String, Vec<String>)> {
+    report["premises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|premise| {
+            (
+                premise["id"].as_str().unwrap().to_owned(),
+                premise["used_for"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|used| used.as_str().unwrap().to_owned())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_report_lists_the_host_premises_with_what_they_are_used_for() {
+    // ADR 0094 rule 5 and `docs/plan/0094-operation-labels-design.md` §7: `premises`, after
+    // `assumptions`, holds H1 to H4, the `Env` note and H5, each assumed of the host (never
+    // proven), with the host operations and the labeled operations it is used for.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-premises");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"premises\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n[labels]\ncategories = [\"Service\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/m.una"),
+        "module m
+
+import std.host (Env, FileError, Files, Header, Http, HttpError)
+
+pub capability Store
+  op owner(file: Text) -> Text
+  op role(file: Text) -> Text
+
+pub capability Front
+  op ask(file: Text) -> internal[Service] Text
+
+handler front_store() for Front
+  uses @inner: Store[owner gives internal[Service]]
+  op ask(file) = @inner.owner(file)
+
+--- The owner of a file, as the service sees it.
+pub refusal(file: Text) -> internal[Service] Text
+  uses @service_store: Store[owner gives internal[Service], role]
+=
+  @service_store.owner(file)
+
+--- The role of a file, as the service sees it.
+pub role_of(file: Text) -> internal[Service] Text
+  uses @service_store: Store[role gives internal[Service]]
+=
+  @service_store.role(file)
+
+--- Reads a file and passes its failure on.
+pub load(path: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  @files.read(path)
+    if error pass
+
+--- The status of a page, or the failure of its request.
+pub status(url: Text) -> internal Result[internal Int, internal HttpError]
+  uses @http: Http[get]
+=
+  let headers: List[Header] = []
+  let r = attempt @http.get(url, headers: headers, key_name: None)
+  when r
+    is Ok(response) -> Ok(response.status)
+    is Err(e) -> Err(e)
+
+configured() -> Bool
+  uses @env: Env[get]
+=
+  let x = @env.get(\"X\")
+  when x
+    is Some(v) -> true
+    is None -> false
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    // The printed order is the one of `spec/13 §6`.
+    let printed = stdout(&output);
+    let at = printed.find("],\"premises\":[").unwrap();
+    assert!(
+        printed.find(",\"assumptions\":[").unwrap() < at,
+        "{printed}"
+    );
+    assert!(at < printed.find("],\"tcb\":{").unwrap(), "{printed}");
+    assert_eq!(
+        premises_used_for(&report),
+        [
+            ("H1".to_owned(), vec!["Files.read".to_owned()]),
+            ("H2".to_owned(), vec![]),
+            ("H3".to_owned(), vec!["Http.get".to_owned()]),
+            ("H4".to_owned(), vec!["Http.get".to_owned()]),
+            ("Env".to_owned(), vec!["Env.get".to_owned()]),
+            (
+                "H5".to_owned(),
+                vec![
+                    "m.refusal: @service_store.owner gives internal[Service]".to_owned(),
+                    "m.role_of: @service_store.role gives internal[Service]".to_owned(),
+                    "m.front_store: @inner.owner gives internal[Service]".to_owned(),
+                ]
+            ),
+        ]
+    );
+    let output = una(&["report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    let section = text.find("\nassumed of the host:\n").expect(text);
+    assert!(section > text.find("\nassumptions:\n").unwrap(), "{text}");
+    assert!(section < text.find("\ntcb:\n").unwrap(), "{text}");
+    assert!(text.contains("\n  H1: used for Files.read\n"), "{text}");
+    assert!(text.contains("\n  H2: used for nothing\n"), "{text}");
+    assert!(
+        text.contains("\n  H5: used for m.refusal: @service_store.owner gives internal[Service], m.role_of: @service_store.role gives internal[Service], m.front_store: @inner.owner gives internal[Service]\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn every_premise_is_listed_when_the_package_uses_none() {
+    // The premise set is the model's, not the package's: a package with no host operation and
+    // no labeled operation lists every premise, each used for nothing.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    let empty: Vec<(String, Vec<String>)> = ["H1", "H2", "H3", "H4", "Env", "H5"]
+        .iter()
+        .map(|id| ((*id).to_owned(), Vec::new()))
+        .collect();
+    assert_eq!(premises_used_for(&report), empty);
+}
+
+#[test]
+fn the_premises_are_the_ones_of_the_spec() {
+    // `spec/13 §6` states each premise as the report does, H5 included (ADR 0094 rule 5), and
+    // calls them assumed; `docs/plan/formal-track-status.md` lists H5 after H4.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    let section =
+        &spec13[spec13.find("## 6. Build report").unwrap()..spec13.find("## 7.").unwrap()];
+    for premise in report["premises"].as_array().unwrap() {
+        let id = premise["id"].as_str().unwrap();
+        let statement = premise["statement"].as_str().unwrap();
+        assert!(
+            section.contains(&format!("**{id}:** {statement}")),
+            "spec/13 §6 lacks the premise {id}: {statement}"
+        );
+    }
+    assert!(section.contains("`premises`"), "spec/13 §6 lacks the key");
+    let status =
+        std::fs::read_to_string(repository().join("docs/plan/formal-track-status.md")).unwrap();
+    let h4 = status.find("- **H4:**").unwrap();
+    let h5 = status.find("- **H5:**").expect("the status page lacks H5");
+    assert!(h4 < h5);
+}
+
+#[test]
+fn a_package_capability_with_a_host_name_does_not_hide_the_host_one() {
+    // A package may declare its own `Files` (B09's scaffold does) and still use the host's
+    // `Files` in another module: the host's read relies on H1 and is in the TCB.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-premises-shadow");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"shadow\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/a.una"),
+        "module a
+
+pub capability Files
+  op owner(file: Text) -> Text
+
+--- The owner of a file, through the package's own `Files`.
+pub owner_of(file: Text) -> Text
+  uses @files: Files[owner]
+=
+  @files.owner(file)
+",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/b.una"),
+        "module b
+
+import std.host (FileError, Files)
+
+--- Reads a file and passes its failure on.
+pub load(path: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  @files.read(path)
+    if error pass
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report = json(&output);
+    let used = premises_used_for(&report);
+    assert_eq!(used[0], ("H1".to_owned(), vec!["Files.read".to_owned()]));
+    assert_eq!(used[1], ("H2".to_owned(), vec![]));
+    assert_eq!(report["tcb"]["host_capabilities"], json!(["Files"]));
+}

@@ -1,0 +1,20 @@
+-- test: edition 0.2 does not narrow a rebinding: the brackets are a syntax error, and edition 0.3 accepts them (ADR 0093 rule 4)
+-- spec: spec/05 §4
+-- expect: error U0101 at src/main.una:20:39
+module main
+
+capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+  op remove(path: Text) -> Unit
+
+copy(path: Text) -> Unit
+  uses @files: Files[read, write]
+=
+  let data = @files.read(path)
+  @files.write(path, data: data)
+
+pub show(path: Text) -> Unit
+  uses @user_files: Files[read, write, remove]
+=
+  copy(path) with @files = @user_files[write, read]

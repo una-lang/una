@@ -1,0 +1,7 @@
+ita drive_timing_lambda
+  version 0.1.0
+  edition 0.4
+
+drive
+  module counter
+  ticks 16

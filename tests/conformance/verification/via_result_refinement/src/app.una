@@ -1,0 +1,15 @@
+-- test: the result of a policy's via function is proven to satisfy the refinement of its to type (R-007)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/release.una:12:47
+module app
+
+import release (Pos, lower)
+
+recip(p: Pos) -> Int = 100 / p
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = lower(0)
+  let q = recip(p)
+  @console.print("q = {q}")

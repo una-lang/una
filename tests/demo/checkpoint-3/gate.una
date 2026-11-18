@@ -1,0 +1,10 @@
+module gate
+
+pub kind Refusal = | Blocked(reason: Text, code: secret Int)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Refusal
+=
+  @console.print("checking the gate")
+  fail Blocked(reason: "maintenance", code: 4242)

@@ -1,0 +1,12 @@
+-- test: the condition of `stop when` is a `Bool` (spec/26 §3, ADR 0116 rule 6)
+-- spec: spec/26 §3
+-- expect: error U2001 at src/conds.una:10:15
+module conds
+
+pub count(xs: List[Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    stop when x + 1
+    n = n + x
+  n

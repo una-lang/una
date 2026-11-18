@@ -1,0 +1,8 @@
+-- test: ADR 0067 adversarial check of #231, L50_param_pos_inner_list: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l50.una:8:34
+module l50
+
+pick[U](x: U, y: U, p: U, q: U) -> U = if x == y then p else q
+
+pub leak(s: secret Int) -> Int = pick([s], y: [0], p: [], q: [s, s]).len

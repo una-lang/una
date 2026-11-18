@@ -1,0 +1,13 @@
+ita ita_limit_twice
+  version 0.1.0
+  edition 0.4
+
+run
+  grants
+    http "https://api.example.com" get
+      at most 100 per minute
+      at most 5 per second
+      at most 2 at once
+      at most 4 at once
+      waiting at most 10
+      waiting at most 20

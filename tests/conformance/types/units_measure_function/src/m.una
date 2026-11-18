@@ -1,0 +1,8 @@
+-- test: `measure` is a keyword only before an upper identifier at a declaration's start: a function named `measure` keeps its meaning
+-- spec: spec/25 §1
+-- expect: ok
+module m
+
+pub measure(x: Int) -> Int = x + 1
+
+pub use_it() -> Int = measure(1)

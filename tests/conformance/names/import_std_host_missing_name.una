@@ -1,0 +1,8 @@
+-- test: std.host exports only the host capabilities and their failure kinds
+-- spec: spec/10 §11
+-- expect: error U1001 at 6:18
+module import_std_host_missing_name
+
+import std.host (Option)
+
+pub one() -> Int = 1

@@ -1,0 +1,31 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Replies to `one`, whose `answer` deadline passed, and reports on `two` what that returned.
+late(one: internal Exchange, two: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let late = attempt @server.reply(to: one.right,
+    reply: Reply(status: 200, headers: [], body: "late")
+  )
+  let said = when late
+    is Ok(done) -> "the late reply returned unit"
+    is Err(failure) -> "the late reply failed"
+  @server.reply(to: two.right, reply: Reply(status: 200, headers: [], body: said))
+    if error use unit
+
+--- A reply after the host's `answer` deadline ended the exchange returns `unit` and sends
+--- nothing; the peer got `503` when the deadline passed (`spec/31 §1` rule 3 item 7, IF4).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  let answered = when first
+    is Ok(one) ->
+      when second
+        is Ok(two) -> late(one, two)
+        is Err(failure) -> unit
+    is Err(failure) -> unit
+  @server.close()

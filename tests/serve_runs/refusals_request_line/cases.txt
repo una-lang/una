@@ -1,0 +1,10 @@
+1	CONNECT 501
+2	TRACE 501
+3	lower-case get 501
+4	method not a token 400
+5	HTTP/1.2 505
+6	http/1.1 505
+7	request line of exactly 8 KiB with its CRLF, accepted 200
+8	request line one byte over 8 KiB 414
+9	bare CR in the request line 400
+10	valid request answered

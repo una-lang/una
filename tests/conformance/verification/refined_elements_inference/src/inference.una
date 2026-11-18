@@ -1,0 +1,56 @@
+-- test: a type argument inferred from values keeps a refinement only when every value agrees and the parameter is covariant in the result; an un-annotated `let edit` drops every refinement; `edit` places that disagree give the base; map lookups take the key's base (ADR 0103 rule 5)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/inference.una:28:9
+-- expect: error U5001 at src/inference.una:45:13
+-- expect: error U5001 at src/inference.una:55:23
+module inference
+
+pub kind Pos = Int where it > 0
+
+takes(xs: List[Pos]) -> Int = xs.len
+
+make[T](x: T) -> fn(T) -> Bool = fn(y) -> true
+
+apply_int(f: fn(Int) -> Bool) -> Bool = f(-1)
+
+pair[T](edit a: List[T], edit b: List[T]) -> Unit
+=
+  a = a
+
+pub agree(p: Pos, q: Pos) -> Int
+=
+  let xs = [p, q]
+  takes(xs)
+
+pub disagree(p: Pos) -> Int
+=
+  let xs = [p, 1]
+  takes(xs)
+
+pub contravariant(p: Pos) -> Bool
+=
+  let f = make(p)
+  apply_int(f)
+
+pub unannotated(p: Pos) -> Int
+=
+  let edit xs = [p]
+  xs = xs.append(item: -1)
+  xs.len
+
+pub places(ps: List[Pos], ints: List[Int]) -> Int
+=
+  let edit a: List[Pos] = ps
+  let edit b: List[Int] = ints
+  pair(edit a, edit b)
+  a.len
+
+pub contains_base(ps: List[Pos], n: Int) -> Bool = ps.contains(item: n)
+
+pub lookups(m: Map[Pos, Text], n: Int) -> Int
+=
+  let a = m.has(key: n)
+  let b = m.get(key: n)
+  let c = m.without(key: n)
+  let d = m.with(key: n, value: "x")
+  d.len

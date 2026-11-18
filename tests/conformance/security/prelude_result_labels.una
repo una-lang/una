@@ -1,0 +1,22 @@
+-- test: the listed prelude functions accept labeled arguments and label their results with the labels of their arguments and element types (R-005); first is structural, so its Option carries the element label at the element position (ADR 0051)
+-- spec: spec/14 §1
+-- expect: ok
+module prelude_result_labels
+
+pub magnitude(pin: secret Int) -> secret Int = abs(pin)
+
+pub trimmed(name: secret Text) -> secret Text = trim(name)
+
+pub known(pins: List[secret Int]) -> secret Bool = pins.contains(item: 1234)
+
+pub total(pins: List[secret Int]) -> secret Int = pins.sum()
+
+pub smallest(pin: secret Int) -> secret Int = min(pin, b: 10)
+
+pub digits(name: secret Text) -> secret Bool = is_digits(name)
+
+pub none_yet(pins: secret List[Int]) -> secret Bool = pins.is_empty()
+
+pub first_labeled(pins: List[secret Int]) -> Option[secret Int] = pins.first()
+
+pub public_data(xs: List[Int]) -> Option[Int] = xs.first()

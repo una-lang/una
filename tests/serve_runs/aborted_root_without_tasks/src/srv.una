@@ -1,0 +1,35 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply, ServeError)
+
+--- Aborts the run: an integer of more than 4300 digits written as text.
+bomb() -> Unit
+=
+  let edit big = 1
+  for i in 1..2000
+    big = big * 1000
+  let shown = "{big}"
+  unit
+
+--- Answers `one`, then aborts holding `two`.
+answer_one(one: internal Exchange, two: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  @server.reply(to: one.right, reply: Reply(status: 200, headers: [], body: "one"))
+    if error use unit
+  bomb()
+
+--- The root holds two rights, answers one and aborts, with no task: the other gets the stopped
+--- task's `503` (ADR 0123 rule 4.5), in both engines.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+=
+  let first = attempt @server.next()
+  let second = attempt @server.next()
+  let answered = when first
+    is Ok(one) ->
+      when second
+        is Ok(two) -> answer_one(one, two)
+        is Err(failure) -> unit
+    is Err(failure) -> unit
+  @server.close()

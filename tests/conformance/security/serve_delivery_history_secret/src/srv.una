@@ -1,0 +1,50 @@
+-- test: the `secret` version of the positive control `serve_delivery_history` of `crates/una-cli/tests/timing_channels.rs` (ADR 0123, S4 design §10.3 and §11.5, SC3): under a rate of one exchange per second, a wait that a `secret` key makes 1 ms or 1.5 s long, a loop that never ends by itself cut by a `within` whose deadline is the key's, between the first delivery and the second `next`, decides whether that `next`, under a deadline, reaches the next token. The wait reads the key after a server operation, so `L_srv` is `secret`: the `next` under each deadline is U4003, each reply under its outcome U4003, and the call of `late` under it U4002 (spec/31 §1, #1660; the wait is a `within` rather than a loop that stops on `Clock.now`, whose reading carries `L_srv` in edition 0.4, #1891). The oracle checks that this file is its program
+-- spec: spec/31 §1
+-- expect: error U4003 at src/srv.una:24:23
+-- expect: error U4003 at src/srv.una:27:7
+-- expect: error U4003 at src/srv.una:44:24
+-- expect: error U4003 at src/srv.una:47:7
+-- expect: error U4002 at src/srv.una:49:24
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+import std.time (millisecond, second)
+
+key() -> secret Int = 1
+
+spin() -> Unit
+  diverges
+=
+  for ever
+    unit
+
+late() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  let again = attempt @server.next() within 10 * second
+  when again
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "late"))
+        if error use unit
+    is Err(failure) -> unit
+
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  diverges
+=
+  let first = attempt @server.next()
+  let answered_first = when first
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "first"))
+        if error use unit
+    is Err(failure) -> unit
+  let wait = if key() > 0 then 1500 else 1
+  let paused = spin() within wait * millisecond
+    if error use unit
+  let second = attempt @server.next() within 500 * millisecond
+  let answered_second = when second
+    is Ok(exchange) ->
+      @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "in time"))
+        if error use unit
+    is Err(failure) -> late()
+  @server.close()

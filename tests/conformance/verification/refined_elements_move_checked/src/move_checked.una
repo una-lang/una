@@ -1,0 +1,20 @@
+-- test: movement checked: a `checked` `List[Int]` bound by a `let` annotated `List[Pos]`, whose predicate says nothing of the elements is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/move_checked.una:19:23
+module move_checked
+
+pub kind Pos = Int where it > 0
+
+kind Empty = | NoItems
+
+pub kept(ps: List[Pos]) -> Int
+  fails Empty
+=
+  let ys: List[Pos] = checked(ps, it.len > 0) else fail NoItems
+  ys.len
+
+pub moved(xs: List[Int]) -> Int
+  fails Empty
+=
+  let ys: List[Pos] = checked(xs, it.len > 0) else fail NoItems
+  ys.len

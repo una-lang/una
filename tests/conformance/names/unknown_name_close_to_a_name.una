@@ -1,0 +1,12 @@
+-- test: an unknown name close to a name in scope is still U1001, at the name, once (its closest name is a repair)
+-- spec: spec/10 §11
+-- expect: error U1001 at 10:21
+-- expect: error U1001 at 12:32
+module unknown_name_close_to_a_name
+
+pub kind Box
+  size: Int
+
+pub area(b: Box) -> Bx = b.size
+
+pub twice(total: Int) -> Int = totl + total

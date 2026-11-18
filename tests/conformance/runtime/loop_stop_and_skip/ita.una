@@ -1,0 +1,8 @@
+ita loop_stop_and_skip
+  version 0.1.0
+  edition 0.4
+
+run
+  entry exits
+  grants
+    console

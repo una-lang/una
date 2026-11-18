@@ -1,0 +1,28 @@
+-- test: a refinement inside a type argument of `on_stop`'s state is refused as one at its top is: the host hands it the state with no fact about the value inside (spec/26 §2)
+-- spec: spec/26 §2
+-- expect: error U7008 at ita.una:6:10
+module counter
+
+import std.drive (Tick)
+
+--- A count that cannot exist.
+kind Never = Int where it == 0 and it == 1
+
+--- Needs the impossible.
+impossible(count: Int) -> Unit
+  requires 1 == 2
+=
+  unit
+
+--- Starts with a count.
+pub init() -> Option[Int] = Some(7)
+
+--- Leaves the count as it is.
+pub step(edit state: Option[Int], input: Tick) -> Unit = unit
+
+--- Stops, through the impossible, which the refinement would prove.
+pub on_stop(state: Option[Never]) -> Unit
+=
+  when state
+    is Some(count) -> impossible(count)
+    is None -> unit

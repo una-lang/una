@@ -1,0 +1,6 @@
+-- test: a name spelled with a non-ASCII letter is rejected
+-- spec: spec/01 §1
+-- expect: error U0001 at 6:8
+module non_ascii_identifier
+
+pub café() -> Text = "coffee"

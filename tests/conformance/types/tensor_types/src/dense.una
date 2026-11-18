@@ -1,0 +1,91 @@
+-- test: Tensor and Lu are built-in types of edition 0.5: tensors are made from list literals of lengths, read and written by list literals of indices, permuted, reshaped, summed, contracted, converted to and from arrays and matrices, and combined by operators; a matrix of floats factors into an Lu, solves and has triangular solves, and every shape precondition here is proven
+-- spec: spec/29 §17
+-- expect: ok
+module dense
+
+pub grid() -> Tensor[F64] = tensor_filled(shape: [2, 3, 4], value: 0.0)
+
+pub made() -> Tensor[I32]
+=
+  let items: List[I32] = [1, 2, 3, 4, 5, 6]
+  tensor(shape: [2, 3], elements: items)
+
+pub shapes(t: Tensor[F64]) -> Int = t.rank + t.dim(axis: 0)
+
+pub read(t: Tensor[F64], i: Int, j: Int) -> F64
+  requires t.rank == 2 and 0 <= i and i < t.dim(axis: 0) and 0 <= j and j < t.dim(axis: 1)
+=
+  t.get(at: [i, j])
+
+pub maybe(t: Tensor[F64]) -> Option[F64] = t.at(at: [0, 0, 0])
+
+pub written(t: Tensor[F64]) -> Tensor[F64]
+  requires t.rank == 3 and t.dim(axis: 0) > 0 and t.dim(axis: 1) > 1 and t.dim(axis: 2) > 2
+=
+  let edit u = t
+  edit u.set(at: [0, 1, 2], item: 5.0)
+  u
+
+pub swapped(t: Tensor[F64]) -> Tensor[F64]
+  requires t.rank == 3
+  ensures result.rank == 3 and result.dim(axis: 0) == t.dim(axis: 2)
+=
+  t.permute(axes: [2, 0, 1])
+
+pub flat() -> Tensor[F64]
+  ensures result.rank == 1 and result.dim(axis: 0) == 24
+=
+  let g = tensor_filled(shape: [2, 3, 4], value: 1.0)
+  g.reshape(shape: [24])
+
+pub summed(t: Tensor[F64]) -> F64 = t.sum()
+
+pub rows(t: Tensor[F64]) -> Tensor[F64]
+  requires t.rank == 3
+  ensures result.rank == 2
+=
+  t.sum(axis: 1)
+
+pub product(a: Tensor[F64], b: Tensor[F64]) -> Tensor[F64]
+  requires a.rank == 2 and b.rank == 2 and a.dim(axis: 1) == b.dim(axis: 0)
+  ensures result.rank == 2 and result.dim(axis: 0) == a.dim(axis: 0) and result.dim(axis: 1) == b.dim(axis: 1)
+=
+  a.contract(with: b, axis: 1, other: 0)
+
+pub combined(a: Tensor[F64]) -> Tensor[F64] = a + a.map(each: fn(x) -> x * 2.0) - 2.0 * a
+
+pub matrix_of(t: Tensor[F64]) -> Matrix[F64]
+  requires t.rank == 2
+=
+  t.to_matrix()
+
+pub back(m: Matrix[F64]) -> Matrix[F64] = m.to_tensor().to_matrix()
+
+pub vector(a: Array[F64]) -> Array[F64] = a.to_tensor().to_array()
+
+pub solved(a: Matrix[F64], b: Matrix[F64]) -> Option[Matrix[F64]]
+  requires a.rows == a.columns and b.rows == a.rows
+=
+  when a.lu()
+    is Some(f) -> Some(f.solve(rhs: b))
+    is None -> None
+
+pub direct(a: Matrix[F64], v: Array[F64]) -> Option[Array[F64]]
+  requires a.rows == a.columns and v.len == a.rows
+=
+  a.solve_array(rhs: v)
+
+pub factor(a: Matrix[F64]) -> Option[Matrix[F64]]
+  requires a.rows == a.columns
+=
+  a.cholesky()
+
+pub triangular(l: Matrix[F64], b: Matrix[F64]) -> Matrix[F64]
+  requires l.rows == l.columns and b.rows == l.rows
+  ensures result.rows == b.rows and result.columns == b.columns
+=
+  l.solve_upper(rhs: l.solve_lower(rhs: b, unit_diagonal: false), unit_diagonal: true)
+
+pub parts(f: Lu[F64]) -> Int = f.size + f.factors().rows + f.pivots().len
+
+pub same(f: Lu[F64], g: Lu[F64], a: Tensor[F64]) -> Bool = f == g and a == a.compact()

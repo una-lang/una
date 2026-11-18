@@ -1,0 +1,42 @@
+-- test: ADR 0093 rule 6, editions 0.1 and 0.2 keep their U3001 and U3002 repairs: an unnarrowed rebinding for U3002 at a call, no rebinding for U3001, and no mark on a widening of a public header
+-- spec: spec/13 §3
+-- expect: error U3002 at src/m.una:22:3
+-- expect: error U3001 at src/m.una:27:3
+-- expect: error U3002 at src/m.una:32:3
+-- expect: error U3002 at src/m.una:37:10
+module m
+
+capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+
+load(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+
+pub more(path: Text) -> Text
+  uses @files: Files[write]
+  uses @store: Files[read, write]
+=
+  load(path)
+
+pub missing(path: Text) -> Text
+  uses @store: Files[read, write]
+=
+  load(path)
+
+helper(path: Text) -> Text
+  uses @files: Files[write]
+=
+  load(path)
+
+pub direct(path: Text) -> Text
+  uses @files: Files[write]
+=
+  @files.read(path)
+
+pub use_helper(path: Text) -> Text
+  uses @files: Files[read, write]
+=
+  helper(path)

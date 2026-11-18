@@ -1,0 +1,47 @@
+-- test: Array and Matrix are built-in types of edition 0.5, of any element type for Array and of F64 or a fixed-width integer type for Matrix; constructors, shapes, reads, views, element-wise operators and kernels check
+-- spec: spec/29 §17
+-- expect: ok
+module dense
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub names(xs: List[Text]) -> Array[Text] = array(xs)
+
+pub points() -> Array[Point] = array_filled(length: 2, value: Point(x: 1, y: 2))
+
+pub small(n: Int) -> Matrix[I32]
+  requires n >= 0
+=
+  let zero: I32 = 0
+  matrix_filled(rows: n, columns: n, value: zero)
+
+pub grid() -> Matrix[F64] = matrix(rows: 2, columns: 2, elements: [1.0, 2.0, 3.0, 4.0])
+
+pub diagonal() -> Matrix[F64] = matrix_diagonal(values: array([1.0, 2.0]))
+
+pub sizes(a: Array[F64], m: Matrix[F64]) -> Int = a.len + m.rows + m.columns
+
+pub twice(a: Array[F64], b: Array[F64]) -> Array[F64]
+  requires a.len == b.len
+=
+  2.0 * (a + b) - a / 4.0
+
+pub negated(m: Matrix[I64 in -1000..1000]) -> Matrix[I64] = -m
+
+pub product(a: Matrix[F64], b: Matrix[F64]) -> Matrix[F64]
+  requires a.columns == b.rows
+=
+  a.multiply(by: b).transpose()
+
+pub reductions(a: Array[F64], b: Array[F64]) -> F64
+  requires a.len == b.len
+=
+  a.sum() + a.dot(with: b) + a.norm2() + a.multiply_elements(by: b).sum()
+
+pub exact(a: Array[U8]) -> Int = a.sum_exact()
+
+pub listed(a: Array[F64]) -> List[F64] = a.map(each: fn(x) -> x.abs()).to_list()
+
+pub equal(a: Array[F64], b: Array[F64]) -> Bool = a == b

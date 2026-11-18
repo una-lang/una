@@ -1,0 +1,56 @@
+-- test: the solved labels of an editable binding reach every read, whatever the order
+-- spec: spec/17 §6
+-- expect: error U4003 at src/main.una:50:18
+-- expect: error U4003 at src/main.una:51:18
+-- expect: error U4003 at src/main.una:52:18
+-- expect: error U4003 at src/main.una:53:18
+-- expect: error U4003 at src/main.una:54:18
+-- expect: error U4003 at src/main.una:56:18
+module main
+
+--- Puts an `internal` count in the map it edits.
+put(edit m: Map[Text, internal Int], n: internal Int) -> Unit
+=
+  edit m.set(key: "b", value: n)
+
+--- A public read printed after a secret value was assigned in one branch: the read sees it.
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit branch = empty_map()
+  edit branch.set(key: "a", value: 1)
+  let wide = 3 > 2
+  if wide
+    edit branch.set(key: "b", value: s.len)
+  let edit late = empty_map()
+  edit late.set(key: "a", value: 1)
+  let early = late.get(key: "a")
+    if none use 0
+  edit late.set(key: "b", value: s.len)
+  let edit looped = empty_map()
+  for i in 0..<3
+    edit looped.set(key: i, value: s.len + i)
+  let edit helped = empty_map()
+  put(edit helped, n: s.len)
+  let edit first = empty_map()
+  let edit second = empty_map()
+  edit first.set(key: "a", value: second.get(key: "a").or_else(default: 0))
+  edit second.set(key: "a", value: s.len)
+  let tasks = together for i in 0..<2
+    let edit inner = empty_map()
+    edit inner.set(key: i, value: s.len)
+    inner.get(key: i).or_else(default: 0)
+  let a = branch.get(key: "a").or_else(default: 0)
+  let b = looped.get(key: 0).or_else(default: 0)
+  let c = helped.get(key: "a").or_else(default: 0)
+  let d = first.get(key: "a").or_else(default: 0)
+  @console.print("{a}")
+  @console.print("{early}")
+  @console.print("{b}")
+  @console.print("{c}")
+  @console.print("{d}")
+  let e = tasks.at(index: 0).or_else(default: 0)
+  @console.print("{e}")

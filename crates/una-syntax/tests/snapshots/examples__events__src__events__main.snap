@@ -1,0 +1,19 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module events.main)
+(import events.seating Event availability clamp_seats)
+(fn pub main
+  ()
+  {Unit}
+  (uses @console {Console[print]})
+  (block
+    (let event (call Event (name: "Launch") (remaining: (call clamp_seats 820))))
+    (let status (call availability event))
+    (let label
+      (when status
+        (arm (is SoldOut) "sold out")
+        (arm (is Few) "few seats left")
+        (arm (is Open) "open")))
+    (@console.print (text "availability of " (. event name) ": " label))))

@@ -1,0 +1,39 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: attempt failer(decided, f: pure k), then its tag
+-- spec: spec/07 §7
+-- expect: error U4002 at src/sw.una:32:19
+-- expect: error U4001 at src/sw.una:32:54
+-- expect: error U4003 at src/sw.una:34:14
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+failer[U](x: U, f: fn(U) -> Int) -> Int
+  fails Bad
+=
+  if f(x) > 0 then fail Oops else 0
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let n = attempt failer(if a == b then p else q, f: k)
+  let m = if n is Ok then 1 else 0
+  @log.write(m)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

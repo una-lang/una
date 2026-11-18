@@ -1,0 +1,58 @@
+-- test: integers whose range a refinement or a fixed width proves compute exactly at the edges of the range, as do unbounded ones beyond a machine word (native slice 6 control)
+-- spec: spec/16 §4
+-- grant: console
+-- expect: run-output "small: 0 9999 -9999 -29997 true"
+-- expect: run-output "near the edge: 4611686018427387903 -4611686018427387904 false"
+-- expect: run-output "beyond: 4611686018427387904 21267647932558653966460912964485513216"
+-- expect: run-output "fixed: 4294967295 2147483647 -2147483648 18446744073709551615 9223372036854775807"
+module widths
+
+pub kind Small = Int in -9999..9999
+
+pub kind Edge = Int in -4611686018427387904..4611686018427387903
+
+pub triple(n: Small) -> Int
+=
+  let product: Int in -29997..29997 = n * 3
+  product
+
+pub sum(a: Small, b: Small) -> Small
+  requires a + b >= -9999 and a + b <= 9999
+=
+  let total: Small = a + b
+  total
+
+pub edge_up(n: Edge) -> Edge
+  requires n < 4611686018427387903
+=
+  let next: Edge = n + 1
+  next
+
+pub widest(n: U32) -> U64
+=
+  let wide = n.to_u64()
+  let doubled: U64 = wide * 4294967297
+  doubled
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let zero = sum(9999, b: -9999)
+  let top = sum(9998, b: 1)
+  let bottom = sum(-9998, b: -1)
+  let tripled = triple(-9999)
+  let ordered = bottom < top
+  @console.print("small: {zero} {top} {bottom} {tripled} {ordered}")
+  let high = edge_up(4611686018427387902)
+  let low: Edge = -4611686018427387904
+  let crossed = high < low
+  @console.print("near the edge: {high} {low} {crossed}")
+  let beyond = high + 1
+  let product = beyond * beyond
+  @console.print("beyond: {beyond} {product}")
+  let u: U32 = 4294967295
+  let i: I32 = 2147483647
+  let j: I32 = -2147483648
+  let w = widest(u)
+  let m: I64 = 9223372036854775807
+  @console.print("fixed: {u} {i} {j} {w} {m}")

@@ -1,0 +1,36 @@
+-- test: Decimal[s] in edition 0.5: literals at and below their scale, with the exponent form; a literal operand taking the other operand's scale; comparisons across scales with a literal at its own digits; the methods with literal scales and written roundings; the prelude functions; a map keyed by decimals; all accepted
+-- spec: spec/29 §16
+-- expect: ok
+module m
+
+pub kind Line
+  name: Text
+  price: Decimal[2]
+
+pub literals() -> List[Decimal[2]] = [19.99, 5.0, 1.5e1, -0.25, 0.0, 1_000.5]
+
+pub mixed(price: Decimal[2], rate: Decimal[4]) -> Decimal[4] = price + rate - price * 1.1
+
+pub compare(price: Decimal[2],
+  rate: Decimal[4]
+) -> Bool = price < 0.005 or price == rate or 1.0 <= price
+
+pub methods(x: Decimal[2], y: Decimal[2]) -> Decimal[2]
+  requires y != 0.00
+=
+  let wide = x.widen(scale: 4)
+  let narrow = wide.rescale(scale: 2, rounding: HalfEven)
+  let q = x.divide(by: y, scale: 2, rounding: TowardZero)
+  let r = x.remainder(by: y, scale: 0)
+  let n = x.to_int(rounding: HalfAwayFromZero) + x.coefficient()
+  narrow + q + r + n.to_decimal() + x.abs() - -x
+
+pub functions(t: Text, j: Json) -> Result[Decimal[3], ParseError]
+=
+  let parsed = attempt parse_decimal(t, scale: 3)
+  let json = as_decimal(j, scale: 3)
+  let price: Decimal[2] = 19.99
+  let back = json_decimal(price)
+  parsed
+
+pub index(prices: Map[Decimal[2], Text], x: Decimal[2]) -> Bool = prices.has(key: x)

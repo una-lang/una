@@ -1,0 +1,9 @@
+-- test: derived from names declared requirements
+-- spec: spec/08 §1
+-- expect: error U1006 at 7:16
+module undeclared_requirement
+
+pub sold_out(remaining: Int) -> Bool
+  derived from EVENTS_3
+=
+  remaining < 1

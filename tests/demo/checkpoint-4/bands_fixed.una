@@ -1,0 +1,10 @@
+module bands_fixed
+
+pub kind Availability = SoldOut | Few | Open
+
+--- The bands of the box office: sold out at zero, few below 20, open from 20.
+pub availability(remaining: Int) -> Availability
+  requires remaining >= 0
+  ensures remaining == 0 implies result is SoldOut
+=
+  if remaining == 0 then SoldOut else if remaining < 20 then Few else Open

@@ -1,0 +1,14 @@
+-- test: in edition 0.5, `initial` of `update` has the map's value type, so `initial: []` for a `Map[Text, List[Text]]` is an empty `List[Text]` that `change` appends to (spec/21 §2 rule 5)
+-- spec: spec/21 §2
+-- grant: console
+-- expect: run-output "{\"fruit\": [\"apple\", \"fig\"], \"leaf\": [\"kale\"]}"
+module groups
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit groups: Map[Text, List[Text]] = empty_map()
+  edit groups.update(key: "fruit", initial: [], change: fn(xs) -> xs.append(item: "apple"))
+  edit groups.update(key: "leaf", initial: [], change: fn(xs) -> xs.append(item: "kale"))
+  edit groups.update(key: "fruit", initial: [], change: fn(xs) -> xs.append(item: "fig"))
+  @console.print("{groups}")

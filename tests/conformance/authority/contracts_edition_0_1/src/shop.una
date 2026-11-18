@@ -1,0 +1,17 @@
+-- test: before edition 0.3, `[contracts]` is the unknown table it always was (ADR 0092 rule 8, as amended)
+-- spec: spec/13 §7
+-- expect: error U7002 at una.toml:6:2
+module shop
+
+pub capability Catalog
+  op price(sku: Int) -> Int
+  op set_price(sku: Int, cents: Int) -> Unit
+  op journal(n: Int) -> Unit
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub update(sku: Int, cents: Int, dry_run: Bool) -> Unit
+  uses @catalog: Catalog[price, set_price, journal]
+=
+  @catalog.set_price(sku, cents)

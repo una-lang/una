@@ -1,0 +1,8 @@
+-- test: std.testing is usable only in handlers and examples
+-- spec: spec/14 §4
+-- expect: error U3015 at 8:44
+module testing_outside_handlers
+
+import std.testing (fake_hash)
+
+pub digest(seed: Int) -> internal Hashed = fake_hash(seed)

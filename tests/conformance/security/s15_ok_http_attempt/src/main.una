@@ -1,0 +1,13 @@
+-- test: a request whose failure is `internal` is handled with `attempt`, and its outcome returned as a labeled value (S-15 twin)
+-- spec: spec/07 §7
+-- expect: ok
+module main
+
+pub send(url: Text, note: internal Text, token: internal Text) -> internal Option[internal Int]
+  uses @http: Http[post]
+=
+  let auth = Header(name: "X-Token", value: token)
+  let r = attempt @http.post(url, headers: [auth], body: note, key_name: None)
+  when r
+    is Ok(response) -> Some(response.status)
+    is Err(e) -> None

@@ -1,0 +1,35 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- Answers one request with the first segment of its path.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> ""
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "hello {first}"))
+    if error use unit
+
+--- `peer` counts the IPv6 addresses of one /64 as one peer: a second address of a /64, its low
+--- 64 bits all ones, is refused at accept, while the next /64, which differs from it in its 64th
+--- bit alone, is not. An IPv4-mapped address counts as its IPv4 address, so that address is
+--- refused after it; a grant on `[::1]` is bound with `IPV6_V6ONLY` and never receives either, so
+--- these two pin the mapping as defense in depth, which the scripted engine lets in (ADR 0123
+--- rule 12, `spec/31 §6` rule 2).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")

@@ -1,0 +1,14 @@
+-- test: policy called under a secret pc (review control)
+-- spec: spec/07 §5
+-- expect: error U4001 at src/app/caller.una:11:6
+-- expect: error U4002 at src/app/caller.una:12:5
+module app.caller
+
+import app.keys (mask)
+
+pub pick(flag: secret Bool, t: secret[PII] Text) -> internal Text
+=
+  if flag
+    mask(t)
+  else
+    ""

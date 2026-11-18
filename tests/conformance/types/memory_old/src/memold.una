@@ -1,0 +1,33 @@
+-- test: `old(x)` appears only in `ensures`, on an `edit` parameter, and `ensures` reads the final value of the parameter (spec/17 §3 rule 6)
+-- spec: spec/17 §3
+-- expect: error U2012 at src/memold.una:10:12
+-- expect: error U2012 at src/memold.una:17:3
+-- expect: error U2012 at src/memold.una:20:16
+-- expect: error U2012 at src/memold.una:25:16
+module memold
+
+pub in_requires(edit n: Int) -> Unit
+  requires old(n) > 0
+=
+  n = n + 1
+
+pub in_body(edit n: Int) -> Int
+=
+  n = n + 1
+  old(n)
+
+pub plain_param(m: Int, edit n: Int) -> Unit
+  ensures n == old(m)
+=
+  n = m
+
+pub of_expression(edit n: Int) -> Unit
+  ensures n == old(n + 1)
+=
+  n = n + 1
+
+pub entry_and_final(edit n: Int) -> Unit
+  requires n > 0
+  ensures n > old(n)
+=
+  n = n * 2

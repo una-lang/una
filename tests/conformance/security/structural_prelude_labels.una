@@ -1,0 +1,32 @@
+-- test: structural prelude functions label each position of their result with what it holds, so records with a secret field the code never reads pass through append, at, first, first_where, filter, map, is_some, is_empty, is_ok and .len (issue #89, ADR 0051)
+-- spec: spec/14 §1
+-- expect: ok
+module structural_prelude_labels
+
+pub kind R
+  id: Text
+  code: secret Text
+
+pub present(r: Option[R]) -> Bool = r.is_some()
+
+pub add(xs: List[R], r: R) -> List[R] = xs.append(item: r)
+
+pub nth(xs: List[R]) -> Option[R] = xs.at(index: 0)
+
+pub by_id(xs: List[R], id: Text) -> Option[R] = xs.first_where(keep: fn(r) -> r.id == id)
+
+pub ids(xs: List[R]) -> List[Text] = xs.map(each: fn(r) -> r.id)
+
+pub head(xs: List[R]) -> Option[R] = xs.first()
+
+pub empty(xs: List[R]) -> Bool = xs.is_empty()
+
+pub size(xs: List[R]) -> Int = xs.len
+
+pub same(xs: List[R], id: Text) -> List[R] = xs.filter(keep: fn(r) -> r.id == id)
+
+pub mapped_secret(xs: List[secret Int]) -> List[secret Int] = xs.map(each: fn(x) -> x + 1)
+
+pub first_secret(xs: List[secret Int]) -> Option[secret Int] = xs.first()
+
+pub at_secret(xs: List[secret Int]) -> Option[secret Int] = xs.at(index: 0)

@@ -1,0 +1,8 @@
+ita task_switch_generic_result
+  version 0.1.0
+  edition 0.4
+
+run
+  entry order
+  grants
+    console

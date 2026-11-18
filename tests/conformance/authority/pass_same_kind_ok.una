@@ -1,0 +1,18 @@
+-- test: if error pass in a function whose error kind is the callee's is accepted; another kind is U3008 (positive twin, #11)
+-- spec: spec/06 §3
+-- expect: ok
+module pass_same_kind_ok
+
+kind StoreError = Timeout | Corrupted
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+
+pub lookup(key: Int) -> Option[Int]
+  uses @store: Store[find]
+  fails StoreError
+=
+  let found = @store.find(key)
+    if error pass
+  found

@@ -1,0 +1,10 @@
+-- test: `Kilometer / Meter` is a scaled dimensionless unit: `convert()` takes it to `Int` by its scale
+-- spec: spec/25 §2, §5
+-- expect: ok
+module m
+
+pub measure Meter
+
+pub measure Kilometer = 1000 * Meter
+
+pub ratio(r: Int of Kilometer / Meter) -> Int = r.convert()

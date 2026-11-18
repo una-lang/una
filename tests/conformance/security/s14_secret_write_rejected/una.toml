@@ -1,0 +1,4 @@
+[package]
+name = "s14_secret_write_rejected"
+version = "0.1.0"
+edition = "0.2"

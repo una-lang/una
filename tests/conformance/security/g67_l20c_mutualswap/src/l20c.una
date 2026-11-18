@@ -1,0 +1,12 @@
+-- test: ADR 0067 adversarial check of #231, L20c_mutualswap: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l20c.una:12:34
+module l20c
+
+f[T, U](a: T, b: U, n: Int) -> List[Int] = if n <= 0 then [] else g(b, b: a, n: n - 1)
+
+g[T, U](a: T, b: U, n: Int) -> List[Int] = h(b, b: a, n: n)
+
+h[T, U](a: T, b: U, n: Int) -> List[Int] = if n == 1 then (if a == a then [1] else []) else f(a, b, n: n - 1)
+
+pub leak(s: secret Int) -> Int = f(s, b: 0, n: 9).len

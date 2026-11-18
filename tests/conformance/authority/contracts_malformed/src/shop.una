@@ -1,0 +1,29 @@
+-- test: each lock that does not resolve against today's code is U7002 at its entry: no public function, a private one, an entry that does not parse or lists no operations, an unknown capability or operation, a condition over a name that is no parameter, a label with a category the package does not declare, and a binding locked twice (ADR 0092 rule 8, as amended)
+-- spec: spec/05 §3
+-- expect: error U7002 at una.toml:7:1
+-- expect: error U7002 at una.toml:8:1
+-- expect: error U7002 at una.toml:10:3
+-- expect: error U7002 at una.toml:11:3
+-- expect: error U7002 at una.toml:12:3
+-- expect: error U7002 at una.toml:13:3
+-- expect: error U7002 at una.toml:14:3
+-- expect: error U7002 at una.toml:15:3
+-- expect: error U7002 at una.toml:16:3
+module shop
+
+pub capability Catalog
+  op price(sku: Int) -> Int
+  op set_price(sku: Int, cents: Int) -> Unit
+  op journal(n: Int) -> Unit
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub update(sku: Int, cents: Int, dry_run: Bool) -> Unit
+  uses @catalog: Catalog[price, set_price where not dry_run, journal where not dry_run]
+=
+  if not dry_run
+    @catalog.set_price(sku, cents)
+  unit
+
+helper(n: Int) -> Int = n

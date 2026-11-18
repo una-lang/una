@@ -1,0 +1,12 @@
+-- test: `skip` takes no `when`; an `if` around it says the same (spec/26 §3, ADR 0116 rule 6)
+-- spec: spec/26 §3
+-- expect: error U0101 at src/skips.una:10:10
+module skips
+
+pub count(xs: List[Int]) -> Int
+=
+  let edit n = 0
+  for x in xs
+    skip when x > 3
+    n = n + x
+  n

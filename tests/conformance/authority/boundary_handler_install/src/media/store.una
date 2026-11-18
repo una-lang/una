@@ -1,0 +1,8 @@
+module media.store
+
+pub capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+
+pub capability Net
+  op post(body: Text) -> Unit

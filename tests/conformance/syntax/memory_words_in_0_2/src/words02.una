@@ -1,0 +1,29 @@
+-- test: edition 0.2 reserves `shared`, `iso` and `weak` for v0.3, rejects `var`, `region`, `while` and `loop` with the messages of the memory model, and makes `old` a keyword (spec/17 §9)
+-- spec: spec/17 §9
+-- expect: error U0103 at src/words02.una:18:3
+-- expect: error U0103 at src/words02.una:20:5
+-- expect: error U0103 at src/words02.una:20:9
+-- expect: error U0103 at src/words02.una:20:31
+-- expect: error U0103 at src/words02.una:22:5
+-- expect: error U0103 at src/words02.una:24:7
+-- expect: error U0103 at src/words02.una:25:7
+-- expect: error U0103 at src/words02.una:26:7
+-- expect: error U0103 at src/words02.una:27:3
+-- expect: error U0103 at src/words02.una:27:10
+-- expect: error U0103 at src/words02.una:27:18
+-- expect: error U0101 at src/words02.una:29:5
+module words02
+
+pub kind Node
+  shared: Int
+
+pub var(region: Int) -> Int = region
+
+pub iso() -> Int
+=
+  let weak = 1
+  let while = 2
+  let loop = 3
+  weak + while + loop
+
+pub old() -> Int = 1

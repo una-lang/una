@@ -1,0 +1,8 @@
+-- test: `attempt` of a call that cannot fail is U3026 in edition 0.3 (ADR 0100 rule 2)
+-- spec: spec/06 §5
+-- expect: error U3026 at src/main.una:8:42
+module main
+
+double(n: Int) -> Int = n * 2
+
+pub tried(n: Int) -> Result[Int, Text] = attempt double(n)

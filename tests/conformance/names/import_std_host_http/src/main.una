@@ -1,0 +1,17 @@
+-- test: in edition 0.2, std.host also exports Http and its kinds
+-- spec: spec/24 §1
+-- expect: ok
+module main
+
+import std.host (Header, Http, HttpError, Response)
+
+--- The status of a page, or the failure of its request. A request's failure is `internal`, as
+--- its response is (S-15), so it is returned rather than passed on.
+pub status(url: Text) -> internal Result[internal Int, internal HttpError]
+  uses @http: Http[get]
+=
+  let headers: List[Header] = []
+  let r = attempt @http.get(url, headers: headers, key_name: None)
+  when r
+    is Ok(response) -> Ok(response.status)
+    is Err(e) -> Err(e)

@@ -1,0 +1,175 @@
+-- test: whether an operation of Http fails, and how, is labeled by every argument, since the server receives them all and may decide it, the values that Header declares internal and the body included, so every request's failure is internal (S-15, ADR 0085): attempt gives a Result labeled by them and if error pass or fail is U4002 when they are above public; H-1's program prints under that label (U4003); each with a control, and the Http that std.host exports is the same capability (#313) (spec/07 §7, spec/24 §5); a loop, together, every method and a generic helper are rejected alike, and a Files path decides a write's failure while its content does not, though a package that writes to a labeled path makes every Files failure internal (S-14)
+-- spec: spec/24 §5
+-- expect: error U4001 at src/http_failures.una:127:3
+-- expect: error U4001 at src/http_failures.una:134:3
+-- expect: error U4001 at src/http_failures.una:140:3
+-- expect: error U4001 at src/http_failures.una:146:3
+-- expect: error U4001 at src/http_failures.una:156:14
+-- expect: error U4001 at src/http_failures.una:166:3
+-- expect: error U4001 at src/http_failures.una:175:13
+-- expect: error U4001 at src/http_failures.una:47:3
+-- expect: error U4001 at src/http_failures.una:59:3
+-- expect: error U4001 at src/http_failures.una:65:3
+-- expect: error U4001 at src/http_failures.una:72:3
+-- expect: error U4001 at src/http_failures.una:79:3
+-- expect: error U4002 at src/http_failures.una:103:5
+-- expect: error U4002 at src/http_failures.una:112:5
+-- expect: error U4002 at src/http_failures.una:119:5
+-- expect: error U4002 at src/http_failures.una:87:5
+-- expect: error U4002 at src/http_failures.una:95:5
+-- expect: error U4003 at src/http_failures.una:39:14
+-- expect: error U4003 at src/http_failures.una:40:15
+module http_failures
+
+import std.host (Http)
+
+pub kind Bad = Unreached | Other
+
+--- H-1: whether a request to an internal URL fails, printed.
+pub h1() -> Unit
+  uses @http: Http[get]
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let url = @env.get("SECRET_URL")
+    if none use "http://127.0.0.1:8765/"
+  let headers: List[Header] = []
+  let r = attempt @http.get(url, headers: headers, key_name: None)
+  when r
+    is Ok -> @console.print("granted")
+    is Err -> @console.print("not granted")
+
+--- The tag of `attempt`'s Result, for each deciding argument.
+pub by_url(url: internal Text) -> Bool
+  uses @http: Http[get]
+=
+  let r = attempt @http.get(url, headers: [], key_name: None)
+  r is Ok
+
+pub by_url_control(url: internal Text) -> internal Bool
+  uses @http: Http[get]
+=
+  let r = attempt @http.get(url, headers: [], key_name: None)
+  r is Ok
+
+pub by_header(session: internal Text) -> Bool
+  uses @http: Http[get]
+=
+  let r = attempt @http.get("http://127.0.0.1:8765/", headers: [Header(name: "Cookie", value: session)], key_name: None)
+  r is Ok
+
+pub by_key_name(name: internal Text) -> Bool
+  uses @http: Http[get]
+=
+  let r = attempt @http.get("http://127.0.0.1:8765/", headers: [], key_name: Some(name))
+  r is Ok
+
+--- The body decides the failure too: the tag is internal (S-15).
+pub by_body(note: internal Text) -> Bool
+  uses @http: Http[post]
+=
+  let r = attempt @http.post("http://127.0.0.1:8765/", headers: [], body: note, key_name: None)
+  r is Ok
+
+--- Every request sends header values that `Header` declares internal: the tag is internal (S-15).
+pub all_public() -> Bool
+  uses @http: Http[delete]
+=
+  let r = attempt @http.delete("http://127.0.0.1:8765/", headers: [], key_name: Some("api"))
+  r is Ok
+
+--- `if error pass` and `if error fail` relay the failure: U4002 above public.
+pub passed(url: internal Text) -> Unit
+  uses @http: Http[put]
+  fails HttpError
+=
+  let r = @http.put(url, headers: [], body: "", key_name: None)
+    if error pass
+  unit
+
+pub failed(url: internal Text) -> Unit
+  uses @http: Http[post]
+  fails Bad
+=
+  let r = @http.post(url, headers: [], body: "", key_name: None)
+    if error fail Unreached
+  unit
+
+pub passed_public(note: internal Text) -> Unit
+  uses @http: Http[post]
+  fails HttpError
+=
+  let r = @http.post("http://127.0.0.1:8765/", headers: [], body: note, key_name: None)
+    if error pass
+  unit
+
+--- A Files path decides its failure too; the content does not.
+pub write_path(path: internal Text) -> Unit
+  uses @files: Files[write]
+  fails FileError
+=
+  @files.write(path, content: "x")
+    if error pass
+
+pub write_content(note: internal Text) -> Unit
+  uses @files: Files[write]
+  fails FileError
+=
+  @files.write("note.txt", content: note)
+    if error pass
+
+--- A header list chosen under an internal condition decides by its own label.
+pub by_header_list(flag: internal Bool) -> Bool
+  uses @http: Http[get]
+=
+  let headers = if flag then [Header(name: "X-A", value: "1")] else []
+  let r = attempt @http.get("http://127.0.0.1:8765/", headers: headers, key_name: None)
+  r is Ok
+
+--- Every method.
+pub by_post(url: internal Text) -> Bool
+  uses @http: Http[post]
+=
+  let r = attempt @http.post(url, headers: [], body: "", key_name: None)
+  r is Ok
+
+pub by_put(url: internal Text) -> Bool
+  uses @http: Http[put]
+=
+  let r = attempt @http.put(url, headers: [], body: "", key_name: None)
+  r is Ok
+
+pub by_delete(url: internal Text) -> Bool
+  uses @http: Http[delete]
+=
+  let r = attempt @http.delete(url, headers: [], key_name: None)
+  r is Ok
+
+--- A loop over guesses counts the ones that succeed.
+pub probe(guesses: List[internal Text]) -> Int
+  uses @http: Http[get]
+=
+  let edit hits = 0
+  for guess in guesses
+    let r = attempt @http.get(guess, headers: [], key_name: None)
+    if r is Ok
+      hits = hits + 1
+  hits
+
+--- Under together.
+pub in_tasks(url: internal Text) -> Bool
+  uses @http: Http[get]
+=
+  together
+    let a = attempt @http.get(url, headers: [], key_name: None)
+    let b = attempt @http.get("http://127.0.0.1:8765/", headers: [], key_name: None)
+  a is Ok
+
+--- Through a generic helper.
+succeeded[T, E](r: Result[T, E]) -> Bool = r is Ok
+
+pub generic(url: internal Text) -> Bool
+  uses @http: Http[get]
+=
+  let r = attempt @http.get(url, headers: [], key_name: None)
+  succeeded(r)

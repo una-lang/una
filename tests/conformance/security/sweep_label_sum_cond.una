@@ -1,0 +1,62 @@
+-- test: a sum kind with a secret variant field: an `if` or `when` on a comparison of it raises the program counter (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 28:34
+-- expect: error U4003 at 34:5
+-- expect: error U4003 at 36:5
+-- expect: error U4003 at 42:16
+-- expect: error U4003 at 43:17
+module sweep_label_sum_cond
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Guess) -> secret Int
+=
+  when x
+    is Hit(pin) -> pin
+    is Miss -> 0
+
+pub chosen(x: Guess) -> Int = if x == Hit(pin: 2) then 1 else 0
+
+pub printed(x: Guess) -> Unit
+  uses @console: Console[print]
+=
+  if x == Hit(pin: 2)
+    @console.print("hit")
+  else
+    @console.print("miss")
+
+pub matched(x: Guess) -> Unit
+  uses @console: Console[print]
+=
+  when x == Hit(pin: 2)
+    is true -> @console.print("hit")
+    is false -> @console.print("miss")
+
+pub chosen_twin(x: Guess) -> secret Int = if x == Hit(pin: 2) then 1 else 0
+
+pub printed_twin(x: PubGuess) -> Unit
+  uses @console: Console[print]
+=
+  if x == PubHit(pin: 2)
+    @console.print("hit")
+  else
+    @console.print("miss")
+
+pub matched_twin(x: PubGuess) -> Unit
+  uses @console: Console[print]
+=
+  when x == PubHit(pin: 2)
+    is true -> @console.print("hit")
+    is false -> @console.print("miss")
+
+kind PubGuess = PubHit(pin: Int) | PubMiss

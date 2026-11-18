@@ -1,0 +1,19 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module greenhouse.main)
+(import greenhouse.climate fixed_sensor printed_vent regulate_warmest)
+(fn pub main
+  ()
+  {Unit}
+  (uses @console {Console[print]})
+  (block
+    (let wanted
+      (handled
+        (call regulate_warmest)
+        (with
+          (= @north (call fixed_sensor (degrees: 24)))
+          (= @south (call fixed_sensor (degrees: 31)))
+          (= @vent (call printed_vent)))))
+    (@console.print (text "the warmer side asks for " wanted "% open"))))

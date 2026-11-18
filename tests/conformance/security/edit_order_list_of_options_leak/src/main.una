@@ -1,0 +1,16 @@
+-- test: label order shape `list-of-options-leak` (#323, review #330): the read sees the solved label, whatever the order
+-- spec: spec/17 §6
+-- expect: error U4003 at src/main.una:16:18
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit xs = []
+  xs = xs.append(item: Some(1))
+  let head = xs.first().or_else(default: None)
+  xs = xs.append(item: Some(s.len))
+  @console.print("{head}")

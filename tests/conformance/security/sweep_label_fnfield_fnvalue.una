@@ -1,0 +1,33 @@
+-- test: a kind whose field is a function type: a function field read as a value and called keeps its label (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 18:3
+-- expect: error U4001 at 23:3
+module sweep_label_fnfield_fnvalue
+
+kind Src
+  get: fn() -> secret Int
+
+kind Feed[T]
+  get: fn() -> T
+
+make(pin: secret Int) -> Src = Src(get: fn() -> pin)
+
+pub read(s: Src) -> Int
+=
+  let g = s.get
+  g()
+
+pub made(pin: secret Int) -> Int
+=
+  let g = make(pin).get
+  g()
+
+pub read_twin(s: Src) -> secret Int
+=
+  let g = s.get
+  g()
+
+pub made_twin(pin: secret Int) -> secret Int
+=
+  let g = make(pin).get
+  g()

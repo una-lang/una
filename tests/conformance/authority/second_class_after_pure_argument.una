@@ -1,0 +1,52 @@
+-- test: U3016 is at the effectful or failing argument, not at the pure one that fixed the type argument first
+-- spec: spec/05 §6
+-- expect: error U3016 at 35:29
+-- expect: error U3016 at 40:28
+-- expect: error U3007 at 41:3
+-- expect: error U3016 at 46:41
+-- expect: error U2001 at 52:3
+-- expect: error U3016 at 52:27
+module a08_unify_order
+
+kind Boom = | Exploded
+
+capability Log
+  op write(line: Text) -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+silent(line: Text) -> Unit = unit
+
+boom(x: Int) -> Int
+  fails Boom
+=
+  fail Exploded
+
+plain(x: Int) -> Int = x
+
+second[T](a: T, b: T) -> T = b
+
+pub paired() -> Unit
+  uses @log: Log[write]
+=
+  let g = second(silent, b: note)
+  g("x")
+
+pub paired_fails() -> Int
+=
+  let g = second(plain, b: boom)
+  g(1)
+
+pub defaulted() -> Unit
+  uses @log: Log[write]
+=
+  let g = Some(silent).or_else(default: note)
+  g("x")
+
+pub contained() -> Bool
+  uses @log: Log[write]
+=
+  [silent].contains(item: note)
