@@ -543,8 +543,10 @@ fn an_archive_that_does_not_check_is_not_fetched() {
 /// the digest of that root metadata. A floor whose version the chain holds with another digest
 /// is a fork of the root chain: refused (U7010) by the offline load (`una check`), by
 /// `una ita lock --check`, which walks the chain online, and by `una ita fetch`. A floor of the
-/// earlier form, the version alone, is compared by version and never replaced by its equal
-/// version; a floor line of neither form is unreadable (U7013) offline.
+/// earlier form, the version alone, is compared by version, and takes the digest of its version
+/// from the next command that walks and verifies the chain at that version (#1970), after which
+/// the offline load compares by digest; a floor line of neither form is unreadable (U7013)
+/// offline.
 #[test]
 fn a_root_version_floor_with_another_digest_is_a_fork() {
     let (registry, _) = acme();
@@ -592,12 +594,19 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
         );
     }
 
-    // The earlier form: by version, accepted, and kept by a command that walks version 1.
+    // The earlier form, as builds before v0.4.0 write it: by version, accepted offline, and
+    // given the digest of version 1 by a command that walks and verifies the chain at version 1.
     write("1\n");
     assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), "1\n");
     let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(std::fs::read_to_string(&floor).unwrap(), "1\n");
+    assert!(!err.contains("not stored"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 {first}\n")
+    );
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
 
     // Neither form: unreadable offline, never no floor.
     write(&format!("1 {first}x\n"));

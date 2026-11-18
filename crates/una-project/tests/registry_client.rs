@@ -2965,7 +2965,8 @@ fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
 /// stored as `<n> sha256:<hex>` and a line feed, read back the same; the earlier form `<n>` is
 /// read as a floor without a digest; any other content is unreadable (U7013 where a load
 /// reports it), never no floor; and a stored floor is replaced only by a higher version, never
-/// by an equal one with another digest, nor by a lower one.
+/// by an equal one with another digest (refused as a fork), nor by a lower one, while a floor of
+/// the earlier form takes the digest of its own version (#1970).
 #[test]
 fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     use una_project::itaoca::{Itaoca, RootFloor, registry_id};
@@ -2989,8 +2990,16 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         itaoca.load_root_version(&id).unwrap(),
         floor(2, Some(digest('a')))
     );
-    // Equal, with another digest, and lower: never stored.
-    itaoca.store_root_version(&id, 2, &digest('b')).unwrap();
+    // Equal, with the same digest: kept as it is.
+    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("2 {}\n", digest('a'))
+    );
+    // Equal, with another digest: a fork of the root chain, refused, never stored.
+    let fork = itaoca.store_root_version(&id, 2, &digest('b')).unwrap_err();
+    assert!(fork.contains("forked"), "{fork}");
+    // Lower: never stored.
     itaoca.store_root_version(&id, 1, &digest('c')).unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
@@ -3010,13 +3019,33 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         floor(3, Some(digest('d')))
     );
 
-    // The earlier form: the version alone, read without a digest; an equal version does not
-    // replace it, a higher one does, in the new form.
+    // The earlier form, as builds before v0.4.0 write it: the version alone, read without a
+    // digest. A lower version leaves it as it is; the equal version takes its digest, in the new
+    // form (#1970), after which another digest at that version is a fork, refused, and a lower
+    // one is still not stored; a higher one replaces it.
     std::fs::remove_file(&file).unwrap();
     std::fs::write(&file, "3\n").unwrap();
     assert_eq!(itaoca.load_root_version(&id).unwrap(), floor(3, None));
+    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "3\n");
     itaoca.store_root_version(&id, 3, &digest('a')).unwrap();
-    assert_eq!(itaoca.load_root_version(&id).unwrap(), floor(3, None));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("3 {}\n", digest('a'))
+    );
+    let fork = itaoca.store_root_version(&id, 3, &digest('b')).unwrap_err();
+    assert!(fork.contains("forked"), "{fork}");
+    itaoca.store_root_version(&id, 2, &digest('b')).unwrap();
+    assert_eq!(
+        itaoca.load_root_version(&id).unwrap(),
+        floor(3, Some(digest('a')))
+    );
+    // A digest that is not one never upgrades a floor of the earlier form.
+    std::fs::remove_file(&file).unwrap();
+    std::fs::write(&file, "3\n").unwrap();
+    assert!(itaoca.store_root_version(&id, 3, "").is_err());
+    assert!(itaoca.store_root_version(&id, 3, "sha256:zz").is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "3\n");
     itaoca.store_root_version(&id, 4, &digest('a')).unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),

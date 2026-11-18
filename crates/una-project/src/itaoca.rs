@@ -14,8 +14,9 @@
 //! - `registry/<id>/checkpoint` and `registry/<id>/root-version`: the floors of rule 39 of the
 //!   registry whose identity is `id` ([`registry_id`]), the largest checkpoint and the highest
 //!   root version the client accepted (with the digest of that root metadata, [`RootFloor`]),
-//!   each replaced only by a larger one under the kernel-held lock of
-//!   `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`]).
+//!   each replaced only by a larger one (a root-version floor of the earlier form, the version
+//!   alone, also takes the digest of its own version) under the kernel-held lock of
+//!   `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`], [`Itaoca::store_root_version`]).
 //!
 //! The root itself must not be a symbolic link; what lies above it is the user's choice. A
 //! package is verified on every load, not once: its files are read again as [`crate::tree`]
@@ -374,8 +375,16 @@ impl Itaoca {
 
     /// Stores `version`, a root version the client accepted for the registry `id`, with
     /// `digest`, the digest of that root metadata (`sha256:` and hex), as the floor of its root
-    /// chain: under the floor lock, only when it is higher than the one stored. An equal version
-    /// never replaces the stored floor, whatever its digest or form.
+    /// chain: under the floor lock, the floor stored is read again and replaced only when
+    /// `version` is higher, or when it is equal and the stored floor is of the earlier form,
+    /// the version alone, which then takes `digest` (`spec/30 §14`, Floors). A lower version is
+    /// not stored. An equal version with the same digest leaves the floor as it is; with
+    /// another digest it is never stored, and is refused as a fork of the root chain.
+    ///
+    /// The caller passes only the last version of a root chain it walked and verified from the
+    /// pin, each version under the threshold of the keys of the one before it, against the
+    /// floor it read (`Registry::open_with`): a floor of the earlier form records the digest on
+    /// that first verified walk at its version, and from then on every load compares by digest.
     pub fn store_root_version(&self, id: &str, version: u64, digest: &str) -> Result<(), Refusal> {
         let floor = RootFloor {
             version,
@@ -385,11 +394,22 @@ impl Itaoca {
             .line()
             .ok_or_else(|| format!("cannot store the root version: `{digest}` is not a digest"))?;
         self.locked(id, || {
-            if self
-                .load_root_version(id)?
-                .is_some_and(|stored| stored.version >= version)
-            {
-                return Ok(());
+            if let Some(stored) = self.load_root_version(id)? {
+                if stored.version > version {
+                    return Ok(());
+                }
+                if stored.version == version {
+                    match stored.digest.as_deref() {
+                        // The earlier form, the version alone: it takes the digest below.
+                        None => {}
+                        Some(held) if held == digest => return Ok(()),
+                        Some(held) => {
+                            return Err(format!(
+                                "cannot store the root version: root version {version} was accepted with the digest {held}, not {digest}, so its root chain forked; the floor is kept"
+                            ));
+                        }
+                    }
+                }
             }
             let parent = tree::make_dirs(&self.root, &["registry", id])?;
             tree::store_file(&parent, "root-version", line.as_bytes(), true)
@@ -410,7 +430,8 @@ pub struct RootFloor {
     /// The root version: a decimal without a leading zero, at least 1.
     pub version: u64,
     /// `sha256:` and the lowercase hex of the root metadata of that version, or `None` for a
-    /// floor of the earlier form, the version alone, which is compared by version only.
+    /// floor of the earlier form, the version alone, which is compared by version only until a
+    /// verified walk at that version stores its digest ([`Itaoca::store_root_version`]).
     pub digest: Option<String>,
 }
 
