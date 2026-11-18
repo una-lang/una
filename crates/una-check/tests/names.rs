@@ -222,6 +222,25 @@ fn naming_conventions_are_t1005() {
 }
 
 #[test]
+fn requirement_suggestions_do_not_overflow_the_number() {
+    // #1474: the suggested name for `X18446744073709551615` is derived as
+    // `X_18446744073709551615`, which is taken; raising its number overflowed a u64.
+    let requirement = |id: &str| {
+        format!("requirement {id}\n  text \"a\"\n  source human\n  owner team\n  status active\n")
+    };
+    assert_eq!(
+        single(&format!(
+            "{}\n{}",
+            requirement("X_18446744073709551615"),
+            requirement("X18446744073709551615")
+        )),
+        [
+            "U1005 t.una:9:13 requirement identifier `X18446744073709551615` must be upper snake case ending with `_` and a number, as in `X_18446744073709551615_1`",
+        ]
+    );
+}
+
+#[test]
 fn requirements_are_unique_declared_and_generated_ones_proposed() {
     let requirement = |id: &str, source: &str, status: &str| {
         format!(
