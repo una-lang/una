@@ -55,7 +55,7 @@
 
 ## Starting a contribution
 
-Use the assigned issue as the scope. Read the charter, identify the package edition, then read its normative specification before changing code. Check `docs/compiler/` for implementation conventions, and see `CONTRIBUTING.md` for what to build and check. The site is a separate repository pinned by `site/website.lock`; the maintainers build it from this checkout.
+Use the assigned issue as the scope. Read the charter, identify the package edition, then read its normative specification before changing code. Check `docs/compiler/` for implementation conventions, and see `CONTRIBUTING.md` for what to build and check. The site is a separate repository pinned by `site/website.lock`; it is built and validated by its own flow against a published docs bundle, not by the release gates.
 
 ## Conventions
 

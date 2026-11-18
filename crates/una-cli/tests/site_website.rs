@@ -1,6 +1,6 @@
 //! `scripts/site-website.sh` (#584, #789): the neutrality of the Learn pages is checked by this
 //! script's own grep -E over every text file of the una-by-example clone, with the pattern on
-//! file descriptor 3, as scripts/release-gates.sh passes it, so that it never reaches an
+//! file descriptor 3, as its caller passes it on a pipe, so that it never reaches an
 //! environment or an argument of any command; a run without it fails unless
 //! UNA_GATES_UNCHECKED=1. check.py and the website's build get no pattern, and the build and the
 //! sample check run with UNA_LEARN_DRAFTS unset, whatever the caller's environment holds.
@@ -9,6 +9,10 @@
 //! stand for the website and una-by-example, with `python3`, `node` and `npm` replaced on `PATH`
 //! by stubs that record how they are called: what is tested is the script's own logic, not the
 //! website's build or check.py, which have their own tests.
+//!
+//! The release gates no longer run these scripts (#2081): the website is validated by its own
+//! flow, so the self-tests of `scripts/site-learn-una.sh` and `scripts/site-learn-release.sh`,
+//! which ran only in the gate, run here.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -372,4 +376,44 @@ fn the_website_builds_without_the_drafts_preview_whatever_the_environment() {
     for line in npm {
         assert!(line.ends_with("drafts=unset"), "{line}");
     }
+}
+
+/// Runs `script --self-test` with a temporary directory of the test, and with `gh` given an empty
+/// configuration and no token, so that the case of a release `gh` cannot read fails at once,
+/// offline, as the self-test expects.
+fn self_test(script: &str) {
+    let config = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{script}-gh"));
+    let _ = std::fs::remove_dir_all(&config);
+    std::fs::create_dir_all(&config).unwrap();
+    let output = Command::new("sh")
+        .arg(root().join("scripts").join(script))
+        .arg("--self-test")
+        .env("TMPDIR", env!("CARGO_TARGET_TMPDIR"))
+        .env("GH_CONFIG_DIR", &config)
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GITHUB_ENTERPRISE_TOKEN")
+        .env_remove("UNA_SITE_LEARN_RELEASE_DIR")
+        .env_remove("UNA_SITE_LEARN_UNA_DIR")
+        .env_remove("UNA_SITE_LEARN_SAME_VERSION")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+#[test]
+fn the_learn_una_self_test_passes() {
+    self_test("site-learn-una.sh");
+}
+
+#[test]
+fn the_learn_release_self_test_passes() {
+    self_test("site-learn-release.sh");
 }

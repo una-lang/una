@@ -145,7 +145,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, deps, mac, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, toolchain-free)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, docs, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, toolchain-free)"
         ),
         "{record}"
     );
@@ -229,13 +229,13 @@ fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
     }
 }
 
-/// The site gate checks the book and the website's samples with the `una` of the release
-/// gate's archive, never with the clone's own `target/release/una` (#2029): the self-test of
-/// `scripts/site-shipped-una.sh` (a book report that carries the shipped library fails with the
-/// build's `una` and passes with the shipped one; a missing, altered or wrong archive fails), and
-/// the gate's text, which is the only place that wires the two.
+/// The `una` that the release archive of this host ships (#2029), which the website's own flow
+/// gives `scripts/site-website.sh` to check the book and the website's samples with (#2081): the
+/// self-test of `scripts/site-shipped-una.sh` (a book report that carries the shipped library
+/// fails with the build's `una` and passes with the shipped one; a missing, altered or wrong
+/// archive fails). No release run calls it any more, so this test is where it runs.
 #[test]
-fn the_site_gate_checks_the_book_with_the_shipped_una() {
+fn the_shipped_una_self_test_passes() {
     let output = Command::new("sh")
         .arg(root().join("scripts/site-shipped-una.sh"))
         .arg("--self-test")
@@ -248,22 +248,90 @@ fn the_site_gate_checks_the_book_with_the_shipped_una() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
-    let site: Vec<&str> = script
+}
+
+/// The body of the function `gate_<name>` of `scripts/release-gates.sh`: its one line, or its
+/// lines up to the closing brace at column 0.
+fn gate_body<'a>(text: &'a str, name: &str) -> Vec<&'a str> {
+    let head = format!("gate_{name}() {{");
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with(&head))
+        .expect("the gate's function in scripts/release-gates.sh");
+    if lines[at].trim_end().ends_with('}') {
+        return vec![lines[at]];
+    }
+    lines[at + 1..]
+        .iter()
+        .take_while(|line| **line != "}")
+        .copied()
+        .collect()
+}
+
+/// The website leaves the compiler's verdict (#2081): the `docs` gate replaces `site`, and keeps
+/// the link check and the docs bundle, with the neutrality pattern on the bundle step; no line of
+/// the release run that is not a comment clones, installs or builds the website, so a failure of
+/// a website dependency cannot fail a release. This fails if a website step comes back, whether
+/// into `gate_docs`, into another gate or into the script's own steps.
+#[test]
+fn no_step_of_the_release_run_builds_the_website() {
+    let text = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let all = text
         .lines()
-        .filter(|line| line.contains("scripts/site-website.sh \"'"))
+        .find_map(|line| line.strip_prefix("ALL=("))
+        .expect("an ALL=(...) line");
+    assert!(all.split_whitespace().any(|gate| gate == "docs"), "{all}");
+    assert!(!all.split_whitespace().any(|gate| gate == "site"), "{all}");
+    assert!(!text.contains("gate_site()"));
+    let code: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
         .collect();
-    assert_eq!(
-        site.len(),
-        1,
-        "one call of scripts/site-website.sh in the site gate"
+    for word in [
+        "site-website.sh",
+        "site-learn-una.sh",
+        "site-learn-release.sh",
+        "site-shipped-una.sh",
+        "website.lock",
+        "learn.lock",
+        "npm",
+        "node ",
+        "una-by-example",
+        "UNA_SITE_",
+    ] {
+        let found: Vec<&&str> = code.iter().filter(|line| line.contains(word)).collect();
+        assert!(
+            found.is_empty(),
+            "a release run step names {word}: {found:?}"
+        );
+    }
+    // The docs gate: the link check after its self-test, then the bundle, which alone receives
+    // the neutrality pattern, on a pipe of its own.
+    let docs = gate_body(&text, "docs").join("\n");
+    assert!(docs.contains("run docs sh -c"), "{docs}");
+    let order = [
+        "scripts/doc-links.py --self-test",
+        "&& scripts/doc-links.py \\",
+        "&& with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh",
+    ];
+    let mut from = 0;
+    for step in order {
+        let at = docs[from..].find(step);
+        assert!(
+            at.is_some(),
+            "the docs gate has no step {step:?} after the one before: {docs}"
+        );
+        from += at.unwrap() + step.len();
+    }
+    assert_eq!(docs.matches("with_pattern env").count(), 1, "{docs}");
+    assert!(
+        text.contains("if [ \"$gate\" = docs ] && [ -n \"$NEUTRALITY\" ]; then"),
+        "the neutrality pattern goes to the docs gate's command"
     );
-    assert!(site[0].contains("UNA_BIN=\"$shipped\""), "{}", site[0]);
-    assert!(!site[0].contains("target/release/una"), "{}", site[0]);
-    assert!(script.contains("scripts/site-shipped-una.sh --self-test"));
-    assert!(script.contains(
-        "shipped=$(scripts/site-shipped-una.sh \"$version\" \"target/local-release/v$version\""
-    ));
+    // The gate dispatch runs `gate_<name>` for each gate of the list, and every gate's function
+    // is free of the website too (checked above over every line of code).
+    assert!(text.contains("    \"gate_$gate\"\n"));
 }
 
 /// Runs `scripts/release-gates-tag-test.sh` (#1017), which needs git alone and makes every
@@ -501,6 +569,53 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         assert_eq!(code, Some(1), "{to}");
         assert!(written.is_empty(), "{to}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The documentation gate was named `site` before #2081 (docs/release-gates.md §3): a record of
+/// an earlier release, with a `site` row and no `docs` row, still has its summary, the row copied
+/// as it was written; a record of now, with a `docs` row, too; a record that names the gate both
+/// ways is refused, and `site` is no gate of the script any more.
+#[test]
+fn an_earlier_record_with_a_site_row_still_has_its_summary() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-summary-site");
+    let digest = "a".repeat(64);
+    let record = |rows: &str| {
+        format!(
+            "# Validation record\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{digest}` |\n{rows}\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n",
+            commit = "c".repeat(40),
+        )
+    };
+    for name in ["site", "docs"] {
+        let (code, written) = summary(
+            &dir,
+            "9.9.9",
+            &record(&format!("| {name} | PASS | 41 | `{digest}` |\n")),
+            None,
+        );
+        assert_eq!(code, Some(0), "{name}");
+        assert!(
+            written.contains(&format!("| clone | PASS | 2 |\n| {name} | PASS | 41 |\n\n")),
+            "{name}: {written}"
+        );
+    }
+    let (code, written) = summary(
+        &dir,
+        "9.9.9",
+        &record(&format!(
+            "| site | PASS | 41 | `{digest}` |\n| docs | PASS | 12 | `{digest}` |\n"
+        )),
+        None,
+    );
+    assert_eq!(code, Some(1));
+    assert!(written.is_empty());
+    // An earlier name is accepted in a record, never run: the script has no gate `site`.
+    let script = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let all = script
+        .lines()
+        .find_map(|line| line.strip_prefix("ALL=("))
+        .unwrap();
+    assert!(!all.split_whitespace().any(|gate| gate == "site"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -869,7 +984,7 @@ fn the_privacy_pattern_comes_from_the_keychain_and_is_never_printed_or_written()
 
 #[test]
 fn the_neutrality_pattern_comes_from_the_keychain_and_is_never_printed_or_written() {
-    // #789: read as the privacy pattern is, and never passed to the gates other than the site
+    // #789: read as the privacy pattern is, and never passed to the gates other than the docs
     // gate, which the clone gate below is not.
     let Some(sha) = head() else {
         return;
@@ -1085,7 +1200,7 @@ fn a_run_without_the_neutrality_pattern_is_unchecked_and_never_published() {
 }
 
 /// Runs scripts/site-bundle.sh into `out` with this checkout's `una`, and `pattern` on its file
-/// descriptor 3 (from a file of the test, as the site gate gives it from a pipe).
+/// descriptor 3 (from a file of the test, as the docs gate gives it from a pipe).
 fn bundle_with(out: &Path, pattern: &str) -> Output {
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir_all(out).unwrap();
@@ -2033,11 +2148,11 @@ fn the_required_gates_follow_the_shipped_targets() {
     for (list, missing) in [
         (
             "aarch64-apple-darwin\naarch64-unknown-linux-gnu\nx86_64-unknown-linux-gnu\n",
-            "build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, limits-linux, toolchain-free",
+            "build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, docs, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, limits-linux, toolchain-free",
         ),
         (
             "aarch64-apple-darwin\n",
-            "build, deps, mac, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, site, formal, hunt, solver-identity, limits, toolchain-free",
+            "build, deps, mac, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, docs, formal, hunt, solver-identity, limits, toolchain-free",
         ),
     ] {
         let script = gates_copy(&tmp.join("gates"), list);

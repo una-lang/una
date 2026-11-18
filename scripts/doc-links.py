@@ -85,7 +85,8 @@ def tracked(root):
 # need it (#843): block quotes and list items, nested both ways, fenced code (backticks or tildes)
 # and indented code, ATX headings, thematic breaks and paragraphs, with lazy continuation. Tabs
 # count to the next multiple of 4 columns. HTML blocks and setext headings are not read; the
-# `site` gate compares every document's heading ids with the website's, so a gap shows there.
+# website's own flow (scripts/site-website.sh) compares every document's heading ids with the
+# website's, so a gap shows there.
 QUOTE = re.compile(r"^ {0,3}> ?")
 LIST = re.compile(r"^( {0,3})([-+*]|(\d{1,9})[.)])( {1,5}|$)")
 OPENER = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
