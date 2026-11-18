@@ -1,3 +1,0 @@
-module c
-
-pub to_f32(t: Text) -> Int = t.len

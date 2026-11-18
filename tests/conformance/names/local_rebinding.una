@@ -1,9 +1,0 @@
--- test: a local cannot rebind another local
--- spec: spec/02 §6
--- expect: error U1002 at 8:7
-module local_rebinding
-
-pub double(x: Int) -> Int
-=
-  let x = x * 2
-  x

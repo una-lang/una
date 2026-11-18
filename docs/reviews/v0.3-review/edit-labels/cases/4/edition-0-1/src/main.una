@@ -1,8 +1,0 @@
--- expect: as before ADR 0075 in edition 0.1
-module main
-
-pub f() -> Int
-=
-  let edit xs = []
-  xs = [1]
-  xs.len

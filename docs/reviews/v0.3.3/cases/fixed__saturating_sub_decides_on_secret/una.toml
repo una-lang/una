@@ -1,8 +1,0 @@
-[package]
-name = "fixed__saturating_sub_decides_on_secret"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "sw"
-grants = ["console"]

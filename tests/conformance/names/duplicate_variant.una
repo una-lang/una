@@ -1,8 +1,0 @@
--- test: variants of a module's kinds have distinct names
--- spec: spec/03 §2
--- expect: error U1002 at 8:23
-module duplicate_variant
-
-pub kind LookupError = NotFound | Unavailable
-
-pub kind StoreError = Unavailable | Corrupted

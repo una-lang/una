@@ -1,5 +1,0 @@
-module text
-
-pub shout(word: Text) -> Text = word
-
-hidden(word: Text) -> Text = word

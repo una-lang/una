@@ -1,7 +1,0 @@
-[package]
-name = "gives_in_0_3"
-version = "0.1.0"
-edition = "0.3"
-
-[labels]
-categories = ["Service"]

@@ -177,4 +177,4 @@ Further rules:
 - `spec/02 §6`: the grammar; `spec/02 §8`: where a bare reference may appear.
 - `spec/10 §6`: the typing of `with`; `spec/10 §10` T4: confinement.
 - `spec/05 §5` rule 4: handlers are not values.
-- Decision record: [ADR 0093](../../../adr/0093-authority-at-module-boundaries.md), for narrowed rebindings and boundaries.
+- Decision record: ADR 0093, for narrowed rebindings and boundaries.

@@ -1,4 +1,0 @@
-{"at": 0, "connection": 1, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"}
-{"at": 0, "connection": 2, "grant": "127.0.0.1:8080", "peer": "192.0.2.2", "reads": "eager"}
-{"at": 5, "connection": 1, "text": "GET /a HTTP/1.1\r\nHost: localhost\r\n\r\n"}
-{"at": 5, "connection": 2, "text": "GET /b HTTP/1.1\r\nHost: localhost\r\n\r\n"}

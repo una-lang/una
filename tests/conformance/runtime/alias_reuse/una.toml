@@ -1,8 +1,0 @@
-[package]
-name = "alias_reuse"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "alias_reuse"
-grants = ["console"]

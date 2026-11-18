@@ -1,7 +1,0 @@
-[package]
-name = "s18_via_failure_internal_to"
-version = "0.1.0"
-edition = "0.2"
-
-[trusted]
-modules = ["release"]

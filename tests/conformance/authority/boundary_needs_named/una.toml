@@ -1,8 +1,0 @@
-[package]
-name = "case"
-version = "0.1.0"
-edition = "0.3"
-
-[boundaries]
-"media.resize" = ["Files[read]"]
-"media.cache" = ["Files[write]", "Net[post]"]

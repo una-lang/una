@@ -1,5 +1,0 @@
-{"at": 0, "connection": 1, "grant": "127.0.0.1:8080", "peer": "192.0.2.1", "reads": "eager"}
-{"at": 1, "connection": 1, "text": "POST /held HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n"}
-{"at": 2, "connection": 2, "grant": "127.0.0.1:8080", "peer": "192.0.2.2", "reads": "eager"}
-{"at": 3, "connection": 2, "text": "POST /one-byte HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\n\r\n"}
-{"at": 100, "connection": 9, "grant": "127.0.0.1:8080", "peer": "192.0.2.9", "reads": "eager"}

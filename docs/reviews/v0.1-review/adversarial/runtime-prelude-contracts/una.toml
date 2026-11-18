@@ -1,8 +1,0 @@
-[package]
-name = "runtime_prelude_contracts"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "prelude_rt"
-grants = ["console"]

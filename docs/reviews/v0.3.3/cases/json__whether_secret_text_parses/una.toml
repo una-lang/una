@@ -1,8 +1,0 @@
-[package]
-name = "json__whether_secret_text_parses"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "sw"
-grants = ["console"]

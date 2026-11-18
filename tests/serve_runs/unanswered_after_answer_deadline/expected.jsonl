@@ -1,3 +1,0 @@
-{"at":1001,"connection":1,"text":"HTTP/1.1 503 Service Unavailable\r\nDate: Tue, 14 Nov 2023 22:13:21 GMT\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n"}
-{"at":1001,"connection":1,"shutdown":true}
-{"at":2001,"closed":true,"connection":1}

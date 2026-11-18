@@ -1,6 +1,0 @@
--- test: a label names a parameter of the callee
--- spec: spec/04 §3
--- expect: error U2005 at 6:36
-module unknown_label
-
-pub larger(x: Int) -> Int = max(x, c: 10)

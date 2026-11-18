@@ -1,8 +1,0 @@
-[package]
-name = "map__iteration_order_reveals_secret_key__control"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "sw"
-grants = ["console"]

@@ -1,6 +1,0 @@
--- test: an integer literal with a trailing underscore is malformed
--- spec: spec/01 §6
--- expect: error U0007 at 6:20
-module integer_trailing_underscore
-
-pub one() -> Int = 1_

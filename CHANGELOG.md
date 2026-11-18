@@ -1194,7 +1194,7 @@ These channels are outside the model, and the build report says so:
 
 ### Known limitations
 
-These are deferred, with a target version and a reason for each in [`docs/plan/backlog.md`](docs/plan/backlog.md):
+These are deferred, with a target version and a reason for each in `docs/plan/backlog.md`:
 - Effect polymorphism: higher-order prelude functions take only pure, non-failing lambdas.
 - Refined elements of collections.
 - Label polymorphism beyond symbolic labels on type parameters.

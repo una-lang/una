@@ -1,8 +1,0 @@
--- test: modules declared with the paths of their files are accepted (U1008 twin)
--- spec: spec/13 §7
--- expect: ok
-module events.seats
-
-import events.venue.rooms (capacity)
-
-pub seats() -> Int = capacity()

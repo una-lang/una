@@ -1,9 +1,0 @@
--- test: profile app is the default, written out; it needs no memory budget (ADR 0109 rules 1 and 4)
--- spec: spec/30 §2
--- expect: ok
-module main
-
-pub main() -> Unit
-  uses @console: Console[print]
-=
-  @console.print("hello")

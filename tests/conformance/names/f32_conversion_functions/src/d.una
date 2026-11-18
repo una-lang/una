@@ -1,3 +1,0 @@
-module d
-
-pub to_decimal(x: F32) -> Int = 0

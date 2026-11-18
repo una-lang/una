@@ -1,8 +1,0 @@
--- test: in edition 0.2 a refined type argument stays U2002 (ADR 0040, ADR 0103 rule 9)
--- spec: spec/03 §3
--- expect: error U2002 at src/edition_0_2.una:8:22
-module edition_0_2
-
-pub kind Pos = Int where it > 0
-
-pub written(xs: List[Pos]) -> Int = xs.len

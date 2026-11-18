@@ -1,8 +1,0 @@
--- test: a bracket left open at the next declaration is rejected
--- spec: spec/01 §2
--- expect: error U0101 at 6:22
-module unclosed_parenthesis
-
-pub three() -> Int = (1 + 2
-
-pub four() -> Int = 4

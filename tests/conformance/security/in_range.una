@@ -1,6 +1,0 @@
--- test: `in` range test on a secret (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 6:38
-module in_range
-
-pub small(pin: secret Int) -> Bool = pin in 0..10

@@ -1,8 +1,0 @@
--- test: a dependency's function that is not `pub` is not importable: U1004
--- spec: spec/30 §3
--- expect: error U1004 at src/main.una:6:19
-module main
-
-import util.text (hidden)
-
-pub greet() -> Text = hidden("hello")

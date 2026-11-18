@@ -1,6 +1,0 @@
-{"at":3,"connection":1,"text":"HTTP/1.1 500 Internal Server Error\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
-{"at":3,"closed":true,"connection":1}
-{"at":3,"connection":2,"text":"HTTP/1.1 500 Internal Server Error\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"}
-{"at":3,"closed":true,"connection":2}
-{"at":3,"connection":3,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 17\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nthrough a closure"}
-{"at":3,"closed":true,"connection":3}

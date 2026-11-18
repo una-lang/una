@@ -1,5 +1,0 @@
-module lib.host.std
-
-pub capability Files
-  op read(path: Text) -> Text
-    ensures result.len == 0

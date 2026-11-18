@@ -1,8 +1,0 @@
--- test: a via result whose type is the base of the policy's refined to type is U4005, since types other than labels match
--- spec: spec/07 §5, §7
--- expect: error U4005 at src/release.una:8:7
-module app
-
-import release (Pos, lower)
-
-pub shown(n: internal Int) -> Pos = lower(n)

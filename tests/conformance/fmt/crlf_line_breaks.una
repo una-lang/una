@@ -1,6 +1,0 @@
--- test: line breaks are line feeds
--- spec: spec/01 §1
--- expect: error U7001 at 1:36
-module crlf_line_breaks
-
-pub one() -> Int = 1

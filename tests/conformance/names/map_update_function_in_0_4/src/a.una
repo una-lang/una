@@ -1,8 +1,0 @@
--- test: in edition 0.4, a package function `update` on a `Map`, and a generic one, are accepted: the map's built-in `update` is of edition 0.5 (ADR 0119 rule 18, ADR 0139 rule 6)
--- spec: spec/21 §2
--- expect: ok
-module a
-
-pub update(m: Map[Text, Int], key: Text) -> Map[Text, Int] = m.with(key: key, value: 1)
-
-pub same[T](x: T) -> T = x

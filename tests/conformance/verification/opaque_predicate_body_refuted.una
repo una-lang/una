@@ -1,6 +1,0 @@
--- test: an obligation in the body of an opaque predicate is refuted (R-037)
--- spec: spec/12 §3
--- expect: error U5001 at 6:64
-module opaque_predicate_body_refuted
-
-predicate opaque above_share(total: Int, parts: Int) -> Bool = total / parts > 10

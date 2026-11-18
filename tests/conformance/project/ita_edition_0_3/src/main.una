@@ -1,6 +1,0 @@
--- test: ita.una exists from edition 0.4
--- spec: spec/30 §2
--- expect: error U7008 at ita.una:3:11
-module main
-
-pub one() -> Int = 1

@@ -1,9 +1,0 @@
-module app.caps
-
-pub capability Catalog
-  op price(sku: Int) -> Int
-  op set_price(sku: Int, cents: Int) -> Unit
-  op journal(n: Int) -> Unit
-
-pub capability Log
-  op write(n: Int) -> Unit

@@ -1,8 +1,0 @@
-module main
-
-f(u: Text) -> internal Response
-  uses @http: Http[get, post, put, delete]
-  fails HttpError
-=
-  @http.post(u, headers: [], body: "b", key_name: None)
-    if error pass

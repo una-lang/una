@@ -1,6 +1,0 @@
--- test: the run entry is a module of the package
--- spec: spec/13 §7
--- expect: error U7002 at una.toml:7:9
-module main
-
-pub one() -> Int = 1

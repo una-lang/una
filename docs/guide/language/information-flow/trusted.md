@@ -158,4 +158,4 @@ Trusted modules are the same in editions `0.1` and `0.2`. From edition `0.3`, a 
 - `spec/07 §6`: trusted modules, and from edition `0.3`, boundary modules that are never trusted; `spec/07 §5`: policies.
 - `spec/02 §1`: the module header.
 - `spec/13 §6`: the build report and its `tcb`; `spec/13 §7`: `[trusted] modules`.
-- Decision record: [ADR 0093](../../../adr/0093-authority-at-module-boundaries.md), for boundaries.
+- Decision record: ADR 0093, for boundaries.

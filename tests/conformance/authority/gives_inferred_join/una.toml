@@ -1,7 +1,0 @@
-[package]
-name = "gives_inferred_join"
-version = "0.1.0"
-edition = "0.3"
-
-[labels]
-categories = ["Billing", "Service"]

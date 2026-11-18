@@ -1,6 +1,0 @@
--- test: a bidirectional control is rejected even in a comment
--- spec: spec/01 §1
--- expect: error U0001 at 6:4
-module bidi_control_in_comment
-
--- ‮ admin only

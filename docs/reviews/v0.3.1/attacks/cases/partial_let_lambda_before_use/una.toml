@@ -1,4 +1,0 @@
-[package]
-name = "partial_let_lambda_before_use"
-version = "0.1.0"
-edition = "0.1"

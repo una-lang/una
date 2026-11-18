@@ -1,8 +1,0 @@
--- test: a unit and a kind of the same name in one module is U1002
--- spec: spec/25 §1
--- expect: error U1002 at src/m.una:8:10
-module m
-
-pub measure Meter
-
-pub kind Meter = Int

@@ -1,6 +1,0 @@
--- test: a text literal cut by the end of the file is rejected
--- spec: spec/01 §6
--- expect: error U0004 at 6:26
-module unterminated_text_at_end_of_file
-
-pub greeting() -> Text = "hello

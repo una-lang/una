@@ -1,7 +1,0 @@
--- test: declarations are separated by one blank line
--- spec: spec/01 §2
--- expect: error U7001 at 7:1
-module missing_blank_line
-
-pub one() -> Int = 1
-pub two() -> Int = 2

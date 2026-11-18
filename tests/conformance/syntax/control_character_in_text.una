@@ -1,6 +1,0 @@
--- test: a control character is rejected inside a text literal
--- spec: spec/01 §1
--- expect: error U0001 at 6:27
-module control_character_in_text
-
-pub bell() -> Text = "ring"

@@ -1,9 +1,0 @@
--- test: a listed empty [run] grants grants no host capability, so every host use of main is U3012 (spec/13 §5, #925)
--- spec: spec/13 §5
--- expect: error U3012 at src/app/main.una:7:3
-module app.main
-
-pub main() -> Unit
-  uses @console: Console[print]
-=
-  @console.print("hi")

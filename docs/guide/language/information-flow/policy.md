@@ -245,4 +245,4 @@ Policies are the same in editions `0.1` and `0.2`.
 - `spec/13 §6`: the build report.
 - `spec/14 §3`: `Keys.hmac` and its labels.
 - `spec/10 §13.4`: a `via` function whose failure reveals nothing.
-- Decision record: [ADR 0039](../../../adr/0039-labels-of-keys-hmac.md), for the labels of `Keys.hmac`.
+- Decision record: ADR 0039, for the labels of `Keys.hmac`.

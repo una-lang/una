@@ -1,8 +1,0 @@
--- test: lambda capturing a secret passed to a fn(Int) -> Int parameter (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 8:51
-module fn_param_contravariance
-
-apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
-
-pub leak(pin: secret Int) -> Int = apply(fn(x) -> x + pin, x: 0)

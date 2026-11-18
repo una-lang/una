@@ -1,3 +1,0 @@
-module app.util
-
-pub masked(t: secret[PII] Text) -> Text = t

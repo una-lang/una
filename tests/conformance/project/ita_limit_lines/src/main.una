@@ -1,9 +1,0 @@
--- test: an `http` grant of `run grants` carries limit lines, a rate per second, minute or hour, `at most n at once` and `waiting at most n`, each kind at most once (ADR 0117 rule 8, ADR 0122 rule 12)
--- spec: spec/27 §9
--- expect: ok
-module main
-
-pub main() -> Unit
-  uses @console: Console[print]
-=
-  @console.print("hello")

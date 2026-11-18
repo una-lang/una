@@ -1,7 +1,0 @@
--- test: label categories keep U1005 and U1002
--- spec: spec/30 §2
--- expect: error U1002 at ita.una:7:3
--- expect: error U1005 at ita.una:8:3
-module main
-
-pub one() -> Int = 1

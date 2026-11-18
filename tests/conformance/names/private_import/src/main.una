@@ -1,8 +1,0 @@
--- test: an import names only public declarations
--- spec: spec/04 §5
--- expect: error U1004 at src/main.una:6:11
-module main
-
-import a (helper)
-
-pub two() -> Int = helper() + 1

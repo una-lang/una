@@ -1,6 +1,0 @@
--- test: the lock pins the encoding v0.1 implements
--- spec: spec/12 §9
--- expect: error U7004 at verification.lock:1:20
-module main
-
-pub one() -> Int = 1

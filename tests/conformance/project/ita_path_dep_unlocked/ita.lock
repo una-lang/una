@@ -1,9 +1,0 @@
-lock 1
-
-solver
-  encoding "una-smt-1"
-  name "z3"
-  version "5.1.0"
-  logic "QF_UFLIA"
-  steps 5000000
-  seed 0

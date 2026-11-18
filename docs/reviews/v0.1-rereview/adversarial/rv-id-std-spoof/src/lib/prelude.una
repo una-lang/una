@@ -1,3 +1,0 @@
-module lib.prelude
-
-pub kind KeyError = UnknownKey | Revoked | Expired

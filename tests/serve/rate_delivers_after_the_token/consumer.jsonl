@@ -1,3 +1,0 @@
-{"at": 0, "reply": {"status": 200, "body": "1"}, "target": "/1"}
-{"at": 0, "reply": {"status": 200, "body": "2"}, "target": "/2"}
-{"at": 500, "reply": {"status": 200, "body": "3"}, "target": "/3"}

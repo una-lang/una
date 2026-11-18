@@ -1,3 +1,0 @@
-module m
-
-pub f(xs: List[Int]) -> Int = xs.fold(initial: 0, step: fn(when, x) -> when + x)

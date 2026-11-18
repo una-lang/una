@@ -1,8 +1,0 @@
-[package]
-name = "rv_link_lexical"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "lexical"
-grants = ["console", "files:./box:read,write"]

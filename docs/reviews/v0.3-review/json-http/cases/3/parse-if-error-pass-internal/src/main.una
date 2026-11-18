@@ -1,7 +1,0 @@
-module main
-
-g(t: internal Text) -> internal Json
-  fails JsonError
-=
-  parse_json(t)
-    if error pass

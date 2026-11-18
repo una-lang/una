@@ -1,7 +1,0 @@
-{"at":3,"connection":2,"text":"HTTP/1.1 503 Service Unavailable\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n"}
-{"at":3,"connection":2,"shutdown":true}
-{"at":100,"connection":1,"text":"HTTP/1.1 503 Service Unavailable\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 0\r\nRetry-After: 1\r\nConnection: close\r\n\r\n"}
-{"at":100,"connection":1,"shutdown":true}
-{"at":100,"closed":true,"connection":9}
-{"at":1003,"closed":true,"connection":2}
-{"at":1100,"closed":true,"connection":1}

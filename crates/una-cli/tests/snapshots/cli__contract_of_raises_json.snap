@@ -1,6 +1,0 @@
----
-source: crates/una-cli/tests/cli.rs
-assertion_line: 844
-expression: raises
----
-{"schema":"una.contract/1","function":"s.apply","public":true,"docs":[],"header":"pub apply[T: Eq](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int","constraints":[{"param":"T","constraint":"Eq","inferred":false}],"result_labels":[{"position":"top","from":["T"]}],"of_raises":[{"param":"k","from":["T"]}],"requires":[],"ensures":[],"uses":[],"fails":null,"diverges":false,"derived_from":[]}

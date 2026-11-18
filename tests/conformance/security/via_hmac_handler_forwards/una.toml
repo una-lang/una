@@ -1,7 +1,0 @@
-[package]
-name = "via_hmac_handler_forwards"
-version = "0.1.0"
-edition = "0.2"
-
-[trusted]
-modules = ["release"]

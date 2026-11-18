@@ -1,7 +1,0 @@
--- test: non-ASCII characters are allowed in text literals and comments
--- spec: spec/01 §1
--- expect: tier0-ok
-module non_ascii_in_text_and_comments
-
--- Café, naïve, 日本語, and U+FFFD itself: �
-pub drink() -> Text = "café ☕"

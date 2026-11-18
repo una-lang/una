@@ -1,6 +1,0 @@
--- test: a character that cannot start a token is rejected
--- spec: spec/01 §1
--- expect: error U0001 at 6:21
-module invalid_character
-
-pub one() -> Int = 1;

@@ -1,8 +1,0 @@
-{"at":0,"closed":true,"connection":3}
-{"at":0,"connection":3,"refused":"peerlimit"}
-{"at":1,"connection":1,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 3\r\ncontent-type: text/plain; charset=utf-8\r\n\r\none"}
-{"at":2,"connection":2,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 3\r\ncontent-type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\ntwo"}
-{"at":2,"closed":true,"connection":2}
-{"at":3,"closed":true,"connection":1}
-{"at":3,"connection":4,"text":"HTTP/1.1 200 OK\r\nDate: Tue, 14 Nov 2023 22:13:20 GMT\r\nContent-Length: 4\r\ncontent-type: text/plain; charset=utf-8\r\n\r\nfour"}
-{"at":3,"closed":true,"connection":4}

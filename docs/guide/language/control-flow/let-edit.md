@@ -224,4 +224,4 @@ pub next_order(last: Int) -> Int
 - `spec/17 §1`: syntax; `spec/17 §2`: places and editable bindings; `spec/17 §3`: parameter conventions.
 - `spec/17 §5`: static semantics; `spec/17 §6`: information flow; `spec/17 §7`: dynamic semantics.
 - `spec/04 §2`: `old` in `ensures`.
-- Decision record: [ADR 0056](../../../adr/0056-memory-model.md), for the memory model of edition `0.2`; [ADR 0103](../../../adr/0103-refined-elements-of-collections.md), for nested refinements in edition `0.3`.
+- Decision record: ADR 0056, for the memory model of edition `0.2`; ADR 0103, for nested refinements in edition `0.3`.

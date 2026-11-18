@@ -1,7 +1,0 @@
--- Adversarial: text ordering on a secret
--- Expected: U4001
--- Observed: U4001 at 7:36
--- Verdict: Pass
-module flow_comparison_text
-
-pub leak(t: secret Text) -> Bool = t < "m"

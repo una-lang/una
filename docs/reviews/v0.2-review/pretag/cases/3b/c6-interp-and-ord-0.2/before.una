@@ -1,3 +1,0 @@
-module m
-
-pub g[T](a: T, b: T) -> Text = if a < b then "{a}" else "{b}"

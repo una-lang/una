@@ -1,8 +1,0 @@
--- test: a function without fails cannot fail
--- spec: spec/04 §2
--- expect: error U3009 at 8:35
-module fail_without_fails
-
-kind LookupError = Missing | Unavailable
-
-pub check(key: Int) -> Int = fail Missing

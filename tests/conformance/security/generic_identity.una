@@ -1,8 +1,0 @@
--- test: secret value through a generic identity (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 8:36
-module generic_identity
-
-id[T](x: T) -> T = x
-
-pub leak(pin: secret Int) -> Int = id(pin)

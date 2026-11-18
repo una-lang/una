@@ -1,7 +1,0 @@
-[package]
-name = "gives_inferred_chain_ok"
-version = "0.1.0"
-edition = "0.3"
-
-[labels]
-categories = ["Service"]

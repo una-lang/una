@@ -1,6 +1,0 @@
--- test: an undeclared type name is unresolved
--- spec: spec/02 §2
--- expect: error U1001 at 6:14
-module unresolved_type
-
-pub seats(x: Amount) -> Int = 0

@@ -1,5 +1,0 @@
-﻿-- test: a byte order mark at the start of a file is rejected
--- spec: spec/01 §1
--- expect: error U0001 at 1:1
-module byte_order_mark
-

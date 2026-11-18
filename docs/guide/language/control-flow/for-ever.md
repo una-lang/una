@@ -459,5 +459,5 @@ In edition `0.4`, `diverges` and `within` are reserved words and cannot be names
 - `spec/26 §6`: host stops, the flags, signal handlers, grace and the hard stop.
 - `spec/26 §7`: `for ever within d`; `spec/26 §8`: `stop after N` and virtual time.
 - `spec/26 §2`: the host-driven step, for a loop the host runs.
-- Decision record: [ADR 0116](../../../adr/0116-long-running-programs.md).
+- Decision record: ADR 0116.
 - Conformance cases: `tests/conformance/runtime/for_ever_on_stop`, `tests/conformance/runtime/for_ever_failure_on_stop`, `tests/conformance/runtime/loop_stop_and_skip`, `tests/conformance/runtime/stop_after_per_loop`, `tests/conformance/runtime/test_stop_after`, `tests/conformance/authority/diverges_sites`, `tests/conformance/authority/diverges_not_a_value`.

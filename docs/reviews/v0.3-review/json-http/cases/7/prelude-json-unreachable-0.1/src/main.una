@@ -1,3 +1,0 @@
-module main
-
-pub f() -> Text = "1".to_json()

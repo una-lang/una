@@ -1,4 +1,0 @@
--- Checkpoint 1: a grammar error, reported at the exact token (U0101).
-module unexpected_token
-
-pub double(x: Int) -> Int = x * * 2

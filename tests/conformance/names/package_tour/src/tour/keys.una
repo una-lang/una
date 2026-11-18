@@ -1,3 +1,0 @@
-trusted module tour.keys
-
-pub pepper() -> Int = 7

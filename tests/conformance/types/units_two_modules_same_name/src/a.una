@@ -1,6 +1,0 @@
--- test: a base unit is identified by its declaration: `Meter` of module `a` and `Meter` of module `b` are two dimensions, and adding them is U2028
--- spec: spec/25 §1
--- expect: error U2028 at src/c.una:6:44
-module a
-
-pub measure Meter

@@ -1,9 +1,0 @@
--- test: a decimal and an integer or an F64 do not mix: U2001 with a repair that converts
--- spec: spec/29 §16
--- expect: error U2001 at src/m.una:7:53
--- expect: error U2001 at src/m.una:9:54
-module m
-
-pub plus(x: Decimal[2], n: Int) -> Decimal[2] = x + n
-
-pub times(x: Decimal[2], f: F64) -> Decimal[2] = x * f

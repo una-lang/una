@@ -5,21 +5,16 @@
 1. `00-charter.md`: thesis, principles, proof boundary, and v0.1 scope. Read first, then identify the package edition and its terms in `spec/13 §7` before selecting normative rules.
 2. `spec/`: the normative language definition, in numeric order. Read the chapters that apply to the package edition; `spec/13 §7` states the edition terms.
 3. `compiler/`: how the reference compiler is built.
-4. `adr/`: why key decisions were made.
-5. `plan/`: roadmap, v0.1 milestones, deferred backlog.
-6. `reviews/`: triage of external design reviews, and the independent review of v0.1 (`reviews/v0.1-review/`).
-7. `guide/syntax-reference.md`: the language guide; `guide/una-for-agents.md`: a compact reference for agents writing Una. `guide/known-limits.md`: what this release does not do, or does only with limits, with the rule of each item. `guide/serving-http.md`: how a package of edition `0.4` serves HTTP, from its grants to its tests. `guide/language/control-flow/for-ever.md`: loops that run until stopped in edition `0.4`, `for ever`, `for until`, `stop`, `skip`, `diverges`, `on stop` and the host stops. `guide/driven-programs.md`: how a package of edition `0.4` hands its loop to the host, with a `drive` section and `init`, `step` and `on_stop`. `guide/tasks-and-time.md`: tasks and time limits, `together`, `tasks` and `start`, `within` and `first of`, cancellation, and the timing labels the checker enforces. `guide/language/` and `guide/configure/` contain construct and `una.toml` pages with examples, edge cases, editions and normative sources; the guide tests their code blocks (#585).
-8. `fixes/`: fix requests and their progress.
-9. `history/v0.1/`: the record of how v0.1 was built: the run instructions, the milestone and closure plans, the decision log and the status report.
+4. The architecture decision records, the plan and the review records are kept by the maintainers and are not in this tree.
+5. `guide/syntax-reference.md`: the language guide; `guide/una-for-agents.md`: a compact reference for agents writing Una. `guide/known-limits.md`: what this release does not do, or does only with limits, with the rule of each item. `guide/serving-http.md`: how a package of edition `0.4` serves HTTP, from its grants to its tests. `guide/language/control-flow/for-ever.md`: loops that run until stopped in edition `0.4`, `for ever`, `for until`, `stop`, `skip`, `diverges`, `on stop` and the host stops. `guide/driven-programs.md`: how a package of edition `0.4` hands its loop to the host, with a `drive` section and `init`, `step` and `on_stop`. `guide/tasks-and-time.md`: tasks and time limits, `together`, `tasks` and `start`, `within` and `first of`, cancellation, and the timing labels the checker enforces. `guide/language/` and `guide/configure/` contain construct and `una.toml` pages with examples, edge cases, editions and normative sources; the guide tests their code blocks (#585).
 
 ## Normative status
 
 | Folder | Status |
 | --- | --- |
 | `spec/` | Normative. Uses RFC 2119 keywords. |
-| `adr/` | Normative once `Accepted`. |
 | `compiler/` | Normative for the reference implementation, not for the language. |
-| `plan/`, `reviews/`, `guide/`, `fixes/`, `history/` | Informative. |
+| `guide/` | Informative. |
 
 ## Specification files
 
@@ -60,10 +55,10 @@
 
 ## Starting a contribution
 
-Use the assigned issue as the scope. Read the charter, identify the package edition, then read its normative specification and accepted ADRs before changing code. Check `docs/compiler/` for implementation conventions, write the relevant conformance or regression test first, and use `scripts/local-ci.sh` for local validation. The site is a separate repository pinned by `site/website.lock`; `scripts/site-bundle.sh` and `scripts/site-website.sh` build it from this checkout.
+Use the assigned issue as the scope. Read the charter, identify the package edition, then read its normative specification before changing code. Check `docs/compiler/` for implementation conventions, and see `CONTRIBUTING.md` for what to build and check. The site is a separate repository pinned by `site/website.lock`; the maintainers build it from this checkout.
 
 ## Conventions
 
-- Code blocks tagged `una` in the spec are illustrative fragments and may omit module headers or surrounding declarations. Complete, tested programs live in `examples/`, `tests/conformance/` and `guide/una-for-agents.md`.
+- Code blocks tagged `una` in the spec are illustrative fragments and may omit module headers or surrounding declarations. Complete, tested programs live in `examples/` and `guide/una-for-agents.md`.
 - Formal rules use LaTeX in `$$` blocks.
 - Section references use the form `spec/03 §4`.

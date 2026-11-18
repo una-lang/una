@@ -1,9 +1,0 @@
-module media.render
-
-import media.release (reveal)
-
-pub show(n: secret Int) -> Int = through(n)
-
-through(n: secret Int) -> Int = reveal(n)
-
-pub plain(n: Int) -> Int = n

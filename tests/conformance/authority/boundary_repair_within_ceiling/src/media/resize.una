@@ -1,8 +1,0 @@
-module media.resize
-
-import media.store (Files)
-
-pub shrink(path: Text) -> Text
-  uses @files: Files[read]
-=
-  @files.read(path)

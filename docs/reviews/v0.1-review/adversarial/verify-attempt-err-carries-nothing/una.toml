@@ -1,4 +1,0 @@
-[package]
-name = "verify_attempt_err_carries_nothing"
-version = "0.1.0"
-edition = "0.1"

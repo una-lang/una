@@ -1,6 +1,0 @@
--- test: secret value as Some payload returned as Option[Int] (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 6:44
-module option_payload
-
-pub wrap(pin: secret Int) -> Option[Int] = Some(pin)

@@ -1,6 +1,0 @@
-module say
-
-pub say(line: Text) -> Unit
-  uses @console: Console[print]
-=
-  @console.print(line)

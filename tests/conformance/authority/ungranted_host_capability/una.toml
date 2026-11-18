@@ -1,8 +1,0 @@
-[package]
-name = "case"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "app.main"
-grants = ["console"]

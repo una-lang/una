@@ -1,9 +1,0 @@
--- test: a line indented two levels at once is rejected
--- spec: spec/01 §2
--- expect: error U0003 at 9:1
-module indentation_two_levels_deeper
-
-pub double(x: Int) -> Int
-  requires x >= 0
-=
-    x * 2

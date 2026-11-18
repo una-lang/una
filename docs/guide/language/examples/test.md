@@ -201,4 +201,4 @@ In edition `0.3` the declaration is written `test`, and `test` is a keyword ther
 - `spec/05 §9` rule 5: operations named in examples, and, in edition `0.3`, examples of boundary modules.
 - `spec/07 §4`: the sink exemption; `spec/04 §4`: one effect per line.
 - `spec/11 §5`: traces; `spec/13 §5`: `una test`.
-- Decision records: [ADR 0105](../../../adr/0105-the-test-declaration.md), the declaration is written `test` in edition `0.3`; [ADR 0032](../../../adr/0032-runtime-details-left-open.md), for the order of expectations after a failed `do`.
+- Decision records: ADR 0105, the declaration is written `test` in edition `0.3`; ADR 0032, for the order of expectations after a failed `do`.

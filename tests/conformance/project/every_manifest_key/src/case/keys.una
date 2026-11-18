@@ -1,3 +1,0 @@
-trusted module case.keys
-
-pub greeting() -> Text = "hello"

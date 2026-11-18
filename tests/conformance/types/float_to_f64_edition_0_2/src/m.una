@@ -1,8 +1,0 @@
--- test: in edition 0.2, a package function `to_f64` on integers is an ordinary function, called in method form; edition 0.3 makes it U1002, since `n.to_f64()` is built in there
--- spec: spec/29 §4
--- expect: ok
-module m
-
-pub to_f64(n: Int) -> Text = "{n} as text"
-
-pub shown() -> Text = "{5.to_f64()}"

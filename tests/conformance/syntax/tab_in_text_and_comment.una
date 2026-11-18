@@ -1,7 +1,0 @@
--- test: tabs inside text literals and comments are not indentation
--- spec: spec/01 §2
--- expect: tier0-ok
-module tab_in_text_and_comment
-
--- a	tab inside a comment
-pub columns() -> Text = "name	seats"

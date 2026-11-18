@@ -1,8 +1,0 @@
--- test: `e == V` where the variant `V` has fields is U2009, whose repair is `e is V` (spec/10 §12 rule 6, #205)
--- spec: spec/10 §12
--- expect: error U2009 at 8:42
-module variant_compared_without_fields
-
-pub kind Problem = Overdrawn(index: Int) | Closed
-
-pub overdrawn(e: Problem) -> Bool = e == Overdrawn

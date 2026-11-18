@@ -91,4 +91,4 @@ Only public functions are locked. A handler is not locked: its operations are ch
 - `spec/13 §7`: the `[contracts]` table and its entries.
 - `spec/05 §3` rule 4: conditions on operations; rule 5: checking a header against its lock.
 - `spec/30 §2`: the `contracts` section of `ita.una` in edition `0.4`.
-- Decision record: [ADR 0092](../../adr/0092-conditions-on-allowed-effects.md), rule 8 and its amendments.
+- Decision record: ADR 0092, rule 8 and its amendments.

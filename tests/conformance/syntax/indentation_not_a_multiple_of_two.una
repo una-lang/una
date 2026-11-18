@@ -1,9 +1,0 @@
--- test: an indentation that is not two spaces per level is rejected
--- spec: spec/01 §2
--- expect: error U0003 at 9:1
-module indentation_not_a_multiple_of_two
-
-pub double(x: Int) -> Int
-  requires x >= 0
-=
-   x * 2

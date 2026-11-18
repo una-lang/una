@@ -1,8 +1,0 @@
--- test: a lambda passed where an unknown type is declared reports only the type name
--- spec: spec/10 §1
--- expect: error U1001 at 6:13
-module unknown_kind_in_lambda_type
-
-apply(f: fn(Missing) -> Int) -> Int = 0
-
-pub g() -> Int = apply(f: fn(x) -> 1)

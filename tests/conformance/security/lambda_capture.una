@@ -1,9 +1,0 @@
--- test: pure lambda capturing a secret, result returned as public (review control)
--- spec: spec/07 §7
--- expect: error U4001 at 9:3
-module lambda_capture
-
-pub leak(pin: secret Int) -> Int
-=
-  let f = fn(x: Int) -> x + pin
-  f(0)

@@ -198,4 +198,4 @@ Predicates are the same in editions `0.1` and `0.2`, and editions `0.3` and `0.4
 - `spec/03 §4`: predicates; `spec/03 §3`: the refinement language.
 - `spec/02 §3`: the grammar.
 - `spec/06 §6`: `checked`; `spec/05 §2`: a capability operation's `ensures`.
-- Decision record: [ADR 0042](../../../adr/0042-opaque-predicates-only-in-checked.md), for opaque predicates only in `checked`.
+- Decision record: ADR 0042, for opaque predicates only in `checked`.

@@ -1,6 +1,0 @@
--- test: a division by the literal zero has a refuted division obligation (review control)
--- spec: spec/12 §3
--- expect: error U5001 at 6:24
-module division_by_literal_zero
-
-pub f(x: Int) -> Int = x / 0

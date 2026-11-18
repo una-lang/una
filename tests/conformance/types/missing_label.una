@@ -1,6 +1,0 @@
--- test: every argument after the first is labeled
--- spec: spec/04 §3
--- expect: error U2004 at 6:36
-module missing_label
-
-pub larger(x: Int) -> Int = max(x, 10)

@@ -1,3 +1,0 @@
-module m
-
-pub f[T: Integer: Eq](a: T, b: T) -> Int = if a == b then a.to_int() else 0

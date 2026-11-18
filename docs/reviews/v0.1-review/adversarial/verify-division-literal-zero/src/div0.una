@@ -1,7 +1,0 @@
--- Adversarial: division by the literal 0 (the encoder skips the obligation for nonzero literals).
--- Expected: U5001 division obligation `0 != 0` (spec/12 §3). Also tried `x / -0`, `x / (0)`,
--- `x / (1 - 1)`, `x mod 0`, and `0_0` (U0007).
--- Observed: U5001 at the division, exit 1. Held.
-module div0
-
-pub f(x: Int) -> Int = x / 0

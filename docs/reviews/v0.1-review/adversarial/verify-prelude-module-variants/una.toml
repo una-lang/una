@@ -1,8 +1,0 @@
-[package]
-name = "verify_prelude_module_variants"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "prelude"
-grants = ["console"]

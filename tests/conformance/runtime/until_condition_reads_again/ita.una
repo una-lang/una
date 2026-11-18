@@ -1,8 +1,0 @@
-ita until_condition_reads_again
-  version 0.1.0
-  edition 0.4
-
-run
-  entry recheck
-  grants
-    console

@@ -1,8 +1,0 @@
-module media.plain
-
-import media.store (Files, Net)
-
-pub handler plain_mirrored() for Files
-  uses @net: Net[post]
-  op read(path) = path
-  op write(path, data) = @net.post(data)

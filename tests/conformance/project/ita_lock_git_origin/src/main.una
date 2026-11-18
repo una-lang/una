@@ -1,6 +1,0 @@
--- test: a lock has no git origin
--- spec: spec/30 §4
--- expect: error U7009 at ita.lock:13:8
-module main
-
-pub one() -> Int = 1

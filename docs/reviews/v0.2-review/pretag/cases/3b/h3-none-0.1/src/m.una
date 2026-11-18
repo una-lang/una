@@ -1,7 +1,0 @@
-module m
-
-pub first_or(xs: List[Int]) -> Int
-=
-  let v = xs.first()
-    if none use 0
-  v

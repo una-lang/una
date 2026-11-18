@@ -1,9 +1,0 @@
--- Adversarial: the proof cache in `.una/cache/proofs/` is trusted without any integrity check.
--- Steps: `una check` (U5001, refuted); then overwrite the one entry with
--- `{"status":"proven","reason":null,"values":[]}`; `una check` again.
--- Expected: a cached status never turns a refuted query into proven (spec/12 §9, §10);
--- Una targets machine-generated code, and a generating agent can write this file.
--- Observed: first run U5001 (exit 1); after the edit, exit 0 with no diagnostic.
-module div0
-
-pub f(x: Int) -> Int = x / 0

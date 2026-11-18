@@ -1,8 +1,0 @@
--- test: before edition 0.4, `std.limit` is not a standard module that can be imported, so its import is U1001 at the module path (spec/10 §11 rule 10, spec/27 §10)
--- spec: spec/27 §10
--- expect: error U1001 at src/gate.una:6:8
-module gate
-
-import std.limit (Limit)
-
-pub main() -> Unit = unit

@@ -1,3 +1,0 @@
-module m
-
-pub lesser[T: Eq](a: T, b: T) -> Bool = a < b

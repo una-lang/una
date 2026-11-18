@@ -1,8 +1,0 @@
-[package]
-name = "rv_link_hardlink"
-version = "0.1.0"
-edition = "0.1"
-
-[run]
-entry = "hard"
-grants = ["console", "files:./box:read,write"]

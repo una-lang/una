@@ -1,6 +1,0 @@
--- test: a module listed as trusted says so in its header
--- spec: spec/07 §6
--- expect: error U7005 at una.toml:7:12
-module main
-
-pub one() -> Int = 1

@@ -1,6 +1,0 @@
--- test: a package of edition 0.4 commits ita.lock
--- spec: spec/30 §4
--- expect: error U7009 at ita.una:1:1
-module main
-
-pub one() -> Int = 1

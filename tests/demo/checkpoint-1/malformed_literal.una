@@ -1,4 +1,0 @@
--- Checkpoint 1: a lexical error with a mechanical repair (U0007).
-module malformed_literal
-
-pub seven() -> Int = 007

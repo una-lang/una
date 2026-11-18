@@ -1,6 +1,0 @@
--- test: the erasure twin of float_literal_edition_0_2: the same program without its float function, which edition 0.2 accepts and edition 0.3 checks the same way (spec/13 §7, ADR 0114 rule 15)
--- spec: spec/29 §13
--- expect: ok
-module m
-
-pub one() -> Int = 1

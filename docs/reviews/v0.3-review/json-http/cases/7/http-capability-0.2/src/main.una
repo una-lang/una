@@ -1,4 +1,0 @@
-module main
-
-pub capability Http
-  op get(url: Text) -> Text

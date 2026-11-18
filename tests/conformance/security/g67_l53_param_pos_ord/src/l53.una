@@ -1,9 +1,0 @@
--- test: ADR 0067 adversarial check of #231, L53_param_pos_ord: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
--- spec: spec/07 §7
--- expect: error U2025 at src/l53.una:9:34
--- expect: error U4001 at src/l53.una:9:34
-module l53
-
-smaller[U: Ord](x: U, y: U) -> U = if x < y then x else y
-
-pub leak(s: secret Int) -> Int = smaller([s], y: [0, 0]).len

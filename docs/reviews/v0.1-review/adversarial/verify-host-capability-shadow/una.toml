@@ -1,4 +1,0 @@
-[package]
-name = "verify_host_capability_shadow"
-version = "0.1.0"
-edition = "0.1"

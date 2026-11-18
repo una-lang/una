@@ -1,9 +1,0 @@
-module srv
-
-import std.host (Reply, Request)
-
---- Answers every request with a `204` that has a body, which `reply` refuses with `BadReply`:
---- the driver ignores the failure, and the end of the request's task answers `500`.
-pub handle(request: internal Request) -> internal Reply = Reply(status: 204, headers: [],
-  body: "not empty"
-)

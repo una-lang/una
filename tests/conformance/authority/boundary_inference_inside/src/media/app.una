@@ -1,9 +1,0 @@
--- test: a private function inside one boundary does not infer a requirement through a call into another boundary, which is a crossing too: U3020 at the call (ADR 0093 rules 3 and 11)
--- spec: spec/05 §9
--- expect: error U3020 at src/media/resize.una:18:27
-module media.app
-
-import media.resize (notify, shrink, size_of)
-import media.store (Files, Net)
-
-pub sized(path: Text) -> Int = size_of(path)

@@ -1,8 +1,0 @@
--- test: in edition 0.1, std.host does not export Http
--- spec: spec/10 §11
--- expect: error U1001 at 6:18
-module import_std_host_http_0_1
-
-import std.host (Http)
-
-pub one() -> Int = 1

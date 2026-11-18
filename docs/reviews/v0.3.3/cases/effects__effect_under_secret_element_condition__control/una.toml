@@ -1,8 +1,0 @@
-[package]
-name = "effects__effect_under_secret_element_condition__control"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "sw"
-grants = ["console"]

@@ -301,4 +301,4 @@ The handling clauses are the same in editions `0.1` and `0.2`. Edition `0.3` add
 - `spec/02 §6`: the grammar of `handled` and `handling`; `spec/02 §8`: where `error` may appear.
 - `spec/04 §4`: one effect per line.
 - `spec/07 §3` rule 3: failures under the program counter; `spec/07 §7` rule 4: labeled failures of operations.
-- Decision record: [ADR 0100](../../../adr/0100-failure-handling-on-code-that-cannot-fail.md), for U3025.
+- Decision record: ADR 0100, for U3025.

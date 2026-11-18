@@ -1,8 +1,0 @@
-module m
-
-pub kind P = Over(index: Int) | Fine
-
-pub f(p: P) -> Int
-  requires not (p is Over)
-=
-  1

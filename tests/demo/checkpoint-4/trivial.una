@@ -1,7 +1,0 @@
-module trivial
-
---- Claims nothing: the solver proves the clause without reading the body.
-pub double(x: Int) -> Int
-  ensures result == result
-=
-  x * 2
