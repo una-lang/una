@@ -1,0 +1,1 @@
+- **Advisories UNA-SA-020 and UNA-SA-021** (#2088, `docs/security/advisories.md`: the integer-text fix of #923 and the trace-outcome fix of #1552, both fixed in v0.4.0)
