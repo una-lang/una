@@ -1,0 +1,1 @@
+- **Advisory UNA-SA-022** (#2090, `docs/security/advisories.md`: the `Files` confinement fix of #1380, fixed in v0.4.0)
