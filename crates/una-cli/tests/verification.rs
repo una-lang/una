@@ -1900,6 +1900,99 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
 
 #[cfg(unix)]
 #[test]
+fn the_key_owner_check_does_not_depend_on_the_temporary_directory_1896() {
+    // #1896: the owner check of the key file (#1164) reads the process's effective user
+    // directly, with no file made in the temporary directory. A private key of the user is
+    // used, and cached answers are read, when `TMPDIR` names no directory or a directory the
+    // process cannot write; nothing is made in an empty writable one; and a key file of
+    // another user is still refused.
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("key-owner-1896");
+    if scratch.exists() {
+        // A read-only directory left by an earlier run is made writable to be removed.
+        let _ = std::fs::set_permissions(
+            scratch.join("read-only"),
+            std::fs::Permissions::from_mode(0o700),
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+    let package = scratch.join("div0");
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    let source =
+        repository().join("docs/reviews/v0.1-review/adversarial/escape-proof-cache-forgery");
+    for file in ["una.toml", "verification.lock", "src/div0.una"] {
+        std::fs::copy(source.join(file), package.join(file)).unwrap();
+    }
+    let key = scratch.join("user.key");
+    std::fs::write(&key, [7u8; 32]).unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let run = |temporary: &Path, key: &Path, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", scratch.join("home"))
+            .env("UNA_PROOF_KEY", key)
+            .env("TMPDIR", temporary)
+            .args(args)
+            .arg(&package)
+            .output()
+            .unwrap()
+    };
+    let report = |temporary: &Path, key: &Path| {
+        let output = run(temporary, key, &["--json", "report"]);
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        (
+            document["obligations"]["cached"].clone(),
+            document["tcb"]["proof_cache_key"].clone(),
+        )
+    };
+    let shown = json!(key.to_str().unwrap());
+    // `TMPDIR` names nothing: the key is used, and the second run reads the first's answer.
+    let missing = scratch.join("missing");
+    assert_eq!(report(&missing, &key), (json!(0), shown.clone()));
+    assert_eq!(report(&missing, &key), (json!(1), shown.clone()));
+    assert!(!missing.exists());
+    // `TMPDIR` is a directory the process cannot write.
+    let read_only = scratch.join("read-only");
+    std::fs::create_dir_all(&read_only).unwrap();
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert_eq!(report(&read_only, &key), (json!(1), shown.clone()));
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // An empty writable `TMPDIR` stays empty through a check and a report.
+    let empty = scratch.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let checked = run(&empty, &key, &["check"]);
+    assert_eq!(checked.status.code(), Some(1), "{}", stderr(&checked));
+    assert!(
+        !stderr(&checked).contains("proof cache key"),
+        "{}",
+        stderr(&checked)
+    );
+    assert_eq!(report(&empty, &key), (json!(1), shown));
+    let left: Vec<_> = std::fs::read_dir(&empty)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    // A key file of another user is refused whatever `TMPDIR` is: `/etc/passwd` is a regular
+    // file owned by the superuser. Run as the superuser, there is no other user's file to name.
+    let foreign = Path::new("/etc/passwd");
+    let ours = std::fs::metadata(&key).unwrap().uid();
+    if std::fs::metadata(foreign).unwrap().uid() != ours {
+        for temporary in [&missing, &empty] {
+            assert_eq!(report(temporary, foreign), (json!(0), json!(null)));
+            let noted = run(temporary, foreign, &["check"]);
+            assert!(
+                stderr(&noted)
+                    .contains("is not used, since another user owns it; the proof cache is off\n"),
+                "{}",
+                stderr(&noted)
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_committed_link_on_the_way_to_the_cache_turns_it_off_1540() {
     // #1540 (`docs/plan/proof-cache-eviction.md` section 6.4): a link at `.una`, `.una/cache`
     // or `.una/cache/proofs`, even to a directory holding valid entries under the user's own
