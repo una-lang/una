@@ -1,0 +1,4 @@
+# The programs of the hunt gate's native sample (scripts/security-hunt/hunt/native.py, #792) that
+# the native backend does not compile, by name, each with its reason after a tab. The gate fails
+# when a sampled program does not compile and is not listed here, and when a listed one compiles
+# or is not sampled.

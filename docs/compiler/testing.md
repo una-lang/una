@@ -2,7 +2,7 @@
 
 Status: Normative for the reference implementation.
 
-Note on the public tree: the scripts for validation and release, the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; the paths below that name them describe the maintainers' checkout. Of the scripts, only `scripts/z3-library.sh` and `scripts/build-z3.sh` are in the tree; the test suites are in the tree.
+Note on the public tree: the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; the paths below that name them describe the maintainers' checkout. The test suites and the scripts are in the tree.
 
 ## 1. Layers
 

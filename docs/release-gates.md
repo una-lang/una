@@ -2,7 +2,7 @@
 
 Status: Normative for the project's workflow (#232). GitHub Actions is not used. Merges, tags and releases rest on local runs whose results are recorded, so anyone can see what was checked, on which commit, and with which outcome.
 
-Note on the public tree: the scripts for validation and release, the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; the paths below that name them describe the maintainers' checkout. Of the scripts, only `scripts/z3-library.sh` and `scripts/build-z3.sh` are in the tree; the test suites are in the tree.
+Note on the public tree: the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; the paths below that name them describe the maintainers' checkout. The test suites and the scripts are in the tree.
 
 ## 1. The rules
 

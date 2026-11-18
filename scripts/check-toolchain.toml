@@ -1,0 +1,6 @@
+# The nightly Rust toolchain used only for checking (#766): Miri and AddressSanitizer in
+# scripts/sanitize.sh. It never builds a release artifact; every artifact is built by the
+# toolchain of rust-toolchain.toml. scripts/install-check-toolchain.sh installs it, and
+# scripts/sanitize.sh fails, never skips, when it is missing or its commit differs.
+channel = "nightly-2026-10-14"
+commit = "822182db4c4a1827256881d8c7aa685f0bcf2b11"
