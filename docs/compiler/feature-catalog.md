@@ -1,6 +1,6 @@
 # The reviewed feature catalog
 
-Note on the public tree: the architecture decision records, the plan and the review records are kept by the maintainers and are not in this repository; paths below that name them describe the maintainers' checkout.
+Note on the public tree: the review records are kept by the maintainers and are not in this repository; paths below that name them describe the maintainers' checkout.
 
 `docs/features.json` is a selected, evidence-backed inventory for documentation consumers. It does not replace the specification or enumerate every language feature. Its unstable build-metadata schema is `una.features/1`.
 

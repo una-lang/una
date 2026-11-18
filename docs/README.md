@@ -5,7 +5,7 @@
 1. `00-charter.md`: thesis, principles, proof boundary, and v0.1 scope. Read first, then identify the package edition and its terms in `spec/13 §7` before selecting normative rules.
 2. `spec/`: the normative language definition, in numeric order. Read the chapters that apply to the package edition; `spec/13 §7` states the edition terms.
 3. `compiler/`: how the reference compiler is built.
-4. The architecture decision records, the plan and the review records are kept by the maintainers and are not in this tree.
+4. `adr/`: why key decisions were made. `plan/`: roadmap, design notes, deferred backlog. The review records are kept by the maintainers and are not in this tree.
 5. `guide/syntax-reference.md`: the language guide; `guide/una-for-agents.md`: a compact reference for agents writing Una. `guide/known-limits.md`: what this release does not do, or does only with limits, with the rule of each item. `guide/serving-http.md`: how a package of edition `0.4` serves HTTP, from its grants to its tests. `guide/language/control-flow/for-ever.md`: loops that run until stopped in edition `0.4`, `for ever`, `for until`, `stop`, `skip`, `diverges`, `on stop` and the host stops. `guide/driven-programs.md`: how a package of edition `0.4` hands its loop to the host, with a `drive` section and `init`, `step` and `on_stop`. `guide/tasks-and-time.md`: tasks and time limits, `together`, `tasks` and `start`, `within` and `first of`, cancellation, and the timing labels the checker enforces. `guide/language/` and `guide/configure/` contain construct and `una.toml` pages with examples, edge cases, editions and normative sources; the guide tests their code blocks (#585).
 
 ## Normative status

@@ -11,16 +11,14 @@ __pycache__/
 /fuzz/artifacts/
 
 # Not in the public tree (#2052, #2049): the maintainers keep these locally. The public tree holds
-# the compiler's sources and tests, the specification, the guides, the examples, and the scripts that
-# build, validate and release `una`.
+# the compiler's sources and tests, the specification, the guides, the decision records, the plan, the
+# examples, and the scripts that build, validate and release `una`.
 /.claude/
 /CLAUDE.md
 /.mcp.json
 /.github/ISSUE_TEMPLATE/work-item.md
 /.github/workflows/release.yml
 /docs/history/
-/docs/plan/
 /docs/fixes/
 /docs/releases/
-/docs/adr/
 /docs/reviews/

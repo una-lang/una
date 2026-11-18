@@ -1,0 +1,89 @@
+# Formal track: `with` scopes for capability handlers
+
+- Issue: #538, under #46 (after #524; the security hunt's family H, H3, and C5(b))
+- Date: 2026-10-11
+- Status: statement approved (2026-10-11); in progress
+
+## 1. Why
+
+#524 reads the handlers a document declares for its own capabilities, but fixes which handler each operation runs for the whole run: a declaration that installs a handler with `with @c = h() do ...`, or reaches an operation whose handler only a `with` scope gives, is not re-checked. The hunt's H3 shapes (a handler installed under a secret branch, or installed publicly and reached from one) are accepted by `una check` and have no theorem; 46 uses of `with` and `together` in the corpus are outside F1 on this account (`docs/reviews/security-hunt/coverage.md`).
+
+## 2. Una's rules
+
+- A `with` scope installs a handler for its body; handlers are dynamically scoped: a function called inside the body runs its invocations under the handlers its callers installed (`spec/17`, Core's `With`).
+- Installing a handler has no premise on the program counter: `una check` accepts H3. Every invocation is checked where it happens, `pc ⊔ ℓ⁺(args) ⊑ accepts` (U4003, `spec/07 §7` rule 4), and every handler body is checked at its declaration for the worst caller (the effect floor, ADR 0038 D4).
+- A failing handler chosen under a secret program counter: its failure is labeled at that program counter, so passing it out of the branch is U4002 (C5(b)).
+
+## 3. The model
+
+1. **Operations, first class.** `Program.handlerOf` maps each handler function (`module.handler.op`, #524) to the operation it implements, and `Program.opRep` names, for each operation, one handler whose signature is the operation's (parameter types raised by `accepts`, result, failure kind); a document may declare several handlers of one capability, and well-formedness asks every handler of an operation to have its signature.
+2. **Two invocations.** #524's `Rhs.invoke f args`, of a lone handler fixed for the run, stays, for a document that installs no handler of that capability with `with`. `Rhs.invokeOp o args` names the operation; which handler runs is found at run time. The importer reads every invocation of a capability some `with` of the document installs as `invokeOp`.
+3. **The handler environment `η` is the markers' values.** A marker `"@o"` (item 7) holds the name of the handler installed for `o`, as public text; a call's body runs under its caller's handlers because the call passes its markers. Threading them is linear in the program; specializing functions per `η` in the importer would be exponential in nested scopes, which the complexity rule excludes.
+4. **`Expr.withH o f body`** runs `body` with `"@o"` bound to `f`.
+5. **`Rhs.invokeOp o args`** reads `"@o"`, a handler name `f`, and runs `f` on the arguments as a call, if `Program.handlerOf` maps `f` to `o`; otherwise, which happens only in a forged export, it runs the operation's representative (`Program.handlerFor`). Either way it runs a handler of `o`, lawful by Hu and with `o`'s signature, so a typed invocation is never stuck.
+6. **Representation** (refining the ruling of 2026-10-11, which approved a field of the world): with markers as parameters, the environment already carries the handlers, through every step and every call, so neither the world nor `eval`'s signature changes. Two runs at related points hold the same handlers: a marker is public text, which `EnvRel` relates only to itself.
+7. **Markers, as parameters.** The operations bound at a point are marker bindings `"@o"` of type `Text ⊥`, whose value is the installed handler's name. They enter only two ways: `withH o f body` binds `"@o"` for its body, and a function whose invocations its callers must bind takes them as parameters (`Fun.installed` is the list of its marker parameters, `"@o"` for each operation it reaches, which the importer derives), to which every call site passes the atom `.var "@o"`. So "the caller's installed set covers the callee's" is ordinary T-Call: the argument `.var "@o"` is typed only where `"@o"` is bound. T-Invoke of a dynamic operation asks `"@o"` in `Γ`.
+8. **No marker is trusted.** A marker cannot collide with a user binding: `@` is not an identifier character in Una (`spec/01 §4`: `lower_ident` is `[a-z][A-Za-z0-9_]*`, and `@` starts only a capability reference, `cap_ref`), and Core's temporaries start with `%`. The importer adds marker parameters and arguments itself, and refuses any name starting with `@` in the export (not re-checked), so the model reads what `una check` checked. The model needs no trust in that: whatever a marker holds, an invocation runs a handler of its operation (item 5), and a marker has type `Text ⊥`, so what a binding forged in a program could hold is public, the same in two runs at related points.
+9. **Closures** (2026-10-14, #674). A lambda evaluates to a closure over the whole environment, markers included, and its body runs under that environment wherever it is applied, never under the applier's: a closure runs on the handlers in scope where it was made. This is what `spec/11 §4` states with E-Lam and E-App for the capability environment `H`, which F1 merges into `ρ` as marker bindings. A Una function value arrives in Core as a lambda around a call, and the importer reads every lambda's body with no marker bound, so it refuses any lambda, and so any function value, that reaches a marker: a function value of a function with `installed` markers, or a lambda that invokes an operation a `with` installs, is not re-checked. `funRef`, which captures no environment, occurs only in hand-written model examples, where its empty environment is faithful only for functions without `installed` markers. Reading lambdas that reach a marker, with the markers of their creation bound as E-Lam says, would be sound, and is a separate change.
+
+**The review's checks** (2026-10-11):
+- **T6 and markers.** A marker has type `Text ⊥`, so two runs at related points hold equal markers and run the same handler. In a program read from `una check`'s export, a marker is bound only by `withH` or by a call passing `.var "@o"`, since the importer refuses every user name starting with `@`: no data-dependent value reaches a marker. A forged Core that binds another public text to a marker still makes both runs pick the same handler, which T6 asks.
+- **Agreement by flows is the safe direction.** The representative's `accepts` is at most every handler's, so T-Invoke's check of the caller against the representative is the strictest; the representative's parameters flow into every handler's, and every handler's result into the representative's.
+- **The fallback runs only on forged Core.** In a program read from `una check`'s export, every marker holds a handler of its operation, so the representative runs only where a forged Core put another value; the importer detects a marker name in the export and reports the document not re-checked (an `ImportTests` case).
+
+## 4. The typing
+
+1. **T-Invoke**, unchanged in substance: it reads `opSigs o` only (arguments flow into the parameters, `pc ⊔ ℓ⁺(args) ⊑ accepts`, `pc` symbol-free, the result type, the failure labeled `pc`, decision label `⊥`).
+2. **The installed operations are part of a function's typing interface.** Since handlers are dynamically scoped, a function's invocations are bound by its callers' scopes, not by its own text: its marker parameters (§3 item 7) are that interface. T-InvokeOp asks `"@o"` in `Γ`; T-With types its body with `"@o"` bound; T-Call types the marker arguments, `.var "@o"`, so the caller must have them bound; T-Fun types the body with its marker parameters. An invocation reached only through a call is bound at every call site, or the call is untyped: never stuck at run time.
+3. **T-With.** `f` is a handler of `o` in `Program.ops`, and its signature matches `opSigs o` (parameters raised by `accepts`, result, failure kind). The body is typed at the same `pc`, under `Γ` with `"@o"` bound; the effects are the body's. **No premise on `pc`**: the scope is lexical, every invocation inside it is checked against `accepts` by T-Invoke, and every installable handler is under the floor (Hu).
+4. **No new premise.** Since an invocation always runs a handler of its operation (§3 item 5), T1 needs no premise on the markers an environment holds, and neither does T6. (An earlier draft carried one, `HsBinds`, then `MarkersOk`; the fallback of §3 item 5 makes it unnecessary.)
+5. **Hu, generalized**: every handler function in `Program.ops` passes T-Handler (#524's floor) and matches its operation's signature. It holds for every handler `una check` accepted, as #524 states, and not for forged or unchecked Core.
+
+## 4b. Effects of a scoped invocation (ruling E, 2026-10-11)
+
+Una charges what a handler does to the code that installs it, at the `with`; F1's single event flag `op` cannot express that by itself (checkpoint `f973fa21`: an installer of an effect-free handler was rejected). So:
+
+1. **`Eff.invokes`**, the operations a code may invoke through a `with` scope, as `rels` lists the policies it may release through. A scoped invocation (`invokeOp o`) has `invokes = [o]`, `op = false`, no host effect, and its failure as T-Invoke's (`Eff.ofInvokeOp`). A function declares the operations its callers must install (`Fun.invokes`, from its `uses`, the same as its markers), and a call has the callee's.
+2. **Whether code may perform the event** is `emits`: its own `op`, or an operation it invokes whose handlers print (`Program.opPrintsB`, the representative's flag, which every handler of the operation shares, `LWellFormed.handlers`). `Allowed` lets an `out` event happen when `ε.emits` and `pc ⊑ acceptsOp`; T-Call's bound, a function value's type and T-Fun read `emits` where they read `op`. So an operation whose handlers print bounds every call that may reach it at `acceptsOp`, and one whose handlers do not charges nothing. A handler that prints is under the floor, `accepts(o) ⊑ acceptsOp`, and an invocation asks `pc ⊑ accepts(o)`, so the handler's events are allowed where it runs.
+2b. **Handlers that disagree fail closed** (option (i) of the review). The representative's flag speaks for every handler of an operation only because they agree: `LWellFormed.handlers` asks each handler's `op` equal to the representative's, and `Check.handlersOk` checks it, so a program with a quiet and a printing handler of one operation is not certified. The importer reads a capability by `with` scopes only when its handlers agree on whether they perform the event; otherwise a `with` of it is not re-checked (an `ImportTests` case: a quiet and a printing handler of one operation, chosen by two scopes). The flag is never the representative's alone.
+3. **T-With discharges** (`Eff.withOf`): the body's effects, less `o` in `invokes`, and the installed handler's own `op`. Installing a printing handler under a secret `pc` is rejected: the call of the code that invokes it is bounded at `acceptsOp`.
+4. **#524's argument survives.** A static invocation (`Rhs.invoke`, #524) keeps `op := true`, the operation's signature, so a caller's certificate holds for every lawful handler, whoever installs it. A scoped invocation is charged at the `with` that names the handler, which the installer's certificate reads; a function whose marker its caller supplies declares `invokes`, and every call of it is bounded as the operation's handlers require. A certificate speaks of the document's handlers; a handler installed from outside the document is outside it, as #524 states.
+
+Non-vacuity of E (the conditions of its approval):
+- **(a)** under a secret `pc`, `work() with @door = noisy()`, whose handler prints publicly: rejected, and it leaks;
+- **(b)** the same `with` at a public `pc`, the handler's events at its floor: certified;
+- **(c)** an invocation in a body whose operation no `with` installs and with no static handler: untyped, and not re-checked by the importer.
+
+## 4c. Which capabilities are read by scopes, and the combined reading
+
+The importer reads a capability by `with` scopes only when the document declares it (not one of the host's, `Files`, `Http`, `Keys`), never installs it with `given`, its handlers agree on whether they print, and none of its handlers invokes a capability read by scopes itself (a handler that forwards to an outer one, such as `uses @inner: Log`, keeps #524's reading). Any other capability is read as before #538.
+
+**The combined reading.** `una-core-check` reads each document twice: with its `with` scopes, and as #524 reads it, without them. A declaration either reading rejects is rejected; otherwise one either accepts is accepted; otherwise the scoped reading's outcome stands (`Import.combineOutcomes`). Which certificate each acceptance rests on (the ruling on its review, the most secure option):
+- an acceptance of the scoped reading rests on #538's: T1 and T6 under Hu, for the handlers the document's scopes install;
+- an acceptance of #524's reading rests on #524's: T1 and T6 under Hu, for any lawful handler, whoever installs it;
+- #524's reading of a document reads no operation of a capability the scoped reading reads (`Ctx.blocked`): a declaration that reaches one is not re-checked there, so nothing in a document with `with` scopes rests on M2's assumption that an operation is an event whose handler is not read. A capability with two or more handlers, which #524 reads as F1's event, is such a capability whenever a `with` of the document installs it.
+
+Reading both keeps what #524 accepted where no scope is involved: an invocation inside a lambda or a `together` task, which no marker reaches, of a capability the scoped reading does not read (such as one whose handler forwards to an outer one).
+
+## 5. Theorems
+
+No statement changes; T1 and T6 take the generalized Hu.
+- **T1**: evaluation under an `η` that binds `I` never gets stuck at an invocation; `withH` extends `η` and `I` together.
+- **T6**: `η` is syntactic, changed only at `withH` with a fixed handler, so two runs at related points have the same `η`. At a visible `pc`, both runs invoke the same handler on related arguments (#524's case); at a hidden `pc`, the run is confined, as before. The decision label of an invocation stays `⊥` under Hu.
+
+## 6. Out of this item
+
+Not re-checked, failing closed: handlers with parameters (`with @c = h(x)`), handlers from outside the document, `given`, and a host capability (`Files`, `Http`, `Keys`) installed by `with`.
+
+## 7. Non-vacuity
+
+`WithExample` (theorems):
+- **H3, a handler installed under a secret `pc`** (`h3`): checked, and it runs, printing `done` from both secrets: its output does not depend on the secret.
+- **C5(b)** (`c5b`, a failing and a quiet handler chosen by a secret condition, the failure passed out of the branch): rejected, it leaks (`after` is printed only when the quiet one runs), and it has no typing.
+- **Ruling E (a)**, a printing handler installed under a secret `pc`: rejected, it leaks, no typing; **(b)**, the same at a public `pc`: checked, and it runs; **(c)**, an invocation no scope installs: rejected, no typing.
+
+`WithImportTests` (verdicts on `una`'s own export): H3's two shapes (install under, and reach from, a secret branch), two handlers of one operation chosen by two scopes (a verdict guard only: a run theorem would add a second program for no new rule), C5(b), ruling E's (a), (b) and (c) (the last on the scoped reading, `runScoped`), a forged `@` name, a document capability named as one of the host's, and a quiet and a printing handler of one operation chosen by two scopes.
+
+## 8. Gate
+
+As #524's: `scripts/formal.sh`; the corpus delta (a fresh export, both checkers on the same files, every flip, the headline split by what `una check` says, synthesized handler lines apart); `docs/reviews/formal-m2-replay/check.sh`; local CI; the adversarial review.
