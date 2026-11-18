@@ -16,12 +16,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 use una_itaty::entry::owner_chain;
-use una_itaty::http::{ServerConfig, Service, serve};
+use una_itaty::http::{ServerConfig, Service, Work, serve, serve_with};
 use una_itaty::namemap::prove_from_tiles;
 use una_itaty::registry::{Clock, Config, Registry, map_root_of};
 use una_itaty::sign::{Signer, note};
@@ -828,6 +829,196 @@ fn a_publication_refused_before_its_body_reads_its_refusal() {
         stream.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 503"), "{response}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The size of the blob the tests of slow readers serve: well past the buffers of a loopback
+/// connection (8 MiB at most on macOS, 10 MiB on Linux), so a peer that never reads stalls
+/// the service's writes.
+const BIG: usize = 32 << 20;
+
+/// A registry served with `server` through `serve_with` and `spawn`, holding a blob of `BIG`
+/// bytes; its path.
+fn served_blob(
+    name: &str,
+    server: ServerConfig,
+    spawn: impl Fn(Work) -> std::io::Result<()> + Send + 'static,
+) -> (Arc<Service>, SocketAddr, std::path::PathBuf, String) {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let dir = temp_dir(name);
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&dir).unwrap());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let blob: Vec<u8> = (0..BIG).map(|i| (i % 251) as u8).collect();
+    let path = format!("blobs/sha256/{}", "ab".repeat(32));
+    store.put(&path, &blob).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    let service = Arc::new(Service::new(Arc::clone(&store), registry, server));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    {
+        let service = Arc::clone(&service);
+        std::thread::spawn(move || serve_with(&listener, &service, spawn));
+    }
+    (service, addr, dir, path)
+}
+
+fn spawn_thread(work: Work) -> std::io::Result<()> {
+    std::thread::Builder::new().spawn(work).map(drop)
+}
+
+/// Waits until `held` is true, at most `within`.
+fn wait_until(within: Duration, what: &str, held: impl Fn() -> bool) {
+    let started = Instant::now();
+    while !held() {
+        assert!(started.elapsed() < within, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Sends `GET /path` and reads nothing.
+fn unread_get(addr: SocketAddr, path: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .write_all(format!("GET /{path} HTTP/1.1\r\n\r\n").as_bytes())
+        .unwrap();
+    stream
+}
+
+/// Everything a connection gives until it closes or resets.
+fn read_all(stream: &mut TcpStream) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut chunk = vec![0u8; 64 << 10];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return out,
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+        }
+    }
+}
+
+/// A client that never reads a large response holds its connection slot while the response
+/// is written, and loses it, with its connection, once a write waits the write timeout; an
+/// honest reader of the same file gets it whole.
+#[test]
+fn a_client_that_never_reads_is_dropped_within_the_write_bound() {
+    let write_timeout = Duration::from_secs(1);
+    let (service, addr, dir, path) = served_blob(
+        "unread",
+        ServerConfig {
+            write_timeout,
+            ..ServerConfig::default()
+        },
+        spawn_thread,
+    );
+    let started = Instant::now();
+    let mut stalled = unread_get(addr, &path);
+    wait_until(Duration::from_secs(10), "the GET took no slot", || {
+        service.connections_in_progress() == 1
+    });
+    wait_until(
+        Duration::from_secs(30),
+        "the slot was never given back",
+        || service.connections_in_progress() == 0,
+    );
+    let held = started.elapsed();
+    // The slot is given back only after a write waited the whole write timeout.
+    assert!(
+        held >= write_timeout,
+        "the slot was given back after {held:?}"
+    );
+    // The connection was closed short of its `Content-Length`.
+    let received = read_all(&mut stalled);
+    assert!(received.starts_with(b"HTTP/1.1 200"));
+    assert!(received.len() < BIG, "{} bytes received", received.len());
+    // An honest reader gets the whole file, sent in parts.
+    let (status, body) = request(addr, "GET", &path, &[], b"");
+    assert_eq!((status, body.len()), (200, BIG));
+    assert!(body.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// While `max_connections` slots are held by clients that do not read, a further connection is
+/// answered 503 and closed from the accept loop, and starts no thread; once the slots are given
+/// back, connections are served again.
+#[test]
+fn connections_past_the_bound_are_refused_and_start_no_thread() {
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&spawned);
+    let (service, addr, dir, path) = served_blob(
+        "bound",
+        ServerConfig {
+            max_connections: 2,
+            write_timeout: Duration::from_secs(5),
+            ..ServerConfig::default()
+        },
+        move |work| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            spawn_thread(work)
+        },
+    );
+    let stalled: Vec<TcpStream> = (0..2).map(|_| unread_get(addr, &path)).collect();
+    wait_until(Duration::from_secs(10), "the GETs took no slot", || {
+        service.connections_in_progress() == 2
+    });
+    for _ in 0..5 {
+        // The refusal is written as soon as the connection is accepted; a client that sent
+        // nothing reads it before the close.
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert!(response.contains("too many connections"), "{response}");
+    }
+    assert_eq!(spawned.load(Ordering::SeqCst), 2);
+    assert_eq!(service.connections_in_progress(), 2);
+    drop(stalled);
+    wait_until(
+        Duration::from_secs(30),
+        "the slots were not given back",
+        || service.connections_in_progress() == 0,
+    );
+    assert!(get(addr, "root/1").is_some());
+    assert_eq!(spawned.load(Ordering::SeqCst), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A connection whose thread cannot start is closed and gives its slot back, and the accept
+/// loop goes on serving.
+#[test]
+fn a_thread_that_cannot_start_does_not_stop_the_accept_loop() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    let (service, addr, dir, _) = served_blob(
+        "spawn",
+        ServerConfig {
+            max_connections: 1,
+            ..ServerConfig::default()
+        },
+        move |work| {
+            if counted.fetch_add(1, Ordering::SeqCst) < 2 {
+                drop(work);
+                return Err(std::io::Error::other("no thread"));
+            }
+            spawn_thread(work)
+        },
+    );
+    for _ in 0..2 {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        assert!(read_all(&mut stream).is_empty());
+        wait_until(
+            Duration::from_secs(10),
+            "the slot was not given back",
+            || service.connections_in_progress() == 0,
+        );
+    }
+    // The one slot is free and the loop still accepts.
+    assert!(get(addr, "root/1").is_some());
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
