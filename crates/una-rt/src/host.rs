@@ -1325,23 +1325,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The environment variable that marks the process
+    /// [`a_grant_on_the_current_directory_reaches_its_files_2144`] starts for its scenario: the
+    /// scenario does nothing in a process that was not started for it.
+    #[cfg(unix)]
+    const CURRENT_DIRECTORY_SCENARIO: &str = "UNA_RT_HOST_CURRENT_DIRECTORY_SCENARIO";
+
     #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "uses the file system, which Miri's isolation refuses")]
-    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[allow(clippy::unwrap_used)]
     fn a_grant_on_the_current_directory_reaches_its_files_2144() {
+        // The scenario resolves grants against the current directory of its process, so it
+        // runs in a process of its own, started in a directory this test makes: the test
+        // holds wherever its binary is started (Cargo starts it in the package's directory,
+        // `scripts/sanitize.sh` in the repository's), and no other test's directory changes.
+        let dir = std::env::temp_dir().join(format!("una-rt-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(dir.join("src/host.rs"), "//! A file.\n").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "host::tests::a_grant_on_the_current_directory_reaches_its_files_2144_scenario",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .current_dir(&dir)
+            .env(CURRENT_DIRECTORY_SCENARIO, "1")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{output:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run by `a_grant_on_the_current_directory_reaches_its_files_2144`, in a process of its own"]
+    #[allow(clippy::unwrap_used, clippy::panic, clippy::disallowed_methods)]
+    fn a_grant_on_the_current_directory_reaches_its_files_2144_scenario() {
         // #2144: an executable resolves its grants against the current directory, and the
         // prefix of `files:.:<modes>` was the empty path, which does not resolve, so every
         // operation under it ended with `NotFound` and the machine was given no path. The
         // prefix is `.`: the operation is given the canonical current directory joined with
         // the final component, and a missing directory is still answered with no path.
-        // Cargo runs the tests of a package in its directory, which this test only reads.
+        // The current directory is the one the parent test made, with `Cargo.toml` and
+        // `src/host.rs` in it, which this scenario only reads.
         use super::{FileFault, Grant, on_confined};
-        let here = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
-        assert_eq!(
-            std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
-            here
-        );
+        if std::env::var_os(CURRENT_DIRECTORY_SCENARIO).is_none() {
+            return;
+        }
+        let here = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        assert!(here.join("src/host.rs").is_file(), "{here:?}");
         let grant = |spec: &str| {
             Grant::parse(spec, std::path::Path::new("")).unwrap_or_else(|| panic!("{spec}"))
         };
@@ -1391,7 +1433,7 @@ mod tests {
             read("files:src:read", "host.rs"),
             (Some(Ok(())), vec![("read", here.join("src/host.rs"))])
         );
-        // A write is confined by the same route, and is not performed in the source tree.
+        // A write is confined by the same route, and is not performed.
         let mut world = Operations::default();
         let written = on_confined(
             &mut world,
