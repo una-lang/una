@@ -1376,8 +1376,10 @@ fn disk_long(on: &Path, length: usize) -> PathBuf {
 fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
     // The table of #1459. Before it, a missing directory left the operation the path as
     // written, and the operation's own failure decided the value: `Io` where that path had
-    // more links than the host follows in one lookup (`ELOOP`), although the directory was
-    // confirmed missing. Now confinement answers `NotFound` (`spec/14 §3` rule 2), the same
+    // more links than the host follows in one lookup (`ELOOP`) or was longer than the host
+    // takes (`ENAMETOOLONG`), although the directory was confirmed missing. Those are the
+    // two classes whose value changes. Now confinement answers `NotFound` (`spec/14 §3` rule
+    // 2), the same
     // value at a host limit as away from it, and the operation gets no path: neither the path
     // as written nor the canonical directory joined with the rest, which is longer than the
     // host takes in the last case and would fail with `Io` (`ENAMETOOLONG`).
@@ -1436,6 +1438,37 @@ fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
         // lookup of the path as written fails with `ELOOP`, `Io` before.
         assert_eq!(changed, [("l/", 33), ("self/", 33)]);
     }
+    // The second class whose value changes: a path as written longer than the host takes,
+    // below a missing directory. The operation failed on its length (`ENAMETOOLONG`, `Io`)
+    // before it reached the missing directory; confinement stops at that directory. Six
+    // components of 200 bytes pass the 1024 bytes of macOS, 25 the 4096 of Linux too. One
+    // long final component alone changes nothing: the path as written was `NotFound` already.
+    for (components, limited) in [
+        (6, cfg!(target_os = "macos")),
+        (25, cfg!(any(target_os = "macos", target_os = "linux"))),
+    ] {
+        let relative = format!("missing/{}/f", vec!["P".repeat(200); components].join("/"));
+        for outcome in [
+            confine(&mut Disk, &on, &relative),
+            confine(&mut DiskDefault, &on, &relative),
+            confine_quadratic(&mut Disk, &on, &relative),
+        ] {
+            assert_eq!(outcome, Confined::Absent(Absence::Missing), "{components}");
+        }
+        if limited {
+            assert_ne!(
+                kind(&lexical(&on, &relative)),
+                std::io::ErrorKind::NotFound,
+                "{components}"
+            );
+        }
+    }
+    let one = format!("missing/{}", "P".repeat(200));
+    assert_eq!(
+        confine(&mut Disk, &on, &one),
+        Confined::Absent(Absence::Missing)
+    );
+    assert_eq!(kind(&lexical(&on, &one)), std::io::ErrorKind::NotFound);
     // A canonical directory of 897 bytes behind two links, a short missing directory and a
     // final component of 150 bytes.
     let long = fresh("limit_long").join("box");

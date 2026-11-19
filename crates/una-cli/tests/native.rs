@@ -3424,9 +3424,10 @@ fn the_executable_confines_files_through_links_as_una_run_does_1343() {
 fn a_missing_directory_is_not_found_in_both_engines_1459() {
     // `spec/14 §3` rule 2, #1459: below a directory that does not exist, a read and a write
     // fail with `NotFound`, which confinement answers, in the executable as in `una run`, and
-    // the value is the same at the host's limits: after more links than one lookup follows,
-    // where the path as written failed with `Io` before, and below a canonical directory so
-    // long that the directory joined with the rest is past the host's limit. A component that
+    // the value is the same at the host's limits: after more links than one lookup follows
+    // and for a path as written longer than the host takes, the two classes where that path
+    // failed with `Io` before, and below a canonical directory so long that the directory
+    // joined with the rest is past the host's limit. A component that
     // is not a directory is `Io`, as before, and a final component that does not exist in a
     // directory that resolves is still left to the operation.
     use std::os::unix::fs::symlink;
@@ -3450,6 +3451,13 @@ fn a_missing_directory_is_not_found_in_both_engines_1459() {
     let fixed = cases.len();
     cases.push(("read", format!("a/b/missing/{leaf}")));
     cases.push(("write", format!("a/b/missing/{leaf}")));
+    // A path as written longer than the host takes (1024 bytes on macOS, 4096 on Linux),
+    // below a missing directory: `ENAMETOOLONG` on that path, `Io`, before.
+    for components in [6, 25] {
+        let path = format!("missing/{}/f", vec!["P".repeat(200); components].join("/"));
+        cases.push(("read", path.clone()));
+        cases.push(("write", path));
+    }
     for links in [1, 10, 25] {
         cases.push(("read", format!("{}missing/f", "l/".repeat(links))));
         cases.push(("write", format!("{}missing/f", "self/".repeat(links))));
@@ -3515,7 +3523,8 @@ fn a_missing_directory_is_not_found_in_both_engines_1459() {
     let mut expected = vec!["not found"; 6];
     expected.extend(["io", "io", "not found", "written", "read"]);
     assert_eq!(expected.len(), fixed);
-    // Below the long canonical directory, and after links well within what a host follows.
+    // Below the long canonical directory, for the paths as written past the host's length
+    // limit, and after links well within what a host follows.
     expected.resize(limits, "not found");
     for (index, outcome) in expected.iter().enumerate() {
         assert_eq!(
