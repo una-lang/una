@@ -132,11 +132,75 @@ enum Pipe {
     Fired,
 }
 
+/// The vectors of the table: `Vec` itself in every build but the unit tests, where
+/// [`counted::Slab`] is a `Vec` that counts each access for the scaling test (#2124).
+#[cfg(not(test))]
+type Slab<T> = Vec<T>;
+#[cfg(test)]
+use counted::Slab;
+
+/// The vector of the table in the unit tests (#2124): a `Vec` that gives only the accesses
+/// the table uses, each O(1), and counts each one on its thread. It gives no iterator and no
+/// slice, so a walk of the table goes through a counted access, element by element, and the
+/// scaling test sees it whatever the machine's load.
+#[cfg(test)]
+mod counted {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The accesses to the table's vectors made on this thread.
+        static STEPS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The accesses to the table's vectors made on this thread so far.
+    pub(super) fn steps() -> u64 {
+        STEPS.with(Cell::get)
+    }
+
+    fn step() {
+        STEPS.with(|steps| steps.set(steps.get() + 1));
+    }
+
+    /// A `Vec` whose every access counts one step.
+    pub(super) struct Slab<T>(Vec<T>);
+
+    impl<T> Slab<T> {
+        pub(super) fn new() -> Slab<T> {
+            Slab(Vec::new())
+        }
+
+        pub(super) fn len(&self) -> usize {
+            step();
+            self.0.len()
+        }
+
+        pub(super) fn get(&self, index: usize) -> Option<&T> {
+            step();
+            self.0.get(index)
+        }
+
+        pub(super) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+            step();
+            self.0.get_mut(index)
+        }
+
+        pub(super) fn push(&mut self, value: T) {
+            step();
+            self.0.push(value);
+        }
+
+        pub(super) fn pop(&mut self) -> Option<T> {
+            step();
+            self.0.pop()
+        }
+    }
+}
+
 /// The waits of the reactor. Every operation is O(1), amortized for the slab's growth, but a
 /// look at the listed waits, O(k) for their k.
 struct Table {
-    slots: Vec<Slot>,
-    free: Vec<u32>,
+    slots: Slab<Slot>,
+    free: Slab<u32>,
     wheel: Wheel<(u32, u32)>,
     /// The first wait of the list of those a host stop interrupts, or [`NIL`].
     head: u32,
@@ -149,8 +213,8 @@ struct Table {
 impl Table {
     fn new() -> Table {
         Table {
-            slots: Vec::new(),
-            free: Vec::new(),
+            slots: Slab::new(),
+            free: Slab::new(),
             wheel: Wheel::new(millis()),
             head: NIL,
             pipe: Pipe::Unwatched,
@@ -918,41 +982,112 @@ mod tests {
         assert!(out.iter().all(|(_, woken)| *woken == Woken::TimedOut));
     }
 
+    /// The most accesses to the table's vectors that one `insert`, one `take` and one `remove`
+    /// make, whatever the number of waits: `insert` pops the free list, reads the slab's
+    /// length, pushes a slot, reads its generation, writes it and links the list's head;
+    /// `take` reads the slot; `remove` reads the slot, unlinks it (itself and its two
+    /// neighbours), frees it and pushes the free list.
+    const INSERT_STEPS: u64 = 6;
+    const TAKE_STEPS: u64 = 1;
+    const REMOVE_STEPS: u64 = 6;
+
+    /// Registers, wakes and removes `count` waits, every second one on the list of host stops:
+    /// the most counted steps of one `insert`, one `take` and one `remove`, the steps of all,
+    /// and the seconds they took.
+    fn register_wake_remove(count: usize, stop: &'static RunStop) -> ([u64; 3], u64, f64) {
+        let mut table = Table::new();
+        let now = millis();
+        let mut most = [0u64; 3];
+        let keep = |most: &mut u64, before: u64| {
+            *most = (*most).max(counted::steps() - before);
+        };
+        let first = counted::steps();
+        let started = Instant::now();
+        let ids: Vec<(u32, u32)> = (0..count)
+            .map(|i| {
+                let run = (i % 2 == 0).then_some(stop);
+                let before = counted::steps();
+                let id = table
+                    .insert(wake(), Some(now + 60_000 + i as u64), run)
+                    .unwrap();
+                keep(&mut most[0], before);
+                id
+            })
+            .collect();
+        assert_eq!(table.wheel.len(), count);
+        for (slot, generation) in &ids {
+            let before = counted::steps();
+            drop(table.take(*slot, *generation));
+            keep(&mut most[1], before);
+        }
+        for (slot, generation) in ids {
+            let before = counted::steps();
+            table.remove(slot, generation);
+            keep(&mut most[2], before);
+        }
+        let seconds = started.elapsed().as_secs_f64();
+        assert!(table.wheel.is_empty());
+        assert_eq!(table.head, NIL);
+        (most, counted::steps() - first, seconds)
+    }
+
     #[test]
     fn registering_waking_and_removing_scale_linearly() {
-        // O(1) per wait: a hundred times the waits takes about a hundred times the time. Under
-        // Miri, where each allocation is slow, 10 to 1,000 waits rather than 1,000 to 100,000,
-        // which did not end in 50 minutes there (#2007); the full sizes run in the ordinary tests.
+        // O(1) per wait. Counted first (#2124): each access to the table's vectors is one step
+        // (`counted::Slab`), which no load on the machine and no sanitizer moves. No `insert`,
+        // `take` or `remove` takes more steps at 100,000 waits than its constant, and the steps
+        // of all are exactly proportional to the waits. The wheel's own work is counted by its
+        // own test (`una_http::wheel`, `work_per_timer_is_flat`).
+        // Under Miri, where each allocation is slow, 10 to 1,000 waits rather than 1,000 to
+        // 100,000, which did not end in 50 minutes there (#2007); the full sizes run in the
+        // ordinary tests.
         let stop = run_stop();
-        let mut times = Vec::new();
-        let counts: &[usize] = if cfg!(miri) {
+        let reduced = cfg!(miri);
+        let counts: &[usize] = if reduced {
             &[10, 100, 1_000]
         } else {
             &[1_000, 10_000, 100_000]
         };
-        for &count in counts {
-            let mut table = Table::new();
-            let now = millis();
-            let started = Instant::now();
-            let ids: Vec<(u32, u32)> = (0..count)
-                .map(|i| {
-                    let run = (i % 2 == 0).then_some(stop);
-                    table
-                        .insert(wake(), Some(now + 60_000 + i as u64), run)
-                        .unwrap()
-                })
-                .collect();
-            for (slot, generation) in &ids {
-                drop(table.take(*slot, *generation));
-            }
-            for (slot, generation) in ids {
-                table.remove(slot, generation);
-            }
-            times.push(started.elapsed().as_secs_f64());
+        let measure = || -> Vec<([u64; 3], u64, f64)> {
+            counts
+                .iter()
+                .map(|&count| register_wake_remove(count, stop))
+                .collect()
+        };
+        let runs = measure();
+        let (smallest, steps) = (counts[0] as u64, runs[0].1);
+        assert!(steps > 0, "the counter counts nothing");
+        for (&count, (most, total, _)) in counts.iter().zip(&runs) {
+            assert!(
+                most[0] <= INSERT_STEPS && most[1] <= TAKE_STEPS && most[2] <= REMOVE_STEPS,
+                "{count} waits: an insert, a take and a remove took up to {most:?} steps, \
+                 against {INSERT_STEPS}, {TAKE_STEPS} and {REMOVE_STEPS}"
+            );
+            assert_eq!(
+                total * smallest,
+                steps * count as u64,
+                "{count} waits took {total} steps, {smallest} took {steps}"
+            );
         }
-        let small = times.first().copied().unwrap();
-        let large = times.last().copied().unwrap();
-        assert!(large < small * 400.0 + 0.1, "{times:?}");
+        // Timed as well: a hundred times the waits takes about a hundred times the time. The
+        // shortest of three measurements of each size, taken again only when the bound is
+        // missed, so that a burst of load on one run does not fail it. Not under Miri or
+        // AddressSanitizer, whose allocators cost more than linearly on the large sizes
+        // (#2124): the count above runs there.
+        if reduced || cfg!(una_asan) {
+            return;
+        }
+        let mut times: Vec<f64> = runs.iter().map(|run| run.2).collect();
+        let within = |times: &[f64]| times[2] < times[0] * 400.0 + 0.1;
+        for _ in 1..3 {
+            if within(&times) {
+                break;
+            }
+            for (time, run) in times.iter_mut().zip(measure()) {
+                *time = time.min(run.2);
+            }
+        }
+        assert!(within(&times), "{times:?}");
     }
 
     fn settings(workers: usize) -> una_interp::Concurrency {

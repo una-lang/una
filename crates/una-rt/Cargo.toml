@@ -42,7 +42,9 @@ una-http = { workspace = true, features = ["test-hooks"] }
 unsafe_code = "deny"
 # `una_fuzz`: set only by scripts/sanitize.sh and scripts/fuzz-smoke.sh, through the flags of
 # scripts/fuzz-targets.sh, for the fuzz targets of `fuzz/` (#766, #1430).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)"] }
+# `una_asan`: set only by scripts/sanitize.sh for its AddressSanitizer builds; here it only
+# skips the timing of one scaling test, whose count still runs (#2124).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(una_fuzz)", "cfg(una_asan)"] }
 
 [lints.clippy]
 dbg_macro = "deny"
