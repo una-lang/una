@@ -455,6 +455,26 @@ impl Floor {
     }
 }
 
+/// The root chain of `provenance`, walked and verified from `pin` as [`verify`] walks it, each
+/// version with the digest of its text and of its whole signed note, or `None` when it does not
+/// verify. O(R) for its R root versions.
+pub fn walked_roots(provenance: &Provenance, pin: &str) -> Option<Vec<itaoca::WalkedRoot>> {
+    let (first, next) = provenance.roots.split_first()?;
+    let pinned = root::trust_first(first, pin).ok()?;
+    let next: Vec<&str> = next.iter().map(String::as_str).collect();
+    let walked = root::walk_all(&pinned, &next, 0).ok()?;
+    Some(
+        walked
+            .into_iter()
+            .map(|root| itaoca::WalkedRoot {
+                version: root.version,
+                text: root.text_digest,
+                note: root.digest,
+            })
+            .collect(),
+    )
+}
+
 /// `signed` for a key of the owner of `name`: `ed25519:`, the owner (`itauna` for a name with
 /// no owner, rule 38.1), `:`, and the key's fingerprint, the hex SHA-256 of the public key.
 pub fn signed_name(name: &str, public: &[u8; 32]) -> String {
@@ -618,10 +638,9 @@ pub fn verify(
             let held = chain.iter().find(|(root, _)| root.version == *floor);
             if held.is_none_or(|(root, note)| !digest.holds(&root.text_digest, note)) {
                 return Err(Problem::Refused(format!(
-                    "the provenance's root chain holds root version {floor} with another digest of {} than {}, which this machine has accepted for `{}`, so the root chain forked",
-                    digest.covers(),
-                    digest.value(),
-                    expected.source
+                    "the provenance's root chain of `{}` holds {}",
+                    expected.source,
+                    digest.mismatch(*floor, &itaoca::registry_id(&expected.root))
                 )));
             }
         }

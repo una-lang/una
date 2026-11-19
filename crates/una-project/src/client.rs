@@ -975,9 +975,8 @@ impl<'t> Registry<'t> {
             let held = chain.iter().find(|(root, _)| root.version == floor);
             if held.is_none_or(|(root, note)| !digest.holds(&root.text_digest, note)) {
                 return Err(refused(format!(
-                    "it serves root version {floor} with another digest of {} than {}, already accepted, so its root chain forked",
-                    digest.covers(),
-                    digest.value()
+                    "it serves {}",
+                    digest.mismatch(floor, &crate::itaoca::registry_id(pin))
                 )));
             }
         }
