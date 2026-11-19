@@ -1,1 +1,0 @@
-- **The nightly run of a commit is its release gate run** (#2084, `docs/release-gates.md` rule 2 and section 4: the complete gate set runs every night on the head of `main`, and a tag may use the night's run of the gated SHA when every gate is PASS; what a PASS means does not change)

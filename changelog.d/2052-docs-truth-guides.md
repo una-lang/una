@@ -1,1 +1,0 @@
-- **Docs: the guides, the status lines of the specification and the trusted base page state what 0.4.0 does** (#2052, the registry pages say that no registry is served and path dependencies are what is usable; the trusted base page lists the registry client, the resolver and the key-chain verification as part of the base)

@@ -1,1 +1,0 @@
-- **The proof cache key's owner check is tested without the temporary directory** (#1896): with `TMPDIR` naming nothing, a read-only directory or an empty one, a private key of the user is used and the empty directory stays empty; a key file of another user is refused as before (#1164). The check reads the effective user through `una_sys::server::identity` since #1894.
