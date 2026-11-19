@@ -393,8 +393,8 @@ impl Itaoca {
     /// stored is read again, whatever the caller read before its walk, and:
     ///
     /// - when `chain` holds the stored floor's version and the floor holds a digest, the two
-    ///   digests must be equal: another digest is [`FloorRefusal::Forked`], two root metadata of
-    ///   one version, and the stored floor is kept as it is (`spec/30 §14`, Floors);
+    ///   digests must be equal: another digest is [`FloorRefusal::Forked`], and the stored
+    ///   floor is kept as it is (`spec/30 §14`, Floors);
     /// - else the floor is replaced only when the last version is higher, or when it is equal
     ///   and the stored floor is of the earlier form, the version alone, which then takes the
     ///   digest. A lower last version is not stored, and an equal one with the same digest
@@ -477,8 +477,11 @@ impl Itaoca {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FloorRefusal {
     /// The floor stored holds `version` with the digest `held`, and the chain offered holds
-    /// that version with the digest `offered`: two root metadata of one version, a fork of the
-    /// root chain (U7010 where a command reports it). The stored floor is kept as it is.
+    /// that version with the digest `offered`: another digest is held for the same root
+    /// version, which is refused as a fork of the root chain (U7010 where a command reports
+    /// it). The digest is of the whole signed root metadata, its signature lines included, so
+    /// two digests do not by themselves show two different root texts. The stored floor is
+    /// kept as it is.
     Forked {
         /// The root version both hold.
         version: u64,
@@ -501,7 +504,7 @@ impl FloorRefusal {
                 held,
                 offered,
             } => format!(
-                "root version {version} was accepted with the digest {held}, not {offered}, so its root chain forked; the floor is kept"
+                "another digest is held for the same root version: root version {version} was accepted with the digest {held}, not {offered}; the floor is kept"
             ),
             FloorRefusal::NotStored(why) => why.clone(),
         }

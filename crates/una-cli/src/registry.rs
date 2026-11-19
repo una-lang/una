@@ -326,7 +326,7 @@ pub(crate) fn open<'t>(
                 offered,
             }) => {
                 return Err(OpenError::Refused(format!(
-                    "the registry `{name}` serves root version {version} with the digest {offered}, another than {held}, which a run at the same time accepted and stored, so its root chain forked"
+                    "the registry `{name}` serves root version {version} with the digest {offered}, and another digest is held for the same root version, {held}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca"
                 )));
             }
             Err(FloorRefusal::NotStored(why)) => Some(format!(

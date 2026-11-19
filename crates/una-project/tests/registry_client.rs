@@ -2964,7 +2964,7 @@ fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
 /// Two runs read a root-version floor at the same time and each walks a root chain; the store
 /// compares again under the floor lock, with the floor as the other run left it (`spec/30 §14`,
 /// Floors; #2099). The run whose chain holds the stored floor's version with another digest
-/// holds two root metadata of one version: its store fails as a fork, typed, and the floor the
+/// than the one held for it: its store fails as a fork, typed, and the floor the
 /// first run stored is kept byte for byte, with nothing else left in the directory. The same
 /// digest from both runs, and a higher version whose chain holds the floor's version with the
 /// stored digest, still pass.
@@ -3009,7 +3009,9 @@ fn a_store_that_finds_another_digest_under_the_lock_is_a_fork() {
         }
     );
     assert!(
-        fork.message().contains("forked") && fork.message().contains("the floor is kept"),
+        fork.message()
+            .contains("another digest is held for the same root version")
+            && fork.message().contains("the floor is kept"),
         "{fork:?}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
@@ -3180,7 +3182,7 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     // Equal, with another digest: a fork of the root chain, refused, never stored.
     let fork = itaoca.store_root_version(&id, 2, &digest('b')).unwrap_err();
     assert!(matches!(fork, FloorRefusal::Forked { .. }), "{fork:?}");
-    assert!(fork.message().contains("forked"), "{fork:?}");
+    assert!(fork.message().contains("the floor is kept"), "{fork:?}");
     // Lower: never stored.
     itaoca.store_root_version(&id, 1, &digest('c')).unwrap();
     assert_eq!(

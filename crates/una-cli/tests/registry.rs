@@ -621,8 +621,8 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
 /// `spec/30 §14`, Floors). Another run is played by this test: it holds the floor lock while
 /// `una ita lock --check` and `una ita lock` each read the floor of the earlier form, walk the
 /// chain and wait for the lock, stores another digest at the floor's version, and lets go. The
-/// command then compares under the lock and holds two root metadata of version 1: exit 1,
-/// U7010, the other run's floor kept, the checkpoint floor as it was. With the same digest
+/// command then compares under the lock and finds another digest held for version 1: exit 1,
+/// U7010 naming the floor file, the other run's floor kept, the checkpoint floor as it was. With the same digest
 /// from the other run, the command passes, with no note.
 ///
 /// The other run cannot see when the command has read the floor, so it waits before it stores.
@@ -673,7 +673,9 @@ fn a_command_that_loses_the_root_floor_race_fails() {
         let (code, out, err) = raced(args, &forked);
         assert_eq!(code, 1, "{args:?}: {out}{err}");
         assert!(
-            err.contains("U7010") && err.contains("forked") && err.contains(&other),
+            err.contains("U7010")
+                && err.contains(&other)
+                && (err.contains("root-version") || err.contains("forked")),
             "{args:?}: {err}"
         );
         assert!(!err.contains("not stored as its floor"), "{args:?}: {err}");

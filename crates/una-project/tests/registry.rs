@@ -1184,7 +1184,7 @@ fn unbundling_respects_the_root_version_floor() {
 /// the unbundling stores its own (#2099, `spec/30 §14`, Floors). The places behind the bundle
 /// are asked for only after the floors are read, so storing from there is that other run,
 /// deterministically. With another digest at the version the bundle's chain holds, the
-/// unbundling holds two root metadata of one version: refused (U7010) as a fork, at the
+/// unbundling holds another digest for the same root version: refused (U7010), at the
 /// source's first package, with the other run's floor kept and no package, provenance or
 /// checkpoint written. With the same digest, it unbundles, with no note.
 #[test]
@@ -1230,8 +1230,9 @@ fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
                 matches!(
                     &problem,
                     Failure::Refused(why)
-                        if why.contains("forked")
+                        if why.contains("another digest is held for the same root version")
                             && why.contains("a run at the same time")
+                            && why.contains(&format!("registry/{id}/root-version"))
                             && why.contains(&first)
                             && why.contains(&other)
                 ),
