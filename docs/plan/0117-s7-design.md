@@ -175,4 +175,4 @@ Each request parked on the reactor holds one socket, where the pool held at most
 | R7-12 (the look at every pass) | §3, Host stops: the reactor keeps the time of its last look, and looks every 100 ms or at a pipe event |
 | R7-13 (a stalled wildcard zone) | §5, Name resolution: at most a quarter of the resolver threads per zone; a test with sixteen names of one stalled zone |
 | R7-14 (a lookup that panics) | §5, Name resolution: a guard in the lookup's thread ends it as a failure; a test with a panicking lookup |
-| R7-8 (count of `unsafe` blocks) | `poll.rs` has eight `unsafe` blocks, `io.rs` two, and `signals.rs` one more, each with its `// SAFETY:` comment |
+| R7-8 (count of `unsafe` blocks) | `poll.rs` has seven `unsafe` blocks (eight until #1483), `io.rs` two, and `signals.rs` one more, each with its `// SAFETY:` comment |

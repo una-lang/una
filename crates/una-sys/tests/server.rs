@@ -4,7 +4,7 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, TcpListener, TcpStream};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 use una_sys::server::{OPEN_FLAGS, identity, listen, raise_descriptor_limit};
@@ -127,6 +127,51 @@ fn a_second_listener_on_the_same_address_and_port_is_refused() {
     // `TcpListener::bind` sets `SO_REUSEADDR` on its own socket, and is refused as well.
     let std = TcpListener::bind(bound).unwrap_err();
     assert_eq!(std.kind(), std::io::ErrorKind::AddrInUse);
+}
+
+/// A listener on `ip` at a port asked for by number, with the address it reports: the port
+/// of a first listener, freed. Another socket may take the port in between, so a refusal
+/// with `AddrInUse` is tried again with another port.
+fn listen_by_number(ip: IpAddr) -> std::io::Result<(SocketAddr, SocketAddr)> {
+    let mut tries = 0;
+    loop {
+        let free = listen(SocketAddr::new(ip, 0), 16)?;
+        let asked = free.local_addr()?;
+        drop(free);
+        tries += 1;
+        match listen(asked, 16) {
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && tries < 16 => {}
+            other => return Ok((asked, other?.local_addr()?)),
+        }
+    }
+}
+
+/// The listener is bound to the address and port asked for, in both families (#1483).
+#[test]
+fn a_listener_is_bound_to_the_address_and_port_asked_for() {
+    let _children = CHILDREN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (asked, bound) = listen_by_number(Ipv4Addr::LOCALHOST.into()).unwrap();
+    assert_eq!(asked.ip(), Ipv4Addr::LOCALHOST);
+    assert_ne!(asked.port(), 0);
+    assert_eq!(bound, asked);
+    let (asked, bound) = match listen_by_number(Ipv6Addr::LOCALHOST.into()) {
+        // Only a machine without IPv6 skips; any other error fails.
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EAFNOSUPPORT | libc::EADDRNOTAVAIL)
+            ) =>
+        {
+            eprintln!("note: IPv6 is not available here ({error}); the case is not checked");
+            return;
+        }
+        other => other.unwrap(),
+    };
+    assert_eq!(asked.ip(), Ipv6Addr::LOCALHOST);
+    assert_ne!(asked.port(), 0);
+    assert_eq!(bound, asked);
 }
 
 #[test]

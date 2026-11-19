@@ -136,32 +136,40 @@ pub fn listen(address: SocketAddr, backlog: u32) -> io::Result<TcpListener> {
     if six {
         set(libc::IPPROTO_IPV6, libc::IPV6_V6ONLY)?;
     }
-    // SAFETY: zero is a valid `sockaddr_storage`, large enough for both address kinds.
-    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    let length = match address {
+    // The address in its family's own structure, every field named, the flow label and scope
+    // of IPv6 zero; `bind` reads `length` bytes of it through `at`.
+    let sa = libc::sa_family_t::try_from(family).unwrap_or(0);
+    let (in4, in6);
+    let (at, length): (*const libc::sockaddr, usize) = match address {
         SocketAddr::V4(v4) => {
-            // SAFETY: `sockaddr_storage` is larger and more aligned than `sockaddr_in`.
-            let a = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in>() };
-            a.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or(0);
-            a.sin_port = v4.port().to_be();
-            a.sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
-            size_of::<libc::sockaddr_in>()
+            let s_addr = u32::from_ne_bytes(v4.ip().octets());
+            in4 = libc::sockaddr_in {
+                #[cfg(target_os = "macos")]
+                sin_len: u8::try_from(size_of::<libc::sockaddr_in>()).unwrap_or(0),
+                sin_family: sa,
+                sin_port: v4.port().to_be(),
+                sin_addr: libc::in_addr { s_addr },
+                sin_zero: [0; 8],
+            };
+            ((&raw const in4).cast(), size_of::<libc::sockaddr_in>())
         }
         SocketAddr::V6(v6) => {
-            // SAFETY: `sockaddr_storage` is larger and more aligned than `sockaddr_in6`.
-            let a = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in6>() };
-            a.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or(0);
-            a.sin6_port = v6.port().to_be();
-            a.sin6_addr.s6_addr = v6.ip().octets();
-            size_of::<libc::sockaddr_in6>()
+            let s6_addr = v6.ip().octets();
+            in6 = libc::sockaddr_in6 {
+                #[cfg(target_os = "macos")]
+                sin6_len: u8::try_from(size_of::<libc::sockaddr_in6>()).unwrap_or(0),
+                sin6_family: sa,
+                sin6_port: v6.port().to_be(),
+                sin6_flowinfo: 0,
+                sin6_addr: libc::in6_addr { s6_addr },
+                sin6_scope_id: 0,
+            };
+            ((&raw const in6).cast(), size_of::<libc::sockaddr_in6>())
         }
     };
-    #[cfg(target_os = "macos")]
-    {
-        storage.ss_len = u8::try_from(length).unwrap_or(0);
-    }
-    // SAFETY: `raw` is open; `storage` holds an initialized address of `length` bytes.
-    ok(unsafe { libc::bind(raw, (&raw const storage).cast(), size(length)) })?;
+    // SAFETY: `raw` is open; `at` points to `in4` or `in6`, the one the match initialized, a
+    // whole `sockaddr_in` or `sockaddr_in6` of `length` bytes that lives past the call.
+    ok(unsafe { libc::bind(raw, at, size(length)) })?;
     let backlog = libc::c_int::try_from(backlog).unwrap_or(libc::c_int::MAX);
     // Between `bind` and `listen` the port is held and refuses connections, as with std.
     // SAFETY: `raw` is an open, bound stream socket; `listen` takes integers only.

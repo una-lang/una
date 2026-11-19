@@ -11,7 +11,7 @@
 
 use std::ffi::CStr;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 
 /// How a child ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,17 +40,17 @@ pub fn spawn(
     // source is first duplicated above 2 (close-on-exec), as the standard library does.
     let mut raised: Vec<OwnedFd> = Vec::new();
     let mut sources = [stdin.as_raw_fd(), stdout.as_raw_fd(), stderr.as_raw_fd()];
-    for source in &mut sources {
+    for (source, borrowed) in sources.iter_mut().zip([stdin, stdout, stderr]) {
         if *source < 3 {
-            // SAFETY: `fcntl` with `F_DUPFD_CLOEXEC` duplicates an open descriptor of the
-            // caller's to a number at least 3 and touches no memory.
-            let duplicate = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 3) };
-            if duplicate < 0 {
-                return Err(io::Error::last_os_error());
+            // The standard library's duplicate is `fcntl` with `F_DUPFD_CLOEXEC` from 3, the
+            // call made here before; its floor is not in its contract, so it is checked.
+            // Close-on-exec rests on that implementation, pinned by the toolchain's version.
+            let duplicate = borrowed.try_clone_to_owned()?;
+            if duplicate.as_raw_fd() < 3 {
+                return Err(io::Error::other("a duplicate landed on a standard stream"));
             }
-            // SAFETY: `duplicate` is a descriptor this function just made and owns alone.
-            raised.push(unsafe { OwnedFd::from_raw_fd(duplicate) });
-            *source = duplicate;
+            *source = duplicate.as_raw_fd();
+            raised.push(duplicate);
         }
     }
     let mut argv: Vec<*mut libc::c_char> = args.iter().map(|a| a.as_ptr().cast_mut()).collect();
