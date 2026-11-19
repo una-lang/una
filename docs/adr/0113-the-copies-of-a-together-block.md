@@ -330,7 +330,7 @@ ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release
 
 ## Amendment (2026-11-19): the reservation is checked before it is announced
 
-- Status: Proposed (2026-11-19); needs the Owner's acceptance.
+- Status: Accepted (2026-11-19), by the Owner's decision.
 - Card: #1943.
 
 Rule 4, "The reservation", says that a step adds its bytes to `reserved`, then checks `held() +sat reserved ≤ mem_ceiling`. A step that the check refuses has then been in `reserved` from its addition to the drop of its guard, and the check of every other thread's step made in that interval counted its bytes. A step of a sibling task that fit the budget could so be refused too, and the U6003 reported at the sibling's block instead of, or as well as, at the block whose step asked for too much (#1943, found through #1920).
@@ -350,5 +350,3 @@ Rule 4, "The reservation", says that a step adds its bytes to `reserved`, then c
 **Cost.** Time O(1) expected per step, space O(1): one more atomic read, and one compare-exchange in place of one addition. A step is lock-free, not wait-free: a pass is repeated only when another thread's step of positive size was accepted meanwhile, so some step always completes, but one step beside siblings whose steps keep being accepted has no bound of its own. Under the accepted order a step was one addition and always completed. Measured on 2026-11-19 with a benchmark that is not committed, in a release build on a machine that was running other builds, best of 5: an accepted step and its release took 10.7 ns where the accepted order took 7.6 ns on one thread, about 3 ns more, and a refused step 6.9 ns where it took 7.5 ns; with 8 threads doing nothing but steps and one small allocation each, an accepted step took about 1.6 times the accepted order's time (1842 ns against 1164 ns of wall time per step of each thread), and a refused one less (815 ns against 1092 ns). Runs of one configuration varied by a factor of 3 on that machine, so the contended figures are indicative only, and no committed test bounds the cost of a step. The copies of one block are sequential (rules 2 and 3), so steps are concurrent only between blocks of sibling tasks and with the runtime's other announced allocations in tasks.
 
 **One case stays looser, in theory.** The two counts behind `reserved`, the bytes announced and the bytes given back, are 64 bits wide on every target, a 32-bit one included, and wrap; their difference, `reserved`, is at most `usize::MAX` by the refusal above. A pass would miss accepted steps if the steps that other threads had accepted between its first read and its compare-exchange summed to an exact positive multiple of 2^64 bytes. No run reaches that within one pass, and ADR 0061's hard ceiling stays under every allocation.
-
-Until this amendment is accepted, the accepted text of rule 4 above stands as the record's decision, and the pull request of #1943 waits for it.

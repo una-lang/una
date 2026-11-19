@@ -256,9 +256,9 @@ fn between_reads(read: usize) {
 /// thread's check ever sees its bytes, and there is nothing to give back. On a thread outside a
 /// run no ceiling applies, and the step is announced whenever the sum below does not overflow.
 ///
-/// The order, check then announce, is that of ADR 0113's amendment of 2026-11-19, which is
-/// proposed and not yet accepted; the accepted text of rule 4 says announce, then check. What
-/// is compared, the guard, the double count and "it never sees fewer" are those of rule 4.
+/// The order, check then announce, is that of ADR 0113's amendment of 2026-11-19; the text of
+/// rule 4 before it says announce, then check. What is compared, the guard, the double count
+/// and "it never sees fewer" are those of rule 4.
 ///
 /// No sum wraps. A step larger than any allocation can be (`isize::MAX` bytes) is refused at
 /// once, a step that would take `reserved` past `usize::MAX` is refused, and the sum with
