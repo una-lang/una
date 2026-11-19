@@ -4415,6 +4415,7 @@ mod tests {
     fn another_step_comes_and_goes() {
         let step = try_reserve(ROOM_STEP).unwrap();
         let bytes: Vec<u8> = Vec::with_capacity(ROOM_STEP);
+        std::hint::black_box(&bytes);
         drop(step);
         drop(bytes);
     }
@@ -4513,7 +4514,9 @@ mod tests {
                                     continue;
                                 };
                                 assert_eq!(inside.fetch_add(1, Ordering::SeqCst), 0);
+                                // Seen, so that no profile removes the allocation.
                                 let bytes: Vec<u8> = Vec::with_capacity(STEP_BYTES);
+                                std::hint::black_box(&bytes);
                                 drop(step);
                                 std::thread::yield_now();
                                 assert_eq!(inside.fetch_sub(1, Ordering::SeqCst), 1);
