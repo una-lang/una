@@ -143,6 +143,9 @@ use counted::Slab;
 /// the table uses, each O(1), and counts each one on its thread. It gives no iterator and no
 /// slice, so a walk of the table goes through a counted access, element by element, and the
 /// scaling test sees it whatever the machine's load.
+///
+/// Invariant (#2130): every method of `Slab` counts a step. A method added without its step,
+/// or a way to the inner `Vec`, takes the walk it allows out of the count.
 #[cfg(test)]
 mod counted {
     use std::cell::Cell;
@@ -198,6 +201,12 @@ mod counted {
 
 /// The waits of the reactor. Every operation is O(1), amortized for the slab's growth, but a
 /// look at the listed waits, O(k) for their k.
+///
+/// Invariant of the counted steps (#2130): every collection of the table is a [`Slab`],
+/// counted in the unit tests, but the wheel, whose own crate counts the steps of its `arm` and
+/// `cancel` (`una_http::wheel`). A collection added here must be a [`Slab`]; the test
+/// `every_collection_of_the_table_is_counted` names every field and its type, so it does not
+/// compile until the new field is listed there.
 struct Table {
     slots: Slab<Slot>,
     free: Slab<u32>,
@@ -986,18 +995,22 @@ mod tests {
     /// make, whatever the number of waits: `insert` pops the free list, reads the slab's
     /// length, pushes a slot, reads its generation, writes it and links the list's head;
     /// `take` reads the slot; `remove` reads the slot, unlinks it (itself and its two
-    /// neighbours), frees it and pushes the free list.
+    /// neighbours), frees it and pushes the free list. An `insert` into a freed slot (#2130)
+    /// pops the free list, reads the slot's generation, writes the slot and links the list's
+    /// head.
     const INSERT_STEPS: u64 = 6;
     const TAKE_STEPS: u64 = 1;
     const REMOVE_STEPS: u64 = 6;
+    const REINSERT_STEPS: u64 = 4;
 
-    /// Registers, wakes and removes `count` waits, every second one on the list of host stops:
-    /// the most counted steps of one `insert`, one `take` and one `remove`, the steps of all,
-    /// and the seconds they took.
-    fn register_wake_remove(count: usize, stop: &'static RunStop) -> ([u64; 3], u64, f64) {
+    /// Registers, wakes and removes `count` waits, every second one on the list of host stops,
+    /// then registers `count` more into the freed slots, the free list at its longest, and
+    /// removes them: the most counted steps of one `insert`, one `take`, one `remove` and one
+    /// `insert` into a freed slot, the steps of all, and the seconds they took.
+    fn register_wake_remove(count: usize, stop: &'static RunStop) -> ([u64; 4], u64, f64) {
         let mut table = Table::new();
         let now = millis();
-        let mut most = [0u64; 3];
+        let mut most = [0u64; 4];
         let keep = |most: &mut u64, before: u64| {
             *most = (*most).max(counted::steps() - before);
         };
@@ -1025,10 +1038,64 @@ mod tests {
             table.remove(slot, generation);
             keep(&mut most[2], before);
         }
+        assert!(table.wheel.is_empty());
+        assert_eq!(table.head, NIL);
+        // Again, into the freed slots (#2130): the first of these inserts finds `count` slots
+        // on the free list, so an `insert` that walked the list is seen at its longest.
+        let ids: Vec<(u32, u32)> = (0..count)
+            .map(|i| {
+                let run = (i % 2 == 0).then_some(stop);
+                let before = counted::steps();
+                let id = table
+                    .insert(wake(), Some(now + 60_000 + i as u64), run)
+                    .unwrap();
+                keep(&mut most[3], before);
+                id
+            })
+            .collect();
+        assert_eq!(table.wheel.len(), count);
+        // No slot was added: each of these waits has a slot of the first ones.
+        assert!(ids.iter().all(|(slot, _)| (*slot as usize) < count));
+        for (slot, generation) in ids {
+            let before = counted::steps();
+            table.remove(slot, generation);
+            keep(&mut most[2], before);
+        }
         let seconds = started.elapsed().as_secs_f64();
         assert!(table.wheel.is_empty());
         assert_eq!(table.head, NIL);
         (most, counted::steps() - first, seconds)
+    }
+
+    /// The shape of the table (#2130): every field by name and type, with no `..`, so a field
+    /// added to `Table` does not compile here until it is listed. A collection must be a
+    /// counted `Slab`, or the scaling test below does not see a walk of it; the wheel is the
+    /// one exception, counted in its own crate.
+    #[test]
+    fn every_collection_of_the_table_is_counted() {
+        let Table {
+            slots,
+            free,
+            wheel,
+            head,
+            pipe,
+            until,
+        } = Table::new();
+        let (mut slots, mut free): (counted::Slab<Slot>, counted::Slab<u32>) = (slots, free);
+        let wheel: Wheel<(u32, u32)> = wheel;
+        let (head, pipe, until): (u32, Pipe, u64) = (head, pipe, until);
+        assert_eq!((head, pipe, until), (NIL, Pipe::Unwatched, u64::MAX));
+        assert!(wheel.is_empty());
+        // Each access of `Slab` counts one step.
+        let before = counted::steps();
+        free.push(0);
+        assert_eq!(free.len(), 1);
+        assert_eq!(free.get(0), Some(&0));
+        assert_eq!(free.get_mut(0), Some(&mut 0));
+        assert_eq!(free.pop(), Some(0));
+        assert_eq!(slots.len(), 0);
+        assert!(slots.get_mut(0).is_none());
+        assert_eq!(counted::steps() - before, 7);
     }
 
     #[test]
@@ -1036,8 +1103,13 @@ mod tests {
         // O(1) per wait. Counted first (#2124): each access to the table's vectors is one step
         // (`counted::Slab`), which no load on the machine and no sanitizer moves. No `insert`,
         // `take` or `remove` takes more steps at 100,000 waits than its constant, and the steps
-        // of all are exactly proportional to the waits. The wheel's own work is counted by its
-        // own test (`una_http::wheel`, `work_per_timer_is_flat`).
+        // of all are exactly proportional to the waits. An `insert` into a freed slot is
+        // counted with the free list at its longest (#2130). The wheel is not counted here:
+        // this test binary links the wheel as its crate builds it for others, uncounted. The
+        // accesses of its `arm` and `cancel` to its slab and free list are counted in its own
+        // crate's unit tests (`una_http::wheel`, `arming_and_cancelling_take_constant_steps`),
+        // which the ordinary tests run and the sanitizer runs do not; here a cost of the wheel
+        // is seen by the timing below only.
         // Under Miri, where each allocation is slow, 10 to 1,000 waits rather than 1,000 to
         // 100,000, which did not end in 50 minutes there (#2007); the full sizes run in the
         // ordinary tests.
@@ -1048,7 +1120,7 @@ mod tests {
         } else {
             &[1_000, 10_000, 100_000]
         };
-        let measure = || -> Vec<([u64; 3], u64, f64)> {
+        let measure = || -> Vec<([u64; 4], u64, f64)> {
             counts
                 .iter()
                 .map(|&count| register_wake_remove(count, stop))
@@ -1059,9 +1131,13 @@ mod tests {
         assert!(steps > 0, "the counter counts nothing");
         for (&count, (most, total, _)) in counts.iter().zip(&runs) {
             assert!(
-                most[0] <= INSERT_STEPS && most[1] <= TAKE_STEPS && most[2] <= REMOVE_STEPS,
-                "{count} waits: an insert, a take and a remove took up to {most:?} steps, \
-                 against {INSERT_STEPS}, {TAKE_STEPS} and {REMOVE_STEPS}"
+                most[0] <= INSERT_STEPS
+                    && most[1] <= TAKE_STEPS
+                    && most[2] <= REMOVE_STEPS
+                    && most[3] <= REINSERT_STEPS,
+                "{count} waits: an insert, a take, a remove and an insert into a freed slot \
+                 took up to {most:?} steps, against {INSERT_STEPS}, {TAKE_STEPS}, \
+                 {REMOVE_STEPS} and {REINSERT_STEPS}"
             );
             assert_eq!(
                 total * smallest,
@@ -1069,9 +1145,10 @@ mod tests {
                 "{count} waits took {total} steps, {smallest} took {steps}"
             );
         }
-        // Timed as well: a hundred times the waits takes about a hundred times the time. The
-        // shortest of three measurements of each size, taken again only when the bound is
-        // missed, so that a burst of load on one run does not fail it. Not under Miri or
+        // Timed as well: a hundred times the waits takes about a hundred times the time. One
+        // measurement of each size, taken again up to twice only when the bound is missed
+        // (each size then keeps its shortest time), so that a burst of load on one run does
+        // not fail it. Not under Miri or
         // AddressSanitizer, whose allocators cost more than linearly on the large sizes
         // (#2124): the count above runs there.
         if reduced || cfg!(una_asan) {
