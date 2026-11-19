@@ -395,9 +395,10 @@ pub fn files_write(path: i64, content: i64) -> i64 {
 /// the table, a count, and hands the HMAC routine the key where the run holds it. The key's name
 /// and the data are read in place in the heap too. The HMAC routine,
 /// [`una_interp::hmac_sha256`], holds the padded key, its two pads and its hash state in fixed
-/// arrays on its stack and overwrites them with zeros before it returns (#2120); its
-/// documentation lists what that wipe does not reach (the working variables of the SHA-256
-/// compression function, copies the compiler makes in registers). What still holds key
+/// arrays on its stack and overwrites them with zeros before it returns (#2120), without a
+/// volatile write: its documentation says what that rests on and what it does not reach (what
+/// the SHA-256 compression function keeps in its own frame, which includes a copy of the
+/// key-equivalent hash state, and copies the compiler makes in registers). What still holds key
 /// material, unwiped: the run's table for the whole run, the key file's text and its decoding
 /// at start-up, and the bearer key of an `Http` request, which the operations of `Http` clone
 /// out of the table, since the request crosses to a helper thread, and write into the request
