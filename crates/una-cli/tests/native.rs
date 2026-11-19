@@ -5650,6 +5650,426 @@ fn races_never_deadlock_with_one_worker_or_several_under_real_time() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The functions the programs of the `real_clock_race_*` tests share. Every line a program
+/// prints is unique in its run and is one of two forms, which [`race_violations`] reads:
+/// `<label> <i>/<n>`, the `i`-th of the `n` lines its task prints under that label, and
+/// `won <race> <k>`, printed by the task that ran the race with the path `<race>`, after it.
+/// A branch returns its own index, so the second form names the winner.
+const RACE_STEPS: &str = "step(line: Text, value: Int) -> Int\n  uses @console: Console[print]\n=\n  @console.print(line)\n  value\n\ntwo(label: Text, value: Int) -> Int\n  uses @console: Console[print]\n=\n  let a = step(\"{label} 1/2\", value: value)\n  step(\"{label} 2/2\", value: a)\n";
+
+/// How one run of a program of races, its output `stdout` and its trace `trace`, breaks the
+/// rules that hold for every schedule (#1516): `spec/27 §6` rules 3 and 6, `spec/19 §6` rule 4
+/// and `§7` rule 3. Empty when the run is one the UAM allows. The rules:
+///
+/// - `seq` counts from 1 with no gap;
+/// - the events of a race are contiguous, and so are those of each of its branches, the
+///   tasks inside a branch included; the winner's come first when it has any, and the other
+///   branches follow in index order;
+/// - a task has at most one `cancelled` event, the last event of the task and of the tasks
+///   inside it, and a winner has none;
+/// - a task prints its lines in order from the first, all of them unless it was canceled;
+/// - the lines of the output are the lines of the `print` events, each once, and each task's
+///   lines are in the output in the order of its events.
+///
+/// It reads the two line forms of [`RACE_STEPS`]. O(e²) in the events, a few dozen here.
+fn race_violations(stdout: &str, trace: &Value) -> Vec<String> {
+    let Some(events) = trace.as_array() else {
+        return vec!["the trace is not an array".to_string()];
+    };
+    let mut found = Vec::new();
+    let paths: Vec<&str> = events
+        .iter()
+        .map(|event| event["task"].as_str().unwrap_or(""))
+        .collect();
+    let inside = |outer: &str, path: &str| {
+        path == outer
+            || path
+                .strip_prefix(outer)
+                .is_some_and(|rest| outer.is_empty() || rest.starts_with('.'))
+    };
+    let cancelled: Vec<bool> = events
+        .iter()
+        .map(|event| event["outcome"]["kind"] == "cancelled")
+        .collect();
+    let was_cancelled = |path: &str| (0..events.len()).any(|i| cancelled[i] && paths[i] == path);
+    for (index, event) in events.iter().enumerate() {
+        if event["seq"].as_u64() != Some(index as u64 + 1) {
+            found.push(format!("event {} has seq {}", index + 1, event["seq"]));
+        }
+        if cancelled[index] {
+            if paths[index].is_empty() {
+                found.push("the root task has a cancelled event".to_string());
+            }
+            if (index + 1..events.len()).any(|later| inside(paths[index], paths[later])) {
+                found.push(format!(
+                    "task {} has an event after its cancelled event",
+                    paths[index]
+                ));
+            }
+        }
+    }
+    // The lines each task printed, in the order of its events.
+    let mut printed: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (index, event) in events.iter().enumerate() {
+        if event["op"] == "print" && event["outcome"]["kind"] == "ok" {
+            let line = event["args"]["line"].as_str().unwrap_or("");
+            let line = line
+                .strip_prefix('"')
+                .and_then(|line| line.strip_suffix('"'));
+            match line {
+                Some(line) => printed
+                    .entry(paths[index])
+                    .or_default()
+                    .push(line.to_string()),
+                None => found.push(format!("event {} prints no quoted line", index + 1)),
+            }
+        }
+    }
+    let output: Vec<&str> = stdout.lines().collect();
+    let mut sorted_output = output.clone();
+    sorted_output.sort_unstable();
+    if sorted_output.windows(2).any(|pair| pair[0] == pair[1]) {
+        found.push("a line is in the output twice".to_string());
+    }
+    let mut sorted_events: Vec<&str> = printed.values().flatten().map(String::as_str).collect();
+    sorted_events.sort_unstable();
+    if sorted_output != sorted_events {
+        found.push("the lines of the output are not the lines of the print events".to_string());
+    }
+    for (task, lines) in &printed {
+        let places: Vec<Option<usize>> = lines
+            .iter()
+            .map(|line| output.iter().position(|printed| printed == line))
+            .collect();
+        if places.windows(2).any(|pair| pair[0] >= pair[1]) {
+            found.push(format!(
+                "the output has the lines of task {task:?} out of order"
+            ));
+        }
+        // `<label> <i>/<n>`: from 1, in order, under one label, to `n` unless canceled.
+        let steps: Vec<(&str, u64, u64)> = lines
+            .iter()
+            .filter(|line| !line.starts_with("won "))
+            .filter_map(|line| {
+                let (label, step) = line.split_once(' ')?;
+                let (i, n) = step.split_once('/')?;
+                Some((label, i.parse().ok()?, n.parse().ok()?))
+            })
+            .collect();
+        if steps.len() != lines.iter().filter(|l| !l.starts_with("won ")).count() {
+            found.push(format!("task {task:?} printed a line of neither form"));
+        }
+        let in_order = steps.iter().enumerate().all(|(place, (label, i, n))| {
+            *i == place as u64 + 1 && *label == steps[0].0 && *n == steps[0].2
+        });
+        if !in_order {
+            found.push(format!(
+                "task {task:?} printed its lines out of order: {lines:?}"
+            ));
+        }
+        if let Some((_, i, n)) = steps.last()
+            && i != n
+            && !was_cancelled(task)
+        {
+            found.push(format!(
+                "task {task:?} stopped at line {i} of {n} with no cancelled event"
+            ));
+        }
+    }
+    // The races: each path component `f<c>` followed by a branch index.
+    let mut races: BTreeMap<String, Vec<(usize, u64)>> = BTreeMap::new();
+    for (index, path) in paths.iter().enumerate() {
+        let parts: Vec<&str> = path.split('.').collect();
+        for at in 0..parts.len().saturating_sub(1) {
+            if parts[at].starts_with('f')
+                && let Ok(branch) = parts[at + 1].parse::<u64>()
+            {
+                races
+                    .entry(parts[..=at].join("."))
+                    .or_default()
+                    .push((index, branch));
+            }
+        }
+    }
+    let winners: BTreeMap<&str, u64> = output
+        .iter()
+        .filter_map(|line| {
+            let (race, winner) = line.strip_prefix("won ")?.split_once(' ')?;
+            Some((race, winner.parse().ok()?))
+        })
+        .collect();
+    for (race, members) in &races {
+        if members[members.len() - 1].0 - members[0].0 + 1 != members.len() {
+            found.push(format!("the events of race {race} are not contiguous"));
+        }
+        let mut order: Vec<u64> = members.iter().map(|(_, branch)| *branch).collect();
+        order.dedup();
+        let mut distinct = order.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if distinct.len() != order.len() {
+            found.push(format!(
+                "the events of a branch of race {race} are not contiguous: {order:?}"
+            ));
+        }
+        // The winner's events come first. A winner that performed nothing has none, and a
+        // race with no `won` line was cut with its task before the line: in both cases the
+        // branches after the first are in index order, and with a known winner that has no
+        // events all of them are.
+        let winner = winners.get(race.as_str()).copied();
+        let rest = match winner {
+            Some(winner) if order.contains(&winner) => {
+                if order[0] != winner {
+                    found.push(format!(
+                        "race {race}: branch {winner} won, and the events of branch {} come first",
+                        order[0]
+                    ));
+                }
+                &order[1..]
+            }
+            Some(_) => &order[..],
+            None => &order[1..],
+        };
+        if rest.windows(2).any(|pair| pair[0] >= pair[1]) {
+            found.push(format!(
+                "race {race}: the other branches are not in index order: {order:?}"
+            ));
+        }
+        if let Some(winner) = winner
+            && was_cancelled(&format!("{race}.{winner}"))
+        {
+            found.push(format!(
+                "race {race}: the winner, branch {winner}, was canceled"
+            ));
+        }
+    }
+    for race in winners.keys() {
+        let known = race
+            .split('.')
+            .next_back()
+            .is_some_and(|c| c.starts_with('f'));
+        if !known {
+            found.push(format!("the output names {race}, which is not a race"));
+        }
+    }
+    found
+}
+
+/// Runs `program` (the `main` and what it needs, after [`RACE_STEPS`]) in the interpreter once
+/// and as a native executable fifty times on the real clock, ten times for each number of
+/// workers, the default included, and fails on any run that [`race_violations`] rejects,
+/// printing its output and its trace. `spec/27 §6` rule 4, `spec/16 §5` and ADR 0117 rule 12:
+/// on the real clock a run in which the winner of a race decides the outcome is compared for
+/// being one the UAM allows under some timing, and the interpreter's schedule is one of them.
+///
+/// The verdict does not depend on the machine's load: no reading of time is compared, no
+/// outcome is required to appear, and every outcome a schedule can give passes. A run that
+/// never ends is killed by the processor-time limit of `output_within`.
+fn real_clock_races_are_ones_the_uam_allows(name: &str, program: &str) {
+    let source = format!("module race\n\n{RACE_STEPS}\n{program}");
+    let dir = within_package(name, "race", &source);
+    let _removed = RemovedAtEnd(dir.clone());
+    let interpreted = una(&dir, &["--json", "run", "."]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    let lines: String = document["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| format!("{}\n", line.as_str().unwrap()))
+        .collect();
+    let violations = race_violations(&lines, &document["trace"]);
+    assert!(
+        violations.is_empty(),
+        "the interpreter: {violations:?}\noutput: {lines:?}\ntrace: {}",
+        document["trace"]
+    );
+    // The program runs its races: an empty trace would pass every rule.
+    assert!(lines.contains("won f1 "), "{lines:?}");
+    let exe = dir.join(format!("target/una/{name}"));
+    let trace = dir.join("trace-real.json");
+    for run in 0..50 {
+        let workers = [None, Some("1"), Some("2"), Some("4"), Some("8")][run % 5];
+        let mut command = Command::new(&exe);
+        command.current_dir(&dir).arg("--trace").arg(&trace);
+        if let Some(workers) = workers {
+            command.args(["--workers", workers]);
+        }
+        let native = output_within(&command, PROCESSOR_LIMIT_SECS);
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "run {run}, --workers {workers:?}: {native:?}"
+        );
+        let stdout = String::from_utf8_lossy(&native.stdout).into_owned();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+        let violations = race_violations(&stdout, &written);
+        assert!(
+            violations.is_empty(),
+            "run {run}, --workers {workers:?}: {violations:?}\noutput: {stdout:?}\ntrace: {written}"
+        );
+        assert!(stdout.contains("won f1 "), "run {run}: {stdout:?}");
+    }
+}
+
+#[test]
+fn real_clock_race_whose_loser_is_about_to_print_is_one_the_uam_allows() {
+    // #1516, the shape of the review's `path3.una`: two branches that each print one line.
+    // The interpreter prints one line; native code may print both, since a branch that printed
+    // before the other returned keeps its effect (`spec/19 §6` rule 4).
+    real_clock_races_are_ones_the_uam_allows(
+        "raceprint",
+        "pub main() -> Unit\n  uses @console: Console[print]\n=\n  let r = first of\n    step(\"a 1/1\", value: 1)\n    step(\"b 1/1\", value: 2)\n  @console.print(\"won f1 {r}\")\n",
+    );
+}
+
+#[test]
+fn real_clock_race_whose_loser_has_finished_is_one_the_uam_allows() {
+    // A branch that performs nothing beside one that prints twice: the branch that ended
+    // before the other won is not canceled and has no event (`spec/27 §6` rule 3), and when
+    // it wins the other is cut at any of its check points.
+    real_clock_races_are_ones_the_uam_allows(
+        "racedone",
+        "one() -> Int = 1\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let r = first of\n    one()\n    two(\"b\", value: 2)\n  @console.print(\"won f1 {r}\")\n",
+    );
+}
+
+#[test]
+fn real_clock_race_of_three_branches_is_one_the_uam_allows() {
+    // Three branches of two lines each: the winner's events, then the others' in index order.
+    real_clock_races_are_ones_the_uam_allows(
+        "racethree",
+        "pub main() -> Unit\n  uses @console: Console[print]\n=\n  let r = first of\n    two(\"a\", value: 1)\n    two(\"b\", value: 2)\n    two(\"c\", value: 3)\n  @console.print(\"won f1 {r}\")\n",
+    );
+}
+
+#[test]
+fn real_clock_race_whose_loser_computes_is_one_the_uam_allows() {
+    // A branch that loops before it prints, beside one that prints at once: the loop's
+    // iterations are check points, so a cut there leaves a `cancelled` event alone.
+    real_clock_races_are_ones_the_uam_allows(
+        "racespin",
+        "spin(n: Int) -> Int\n  uses @console: Console[print]\n=\n  let edit total = 0\n  for i in 1..n\n    total = total + i\n  step(\"s 1/1\", value: if total > 0 then 1 else 0)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let r = first of\n    spin(20000)\n    step(\"b 1/1\", value: 2)\n  @console.print(\"won f1 {r}\")\n",
+    );
+}
+
+#[test]
+fn real_clock_nested_races_are_ones_the_uam_allows() {
+    // A race whose two branches each print, run a race of their own, name its winner and
+    // print again, then a second race of the root task: the events of an inner race stay
+    // inside its branch, and a branch cut at its join ends after its inner branches.
+    real_clock_races_are_ones_the_uam_allows(
+        "racenested",
+        "inner(label: Text, value: Int) -> Int\n  uses @console: Console[print]\n=\n  let a = step(\"{label} 1/2\", value: value)\n  let r = first of\n    step(\"{label}x 1/1\", value: 1)\n    step(\"{label}y 1/1\", value: 2)\n  @console.print(\"won f1.{value}.f1 {r}\")\n  step(\"{label} 2/2\", value: a)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let r = first of\n    inner(\"o1\", value: 1)\n    inner(\"o2\", value: 2)\n  @console.print(\"won f1 {r}\")\n  let q = first of\n    step(\"p 1/1\", value: 1)\n    step(\"q 1/1\", value: 2)\n  @console.print(\"won f2 {q}\")\n",
+    );
+}
+
+#[test]
+fn the_race_rules_reject_runs_no_schedule_gives() {
+    // The checker of the tests above is not vacuous: each of these traces breaks one rule.
+    let print = |seq: u64, task: &str, line: &str| {
+        serde_json::json!({"seq": seq, "task": task, "op": "print",
+            "args": {"line": format!("\"{line}\"")}, "outcome": {"kind": "ok"}})
+    };
+    let root = |seq: u64, line: &str| {
+        serde_json::json!({"seq": seq, "op": "print",
+            "args": {"line": format!("\"{line}\"")}, "outcome": {"kind": "ok"}})
+    };
+    let cut = |seq: u64, task: &str| serde_json::json!({"seq": seq, "task": task, "outcome": {"kind": "cancelled"}});
+    let legal = Value::Array(vec![
+        print(1, "f1.2", "b 1/2"),
+        print(2, "f1.2", "b 2/2"),
+        print(3, "f1.1", "a 1/2"),
+        cut(4, "f1.1"),
+        root(5, "won f1 2"),
+    ]);
+    assert_eq!(
+        race_violations("a 1/2\nb 1/2\nb 2/2\nwon f1 2\n", &legal),
+        Vec::<String>::new()
+    );
+    let rejected = |stdout: &str, events: Vec<Value>, why: &str| {
+        let violations = race_violations(stdout, &Value::Array(events));
+        assert!(
+            violations.iter().any(|violation| violation.contains(why)),
+            "{why}: {violations:?}"
+        );
+    };
+    // The loser's events before the winner's.
+    rejected(
+        "a 1/1\nb 1/1\nwon f1 2\n",
+        vec![
+            print(1, "f1.1", "a 1/1"),
+            print(2, "f1.2", "b 1/1"),
+            root(3, "won f1 2"),
+        ],
+        "come first",
+    );
+    // The losers out of index order.
+    rejected(
+        "a 1/1\nb 1/1\nc 1/1\nwon f1 1\n",
+        vec![
+            print(1, "f1.1", "a 1/1"),
+            print(2, "f1.3", "c 1/1"),
+            print(3, "f1.2", "b 1/1"),
+            root(4, "won f1 1"),
+        ],
+        "not in index order",
+    );
+    // A canceled winner, and an event after a `cancelled` event.
+    rejected(
+        "a 1/2\nwon f1 1\n",
+        vec![
+            print(1, "f1.1", "a 1/2"),
+            cut(2, "f1.1"),
+            root(3, "won f1 1"),
+        ],
+        "was canceled",
+    );
+    rejected(
+        "a 1/2\na 2/2\nb 1/1\nwon f1 2\n",
+        vec![
+            print(1, "f1.2", "b 1/1"),
+            print(2, "f1.1", "a 1/2"),
+            cut(3, "f1.1"),
+            print(4, "f1.1", "a 2/2"),
+            root(5, "won f1 2"),
+        ],
+        "after its cancelled event",
+    );
+    // A loser that stopped early with no `cancelled` event.
+    rejected(
+        "a 1/2\nb 1/1\nwon f1 2\n",
+        vec![
+            print(1, "f1.2", "b 1/1"),
+            print(2, "f1.1", "a 1/2"),
+            root(3, "won f1 2"),
+        ],
+        "with no cancelled event",
+    );
+    // A line in the output with no event, a gap in `seq`, and a branch's events split.
+    rejected(
+        "a 1/1\nb 1/1\nwon f1 1\n",
+        vec![print(1, "f1.1", "a 1/1"), root(2, "won f1 1")],
+        "not the lines of the print events",
+    );
+    rejected(
+        "a 1/1\nwon f1 1\n",
+        vec![print(1, "f1.1", "a 1/1"), root(3, "won f1 1")],
+        "has seq",
+    );
+    rejected(
+        "a 1/2\na 2/2\nb 1/1\nwon f1 1\n",
+        vec![
+            print(1, "f1.1", "a 1/2"),
+            print(2, "f1.2", "b 1/1"),
+            print(3, "f1.1", "a 2/2"),
+            root(4, "won f1 1"),
+        ],
+        "of a branch of race f1 are not contiguous",
+    );
+}
+
 /// A program that runs `rounds` races, each between a branch that computes a little and
 /// returns, and one that builds a list of a thousand items and then computes for minutes, so
 /// the winner cancels it with the list alive, and prints how many the first branch won.
