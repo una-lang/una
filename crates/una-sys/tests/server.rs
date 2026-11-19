@@ -4,7 +4,7 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, TcpListener, TcpStream};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 use una_sys::server::{OPEN_FLAGS, identity, listen, raise_descriptor_limit};
@@ -129,19 +129,34 @@ fn a_second_listener_on_the_same_address_and_port_is_refused() {
     assert_eq!(std.kind(), std::io::ErrorKind::AddrInUse);
 }
 
-/// The listener is bound to the address and port asked for, in both families (#1483): the
-/// port of a first listener, freed, is asked for by number.
+/// A listener on `ip` at a port asked for by number, with the address it reports: the port
+/// of a first listener, freed. Another socket may take the port in between, so a refusal
+/// with `AddrInUse` is tried again with another port.
+fn listen_by_number(ip: IpAddr) -> std::io::Result<(SocketAddr, SocketAddr)> {
+    let mut tries = 0;
+    loop {
+        let free = listen(SocketAddr::new(ip, 0), 16)?;
+        let asked = free.local_addr()?;
+        drop(free);
+        tries += 1;
+        match listen(asked, 16) {
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && tries < 16 => {}
+            other => return Ok((asked, other?.local_addr()?)),
+        }
+    }
+}
+
+/// The listener is bound to the address and port asked for, in both families (#1483).
 #[test]
 fn a_listener_is_bound_to_the_address_and_port_asked_for() {
     let _children = CHILDREN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let free = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
-    let four = free.local_addr().unwrap();
-    assert_eq!(four.ip(), Ipv4Addr::LOCALHOST);
-    drop(free);
-    assert_eq!(listen(four, 16).unwrap().local_addr().unwrap(), four);
-    let free = match listen(SocketAddr::from((Ipv6Addr::LOCALHOST, 0)), 16) {
+    let (asked, bound) = listen_by_number(Ipv4Addr::LOCALHOST.into()).unwrap();
+    assert_eq!(asked.ip(), Ipv4Addr::LOCALHOST);
+    assert_ne!(asked.port(), 0);
+    assert_eq!(bound, asked);
+    let (asked, bound) = match listen_by_number(Ipv6Addr::LOCALHOST.into()) {
         // Only a machine without IPv6 skips; any other error fails.
         Err(error)
             if matches!(
@@ -154,10 +169,9 @@ fn a_listener_is_bound_to_the_address_and_port_asked_for() {
         }
         other => other.unwrap(),
     };
-    let six = free.local_addr().unwrap();
-    assert_eq!(six.ip(), Ipv6Addr::LOCALHOST);
-    drop(free);
-    assert_eq!(listen(six, 16).unwrap().local_addr().unwrap(), six);
+    assert_eq!(asked.ip(), Ipv6Addr::LOCALHOST);
+    assert_ne!(asked.port(), 0);
+    assert_eq!(bound, asked);
 }
 
 #[test]

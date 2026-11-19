@@ -44,6 +44,7 @@ pub fn spawn(
         if *source < 3 {
             // The standard library's duplicate is `fcntl` with `F_DUPFD_CLOEXEC` from 3, the
             // call made here before; its floor is not in its contract, so it is checked.
+            // Close-on-exec rests on that implementation, pinned by the toolchain's version.
             let duplicate = borrowed.try_clone_to_owned()?;
             if duplicate.as_raw_fd() < 3 {
                 return Err(io::Error::other("a duplicate landed on a standard stream"));
