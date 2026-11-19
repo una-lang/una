@@ -696,6 +696,92 @@ fn a_command_that_loses_the_root_floor_race_fails() {
     }
 }
 
+/// #2132, the present behavior, reproduced end to end: a mirror that holds no key poisons the
+/// root-version floor for good. The lock is made under root 1; the registry then rotates to
+/// root 2 with the same witnesses. A mirror directory serves the honest root 2 with one junk
+/// signature line more and no latest checkpoint. `una ita fetch` succeeds from it and stores
+/// root version 2 with the digest of the altered note. From then on every command that reads
+/// the honest registry is refused (U7010, "forked"). Removing the floor file does not end it:
+/// the provenance fetched from the mirror, which Itaoca never replaces, holds the altered note,
+/// and `una ita lock --check` refuses it against the honest registry's root 2.
+///
+/// This test documents the defect and flips when #2132 is fixed.
+#[test]
+fn a_mirror_with_no_key_poisons_the_root_floor() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("floor-poison", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    let first = una_project::tlog::root::digest(&registry.roots[0]);
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 {first}\n")
+    );
+    // The rotation: root 2, the same witnesses, and a later checkpoint signed under it.
+    registry.rotate_witnesses(0, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    let honest = mirror.parent().unwrap().join("honest");
+    registry.write(&honest);
+    // The mirror: the honest files, but root 2 with a junk signature line, and no latest
+    // checkpoint. It needs no key.
+    let altered = format!(
+        "{}\u{2014} nobody {}\n",
+        registry.roots[1],
+        una_project::tlog::note::encode_base64(&[7u8; 68])
+    );
+    let second = una_project::tlog::root::digest(&registry.roots[1]);
+    let poisoned = una_project::tlog::root::digest(&altered);
+    assert_ne!(poisoned, second);
+    registry.write(&mirror);
+    std::fs::remove_file(mirror.join("checkpoint/latest")).unwrap();
+    std::fs::write(mirror.join("root/2"), &altered).unwrap();
+
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
+    );
+    assert!(!err.contains("not stored"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("2 {poisoned}\n")
+    );
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+
+    // The honest registry, from then on: refused.
+    list_mirrors(&itaoca, &[&honest]);
+    for args in [
+        &["una", "ita", "lock", "--check", arg(&dir)][..],
+        &["una", "ita", "lock", arg(&dir)][..],
+    ] {
+        let (code, out, err) = una_in(args, &itaoca);
+        assert_eq!(
+            code, 1,
+            "#2132 is fixed, flip this test: {args:?}: {out}{err}"
+        );
+        assert!(
+            err.contains("U7010") && err.contains("forked") && err.contains(&poisoned),
+            "{args:?}: {err}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("2 {poisoned}\n")
+    );
+    // The user removes the floor file: the provenance stored from the mirror is still refused.
+    std::fs::remove_file(&floor).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("U7010") && err.contains("forked"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("2 {second}\n")
+    );
+}
+
 /// Floors are stored as soon as a checkpoint is accepted, even when nothing is written; and a
 /// registry whose log does not extend the lock's point is refused, with no floor stored.
 #[test]

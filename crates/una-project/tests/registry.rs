@@ -1263,6 +1263,96 @@ fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
     }
 }
 
+/// #2132, the present behavior, reproduced for a bundle: a bundle made by someone who holds no
+/// key poisons the root-version floor for good. The lock was made under root 1 (`last root 1`);
+/// the registry has since rotated to root 2 with the same witnesses. The bundle's copy of the
+/// registry holds the honest root 2 with one junk signature line more, and no latest
+/// checkpoint. It unbundles with no note, and the floor is stored with the digest of the
+/// altered note. From then on the honest bundle of the same lock is refused as forked, and so
+/// is the honest registry read as a place.
+///
+/// This test documents the defect and flips when #2132 is fixed.
+#[test]
+fn a_bundle_with_no_key_poisons_the_root_floor() {
+    use una_project::tlog::root::digest;
+
+    let mut b = bundled_with(Rotation::AfterPoint(0));
+    // The lock was written under root 1, before the rotation.
+    b.expected.last_root = 1;
+    b.expected.last_root_digest = b.test.pin();
+    let id = registry_id(&b.expected.root);
+    let altered = format!(
+        "{}\u{2014} nobody {}\n",
+        b.test.roots[1],
+        una_project::tlog::note::encode_base64(&[7u8; 68])
+    );
+    assert_ne!(digest(&altered), digest(&b.test.roots[1]));
+    let mut files = b.files.clone();
+    assert!(files.remove("checkpoint").is_some());
+    files.insert("root/2".to_owned(), altered.clone().into_bytes());
+    let hostile = bundle_of(&b, &b.archive, &b.provenance, &files);
+    let honest = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let store = Itaoca {
+        root: scratch("unbundle-root-poison"),
+    };
+    // What the machine stored when it locked, under root 1.
+    store.store_root_version(&id, 1, &b.test.pin()).unwrap();
+
+    let done = bundle::unbundle(
+        &hostile,
+        &store,
+        std::slice::from_ref(&b.expected),
+        &no_place,
+    )
+    .unwrap();
+    assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
+    assert!(done.notes.is_empty(), "{:?}", done.notes);
+    let poisoned = una_project::itaoca::RootFloor {
+        version: 2,
+        digest: Some(digest(&altered)),
+    };
+    assert_eq!(
+        store.load_root_version(&id).unwrap(),
+        Some(poisoned.clone())
+    );
+
+    // The honest bundle of the same lock is refused from then on.
+    let (_, problem) = bundle::unbundle(
+        &honest,
+        &store,
+        std::slice::from_ref(&b.expected),
+        &no_place,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&problem, Failure::Refused(why) if why.contains("another digest") && why.contains("forked")),
+        "#2132 is fixed, flip this test: {problem:?}"
+    );
+    // And so is the honest registry, read as a place at its latest checkpoint.
+    let served = Memory {
+        source: "acme".to_owned(),
+        files: b.test.files.clone(),
+    };
+    let floors = una_project::client::Floors {
+        checkpoint: None,
+        root_version: Some(poisoned.version),
+        root_digest: poisoned.digest.as_deref(),
+    };
+    let opened = Registry::open_with(
+        "acme",
+        &served,
+        &b.test.pin(),
+        &Point::Latest { now: NOW + 60 },
+        &floors,
+    );
+    assert!(
+        matches!(&opened, Err(una_project::client::OpenError::Refused(why)) if why.contains("forked")),
+        "{:?}",
+        opened.err().map(una_project::client::OpenError::message)
+    );
+    assert_eq!(store.load_root_version(&id).unwrap(), Some(poisoned));
+}
+
 /// ADR 0122, amendment of 2026-11-09 (L3): unbundling refuses a bundle whose root chain holds
 /// the floor's version with another digest than the one stored, a fork of the root chain
 /// (U7010), and writes nothing; with the same digest, or a floor of the earlier form, it
