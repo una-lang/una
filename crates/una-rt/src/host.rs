@@ -1326,6 +1326,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "uses the file system, which Miri's isolation refuses")]
     #[allow(clippy::unwrap_used, clippy::panic)]
     fn a_grant_on_the_current_directory_reaches_its_files_2144() {
         // #2144: an executable resolves its grants against the current directory, and the
