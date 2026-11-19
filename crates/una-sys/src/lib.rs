@@ -3,7 +3,7 @@
 //! of SIGINT and SIGTERM, the attention words, coroutines, a write-readiness check, and the
 //! `kqueue` or `epoll` instance of the reactor (ADR 0117 slice S7).
 //!
-//! The base code stays under its cap of 1,594 lines (ADR 0058, amendment of 2026-10-28), with one
+//! The base code stays under its cap of 1,751 lines (ADR 0058, amendment of 2026-11-19), with one
 //! assembly instruction per line, and depends on no crate of the repository. Every change to
 //! it gets a security review before it merges. Only `signals`, `coroutine`, `io`, `poll`,
 //! `server` (`serve:` grants) and, behind the feature of that name, `solver` hold `unsafe` code,
