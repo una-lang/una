@@ -15,7 +15,7 @@ Run the installer:
 curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
 ```
 
-It puts the release in `~/.una` and changes nothing else. Put that directory on your `PATH`:
+It puts the release in `~/.una` and changes nothing else. The installer is the supported way to install. If you downloaded the macOS archive in a browser instead, read [An archive downloaded by hand on macOS](#an-archive-downloaded-by-hand-on-macos). Put `~/.una/bin` on your `PATH`:
 
 ```sh
 export PATH="$HOME/.una/bin:$PATH"
@@ -360,7 +360,12 @@ The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/
 - It installs only an archive whose digest the release's validation record lists, or that `docs/validation/repacked.md` pairs with that listed digest (an archive packed again after its release).
 - It changes nothing outside `~/.una`.
 - To update, run it again: it replaces the release in `~/.una` with the current one, and prints the new version when it is done.
-- The README describes the other ways to install, and how to uninstall.
+- To uninstall, run `curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh -s -- --uninstall`. It removes the files the installer recorded and the key of the proof cache that `una` makes at run time, `~/.una/proof-cache.key`, and then `~/.una` when nothing else is in it. It removes no other file: what is left is named in its message, and a key file that `UNA_PROOF_KEY` names is kept.
+- The README says more about the installer and the release archives.
+
+### An archive downloaded by hand on macOS
+
+The installer is the supported way to install. The `una` in the macOS archive of the releases page is ad hoc signed and is not notarized. A browser marks what it downloads with the `com.apple.quarantine` attribute, and the files unpacked from the archive carry it. macOS does not run that `una`: started from a terminal, the process is killed (exit code 137) and `una` prints nothing. Either use the installer, whose download carries no such attribute, or remove the attribute from the unpacked file with `xattr -d com.apple.quarantine <file>`, where `<file>` is the unpacked `una`. Compare the archive's SHA-256 digest with the one in the release's validation record first, as the installer does.
 
 ### Run `una` as an ordinary user
 

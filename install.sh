@@ -43,7 +43,10 @@
 # The installation is recorded in UNA_HOME/.una-install: the version, each file it installed and
 # each directory it created. `--uninstall` removes exactly those files, then those directories
 # when they are empty, and refuses a UNA_HOME without that record, so it never removes what
-# Una did not install.
+# Una did not install. It also removes the one file `una` makes outside a package at run time, the
+# proof cache's key $HOME/.una/proof-cache.key (ADR 0064), and then $HOME/.una when it is empty.
+# A key file that UNA_PROOF_KEY names is the user's choice of file and is kept. The messages say
+# what was removed and name what is left.
 #
 # Usage:
 #   curl -fsSL <site>/install.sh | sh
@@ -193,6 +196,11 @@ fi
 
 marker=$home/.una-install
 
+# `holds DIR`: the names in DIR, on one line, for a message.
+holds() {
+    ls -A "$1" 2> /dev/null | awk '{ printf "%s%s", (NR > 1 ? ", " : ""), $0 } END { if (NR == 0) printf "nothing" }'
+}
+
 if [ "${1:-}" = --uninstall ]; then
     [ -f "$marker" ] \
         || fail "$home has no record of an installation by this script ($marker), so nothing is removed"
@@ -215,6 +223,41 @@ if [ "${1:-}" = --uninstall ]; then
     while read -r kind path; do
         [ "$kind" = file ] && rm -f "${home:?}/$path"
     done < "$marker"
+    # The proof cache's key (ADR 0064): `una` makes it on first use as $HOME/.una/proof-cache.key,
+    # whatever UNA_HOME is, and it has no use without the installation. Only that one name is
+    # removed, with `rm -f`, which removes a symbolic link and never what the link names; a
+    # directory or anything else at the name is kept. As root, it is removed only when $HOME/.una
+    # is UNA_HOME, which was checked above to be a place only root can change.
+    keydir=
+    key_note=
+    if [ -n "${HOME:-}" ]; then
+        keydir=$HOME/.una
+        if [ "$uid" = 0 ]; then
+            physical=$(cd "$keydir" 2> /dev/null && pwd -P) || physical=
+            if [ "$physical" = "$home" ]; then
+                keydir=$home
+            else
+                [ ! -e "$keydir/proof-cache.key" ] && [ ! -L "$keydir/proof-cache.key" ] \
+                    || key_note="as root, kept the proof cache's key $keydir/proof-cache.key, which is outside $home"
+                keydir=
+            fi
+        fi
+    fi
+    key_removed=
+    if [ -n "$keydir" ]; then
+        key=$keydir/proof-cache.key
+        if [ -L "$key" ]; then
+            rm -f "${keydir:?}/proof-cache.key"
+            key_removed=1
+            key_note="removed the proof cache's key $key, a symbolic link; the file it named is kept"
+        elif [ -f "$key" ]; then
+            rm -f "${keydir:?}/proof-cache.key"
+            key_removed=1
+            key_note="removed the proof cache's key $key"
+        elif [ -e "$key" ]; then
+            key_note="kept $key, which is not a file"
+        fi
+    fi
     dirs=$(sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
     rm -f "$marker"
     printf '%s\n' "$dirs" | while read -r path; do
@@ -224,10 +267,25 @@ if [ "${1:-}" = --uninstall ]; then
             *) rmdir "$home/$path" 2> /dev/null || true ;;
         esac
     done
+    # $HOME/.una, when the key was removed from it and nothing else is there.
+    [ -z "$key_removed" ] || rmdir "$keydir" 2> /dev/null || true
     if [ -d "$home" ]; then
-        say "removed Una from $home; the other files there are kept"
+        left=$(holds "$home")
+        if [ "$left" = nothing ] && [ -z "$(ls -A "$home" 2> /dev/null)" ]; then
+            say "removed Una from $home; the directory, which the installer did not create, is kept"
+        else
+            say "removed Una from $home; kept there, since the installer did not install them: $left"
+        fi
     else
         say "removed $home"
+    fi
+    [ -z "$key_note" ] || say "$key_note"
+    if [ -n "$key_removed" ] && [ "$keydir" != "$home" ] && [ -d "$keydir" ]; then
+        say "kept $keydir, which holds: $(holds "$keydir")"
+    fi
+    # A key file that UNA_PROOF_KEY names is a file the user chose: it is named, never removed.
+    if [ -n "${UNA_PROOF_KEY:-}" ] && { [ -e "$UNA_PROOF_KEY" ] || [ -L "$UNA_PROOF_KEY" ]; }; then
+        say "kept the proof cache's key $UNA_PROOF_KEY, which UNA_PROOF_KEY names"
     fi
     say "remove the PATH line for $home/bin from your shell's profile too"
     exit 0

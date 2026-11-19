@@ -493,6 +493,217 @@ fn an_archive_without_lib_installs_no_runtime_and_an_earlier_one_still_installs_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A fresh installation of `version` into `dir/home/.una` (or where `envs` says), for the
+/// uninstall tests of the proof cache's key (#2097); `None` on a platform without a release.
+fn installed_for_uninstall(name: &str, version: &str, envs: &[(&str, &str)]) -> Option<PathBuf> {
+    let target = target()?;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    release(&dir, target, version, "PASS (every gate)", None);
+    let output = run_installer(
+        &root().join("install.sh"),
+        &dir,
+        version,
+        &[],
+        SYSTEM_PATH,
+        envs,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    Some(dir)
+}
+
+/// Runs `--uninstall` for the installation of [`installed_for_uninstall`], and returns what it
+/// printed after checking that it exits with 0.
+fn uninstall(dir: &Path, version: &str, envs: &[(&str, &str)]) -> String {
+    let output = run_installer(
+        &root().join("install.sh"),
+        dir,
+        version,
+        &["--uninstall"],
+        SYSTEM_PATH,
+        envs,
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn uninstall_removes_the_proof_cache_key_and_then_the_empty_directory() {
+    // #2097: `una` makes `$HOME/.una/proof-cache.key` at run time (ADR 0064), so the record of
+    // the installation does not list it. Uninstall removes it too, says so, and then removes
+    // `~/.una`, which holds nothing else.
+    let version = "9.9.6";
+    let Some(dir) = installed_for_uninstall("uninstall-key", version, &[]) else {
+        return;
+    };
+    let home = dir.join("home/.una");
+    std::fs::write(home.join("proof-cache.key"), [7u8; 32]).unwrap();
+    let said = uninstall(&dir, version, &[]);
+    assert!(!home.exists(), "{said}");
+    assert!(
+        said.contains(&format!(
+            "removed the proof cache's key {}",
+            home.join("proof-cache.key").display()
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("removed {}", home.display())),
+        "{said}"
+    );
+    assert!(!said.contains("kept"), "{said}");
+    // Without a key, nothing is said of one.
+    let Some(dir) = installed_for_uninstall("uninstall-key", version, &[]) else {
+        return;
+    };
+    let said = uninstall(&dir, version, &[]);
+    assert!(!home.exists() && !said.contains("proof cache"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn uninstall_keeps_and_names_what_the_product_did_not_make() {
+    // The key goes; a file and a directory of the user's stay, with `~/.una`, and the message
+    // names them. A staged key file of another name is not the key and stays as well.
+    let version = "9.9.5";
+    let Some(dir) = installed_for_uninstall("uninstall-foreign", version, &[]) else {
+        return;
+    };
+    let home = dir.join("home/.una");
+    std::fs::write(home.join("proof-cache.key"), [7u8; 32]).unwrap();
+    std::fs::write(home.join("notes.txt"), "mine").unwrap();
+    std::fs::create_dir_all(home.join("keys")).unwrap();
+    std::fs::write(home.join("keys/owner.key"), "mine").unwrap();
+    std::fs::write(home.join("proof-cache.key.bak"), "mine").unwrap();
+    let said = uninstall(&dir, version, &[]);
+    assert!(!home.join("proof-cache.key").exists(), "{said}");
+    assert!(!home.join("bin").exists() && !home.join(".una-install").exists());
+    assert_eq!(
+        std::fs::read_to_string(home.join("notes.txt")).unwrap(),
+        "mine"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("keys/owner.key")).unwrap(),
+        "mine"
+    );
+    assert!(home.join("proof-cache.key.bak").exists());
+    assert!(
+        said.contains(&format!(
+            "removed Una from {}; kept there, since the installer did not install them: keys, notes.txt, proof-cache.key.bak\n",
+            home.display()
+        )),
+        "{said}"
+    );
+    assert!(said.contains("removed the proof cache's key"), "{said}");
+
+    // A directory at the key's name is not the key: it is kept, with what it holds, and named.
+    let Some(dir) = installed_for_uninstall("uninstall-foreign", version, &[]) else {
+        return;
+    };
+    std::fs::create_dir_all(home.join("proof-cache.key")).unwrap();
+    std::fs::write(home.join("proof-cache.key/inside"), "mine").unwrap();
+    let said = uninstall(&dir, version, &[]);
+    assert!(home.join("proof-cache.key/inside").exists(), "{said}");
+    assert!(
+        said.contains(&format!(
+            "kept {}, which is not a file",
+            home.join("proof-cache.key").display()
+        )),
+        "{said}"
+    );
+
+    // With UNA_HOME elsewhere, the key is still the one of `$HOME/.una`: it is removed, and
+    // that directory after it when it is empty, or kept and named when it holds something.
+    for foreign in [false, true] {
+        let custom = dir.join("home/custom");
+        let custom_text = custom.to_str().unwrap().to_owned();
+        let envs = [("UNA_HOME", custom_text.as_str())];
+        let Some(dir) = installed_for_uninstall("uninstall-foreign", version, &envs) else {
+            return;
+        };
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("proof-cache.key"), [7u8; 32]).unwrap();
+        if foreign {
+            std::fs::write(home.join("notes.txt"), "mine").unwrap();
+        }
+        let said = uninstall(&dir, version, &envs);
+        assert!(!custom.exists(), "{said}");
+        assert!(!home.join("proof-cache.key").exists(), "{said}");
+        assert_eq!(home.exists(), foreign, "{said}");
+        assert_eq!(
+            said.contains(&format!(
+                "kept {}, which holds: notes.txt\n",
+                home.display()
+            )),
+            foreign,
+            "{said}"
+        );
+    }
+
+    // A key file that UNA_PROOF_KEY names is the user's choice of file: kept, and named.
+    let named = dir.join("home/my.key");
+    let named_text = named.to_str().unwrap().to_owned();
+    let envs = [("UNA_PROOF_KEY", named_text.as_str())];
+    let Some(dir) = installed_for_uninstall("uninstall-foreign", version, &envs) else {
+        return;
+    };
+    std::fs::write(&named, [9u8; 32]).unwrap();
+    std::fs::write(home.join("proof-cache.key"), [7u8; 32]).unwrap();
+    let said = uninstall(&dir, version, &envs);
+    assert!(named.exists() && !home.exists(), "{said}");
+    assert!(
+        said.contains(&format!(
+            "kept the proof cache's key {named_text}, which UNA_PROOF_KEY names"
+        )),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_removes_a_key_that_is_a_link_and_never_what_it_names() {
+    // The key's name is removed, never followed: a symbolic link there goes, and the file it
+    // named, outside `~/.una`, stays as it was. So does the directory a link names.
+    use std::os::unix::fs::symlink;
+    let version = "9.9.4";
+    let Some(dir) = installed_for_uninstall("uninstall-link", version, &[]) else {
+        return;
+    };
+    let home = dir.join("home/.una");
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("real.key"), "the user's file").unwrap();
+    symlink(elsewhere.join("real.key"), home.join("proof-cache.key")).unwrap();
+    let said = uninstall(&dir, version, &[]);
+    assert!(!home.exists(), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("real.key")).unwrap(),
+        "the user's file"
+    );
+    assert!(
+        said.contains(&format!(
+            "removed the proof cache's key {}, a symbolic link; the file it named is kept",
+            home.join("proof-cache.key").display()
+        )),
+        "{said}"
+    );
+    // A link to a directory, and a link to nothing.
+    for to in ["elsewhere", "missing"] {
+        let Some(dir) = installed_for_uninstall("uninstall-link", version, &[]) else {
+            return;
+        };
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("real.key"), "the user's file").unwrap();
+        symlink(dir.join(to), home.join("proof-cache.key")).unwrap();
+        let said = uninstall(&dir, version, &[]);
+        assert!(!home.exists(), "{to}: {said}");
+        assert!(elsewhere.join("real.key").exists(), "{to}: {said}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn an_archive_with_a_link_is_refused_before_anything_is_installed() {
