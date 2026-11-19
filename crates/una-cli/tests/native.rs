@@ -3424,12 +3424,15 @@ fn the_executable_confines_files_through_links_as_una_run_does_1343() {
 fn a_missing_directory_is_not_found_in_both_engines_1459() {
     // `spec/14 §3` rule 2, #1459: below a directory that does not exist, a read and a write
     // fail with `NotFound`, which confinement answers, in the executable as in `una run`, and
-    // the value is the same at the host's limits: after more links than one lookup follows
-    // and for a path as written longer than the host takes, the two classes where that path
-    // failed with `Io` before, and below a canonical directory so long that the directory
+    // the value is the same at the host's limits: after more links than one lookup follows,
+    // for a path as written longer than the host takes and for a NUL in a component after
+    // the missing directory (#2138), the three classes where that path failed with `Io`
+    // before, and below a canonical directory so long that the directory
     // joined with the rest is past the host's limit. A component that
     // is not a directory is `Io`, as before, and a final component that does not exist in a
-    // directory that resolves is still left to the operation.
+    // directory that resolves is still left to the operation: a name longer than the host
+    // takes, or one with a NUL, is `Io` there, and a NUL in a directory that confinement
+    // must resolve is `Denied` (#2138).
     use std::os::unix::fs::symlink;
     runtime();
     let depth = 40;
@@ -3448,9 +3451,32 @@ fn a_missing_directory_is_not_found_in_both_engines_1459() {
         ("write", "in_dir/new.txt".to_owned()),
         ("read", "in_dir/new.txt".to_owned()),
     ]);
+    // #2138: in a directory that resolves, a final component of 300 bytes, more than a host
+    // takes in a name (255), and one with a NUL, are the operation's own failure; a NUL in a
+    // directory is not absence. The Una text writes the NUL as `\u{0}`.
+    let name = "P".repeat(300);
+    cases.extend([
+        ("read", name.clone()),
+        ("write", format!("in_dir/{name}")),
+        ("read", "in_dir/a\\u{0}b".to_owned()),
+        ("write", "a\\u{0}b".to_owned()),
+        ("read", "a\\u{0}b/new.txt".to_owned()),
+        ("write", "in_dir/a\\u{0}b/new.txt".to_owned()),
+    ]);
     let fixed = cases.len();
     cases.push(("read", format!("a/b/missing/{leaf}")));
     cases.push(("write", format!("a/b/missing/{leaf}")));
+    // #2138: below a missing directory, that name of 300 bytes and a NUL are never reached:
+    // `NotFound`. The NUL was `Io` before #1459; the long name was `NotFound` already.
+    for path in [
+        format!("missing/{name}"),
+        "missing/a\\u{0}b".to_owned(),
+        "missing/a\\u{0}b/new.txt".to_owned(),
+        "in_dir/missing/\\u{0}".to_owned(),
+    ] {
+        cases.push(("read", path.clone()));
+        cases.push(("write", path));
+    }
     // A path as written longer than the host takes (1024 bytes on macOS, 4096 on Linux),
     // below a missing directory: `ENAMETOOLONG` on that path, `Io`, before.
     for components in [6, 25] {
@@ -3522,6 +3548,7 @@ fn a_missing_directory_is_not_found_in_both_engines_1459() {
     assert_eq!(outcomes.len(), cases.len(), "{stdout}");
     let mut expected = vec!["not found"; 6];
     expected.extend(["io", "io", "not found", "written", "read"]);
+    expected.extend(["io", "io", "io", "io", "denied", "denied"]);
     assert_eq!(expected.len(), fixed);
     // Below the long canonical directory, for the paths as written past the host's length
     // limit, and after links well within what a host follows.

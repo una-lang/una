@@ -153,6 +153,10 @@ fn an_absent_directory_fails_the_operation_without_a_path_1459() {
         "missing/deeper/new.txt",
         "in_dir/missing/new.txt",
         "sub/../missing/a/b/new.txt",
+        // #2138: a NUL after the missing directory is never reached. Before #1459 the
+        // operation refused the path as written for it, `Io`.
+        "missing/a\\u{0}b",
+        "missing/a\\u{0}b/new.txt",
         "note.txt/x/new.txt",
     ];
     let cases: Vec<(&str, &str)> = paths
@@ -214,6 +218,13 @@ fn a_missing_final_component_is_opened_in_its_canonical_directory_1459() {
         ("write", "in_dir/new.txt"),
         ("read", "in_dir/new.txt"),
         ("write", "fresh.txt"),
+        // #2138: a NUL in the final component is the operation's own failure, `Io`, on the
+        // canonical directory joined with it; a NUL in a directory that confinement must
+        // resolve is `Denied`, with no path.
+        ("read", "in_dir/a\\u{0}b"),
+        ("write", "a\\u{0}b"),
+        ("read", "a\\u{0}b/new.txt"),
+        ("write", "in_dir/a\\u{0}b/new.txt"),
     ];
     let world = run(&dir, &["boxlink"], &cases);
     assert_eq!(
@@ -222,7 +233,11 @@ fn a_missing_final_component_is_opened_in_its_canonical_directory_1459() {
             "0 read: not found",
             "1 write: written",
             "2 read: read",
-            "3 write: written"
+            "3 write: written",
+            "4 read: io",
+            "5 write: io",
+            "6 read: denied",
+            "7 write: denied"
         ]
     );
     let canonical = std::fs::canonicalize(dir.join("box")).unwrap();
@@ -233,6 +248,8 @@ fn a_missing_final_component_is_opened_in_its_canonical_directory_1459() {
             ("write", canonical.join("sub/new.txt")),
             ("read", canonical.join("sub/new.txt")),
             ("write", canonical.join("fresh.txt")),
+            ("read", canonical.join("sub/a\0b")),
+            ("write", canonical.join("a\0b")),
         ]
     );
     for (_, path) in &world.operations {
