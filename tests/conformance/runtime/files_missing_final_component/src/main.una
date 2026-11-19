@@ -1,0 +1,48 @@
+-- test: a final component that does not exist in a directory that exists is left to the operation: a read fails with NotFound, a write creates the file, and a read then finds it
+-- spec: spec/14 §3
+-- grant: console
+-- grant: files:data:read,write
+-- expect: run-output "read of a file that does not exist: not found"
+-- expect: run-output "read of one in a directory below: not found"
+-- expect: run-output "write of a file that does not exist: written"
+-- expect: run-output "read of the file written: read"
+-- expect: run-output "read of the other still: not found"
+module main
+
+describe(failure: FileError) -> Text
+=
+  when failure
+    is NotFound -> "not found"
+    is Denied -> "denied"
+    is Io -> "io"
+
+show(path: Text) -> Text
+  uses @files: Files[read]
+=
+  let content = attempt @files.read(path)
+  when content
+    is Ok -> "read"
+    is Err(failure) -> describe(failure)
+
+save(path: Text) -> Text
+  uses @files: Files[write]
+=
+  let saved = attempt @files.write(path, content: "entry")
+  when saved
+    is Ok -> "written"
+    is Err(failure) -> describe(failure)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  let r0 = show("gone.txt")
+  @console.print("read of a file that does not exist: {r0}")
+  let r1 = show("sub/gone.txt")
+  @console.print("read of one in a directory below: {r1}")
+  let r2 = save("sub/new.txt")
+  @console.print("write of a file that does not exist: {r2}")
+  let r3 = show("sub/new.txt")
+  @console.print("read of the file written: {r3}")
+  let r4 = show("sub/gone.txt")
+  @console.print("read of the other still: {r4}")
