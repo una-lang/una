@@ -3421,6 +3421,176 @@ fn the_executable_confines_files_through_links_as_una_run_does_1343() {
 
 #[cfg(unix)]
 #[test]
+fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
+    // #2144, `spec/13 §5`, `spec/14 §3`: a grant on the directory that grants are relative to
+    // (`files:.:<modes>` in `[run] grants`, relative to the package root in `una run` and to
+    // the current directory in an executable, and in a `--grant` flag) had the empty path as
+    // its prefix, which does not resolve: since #1459 every operation under it was `NotFound`
+    // and nothing was written. A new file is written and read back, an existing one is read,
+    // a missing file and a missing directory are `NotFound`, and a link that leaves the
+    // directory, as a directory of the path or as its final component, is `Denied`, as is
+    // `..`, in the executable as in `una run`, from the canonical directory
+    // and from a link to it, and the same under the relative prefixes `sub` and `./sub`.
+    use std::os::unix::fs::symlink;
+    runtime();
+    let cases: Vec<(&str, String)> = [
+        ("write", "new.txt"),
+        ("read", "new.txt"),
+        ("read", "note.txt"),
+        ("read", "gone.txt"),
+        ("write", "sub/new.txt"),
+        ("read", "sub/new.txt"),
+        ("read", "missing/new.txt"),
+        ("write", "missing/new.txt"),
+        ("write", "missing/deeper/new.txt"),
+        ("read", "out/secret.txt"),
+        ("write", "out/new.txt"),
+        ("write", "../new.txt"),
+        ("read", "final.txt"),
+        ("write", "final.txt"),
+    ]
+    .into_iter()
+    .map(|(operation, path)| (operation, path.to_owned()))
+    .collect();
+    let outcomes = [
+        "written",
+        "read",
+        "read",
+        "not found",
+        "written",
+        "read",
+        "not found",
+        "not found",
+        "not found",
+        "denied",
+        "denied",
+        "denied",
+        "denied",
+        "denied",
+    ];
+    let expected: Vec<String> = cases
+        .iter()
+        .zip(outcomes)
+        .enumerate()
+        .map(|(index, ((operation, _), outcome))| format!("{index} {operation}: {outcome}"))
+        .collect();
+    let program = confined_program(&cases);
+    // `granted`, a directory under a grant: a file, a directory, a link to a directory that
+    // leaves it, and a final component that is a link to a file outside it.
+    let tree = |granted: &Path, outside: &Path| {
+        std::fs::create_dir_all(granted.join("sub")).unwrap();
+        std::fs::write(granted.join("note.txt"), "inside\n").unwrap();
+        symlink(outside, granted.join("out")).unwrap();
+        symlink(outside.join("final.txt"), granted.join("final.txt")).unwrap();
+    };
+    // What one run of the cases left in `granted`, removed for the next run.
+    let check = |output: &Output, granted: &Path, outside: &Path, context: &str| {
+        assert_eq!(output.status.code(), Some(0), "{context}: {output:?}");
+        let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines, expected, "{context}");
+        for written in ["new.txt", "sub/new.txt"] {
+            let written = granted.join(written);
+            assert_eq!(
+                std::fs::read_to_string(&written).unwrap(),
+                "entry",
+                "{context}"
+            );
+            std::fs::remove_file(written).unwrap();
+        }
+        assert!(!granted.join("missing").exists(), "{context}");
+        assert!(!outside.join("new.txt").exists(), "{context}");
+        // Nothing went through the final link, and `..` wrote nothing above the directory.
+        assert_eq!(
+            std::fs::read_to_string(outside.join("final.txt")).unwrap(),
+            "final\n",
+            "{context}"
+        );
+        assert!(
+            !granted.parent().unwrap().join("new.txt").exists(),
+            "{context}"
+        );
+    };
+    let place = |name: &str, grants: &str| {
+        let dir = package(
+            name,
+            &format!("\n[run]\nentry = \"files\"\n{grants}"),
+            &[("src/files.una", &program)],
+        );
+        let dir = std::fs::canonicalize(dir).unwrap();
+        let outside = dir.with_extension("outside");
+        let link = dir.with_extension("link");
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_file(&link);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        std::fs::write(outside.join("final.txt"), "final\n").unwrap();
+        symlink(&dir, &link).unwrap();
+        tree(&dir, &outside);
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        (dir, outside, link)
+    };
+    // The grant of the package: `[run] grants`.
+    let (dir, outside, link) = place("here", "grants = [\"console\", \"files:.:read,write\"]\n");
+    for directory in [&dir, &link] {
+        let native = Command::new(dir.join("target/una/here"))
+            .current_dir(directory)
+            .output()
+            .unwrap();
+        let context = format!("the executable in {}", directory.display());
+        check(&native, &dir, &outside, &context);
+        let context = format!("una run in {}", directory.display());
+        check(&una(directory, &["run"]), &dir, &outside, &context);
+        check(&una(directory, &["run", "."]), &dir, &outside, &context);
+    }
+    // The package named from another directory, by its path and through the link: its root,
+    // and so the prefix, is that path.
+    for path in [&dir, &link] {
+        let context = format!("una run {}", path.display());
+        let run = una(&outside, &["run", &path.to_string_lossy()]);
+        check(&run, &dir, &outside, &context);
+    }
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&dir);
+    // The grant of a flag, relative to the current directory in both engines: the directory
+    // itself and a directory in it, each written in more than one way.
+    let (dir, outside, link) = place("flagged", "");
+    tree(&dir.join("sub"), &outside);
+    for (spec, granted) in [
+        (".", dir.clone()),
+        ("./", dir.clone()),
+        ("sub/..", dir.clone()),
+        ("sub", dir.join("sub")),
+        ("./sub", dir.join("sub")),
+        ("sub/", dir.join("sub")),
+    ] {
+        let files = format!("files:{spec}:read,write");
+        let grants = ["--grant", "console", "--grant", &files];
+        for directory in [&dir, &link] {
+            let native = Command::new(dir.join("target/una/flagged"))
+                .args(grants)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            let context = format!("the executable with {files} in {}", directory.display());
+            check(&native, &granted, &outside, &context);
+            let context = format!("una run with {files} in {}", directory.display());
+            let mut arguments = vec!["run", "."];
+            arguments.extend(grants);
+            check(&una(directory, &arguments), &granted, &outside, &context);
+        }
+    }
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_missing_directory_is_not_found_in_both_engines_1459() {
     // `spec/14 §3` rule 2, #1459: below a directory that does not exist, a read and a write
     // fail with `NotFound`, which confinement answers, in the executable as in `una run`, and

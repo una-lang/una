@@ -329,19 +329,29 @@ pub fn check_limited_flags(flags: &[String], limit: LimitLabel<'_>) -> Result<()
     Ok(())
 }
 
-/// `path` with `.` removed and `..` applied, lexically.
+/// `path` with `.` removed and `..` applied, lexically: a `..` removes the named component
+/// before it, and is kept when there is none, so `../..` stays two levels up and a `..` at
+/// the root stays `/..`, which every host resolves to the root (#2144: a `..` once removed
+/// a `..` before it, so `../../x` was `x`). A relative path with no component left (`.`,
+/// `a/..`, the empty path) is `.`, the directory it is relative to, and never the empty
+/// path, which names no directory to the operating system (#2144).
 pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                if !out.pop() {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
                     out.push("..");
                 }
             }
             other => out.push(other.as_os_str()),
         }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(Component::CurDir);
     }
     out
 }
@@ -379,10 +389,19 @@ pub fn normalize(path: &Path) -> PathBuf {
 /// decides, in O(c²) lookups: the bound of O(c) holds on the normal path, and the fallback,
 /// which any path can reach, keeps the cost the earlier algorithm had for every path.
 ///
+/// An empty `prefix` is `.`, the directory that a relative path is relative to, as it is for
+/// every relative path ([`normalize`]): it is resolved and checked as any other prefix, and
+/// is not a prefix that does not exist (#2144). The grants of [`Grant::parse`] never hold one.
+///
 /// Races between this check and the operation are outside the v0.1 model (D9 rule 4). An
 /// absence is decided at the check: a directory made after it does not turn the answer into
 /// a late success.
 pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Confined {
+    let prefix = if prefix.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        prefix
+    };
     let Some(parts) = normalized(relative) else {
         return Confined::Denied;
     };
@@ -849,6 +868,74 @@ mod tests {
         assert_eq!(Grant::parse("http:https://h;0/second", base), None);
         assert_eq!(Grant::parse("http:https://h;1/once;2/once", base), None);
         assert_eq!(Grant::parse("console;1/once", base), None);
+    }
+
+    #[test]
+    fn the_prefix_of_a_files_grant_is_never_the_empty_path_2144() {
+        // #2144: `files:.:<modes>` relative to the current directory (a `--grant` flag, the
+        // embedded grants of an executable: the base ``) or to a package root written `.`
+        // (`una run .`) held the empty path, which no host resolves, so every operation under
+        // the grant ended with `NotFound`. The prefix is `.` there, and every other prefix is
+        // as it was.
+        let prefix = |spec: &str, base: &str| match Grant::parse(spec, Path::new(base)) {
+            Some(Grant::Files { prefix, .. }) => prefix,
+            other => panic!("{spec} in `{base}`: {other:?}"),
+        };
+        for base in ["", ".", "./", "./."] {
+            for path in [".", "./", "./.", "data/..", "./data/.."] {
+                let spec = format!("files:{path}:write");
+                assert_eq!(prefix(&spec, base), Path::new("."), "{spec} in `{base}`");
+            }
+            for path in ["data", "./data", "data/", "./data/.", "x/../data"] {
+                let spec = format!("files:{path}:read");
+                assert_eq!(prefix(&spec, base), Path::new("data"), "{spec} in `{base}`");
+            }
+            assert_eq!(prefix("files:..:read", base), Path::new(".."));
+            assert_eq!(prefix("files:../data:read", base), Path::new("../data"));
+            assert_eq!(prefix("files:/srv/data:read", base), Path::new("/srv/data"));
+            assert_eq!(prefix("files:/:read", base), Path::new("/"));
+        }
+        assert_eq!(prefix("files:.:read", "/work/app"), Path::new("/work/app"));
+        assert_eq!(prefix("files:.:read", "app"), Path::new("app"));
+        assert_eq!(prefix("files:..:read", "app"), Path::new("."));
+        // A `..` never removes a `..` before it: a spec that goes up two or more levels names
+        // that directory, not the current one or one in it.
+        for base in ["", ".", "./"] {
+            for (path, expected) in [
+                ("../..", "../.."),
+                ("../../", "../.."),
+                ("../../x", "../../x"),
+                ("../../../x", "../../../x"),
+                ("a/../..", ".."),
+                ("a/../../..", "../.."),
+                ("../a/../..", "../.."),
+                ("../../a/..", "../.."),
+            ] {
+                let spec = format!("files:{path}:read");
+                assert_eq!(
+                    prefix(&spec, base),
+                    Path::new(expected),
+                    "{spec} in `{base}`"
+                );
+            }
+        }
+        assert_eq!(prefix("files:..:read", ".."), Path::new("../.."));
+        assert_eq!(prefix("files:.:read", "../.."), Path::new("../.."));
+        assert_eq!(prefix("files:../..:read", "../pkg"), Path::new("../.."));
+        assert_eq!(prefix("files:../x:read", "../pkg"), Path::new("../x"));
+        // More `..` than an absolute base has components: the rest stays after the root,
+        // where the host reads `/..` as `/`, so the prefix is a path from the root and never
+        // a relative one.
+        assert_eq!(prefix("files:../..:read", "/work"), Path::new("/.."));
+        assert_eq!(prefix("files:../../x:read", "/work"), Path::new("/../x"));
+        assert_eq!(prefix("files:..:read", "/"), Path::new("/.."));
+        assert_eq!(prefix("files:/../../x:read", ""), Path::new("/../../x"));
+        assert_eq!(prefix("files:..:read", "/work"), Path::new("/"));
+        assert_eq!(normalize(Path::new("../..")), Path::new("../.."));
+        assert_eq!(normalize(Path::new("")), Path::new("."));
+        assert_eq!(normalize(Path::new("/")), Path::new("/"));
+        // No path is a spec without a path, as before.
+        assert_eq!(Grant::parse("files::read", Path::new("")), None);
     }
 
     #[test]
