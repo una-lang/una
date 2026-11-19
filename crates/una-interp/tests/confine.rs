@@ -702,6 +702,13 @@ fn confinement_keeps_the_outcomes_of_resolving_every_prefix_1343() {
             Confined::Denied,
             "{relative}"
         );
+        // A prefix whose path passes through a dangling link is not that link: it does not
+        // exist, `NotFound` (`spec/14 §3` rule 2, #2138).
+        assert_eq!(
+            confine(&mut Disk, &root.join("dangling_prefix/under"), relative),
+            Confined::Absent(Absence::Missing),
+            "{relative}"
+        );
     }
     let link = root.join("boxlink");
     assert_eq!(
@@ -1377,9 +1384,12 @@ fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
     // The table of #1459. Before it, a missing directory left the operation the path as
     // written, and the operation's own failure decided the value: `Io` where that path had
     // more links than the host follows in one lookup (`ELOOP`) or was longer than the host
-    // takes (`ENAMETOOLONG`), although the directory was confirmed missing. Those are the
-    // two classes whose value changes. Now confinement answers `NotFound` (`spec/14 §3` rule
-    // 2), the same
+    // takes (`ENAMETOOLONG`), although the directory was confirmed missing, and where a
+    // component after the missing directory held a NUL, which the host's interface refuses
+    // before any lookup (#2138). Those are the three classes whose value changes, the ones
+    // known: the rule is that the value changed wherever the operation failed on the path as
+    // written as a whole for a reason other than the missing directory. Now confinement
+    // answers `NotFound` (`spec/14 §3` rule 2), the same
     // value at a host limit as away from it, and the operation gets no path: neither the path
     // as written nor the canonical directory joined with the rest, which is longer than the
     // host takes in the last case and would fail with `Io` (`ENAMETOOLONG`).
@@ -1441,8 +1451,7 @@ fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
     // The second class whose value changes: a path as written longer than the host takes,
     // below a missing directory. The operation failed on its length (`ENAMETOOLONG`, `Io`)
     // before it reached the missing directory; confinement stops at that directory. Six
-    // components of 200 bytes pass the 1024 bytes of macOS, 25 the 4096 of Linux too. One
-    // long final component alone changes nothing: the path as written was `NotFound` already.
+    // components of 200 bytes pass the 1024 bytes of macOS, 25 the 4096 of Linux too.
     for (components, limited) in [
         (6, cfg!(target_os = "macos")),
         (25, cfg!(any(target_os = "macos", target_os = "linux"))),
@@ -1463,12 +1472,72 @@ fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
             );
         }
     }
-    let one = format!("missing/{}", "P".repeat(200));
-    assert_eq!(
+    // One final component longer than a host takes in a name (255 bytes), below a missing
+    // directory, changes nothing: the lookup of the path as written stopped at the missing
+    // directory, `NotFound` already, before it reached the long name (#2138: 300 bytes, where
+    // the 200 of #1459 were a name any host takes).
+    let name = "P".repeat(300);
+    let one = format!("missing/{name}");
+    for outcome in [
         confine(&mut Disk, &on, &one),
-        Confined::Absent(Absence::Missing)
-    );
+        confine(&mut DiskDefault, &on, &one),
+        confine_quadratic(&mut Disk, &on, &one),
+    ] {
+        assert_eq!(outcome, Confined::Absent(Absence::Missing));
+    }
     assert_eq!(kind(&lexical(&on, &one)), std::io::ErrorKind::NotFound);
+    // The same name in a directory that resolves is the operation's: the canonical directory
+    // joined with it, on which the operation fails as it did, with `Io` on a host that
+    // refuses the name.
+    assert_eq!(
+        confine(&mut Disk, &on, &name),
+        Confined::Path(on.join(&name))
+    );
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        assert_ne!(kind(&on.join(&name)), std::io::ErrorKind::NotFound);
+    }
+    // The third class whose value changes (#2138): a NUL in a component after the missing
+    // directory. The host's interface refuses the path as written before any lookup
+    // (`InvalidInput`), `Io` before; confinement stops at the missing directory, whose path
+    // holds no NUL, and answers `NotFound`.
+    for relative in ["missing/a\0b", "missing/a\0b/f", "missing/deeper/\0"] {
+        for outcome in [
+            confine(&mut Disk, &on, relative),
+            confine(&mut DiskDefault, &on, relative),
+            confine_quadratic(&mut Disk, &on, relative),
+        ] {
+            assert_eq!(outcome, Confined::Absent(Absence::Missing), "{relative:?}");
+        }
+        assert_eq!(
+            kind(&lexical(&on, relative)),
+            std::io::ErrorKind::InvalidInput,
+            "{relative:?}"
+        );
+    }
+    // Unchanged, and not `NotFound`: a NUL in the final component of a path whose directory
+    // resolves is left to the operation, in the canonical directory, where it fails with `Io`
+    // as before; a NUL in a directory that confinement must resolve is not absence, so the
+    // path is denied, as any directory that does not resolve for another reason (#1380).
+    for (relative, directory) in [("a\0b", ""), ("d/a\0b", "d"), ("l/a\0b", "d")] {
+        let target = on.join(directory).join("a\0b");
+        for outcome in [
+            confine(&mut Disk, &on, relative),
+            confine(&mut DiskDefault, &on, relative),
+            confine_quadratic(&mut Disk, &on, relative),
+        ] {
+            assert_eq!(outcome, Confined::Path(target.clone()), "{relative:?}");
+        }
+        assert_eq!(kind(&target), std::io::ErrorKind::InvalidInput);
+    }
+    for relative in ["a\0b/f", "d/a\0b/f", "a\0b/missing/f"] {
+        for outcome in [
+            confine(&mut Disk, &on, relative),
+            confine(&mut DiskDefault, &on, relative),
+            confine_quadratic(&mut Disk, &on, relative),
+        ] {
+            assert_eq!(outcome, Confined::Denied, "{relative:?}");
+        }
+    }
     // A canonical directory of 897 bytes behind two links, a short missing directory and a
     // final component of 150 bytes.
     let long = fresh("limit_long").join("box");

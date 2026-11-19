@@ -348,10 +348,17 @@ fn file_failure(fault: FileFault) -> i64 {
 /// In a task, the confinement and the read run on a helper of the file pool while the task
 /// parks, since either may block (ADR 0117 rule 3).
 pub fn files_read(site: i64, path: i64) -> i64 {
+    files_read_in(Machine, site, path)
+}
+
+/// [`files_read`] in `world`, which is the machine for every run: the whole operation, so that
+/// a test gives it a world that keeps what it is asked and reads the paths a read reaches the
+/// world with (#2138). `world` goes to the helper with the job, as the machine does.
+fn files_read_in(mut world: impl World + Send + 'static, site: i64, path: i64) -> i64 {
     let relative = values::text_value(path);
     let grants = run_grants();
     let read = sched::blocking(Pool::Files, move || {
-        on_confined(&mut Machine, &grants, &relative, false, |world, target| {
+        on_confined(&mut world, &grants, &relative, false, |world, target| {
             world.read_file(target)
         })
     });
@@ -374,11 +381,17 @@ fn run_grants() -> Arc<Vec<Grant>> {
 ///
 /// In a task, it runs on a helper of the file pool while the task parks, as a read does.
 pub fn files_write(path: i64, content: i64) -> i64 {
+    files_write_in(Machine, path, content)
+}
+
+/// [`files_write`] in `world`, which is the machine for every run: the whole operation, for
+/// the same test as [`files_read_in`].
+fn files_write_in(mut world: impl World + Send + 'static, path: i64, content: i64) -> i64 {
     let relative = values::text_value(path);
     let content = values::text_value(content);
     let grants = run_grants();
     let written = sched::blocking(Pool::Files, move || {
-        on_confined(&mut Machine, &grants, &relative, true, |world, target| {
+        on_confined(&mut world, &grants, &relative, true, |world, target| {
             world.write_file(target, &content)
         })
     });
@@ -1264,6 +1277,9 @@ mod tests {
             ("box", "in_dir/missing/new.txt", FileFault::NotFound),
             ("boxlink", "in_dir/missing/a/new.txt", FileFault::NotFound),
             ("box", "note.txt/x/new.txt", FileFault::Io),
+            // #2138: a NUL after the missing directory is never reached.
+            ("box", "missing/a\0b", FileFault::NotFound),
+            ("box", "missing/a\0b/new.txt", FileFault::NotFound),
             ("nothing", "new.txt", FileFault::NotFound),
             ("nothing/deeper", "sub/new.txt", FileFault::NotFound),
         ];
@@ -1319,6 +1335,262 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(dir.join("box/sub/new.txt")).unwrap(),
+            "entry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The machine, keeping every path that any of its methods is asked about, the lookups of
+    /// confinement included: owned, so that it goes where [`super::files_read_in`] sends its
+    /// world.
+    #[cfg(unix)]
+    #[derive(Clone, Default)]
+    struct Asked(std::sync::Arc<std::sync::Mutex<Vec<(&'static str, std::path::PathBuf)>>>);
+
+    #[cfg(unix)]
+    impl Asked {
+        fn keep(&self, method: &'static str, path: &std::path::Path) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((method, path.to_path_buf()));
+        }
+
+        /// What was asked since the last call.
+        fn take(&self) -> Vec<(&'static str, std::path::PathBuf)> {
+            std::mem::take(
+                &mut self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        }
+    }
+
+    #[cfg(unix)]
+    impl super::World for Asked {
+        fn print(&mut self, _line: &str) {}
+        fn now(&mut self) -> i64 {
+            0
+        }
+        fn env_var(&mut self, _name: &str) -> Result<Option<String>, super::NotText> {
+            Ok(None)
+        }
+        fn read_file(&mut self, path: &std::path::Path) -> Result<String, super::FileFault> {
+            self.keep("read", path);
+            super::Machine.read_file(path)
+        }
+        fn write_file(
+            &mut self,
+            path: &std::path::Path,
+            content: &str,
+        ) -> Result<(), super::FileFault> {
+            self.keep("write", path);
+            super::Machine.write_file(path, content)
+        }
+        fn canonical(&mut self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+            self.keep("canonical", path);
+            super::Machine.canonical(path)
+        }
+        fn is_link(&mut self, path: &std::path::Path) -> bool {
+            self.keep("is_link", path);
+            super::Machine.is_link(path)
+        }
+        fn step(
+            &mut self,
+            directory: &std::path::Path,
+            name: &std::ffi::OsStr,
+        ) -> Option<std::path::PathBuf> {
+            self.keep("step", &directory.join(name));
+            super::Machine.step(directory, name)
+        }
+        fn absent(&mut self, path: &std::path::Path) -> Option<una_interp::Absence> {
+            self.keep("absent", path);
+            super::Machine.absent(path)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn files_read_and_write_give_the_world_no_path_below_an_absent_directory_2138() {
+        // `spec/14 §3` rule 2, #1459, end to end in the runtime (#2138): the operations that
+        // generated code calls, `files_read` and `files_write`, with the grants of the run's
+        // state and paths that are texts of the run's heap. Each case runs twice: through
+        // `files_read_in` and `files_write_in`, the whole of each operation, in a world that is
+        // the machine and keeps every path any method is asked about; and through `files_read`
+        // and `files_write` themselves, which must answer the same word.
+        //
+        // What this does not observe, and is read in the source: that `files_read` and
+        // `files_write` pass the machine and nothing else to those two functions, and that the
+        // machine's methods make no operating system call other than on the path they are
+        // given. The calls are outside a task, so the job runs inline; in a task the same job,
+        // with the world moved into it, runs on a helper.
+        use super::{DENIED, Grant, IO, NOT_FOUND};
+        use crate::runtime::with_state;
+        use crate::values;
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+        use std::path::{Component, Path, PathBuf};
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("una-rt-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("box/sub")).unwrap();
+        std::fs::write(dir.join("box/note.txt"), "inside\n").unwrap();
+        symlink("sub", dir.join("box/in_dir")).unwrap();
+        symlink("box", dir.join("boxlink")).unwrap();
+        let canonical = std::fs::canonicalize(dir.join("box")).unwrap();
+        let prefix = dir.join("boxlink");
+        // The outcome of an operation: its word when it failed, `Ok` otherwise.
+        fn outcome(word: i64) -> Result<i64, i64> {
+            match super::host_failed() {
+                0 => Ok(word),
+                _ => Err(word),
+            }
+        }
+        // A component after one named `missing`, or after the file `note.txt`: a path below a
+        // directory that is not there.
+        fn below_absent(path: &Path) -> bool {
+            let mut parts = path.components().skip_while(|part| {
+                !matches!(part, Component::Normal(name)
+                    if *name == OsStr::new("missing") || *name == OsStr::new("note.txt"))
+            });
+            // `note.txt/x` is what confinement finds not to be a directory: one component
+            // below the file is looked up, none is opened.
+            let at = parts.next();
+            let file = at == Some(Component::Normal(OsStr::new("note.txt")));
+            parts.nth(usize::from(file)).is_some()
+        }
+        let thread_prefix = prefix.clone();
+        let thread_canonical = canonical.clone();
+        std::thread::spawn(move || {
+            let (prefix, canonical) = (thread_prefix, thread_canonical);
+            crate::runtime::install_test_state_as("0".to_owned(), false, String::new());
+            with_state(|state| {
+                state.grants = Arc::new(vec![Grant::Files {
+                    prefix: prefix.clone(),
+                    read: true,
+                    write: true,
+                }]);
+            });
+            let asked = Asked::default();
+            let text = |text: &str| values::text_word(text.to_owned());
+            let read_in = |path: &str| outcome(super::files_read_in(asked.clone(), 0, text(path)));
+            let write_in = |path: &str| {
+                outcome(super::files_write_in(
+                    asked.clone(),
+                    text(path),
+                    text("entry"),
+                ))
+            };
+            let read = |path: &str| outcome(super::files_read(0, text(path)));
+            let write = |path: &str| outcome(super::files_write(text(path), text("entry")));
+            // Below a directory that does not exist, and below a file: the failure, and no
+            // read or write in the world; no method of the world is asked about the path as
+            // written, about anything below the absent directory, or about a path with a NUL.
+            for (path, word) in [
+                ("missing/new.txt", NOT_FOUND),
+                ("missing/deeper/new.txt", NOT_FOUND),
+                ("in_dir/missing/new.txt", NOT_FOUND),
+                ("sub/../missing/a/b/new.txt", NOT_FOUND),
+                ("missing/a\0b", NOT_FOUND),
+                ("missing/a\0b/new.txt", NOT_FOUND),
+                ("note.txt/x/new.txt", IO),
+            ] {
+                for writing in [false, true] {
+                    let (seen, real) = if writing {
+                        (write_in(path), write(path))
+                    } else {
+                        (read_in(path), read(path))
+                    };
+                    assert_eq!(seen, Err(word), "{path:?} {writing}");
+                    assert_eq!(real, Err(word), "{path:?} {writing}");
+                    let asked = asked.take();
+                    assert!(!asked.is_empty(), "{path:?}: confinement looked nothing up");
+                    for (method, at) in &asked {
+                        assert!(
+                            !matches!(*method, "read" | "write"),
+                            "{path:?}: {method} {at:?}"
+                        );
+                        assert_ne!(*at, prefix.join(path), "{path:?}: {method}");
+                        assert!(!below_absent(at), "{path:?}: {method} {at:?}");
+                        assert!(
+                            !at.as_os_str().as_bytes().contains(&0),
+                            "{path:?}: {method} {at:?}"
+                        );
+                    }
+                }
+            }
+            assert!(!canonical.join("missing").exists());
+            // Denied: no read or write either.
+            assert_eq!(read_in("../box/note.txt"), Err(DENIED));
+            assert_eq!(read("../box/note.txt"), Err(DENIED));
+            assert_eq!(write_in("/outside/new.txt"), Err(DENIED));
+            assert!(
+                asked
+                    .take()
+                    .iter()
+                    .all(|(method, _)| !matches!(*method, "read" | "write"))
+            );
+            // A NUL in a directory that confinement must resolve is not absence: `Denied`.
+            assert_eq!(read_in("a\0b/new.txt"), Err(DENIED));
+            assert_eq!(read("a\0b/new.txt"), Err(DENIED));
+            assert_eq!(write_in("sub/a\0b/new.txt"), Err(DENIED));
+            assert_eq!(write("sub/a\0b/new.txt"), Err(DENIED));
+            assert!(
+                asked
+                    .take()
+                    .iter()
+                    .all(|(method, _)| !matches!(*method, "read" | "write"))
+            );
+            // A final component in a directory that resolves is the operation's: the world
+            // is given the canonical directory joined with it, and nothing else. One that
+            // does not exist is `NotFound` for a read and created by a write; one with a NUL
+            // is the operation's own `Io`.
+            let operations = |asked: &Asked| -> Vec<(&'static str, PathBuf)> {
+                asked
+                    .take()
+                    .into_iter()
+                    .filter(|(method, _)| matches!(*method, "read" | "write"))
+                    .collect()
+            };
+            assert_eq!(read_in("in_dir/gone.txt"), Err(NOT_FOUND));
+            assert_eq!(read("in_dir/gone.txt"), Err(NOT_FOUND));
+            assert_eq!(write_in("in_dir/new.txt"), Ok(0));
+            assert_eq!(
+                read_in("in_dir/new.txt").map(values::text_value),
+                Ok("entry".to_owned())
+            );
+            assert_eq!(write("in_dir/real.txt"), Ok(0));
+            assert_eq!(
+                read("in_dir/real.txt").map(values::text_value),
+                Ok("entry".to_owned())
+            );
+            assert_eq!(read_in("in_dir/a\0b"), Err(IO));
+            assert_eq!(read("in_dir/a\0b"), Err(IO));
+            assert_eq!(write_in("a\0b"), Err(IO));
+            assert_eq!(write("a\0b"), Err(IO));
+            assert_eq!(
+                operations(&asked),
+                vec![
+                    ("read", canonical.join("sub/gone.txt")),
+                    ("write", canonical.join("sub/new.txt")),
+                    ("read", canonical.join("sub/new.txt")),
+                    ("read", canonical.join("sub/a\0b")),
+                    ("write", canonical.join("a\0b")),
+                ]
+            );
+            drop(crate::runtime::leave_task());
+        })
+        .join()
+        .unwrap_or_else(|_| panic!("the test thread panicked"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("box/sub/new.txt")).unwrap(),
+            "entry"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("box/sub/real.txt")).unwrap(),
             "entry"
         );
         let _ = std::fs::remove_dir_all(&dir);
