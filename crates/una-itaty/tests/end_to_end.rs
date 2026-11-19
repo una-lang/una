@@ -1035,53 +1035,80 @@ fn connections_that_send_nothing_lose_their_slots_at_the_first_byte_timeout() {
     let (service, addr, dir) = served("idle", config);
     let started = Instant::now();
     let mut idle: Vec<TcpStream> = (0..2).map(|_| TcpStream::connect(addr).unwrap()).collect();
-    wait_until(bound, "the idle connections took no slot", || {
-        service.connections_in_progress() == 2
-    });
-    wait_until(bound, "the idle connections kept their slots", || {
-        service.connections_in_progress() == 0
-    });
-    assert!(started.elapsed() >= first_byte_timeout);
+    // Each read ends when the service closes the connection: no state is waited for that
+    // lasts only for a time.
     for stream in &mut idle {
         let response = String::from_utf8_lossy(&read_all(stream)).to_string();
         assert!(response.starts_with("HTTP/1.1 408"), "{response}");
         assert!(response.contains("did not start in time"), "{response}");
     }
+    let held = started.elapsed();
+    assert!(
+        held >= first_byte_timeout && held < bound,
+        "the idle connections were held for {held:?}"
+    );
+    wait_until(bound, "the idle connections kept their slots", || {
+        service.connections_in_progress() == 0
+    });
     assert!(get(addr, "root/1").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// One address holds at most `max_connections_per_peer` slots: its next connection is
-/// answered 503 while the service has slots left, and is served once it gives one back.
+/// A connection that sends one byte and stops does not get the head's whole time either: it
+/// is answered 408 a moment after the first-byte timeout.
 #[test]
-fn one_address_holds_at_most_its_bound_of_connections() {
+fn a_connection_that_sends_one_byte_loses_its_slot_soon_after_the_first_byte_timeout() {
+    let first_byte_timeout = Duration::from_millis(300);
+    let config = ServerConfig {
+        first_byte_timeout,
+        ..ServerConfig::default()
+    };
+    let bound = Duration::from_secs(10);
+    assert!(bound < config.head_timeout);
+    let (service, addr, dir) = served("onebyte", config);
+    let started = Instant::now();
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.write_all(b"G").unwrap();
+    let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    assert!(response.contains("head took too long"), "{response}");
+    let held = started.elapsed();
+    assert!(
+        held >= first_byte_timeout && held < bound,
+        "the connection was held for {held:?}"
+    );
+    wait_until(bound, "the connection kept its slot", || {
+        service.connections_in_progress() == 0
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Connections from this host, a terminator's, are not bounded per peer: past
+/// `max_connections_per_peer` they are served, up to `max_connections` (the bound of another
+/// address is a unit test of the slots, since a test has only loopback addresses).
+#[test]
+fn connections_from_a_loopback_address_are_not_bounded_per_peer() {
     let (service, addr, dir) = served(
-        "peer",
+        "loopback",
         ServerConfig {
-            max_connections: 8,
-            max_connections_per_peer: 2,
+            max_connections: 4,
+            max_connections_per_peer: 1,
             // The idle connections below hold their slots until they are dropped.
             first_byte_timeout: Duration::from_secs(25),
             ..ServerConfig::default()
         },
     );
-    let idle: Vec<TcpStream> = (0..2).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    let idle: Vec<TcpStream> = (0..4).map(|_| TcpStream::connect(addr).unwrap()).collect();
     wait_until(
         Duration::from_secs(10),
         "the connections took no slot",
-        || service.connections_in_progress() == 2,
+        || service.connections_in_progress() == 4,
     );
-    for _ in 0..3 {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
-        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
-        assert!(
-            response.contains("too many connections from this address"),
-            "{response}"
-        );
-    }
-    // The refusals took no slot of the six the service has left.
-    assert_eq!(service.connections_in_progress(), 2);
+    // The fifth is past the bound of the service, not of its address.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert!(!response.contains("from this address"), "{response}");
     drop(idle);
     wait_until(
         Duration::from_secs(10),

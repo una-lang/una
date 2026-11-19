@@ -15,9 +15,13 @@
 //! - `/cosign`: a checkpoint's size in decimal, a line feed, and a witness's cosignature line.
 //!
 //! **Limits, before allocation.** A request's head is at most 16 KiB and 64 header lines, read
-//! within 30 seconds, and its first byte arrives within 5 seconds of the connection's
-//! acceptance (the first-byte timeout), so a connection that sends nothing gives its slot back
-//! then; a body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
+//! within 30 seconds. Its first byte arrives within 5 seconds (the first-byte timeout) of the
+//! moment the connection starts to be read, which is when its thread starts, right after its
+//! acceptance; and at every moment the head so far has arrived within the first-byte timeout
+//! and a second per KiB received. So a connection that sends nothing gives its slot back
+//! after 5 seconds, one that sends a byte and stops does a millisecond later, and holding a
+//! slot for the 21 seconds the largest head allows costs its 16 KiB; a head that an honest
+//! client sends whole, in one write, is not concerned. A body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
 //! note, the archive's bound for a publication), and is read with no more than 60 seconds
 //! without progress and at least 64 KiB per second on average past its first minute (the
 //! idle timeout), counted on the bytes that arrived, within a total of the idle timeout and a
@@ -44,8 +48,11 @@
 //! at once, each from its acceptance to its response's last byte: a connection takes its slot
 //! when it is accepted, before any byte of its request, and holds it while its response is
 //! written. Of those, at most `max_connections_per_peer` come from one peer, which is an IPv4
-//! address or an IPv6 /64 prefix, so one peer cannot hold every slot; a service behind a
-//! terminator sees the terminator as its one peer (see [`ServerConfig`]). [`serve`] takes the
+//! address or an IPv6 /64 prefix, so one such peer cannot hold every slot. That is the whole
+//! of the protection: at the defaults four peers hold every slot between them, and a client
+//! with four addresses or a wider IPv6 prefix is not bounded by it. Connections from a
+//! loopback address are not bounded per peer, since they are a terminator's on the same
+//! host; a terminator on another host is one peer (see [`ServerConfig`]). [`serve`] takes the
 //! slot before it starts the connection's thread, so it runs at most `max_connections`
 //! connection threads; a connection past either bound is answered 503 by one write that never
 //! waits, then closed, and starts no thread. A thread that cannot start closes its connection
@@ -59,12 +66,16 @@
 //!
 //! **The accept loop.** [`serve`] puts the listener in blocking mode, so an `accept` waits for
 //! a connection. Only an error that says the listener itself is unusable (`EBADF`, `EINVAL`,
-//! `ENOTSOCK`, `EFAULT`) ends [`serve`]. An `accept` that fails for the connection it would
-//! have given (aborted, reset, interrupted) goes on at once, up to 16 times in a row; every
-//! other failure (want of descriptors, buffers or memory, the pending network errors that
-//! `accept(2)` reports for a connection, a wait that timed out, an error the module does not
-//! know) goes on after a pause that doubles from 5 ms to a second and starts over at the next
-//! connection accepted, so an error that persists costs at most one `accept` a second.
+//! `ENOTSOCK`, `EFAULT`) ends [`serve`] at once. An `accept` that fails for the connection it
+//! would have given (aborted, reset, interrupted) goes on at once, up to 16 times in a row,
+//! then after a fixed pause of 5 ms each. Every other failure goes on after a pause that
+//! doubles from 5 ms to a second, so an error that persists costs at most one `accept` a
+//! second. The pauses start over at the next connection accepted. A listener that only fails
+//! is not served for ever in silence: once the pauses since the last connection accepted add
+//! up to 30 seconds, [`serve`] ends with the last error, for the operator's process to see.
+//! Two kinds of failure do not count toward those 30 seconds, since they pass by themselves:
+//! a want of descriptors, buffers or memory (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`), which
+//! the connections that end give back, and a wait for a connection that timed out.
 //!
 //! **Descriptors.** A connection holds its socket and, while a file is sent, that file's open
 //! descriptor, for as long as its response is written: up to 2 x `max_connections`
@@ -124,8 +135,15 @@ const ACCEPT_PAUSE_MIN: Duration = Duration::from_millis(5);
 /// The longest such pause; each failure in a row doubles it up to this.
 const ACCEPT_PAUSE_MAX: Duration = Duration::from_secs(1);
 /// How many failures of one connection in a row an `accept` is tried again after at once;
-/// past them, they pause as every other failure does.
+/// past them, each is followed by a pause of `ACCEPT_PAUSE_MIN`, which does not double: such
+/// a failure used up the connection it concerned, so it cannot repeat by itself.
 const ACCEPT_FREE_RETRIES: u32 = 16;
+/// The most time paused on failures of `accept` in a row, with no connection accepted, before
+/// [`serve`] ends with the error; wants of resources and waits that timed out do not count.
+const ACCEPT_FAILING_MAX: Duration = Duration::from_secs(30);
+/// The least average rate of a request's head past the first-byte timeout, in bytes per
+/// second: a head of `MAX_HEAD` bytes has 16 seconds more than its first byte.
+const MIN_HEAD_RATE: u64 = 1 << 10;
 /// The descriptors the service needs besides its connections': the standard streams, the
 /// listener, the store's lock, a connection being refused, the files the registry reads and
 /// writes (one at a time, under its lock), and a margin for the operator's own.
@@ -144,18 +162,20 @@ pub struct ServerConfig {
     pub max_connections: usize,
     /// How many of those connections one peer holds at once; a peer is an IPv4 address or an
     /// IPv6 /64 prefix. At least 1. The default, 64, is a quarter of the default
-    /// `max_connections`, so one address cannot hold every slot. Behind a terminator every
-    /// connection comes from the terminator's address: there, set this to `max_connections`
-    /// and bound the clients at the terminator.
+    /// `max_connections`, so one address cannot hold every slot (four can). Connections from
+    /// a loopback address are not counted against it: they are a terminator's on the same
+    /// host, which bounds its clients itself. A terminator on another host is one peer: for
+    /// it, set this to `max_connections` and bound the clients at the terminator.
     pub max_connections_per_peer: usize,
-    /// The longest wait for a request's first byte, counted from the connection's acceptance,
-    /// within the head's time. A client sends its request as soon as it is connected, so the
-    /// default, 5 seconds, covers a retransmission of a lost first segment (1 second, then 2)
-    /// with a margin, while a connection that sends nothing holds its slot a sixth of the
-    /// head's 30 seconds. It is also the default wait for a request's first byte of the
-    /// language's own servers (`spec/31`, `idle`).
+    /// The longest wait for a request's first byte, counted from the moment the connection
+    /// starts to be read, right after its acceptance, within the head's time; past it, the
+    /// head has a second more for each KiB of it that arrived. A client sends its request as
+    /// soon as it is connected, so the default, 5 seconds, covers a retransmission of a lost
+    /// first segment (1 second, then 2) with a margin, while a connection that sends nothing
+    /// holds its slot a sixth of the head's 30 seconds. It is also the default wait for a
+    /// request's first byte of the language's own servers (`spec/31`, `idle`).
     pub first_byte_timeout: Duration,
-    /// The time to read a request's head.
+    /// The longest time to read a request's head, however fast it arrives.
     pub head_timeout: Duration,
     /// The longest wait for progress on a body.
     pub idle_timeout: Duration,
@@ -317,9 +337,11 @@ struct Places {
 
 /// Whose connections are counted together: an IPv4 address, or the /64 prefix of an IPv6
 /// address, since one host commonly holds a whole /64. An IPv4-mapped IPv6 address counts as
-/// its IPv4 address.
+/// its IPv4 address. The loopback addresses (`127.0.0.0/8`, `::1`) are this host, whose
+/// connections are not bounded per peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Peer {
+    Loopback,
     V4([u8; 4]),
     V6([u8; 8]),
 }
@@ -327,6 +349,7 @@ enum Peer {
 impl Peer {
     fn of(address: IpAddr) -> Peer {
         match address.to_canonical() {
+            address if address.is_loopback() => Peer::Loopback,
             IpAddr::V4(v4) => Peer::V4(v4.octets()),
             IpAddr::V6(v6) => {
                 let [a, b, c, d, e, f, g, h, ..] = v6.octets();
@@ -464,18 +487,21 @@ impl Places {
     }
 
     /// Takes a connection slot for `peer`, or says which bound refuses it. Both counts change
-    /// under the lock of the peers, so a refusal leaves no trace in either.
+    /// under the lock of the peers, so a refusal leaves no trace in either. A loopback peer
+    /// is under the bound of the service alone, and has no entry among the peers.
     fn enter(&self, peer: Peer) -> Result<(), Busy> {
         let mut peers = self.peers();
         let held = peers.get(&peer).copied().unwrap_or(0);
-        if held >= self.per_peer {
+        if peer != Peer::Loopback && held >= self.per_peer {
             return Err(Busy::Peer);
         }
         if self.taken() >= self.limit {
             return Err(Busy::Service);
         }
         self.taken.fetch_add(1, Ordering::SeqCst);
-        peers.insert(peer, held.saturating_add(1));
+        if peer != Peer::Loopback {
+            peers.insert(peer, held.saturating_add(1));
+        }
         Ok(())
     }
 
@@ -892,28 +918,30 @@ fn read_head(stream: &mut impl Conn, config: &ServerConfig) -> Result<Head, Resp
         if head.len() > MAX_HEAD + 3 {
             return Err(text(431, "the request's head is too large"));
         }
-        let left = config
-            .head_timeout
+        // The head so far has the first-byte timeout and a second per `MIN_HEAD_RATE` bytes
+        // of it, within the head's time: nothing received has the first-byte timeout alone,
+        // and a byte now and then buys a millisecond each, not the head's whole time.
+        let earned = (head.len() as u64).saturating_mul(1_000_000_000) / MIN_HEAD_RATE;
+        let allowed = config
+            .first_byte_timeout
+            .saturating_add(Duration::from_nanos(earned))
+            .min(config.head_timeout);
+        let late = if head.is_empty() {
+            "the request did not start in time"
+        } else {
+            "the request's head took too long"
+        };
+        let left = allowed
             .checked_sub(stream.now().saturating_duration_since(started))
             .filter(|d| !d.is_zero())
-            .ok_or_else(|| text(408, "the request's head took too long"))?;
-        // Before the request's first byte the wait is the first-byte timeout, so a connection
-        // that sends nothing gives its slot back then, not after the head's whole time.
-        let wait = if head.is_empty() {
-            left.min(config.first_byte_timeout)
-        } else {
-            left
-        };
-        if stream.wait_at_most(wait).is_err() {
+            .ok_or_else(|| text(408, late))?;
+        if stream.wait_at_most(left).is_err() {
             return Err(no_timeout());
         }
         match stream.read(&mut chunk) {
             Ok(0) => return Err(text(400, "the connection closed inside the request's head")),
             Ok(n) => head.extend_from_slice(chunk.get(..n).unwrap_or_default()),
-            Err(e) if is_timeout(&e) && head.is_empty() => {
-                return Err(text(408, "the request did not start in time"));
-            }
-            Err(e) if is_timeout(&e) => return Err(text(408, "the request's head took too long")),
+            Err(e) if is_timeout(&e) => return Err(text(408, late)),
             Err(_) => return Err(text(400, "the request could not be read")),
         }
     };
@@ -999,7 +1027,9 @@ fn read_body(
         return Err(text(400, "the body is longer than `Content-Length`"));
     }
     let started = stream.now();
-    let deadline = config.idle_timeout + Duration::from_secs((length / (64 << 10)) as u64);
+    let deadline = config
+        .idle_timeout
+        .saturating_add(Duration::from_secs((length / (64 << 10)) as u64));
     // The buffer grows with the bytes that arrived, never by the declared length alone, so a
     // peer that declares a large body and sends little holds little memory.
     let before = already.len();
@@ -1165,7 +1195,9 @@ pub fn write_response(stream: &mut impl Write, response: &Response) -> io::Resul
 pub type Work = Box<dyn FnOnce() + Send>;
 
 /// Serves `listener` until it fails, one thread per connection and at most `max_connections`
-/// of them (the module's rules). It puts `listener` in blocking mode.
+/// of them (the module's rules). It puts `listener` in blocking mode. It ends at once with the
+/// error of a listener that is unusable, and with the last error once its `accept` only
+/// failed, with no connection accepted, through 30 seconds of pauses (the module's rules).
 pub fn serve(listener: &TcpListener, service: &Arc<Service>) -> io::Result<()> {
     serve_with(listener, service, |work| {
         std::thread::Builder::new()
@@ -1203,7 +1235,8 @@ pub fn serve_with(
 }
 
 /// The accept loop of [`serve_with`], over what accepts a connection, what pauses, and what
-/// serves a connection accepted. It ends only with the error of a listener that is unusable.
+/// serves a connection accepted. It ends only with an error: that of a listener that is
+/// unusable, or the last of the failures that went on too long.
 fn accept_loop(
     mut accept: impl FnMut() -> io::Result<(TcpStream, SocketAddr)>,
     mut pause: impl FnMut(Duration),
@@ -1236,8 +1269,13 @@ enum Failure {
     OneConnection,
     /// The listener is unusable, and no later `accept` can succeed.
     Listener,
-    /// Anything else: a want of descriptors, buffers or memory, a pending network error of a
-    /// connection, a wait that timed out, or an error this module does not know.
+    /// A want of descriptors, buffers or memory, which the connections that end give back.
+    Resources,
+    /// No connection came within the wait: a listener with a timeout, or one that does not
+    /// block.
+    Waiting,
+    /// Anything else: a pending network error of a connection, or an error this module does
+    /// not know.
     Other,
 }
 
@@ -1254,21 +1292,40 @@ const LISTENER_ERRORS: [i32; 4] = [
     },
 ];
 
-/// Sorts a failed `accept`. Only the errors that name the listener itself end the loop;
-/// `accept(2)` documents the others (`ECONNABORTED`, `EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`,
-/// `EPERM`, `EPROTO`, `ENETDOWN`, `ENOPROTOOPT`, `EHOSTDOWN`, `ENONET`, `EHOSTUNREACH`,
-/// `EOPNOTSUPP`, `ENETUNREACH`, `EAGAIN`, `ETIMEDOUT`) as passing or as one connection's.
+/// `ENOMEM`, `ENFILE` and `EMFILE`, the same numbers on Linux and macOS, and `ENOBUFS`.
+const RESOURCE_ERRORS: [i32; 4] = [
+    12,
+    23,
+    24,
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        105
+    } else {
+        55
+    },
+];
+
+/// Sorts a failed `accept`. Only the errors that name the listener itself end the loop at
+/// once; `accept(2)` documents the others (`ECONNABORTED`, `EMFILE`, `ENFILE`, `ENOBUFS`,
+/// `ENOMEM`, `EPERM`, `EPROTO`, `ENETDOWN`, `ENOPROTOOPT`, `EHOSTDOWN`, `ENONET`,
+/// `EHOSTUNREACH`, `EOPNOTSUPP`, `ENETUNREACH`, `EAGAIN`, `ETIMEDOUT`) as passing or as one
+/// connection's.
 fn accept_failure(e: &io::Error) -> Failure {
-    if e.kind() == io::ErrorKind::InvalidInput
-        || e.raw_os_error()
-            .is_some_and(|errno| LISTENER_ERRORS.contains(&errno))
-    {
+    let numbered = |errors: &[i32]| {
+        e.raw_os_error()
+            .is_some_and(|errno| errors.contains(&errno))
+    };
+    if e.kind() == io::ErrorKind::InvalidInput || numbered(&LISTENER_ERRORS) {
         return Failure::Listener;
+    }
+    if numbered(&RESOURCE_ERRORS) {
+        return Failure::Resources;
     }
     match e.kind() {
         io::ErrorKind::ConnectionAborted
         | io::ErrorKind::ConnectionReset
         | io::ErrorKind::Interrupted => Failure::OneConnection,
+        io::ErrorKind::OutOfMemory => Failure::Resources,
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failure::Waiting,
         _ => Failure::Other,
     }
 }
@@ -1285,8 +1342,10 @@ enum Retry {
 struct Retries {
     /// The failures of one connection tried again at once.
     free: u32,
-    /// The next pause.
+    /// The next pause that doubles.
     pause: Duration,
+    /// The pauses made on the failures that count toward `ACCEPT_FAILING_MAX`.
+    failing: Duration,
 }
 
 impl Retries {
@@ -1294,25 +1353,38 @@ impl Retries {
         Retries {
             free: 0,
             pause: ACCEPT_PAUSE_MIN,
+            failing: Duration::ZERO,
         }
     }
 
-    /// When to try again after the failure `e`: never when the listener is unusable, at once
-    /// for the first failures in a row of one connection, and otherwise after a pause that
-    /// doubles up to `ACCEPT_PAUSE_MAX`, so no error that persists makes the loop spin.
+    /// When to try again after the failure `e`. Never when the listener is unusable. At once
+    /// for the first failures in a row of one connection, then after `ACCEPT_PAUSE_MIN` each.
+    /// Otherwise after a pause that doubles up to `ACCEPT_PAUSE_MAX`, so no error that
+    /// persists makes the loop spin. And never once the pauses on failures that do not pass
+    /// by themselves add up to `ACCEPT_FAILING_MAX`, so a listener that only fails ends the
+    /// loop with its error.
     fn after(&mut self, e: &io::Error) -> Retry {
-        match accept_failure(e) {
-            Failure::Listener => Retry::Never,
+        let failure = accept_failure(e);
+        let wait = match failure {
+            Failure::Listener => return Retry::Never,
             Failure::OneConnection if self.free < ACCEPT_FREE_RETRIES => {
                 self.free += 1;
-                Retry::AtOnce
+                return Retry::AtOnce;
             }
-            Failure::OneConnection | Failure::Other => {
+            Failure::OneConnection => ACCEPT_PAUSE_MIN,
+            Failure::Resources | Failure::Waiting | Failure::Other => {
                 let wait = self.pause;
                 self.pause = wait.saturating_mul(2).min(ACCEPT_PAUSE_MAX);
-                Retry::After(wait)
+                wait
             }
+        };
+        if matches!(failure, Failure::OneConnection | Failure::Other) {
+            if self.failing >= ACCEPT_FAILING_MAX {
+                return Retry::Never;
+            }
+            self.failing = self.failing.saturating_add(wait);
         }
+        Retry::After(wait)
     }
 }
 
@@ -2060,31 +2132,35 @@ mod tests {
         ] {
             assert_eq!(accept_failure(&kind.into()), Failure::OneConnection);
         }
-        // A want of descriptors (`ENFILE`, `EMFILE`) or of memory goes on, after a pause.
-        for errno in [23, 24] {
+        // A want of descriptors (`ENFILE`, `EMFILE`), of memory or of buffers goes on, after
+        // a pause.
+        for errno in [23, 24, 12, PASSING[2]] {
             let e = io::Error::from_raw_os_error(errno);
-            assert_eq!(accept_failure(&e), Failure::Other);
+            assert_eq!(accept_failure(&e), Failure::Resources, "errno {errno}");
             assert!(matches!(Retries::new().after(&e), Retry::After(_)));
         }
         assert_eq!(
             accept_failure(&io::ErrorKind::OutOfMemory.into()),
-            Failure::Other
+            Failure::Resources
         );
-        // So do the pending network errors, a want of buffers, a wait that timed out, a
-        // listener that does not block, and an error with no number at all.
+        // So do the pending network errors, a wait that timed out, a listener that does not
+        // block, and an error with no number at all.
         for errno in PASSING {
             let e = io::Error::from_raw_os_error(*errno);
-            assert_eq!(accept_failure(&e), Failure::Other, "errno {errno}");
+            assert!(
+                matches!(
+                    accept_failure(&e),
+                    Failure::Other | Failure::Resources | Failure::Waiting
+                ),
+                "errno {errno}"
+            );
             assert!(matches!(Retries::new().after(&e), Retry::After(_)));
         }
-        for kind in [
-            io::ErrorKind::WouldBlock,
-            io::ErrorKind::TimedOut,
-            io::ErrorKind::Other,
-        ] {
-            assert_eq!(accept_failure(&kind.into()), Failure::Other);
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            assert_eq!(accept_failure(&kind.into()), Failure::Waiting);
         }
-        // Only the listener's own errors end the loop.
+        assert_eq!(accept_failure(&io::ErrorKind::Other.into()), Failure::Other);
+        // Only the listener's own errors end the loop at once.
         let other = io::Error::from(io::ErrorKind::InvalidInput);
         assert_eq!(accept_failure(&other), Failure::Listener);
         assert_eq!(Retries::new().after(&other), Retry::Never);
@@ -2093,14 +2169,19 @@ mod tests {
             assert_eq!(accept_failure(&e), Failure::Listener, "errno {errno}");
         }
         assert!(PASSING.iter().all(|n| !LISTENER_ERRORS.contains(n)));
+        assert!(RESOURCE_ERRORS.iter().all(|n| !LISTENER_ERRORS.contains(n)));
     }
 
-    /// Runs the accept loop over `failures`, then the error that ends it; the pauses it made.
-    fn pauses_of(failures: Vec<io::Error>) -> Vec<Duration> {
+    /// Runs the accept loop over `failures`, then `EBADF`, which ends it if nothing did
+    /// before; the pauses it made, how many times it called `accept`, and the error it ended
+    /// with.
+    fn looped(failures: Vec<io::Error>) -> (Vec<Duration>, usize, io::Error) {
         let mut script = failures.into_iter();
         let mut pauses = Vec::new();
+        let mut calls = 0;
         let ended = accept_loop(
             || {
+                calls += 1;
                 Err(script
                     .next()
                     .unwrap_or_else(|| io::Error::from_raw_os_error(9)))
@@ -2109,36 +2190,88 @@ mod tests {
             |_, _| panic!("no connection was accepted"),
         )
         .unwrap_err();
-        assert_eq!(ended.raw_os_error(), Some(9));
-        pauses
+        (pauses, calls, ended)
+    }
+
+    fn total(pauses: &[Duration]) -> Duration {
+        pauses.iter().sum()
     }
 
     #[test]
     fn a_failure_of_accept_that_persists_cannot_spin() {
         // A thousand failures in a row for want of buffers (`ENOBUFS`): each is followed by a
         // pause, from 5 ms doubling to a second, so they take more than 16 minutes, not none.
-        let enobufs = PASSING[2];
-        let pauses = pauses_of(
-            (0..1000)
-                .map(|_| io::Error::from_raw_os_error(enobufs))
-                .collect(),
-        );
-        assert_eq!(pauses.len(), 1000);
-        assert_eq!(pauses[..3], [5, 10, 20].map(Duration::from_millis));
-        assert!(pauses.windows(2).all(|w| w[0] <= w[1]));
-        assert_eq!(pauses.iter().max(), Some(&ACCEPT_PAUSE_MAX));
-        assert!(pauses.iter().sum::<Duration>() > Duration::from_secs(990));
-        // A listener that does not block fails every `accept` at once: paused from the first.
-        let pauses = pauses_of((0..100).map(|_| io::ErrorKind::WouldBlock.into()).collect());
-        assert_eq!(pauses.len(), 100);
-        // Aborted connections go on at once 16 times in a row, then pause like the rest.
-        let pauses = pauses_of(
-            (0..1000)
+        // A want of resources passes when connections end, so it never ends the loop.
+        for errno in [PASSING[2], 23, 24, 12] {
+            let failures = (0..1000).map(|_| io::Error::from_raw_os_error(errno));
+            let (pauses, calls, ended) = looped(failures.collect());
+            assert_eq!((pauses.len(), calls), (1000, 1001), "errno {errno}");
+            assert_eq!(ended.raw_os_error(), Some(9));
+            assert_eq!(pauses[..3], [5, 10, 20].map(Duration::from_millis));
+            assert!(pauses.windows(2).all(|w| w[0] <= w[1]));
+            assert_eq!(pauses.iter().max(), Some(&ACCEPT_PAUSE_MAX));
+            assert!(total(&pauses) > Duration::from_secs(990));
+        }
+        // A listener that does not block, or whose wait times out, fails every `accept` with
+        // no connection waiting: paused from the first, and no reason to end either.
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            let (pauses, _, ended) = looped((0..1000).map(|_| kind.into()).collect());
+            assert_eq!((pauses.len(), ended.raw_os_error()), (1000, Some(9)));
+            assert!(total(&pauses) > Duration::from_secs(990));
+        }
+    }
+
+    #[test]
+    fn a_listener_that_only_fails_ends_the_loop_with_its_error() {
+        // `EPERM` for ever, which no rule of the module knows to pass: tried again through 30
+        // seconds of pauses, at most a second apart, then the loop ends with that error.
+        let failures = (0..1000).map(|_| io::Error::from_raw_os_error(1));
+        let (pauses, calls, ended) = looped(failures.collect());
+        assert_eq!(ended.raw_os_error(), Some(1));
+        assert!(total(&pauses) >= ACCEPT_FAILING_MAX);
+        assert!(total(&pauses) < ACCEPT_FAILING_MAX + ACCEPT_PAUSE_MAX);
+        assert_eq!(calls, pauses.len() + 1);
+        assert!(calls < 50, "{calls} calls of `accept`");
+        // An error with no number is the same.
+        let failures = (0..1000).map(|_| io::Error::other("unknown"));
+        let (pauses, _, ended) = looped(failures.collect());
+        assert_eq!(ended.kind(), io::ErrorKind::Other);
+        assert!(total(&pauses) >= ACCEPT_FAILING_MAX);
+        // Wants of resources between them do not count, and do not start the count over.
+        let failures =
+            (0..2000).map(|i| io::Error::from_raw_os_error(if i % 2 == 0 { 1 } else { 24 }));
+        let (pauses, calls, ended) = looped(failures.collect());
+        assert_eq!(ended.raw_os_error(), Some(1));
+        assert!(total(&pauses) >= 2 * ACCEPT_FAILING_MAX - 2 * ACCEPT_PAUSE_MAX);
+        assert!(calls < 100, "{calls} calls of `accept`");
+    }
+
+    #[test]
+    fn failures_of_one_connection_pause_briefly_and_do_not_escalate() {
+        // Aborted connections go on at once 16 times in a row, then after 5 ms each, never
+        // more: a peer that queues aborted connections does not buy a second apiece.
+        let aborted = |n: usize| -> Vec<io::Error> {
+            (0..n)
                 .map(|_| io::ErrorKind::ConnectionAborted.into())
-                .collect(),
+                .collect()
+        };
+        let (pauses, calls, ended) = looped(aborted(1000));
+        assert_eq!(ended.raw_os_error(), Some(9));
+        assert_eq!(
+            (pauses.len(), calls),
+            (1000 - ACCEPT_FREE_RETRIES as usize, 1001)
         );
-        assert_eq!(pauses.len(), 1000 - ACCEPT_FREE_RETRIES as usize);
-        assert!(pauses.iter().sum::<Duration>() > Duration::from_secs(970));
+        assert!(pauses.iter().all(|wait| *wait == ACCEPT_PAUSE_MIN));
+        // They do not raise the pause of the other failures either.
+        let mut failures = aborted(100);
+        failures.push(io::Error::from_raw_os_error(24));
+        let (pauses, _, _) = looped(failures);
+        assert_eq!(pauses.last(), Some(&ACCEPT_PAUSE_MIN));
+        // A listener that gives nothing else (one shut down, on some systems) ends the loop
+        // with that error after 30 seconds of those pauses.
+        let (pauses, _, ended) = looped(aborted(100_000));
+        assert_eq!(ended.kind(), io::ErrorKind::ConnectionAborted);
+        assert_eq!(total(&pauses), ACCEPT_FAILING_MAX);
     }
 
     #[test]
@@ -2165,6 +2298,26 @@ mod tests {
         assert_eq!(ended.raw_os_error(), Some(9));
         assert_eq!(accepted, 1);
         assert_eq!(pauses, [5, 10, 20, 5].map(Duration::from_millis));
+        // The 30 seconds start over too: 23 seconds of pauses on each side of a connection
+        // accepted do not end the loop, which the scripted `EBADF` does.
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let eperm = || io::Error::from_raw_os_error(1);
+        let mut step = 0;
+        let mut pauses = Vec::new();
+        let ended = accept_loop(
+            || {
+                step += 1;
+                match step {
+                    1..=30 | 32..=61 => Err(eperm()),
+                    31 => listener.accept(),
+                    _ => Err(io::Error::from_raw_os_error(9)),
+                }
+            },
+            |wait| pauses.push(wait),
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert_eq!((ended.raw_os_error(), pauses.len()), (Some(9), 60));
     }
 
     fn v4(last: u8) -> Peer {
@@ -2196,6 +2349,40 @@ mod tests {
     }
 
     #[test]
+    fn loopback_peers_are_bounded_by_the_service_alone() {
+        let of = |text: &str| Peer::of(text.parse().unwrap());
+        for local in ["127.0.0.1", "127.8.9.10", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(of(local), Peer::Loopback, "{local}");
+        }
+        for remote in [
+            "192.0.2.1",
+            "126.255.255.255",
+            "128.0.0.1",
+            "::2",
+            "2001:db8::1",
+        ] {
+            assert_ne!(of(remote), Peer::Loopback, "{remote}");
+        }
+        // Past the bound of a peer, up to the bound of the service, with no entry kept.
+        let places = Places::new(4, 1);
+        for _ in 0..4 {
+            assert_eq!(places.enter(Peer::Loopback), Ok(()));
+        }
+        assert_eq!(places.enter(Peer::Loopback), Err(Busy::Service));
+        assert_eq!((places.taken(), places.peers().len()), (4, 0));
+        // Another address is still bounded while they hold slots, and they give theirs back.
+        places.leave(Peer::Loopback);
+        assert_eq!(places.enter(v4(1)), Ok(()));
+        places.leave(Peer::Loopback);
+        assert_eq!(places.enter(v4(1)), Err(Busy::Peer));
+        assert_eq!(places.enter(Peer::Loopback), Ok(()));
+        for peer in [Peer::Loopback, Peer::Loopback, Peer::Loopback, v4(1)] {
+            places.leave(peer);
+        }
+        assert_eq!((places.taken(), places.peers().len()), (0, 0));
+    }
+
+    #[test]
     fn a_peer_is_an_ipv4_address_or_an_ipv6_prefix() {
         let of = |text: &str| Peer::of(text.parse().unwrap());
         assert_ne!(of("192.0.2.1"), of("192.0.2.2"));
@@ -2207,7 +2394,6 @@ mod tests {
             of("2001:db8:0:1:ffff:ffff:ffff:ffff")
         );
         assert_ne!(of("2001:db8:0:1::1"), of("2001:db8:0:2::1"));
-        assert_ne!(of("::1"), of("127.0.0.1"));
     }
 
     #[test]
@@ -2317,6 +2503,11 @@ mod tests {
         assert_eq!((peer.writes, peer.taken), (0, 0));
     }
 
+    /// How long `conn` was read, on its own clock.
+    fn held(conn: &Paced) -> Duration {
+        conn.now().saturating_duration_since(conn.start)
+    }
+
     #[test]
     fn a_request_starts_within_the_first_byte_timeout() {
         let config = ServerConfig::default();
@@ -2327,24 +2518,6 @@ mod tests {
         assert_eq!(refused.status, 408);
         assert!(String::from_utf8_lossy(&refused.body).contains("did not start"));
         assert_eq!(conn.waits, [config.first_byte_timeout]);
-        // A byte arrived: the rest of the head has the head's time, and is refused past it.
-        let mut conn = paced(b"GET /checkpoint".to_vec(), 1, Duration::from_secs(1));
-        let refused = read_head(&mut conn, &config).err().unwrap();
-        assert_eq!(refused.status, 408);
-        assert!(String::from_utf8_lossy(&refused.body).contains("head took too long"));
-        assert_eq!(conn.waits[0], config.first_byte_timeout);
-        assert_eq!(conn.waits[1], config.head_timeout - Duration::from_secs(1));
-        assert!(conn.waits[1..].iter().all(|w| *w <= config.head_timeout));
-        // A whole head sent a byte a second is read: only its first byte had the short wait.
-        let head = b"GET /checkpoint HTTP/1.1\r\n\r\n";
-        let mut conn = paced(head.to_vec(), 1, Duration::from_millis(900));
-        assert_eq!(read_head(&mut conn, &config).unwrap().path, "checkpoint");
-        assert!(
-            conn.waits
-                .iter()
-                .skip(1)
-                .any(|w| *w > config.first_byte_timeout)
-        );
         // A first-byte timeout past the head's is the head's.
         let long = ServerConfig {
             first_byte_timeout: Duration::from_secs(3600),
@@ -2353,6 +2526,65 @@ mod tests {
         let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
         assert_eq!(read_head(&mut conn, &long).err().unwrap().status, 408);
         assert_eq!(conn.waits, [long.head_timeout]);
+    }
+
+    #[test]
+    fn a_head_sent_slowly_loses_its_slot_soon_after_the_first_byte_timeout() {
+        let config = ServerConfig::default();
+        let first = config.first_byte_timeout;
+        let refused_late = |conn: &mut Paced| {
+            let refused = read_head(conn, &config).err().unwrap();
+            assert_eq!(refused.status, 408);
+            assert!(String::from_utf8_lossy(&refused.body).contains("head took too long"));
+        };
+        // The review's case: one byte at once, then nothing. The second wait ends a
+        // millisecond past the first-byte timeout, not at the head's 30 seconds.
+        let mut conn = paced(b"G".to_vec(), 1, Duration::from_millis(1));
+        refused_late(&mut conn);
+        assert_eq!(conn.waits.len(), 2);
+        assert!(conn.waits[1] <= first, "{:?}", conn.waits);
+        // A byte a second: refused at the first-byte timeout, a few milliseconds late.
+        let mut conn = paced(vec![b'a'; 4096], 1, Duration::from_secs(1));
+        refused_late(&mut conn);
+        assert!(
+            held(&conn) <= first + Duration::from_secs(1),
+            "{:?}",
+            held(&conn)
+        );
+        assert!(conn.at <= 6, "{} bytes read", conn.at);
+        // Half the least rate, 512 bytes a second: refused within twice the timeout or so,
+        // long before the 32 seconds the largest head would take at that pace.
+        let mut conn = paced(head_of(MAX_HEAD), 512, Duration::from_secs(1));
+        refused_late(&mut conn);
+        assert!(
+            held(&conn) <= 2 * first + Duration::from_secs(1),
+            "{:?}",
+            held(&conn)
+        );
+        // No wait is ever past the head's time or the time the bytes received earned.
+        assert!(conn.waits.iter().all(|w| *w <= config.head_timeout));
+    }
+
+    #[test]
+    fn a_head_at_the_least_rate_is_read_within_the_head_timeout() {
+        let config = ServerConfig::default();
+        // The largest head at 1 KiB a second, the least rate: read whole in 16 seconds.
+        let mut conn = paced(head_of(MAX_HEAD), 1 << 10, Duration::from_secs(1));
+        assert_eq!(read_head(&mut conn, &config).unwrap().path, "checkpoint");
+        assert_eq!(held(&conn), Duration::from_secs(16));
+        // A small head sent in a few parts within the first-byte timeout is read.
+        let head = b"GET /checkpoint HTTP/1.1\r\n\r\n";
+        let mut conn = paced(head.to_vec(), 7, Duration::from_secs(1));
+        assert_eq!(read_head(&mut conn, &config).unwrap().path, "checkpoint");
+        // The head's time bounds a head however many bytes it earned: with a head timeout of
+        // 8 seconds, the largest head at the least rate is refused at 8 seconds.
+        let short = ServerConfig {
+            head_timeout: Duration::from_secs(8),
+            ..ServerConfig::default()
+        };
+        let mut conn = paced(head_of(MAX_HEAD), 1 << 10, Duration::from_secs(1));
+        let refused = read_head(&mut conn, &short).err().unwrap();
+        assert_eq!((refused.status, held(&conn)), (408, Duration::from_secs(8)));
     }
 
     #[test]
