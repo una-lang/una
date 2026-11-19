@@ -129,6 +129,37 @@ fn a_second_listener_on_the_same_address_and_port_is_refused() {
     assert_eq!(std.kind(), std::io::ErrorKind::AddrInUse);
 }
 
+/// The listener is bound to the address and port asked for, in both families (#1483): the
+/// port of a first listener, freed, is asked for by number.
+#[test]
+fn a_listener_is_bound_to_the_address_and_port_asked_for() {
+    let _children = CHILDREN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let free = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), 16).unwrap();
+    let four = free.local_addr().unwrap();
+    assert_eq!(four.ip(), Ipv4Addr::LOCALHOST);
+    drop(free);
+    assert_eq!(listen(four, 16).unwrap().local_addr().unwrap(), four);
+    let free = match listen(SocketAddr::from((Ipv6Addr::LOCALHOST, 0)), 16) {
+        // Only a machine without IPv6 skips; any other error fails.
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EAFNOSUPPORT | libc::EADDRNOTAVAIL)
+            ) =>
+        {
+            eprintln!("note: IPv6 is not available here ({error}); the case is not checked");
+            return;
+        }
+        other => other.unwrap(),
+    };
+    let six = free.local_addr().unwrap();
+    assert_eq!(six.ip(), Ipv6Addr::LOCALHOST);
+    drop(free);
+    assert_eq!(listen(six, 16).unwrap().local_addr().unwrap(), six);
+}
+
 #[test]
 fn an_ipv6_listener_is_v6_only() {
     let any = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0));

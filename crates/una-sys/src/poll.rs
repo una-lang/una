@@ -30,9 +30,18 @@ pub struct Events {
 impl Events {
     /// A buffer for at most `capacity` events of one wait, from 1 to 4096.
     pub fn with_capacity(capacity: usize) -> Events {
-        // SAFETY: `kevent` and `epoll_event` are plain C structs of integers (and, for
-        // `kevent`, one pointer that is never dereferenced), for which all zeros is valid.
-        let zero: Raw = unsafe { std::mem::zeroed() };
+        // Every field zero, and for `kevent` a null pointer that is never dereferenced.
+        #[cfg(target_os = "macos")]
+        let zero = libc::kevent {
+            ident: 0,
+            filter: 0,
+            flags: 0,
+            fflags: 0,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        #[cfg(target_os = "linux")]
+        let zero = libc::epoll_event { events: 0, u64: 0 };
         let list = vec![zero; capacity.clamp(1, 4096)];
         Events { list, len: 0 }
     }

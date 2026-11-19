@@ -9,7 +9,7 @@
 
 use std::ffi::CString;
 use std::io::{Read, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 
 use una_sys::solver::spawn::{Ended, spawn, try_wait, wait};
 use una_sys::solver::{Limits, confine, confined, limits};
@@ -1202,6 +1202,62 @@ fn under_an_accepted_outer_sandbox_no_descriptor_can_be_opened() {
     assert!(out.contains("outcome=true"), "{out}");
     assert!(out.contains(&format!("connect={emfile:?}")), "{out}");
     assert!(out.contains(&format!("file={emfile:?}")), "{out}");
+}
+
+/// The device and inode of the open file behind `fd`.
+fn file_identity(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::File::from(fd.try_clone_to_owned()?).metadata()?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// A source numbered below 3 is duplicated above 2 before the actions run (#1483): the
+/// child's stdout is the parent's descriptor 0, which the `dup2` onto the child's stdin would
+/// otherwise have replaced with the pipe.
+#[test]
+fn a_source_below_three_reaches_the_child_as_the_file_it_was() {
+    const TEST: &str = "a_source_below_three_reaches_the_child_as_the_file_it_was";
+    if let Some(scenario) = scenario() {
+        let Some(wanted) = scenario.strip_prefix("below3 ") else {
+            return;
+        };
+        let found = file_identity(std::io::stdout().as_fd()).unwrap();
+        let found = format!("{} {}", found.0, found.1);
+        if found != wanted {
+            eprintln!("stdout is {found}, not {wanted}");
+            std::process::exit(3);
+        }
+        std::process::exit(0);
+    }
+    let stdin = std::io::stdin();
+    let Ok((dev, ino)) = file_identity(stdin.as_fd()) else {
+        eprintln!("note: descriptor 0 is not open here; the case is not checked");
+        return;
+    };
+    assert!(stdin.as_fd().as_raw_fd() < 3);
+    let exe = CString::new(std::env::current_exe().unwrap().to_str().unwrap()).unwrap();
+    let test = CString::new(TEST).unwrap();
+    let args = [c"una-sys-solver-child", c"--exact", &test, c"--nocapture"];
+    let (stdin_reader, mut stdin_writer) = std::io::pipe().unwrap();
+    let (mut stderr_reader, stderr_writer) = std::io::pipe().unwrap();
+    stdin_writer
+        .write_all(format!("below3 {dev} {ino}").as_bytes())
+        .unwrap();
+    drop(stdin_writer);
+    let pid = spawn(
+        &exe,
+        &args,
+        stdin_reader.as_fd(),
+        stdin.as_fd(),
+        stderr_writer.as_fd(),
+    )
+    .unwrap();
+    drop(stderr_writer);
+    let mut err = String::new();
+    let _ = stderr_reader.read_to_string(&mut err);
+    assert_eq!(wait(pid).unwrap(), Ended::Exited(0), "{err}");
+    // The duplicate was the call's own: the parent's descriptor 0 is the file it was.
+    assert_eq!(file_identity(stdin.as_fd()).unwrap(), (dev, ino));
 }
 
 #[test]
