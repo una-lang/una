@@ -367,10 +367,12 @@ pub fn files_write(path: i64, content: i64) -> i64 {
 
 /// `Keys.hmac(key_name, data)`.
 ///
-/// The key is read where the run holds it (#1481): the operation takes a reference to the run's
-/// table of keys, a count and never a copy of a key, and the HMAC reads the key there. The key's
-/// name and the data are read in place in the heap too, so the operation leaves no copy of the
-/// key or of the data behind it. Time O(length of the data).
+/// The operation itself copies no key out of the run's table (#1481): it takes a reference to
+/// the table, a count, and hands the HMAC routine the key where the run holds it. The key's name
+/// and the data are read in place in the heap too. What still copies key material, and does not
+/// wipe it: the HMAC routine, [`una_interp::hmac_sha256`], which makes the padded key and its
+/// two pads on the heap for each call, and the bearer key of an `Http` request, which the
+/// operations of `Http` clone out of the table. Time O(length of the data).
 pub fn keys_hmac(key_name: i64, data: i64) -> i64 {
     let Some(keys) = with_state(|state| Arc::clone(&state.keys)) else {
         return failed(UNKNOWN_KEY);
@@ -1113,6 +1115,10 @@ mod tests {
     /// `Keys.hmac` over the key in the run's table (#1481): the HMAC of RFC 4231 test case 2,
     /// an unknown key and a key name that is not a text, with the table left as it was, held by
     /// the run alone and its key unchanged.
+    ///
+    /// It pins the results of the operation, not the absence of a copy: a copy of the key made
+    /// and dropped inside the operation changes nothing a test can read, so this test also
+    /// passes on the code that cloned the key. That the key is not cloned is read in the source.
     #[test]
     fn keys_hmac_reads_the_key_in_the_table_of_the_run() {
         use crate::runtime::with_state;
