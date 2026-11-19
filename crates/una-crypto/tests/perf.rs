@@ -19,26 +19,29 @@ use una_crypto::chacha20poly1305::seal_in_place;
 use una_crypto::sha2::{Sha256, Sha512};
 use una_crypto::x25519::x25519;
 
-fn run(name: &str, m: &[u8]) {
+/// One pass of the primitive `name` over `buf`, the caller's buffer: nothing is allocated or
+/// copied here, so the clock sees the primitive alone (#1481; a `to_vec` of the message inside
+/// the timed pass counted a 32 MiB allocation, its page faults and the copy). An AEAD seals the
+/// buffer in place, pass after pass: its time does not depend on the content.
+fn run(name: &str, buf: &mut [u8]) {
     match name {
         "sha256" => {
-            std::hint::black_box(Sha256::digest(m));
+            std::hint::black_box(Sha256::digest(buf));
         }
         "sha512" => {
-            std::hint::black_box(Sha512::digest(m));
+            std::hint::black_box(Sha512::digest(buf));
         }
         "aes128gcm" | "aes256gcm" => {
-            let mut buf = m.to_vec();
             let tag = if name == "aes128gcm" {
-                AesGcm::new_128(&[1u8; 16]).seal_in_place(&[2u8; 12], b"", &mut buf)
+                AesGcm::new_128(&[1u8; 16]).seal_in_place(&[2u8; 12], b"", buf)
             } else {
-                AesGcm::new_256(&[1u8; 32]).seal_in_place(&[2u8; 12], b"", &mut buf)
+                AesGcm::new_256(&[1u8; 32]).seal_in_place(&[2u8; 12], b"", buf)
             };
-            std::hint::black_box(tag.ok());
+            assert!(std::hint::black_box(tag).is_ok());
         }
         _ => {
-            let mut buf = m.to_vec();
-            std::hint::black_box(seal_in_place(&[1u8; 32], &[2u8; 12], b"", &mut buf).ok());
+            let tag = seal_in_place(&[1u8; 32], &[2u8; 12], b"", buf);
+            assert!(std::hint::black_box(tag).is_ok());
         }
     }
 }
@@ -60,8 +63,10 @@ fn time_is_linear_in_the_message_size() {
     if cfg!(debug_assertions) {
         return;
     }
-    let small = vec![0u8; 4 << 20];
-    let large = vec![0u8; 32 << 20];
+    // Allocated and written once, before any clock starts: a nonzero fill makes the pages real,
+    // and the warm-up pass of `seconds` touches them again.
+    let mut small = vec![0x5au8; 4 << 20];
+    let mut large = vec![0x5au8; 32 << 20];
     for name in [
         "sha256",
         "sha512",
@@ -69,8 +74,8 @@ fn time_is_linear_in_the_message_size() {
         "aes128gcm",
         "aes256gcm",
     ] {
-        let t_small = seconds(|| run(name, &small));
-        let t_large = seconds(|| run(name, &large));
+        let t_small = seconds(|| run(name, &mut small));
+        let t_large = seconds(|| run(name, &mut large));
         let ratio = t_large / t_small;
         // 8x the data: linear is 8; allow 4 to 16.
         assert!((4.0..16.0).contains(&ratio), "{name}: ratio {ratio:.2}");

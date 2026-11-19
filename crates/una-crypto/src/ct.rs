@@ -23,6 +23,12 @@ pub(crate) fn mask64(bit: u64) -> u64 {
     black_box(0u64.wrapping_sub(bit & 1))
 }
 
+/// All ones when `bit` is 1, all zeros when it is 0, for 32-bit limbs. `bit` must be 0 or 1.
+#[must_use]
+pub(crate) fn mask32(bit: u32) -> u32 {
+    black_box(0u32.wrapping_sub(bit & 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,5 +41,7 @@ mod tests {
         assert!(!eq(b"abc", b"ab"));
         assert_eq!(mask64(1), u64::MAX);
         assert_eq!(mask64(0), 0);
+        assert_eq!(mask32(1), u32::MAX);
+        assert_eq!(mask32(0), 0);
     }
 }

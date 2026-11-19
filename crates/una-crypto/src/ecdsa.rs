@@ -206,6 +206,11 @@ struct Point<const N: usize> {
 
 /// A prime-field curve `y^2 = x^3 - 3x + b` of prime order `n`, with the field and the scalar
 /// ring set up for Montgomery arithmetic.
+///
+/// Every method whose name ends in `_vartime` branches on its operands or reads a table at an
+/// index taken from them (ADR 0133 rule 8), so it takes public operands only: here, values
+/// derived from the message, the signature and the public key, and the curve's own constants. A
+/// routine that handles a secret (a private scalar, a shared point) must not call one (#1481).
 struct Params<const N: usize> {
     fp: Mont<N>,
     fnn: Mont<N>,
@@ -237,7 +242,8 @@ impl<const N: usize> Params<N> {
         let infinity = params.infinity();
         params.g_table[0] = infinity;
         for i in 2..16 {
-            params.g_table[i] = params.add(&params.g_table[i - 1], &g);
+            // Public: multiples of the generator, a curve constant.
+            params.g_table[i] = params.add_vartime(&params.g_table[i - 1], &g);
         }
         params
     }
@@ -250,12 +256,14 @@ impl<const N: usize> Params<N> {
         }
     }
 
-    fn is_infinity(p: &Point<N>) -> bool {
+    /// Whether `p` is the identity. Variable time: the scan stops at the first nonzero limb.
+    fn is_infinity_vartime(p: &Point<N>) -> bool {
         p.z.iter().all(|&w| w == 0)
     }
 
-    /// `y^2 = x^3 - 3x + b` for affine Montgomery-form coordinates.
-    fn on_curve(&self, x: &Limbs<N>, y: &Limbs<N>) -> bool {
+    /// `y^2 = x^3 - 3x + b` for affine Montgomery-form coordinates. Variable time: the final
+    /// comparison stops at the first differing limb.
+    fn on_curve_vartime(&self, x: &Limbs<N>, y: &Limbs<N>) -> bool {
         let f = &self.fp;
         let lhs = f.mul(y, y);
         let x2 = f.mul(x, x);
@@ -265,10 +273,11 @@ impl<const N: usize> Params<N> {
         lhs == rhs
     }
 
-    /// Doubling (`dbl-2001-b`, `a = -3`).
-    fn double(&self, p: &Point<N>) -> Point<N> {
+    /// Doubling (`dbl-2001-b`, `a = -3`). Variable time: it branches on whether the point is the
+    /// identity or has `y = 0`.
+    fn double_vartime(&self, p: &Point<N>) -> Point<N> {
         let f = &self.fp;
-        if Self::is_infinity(p) || p.y.iter().all(|&w| w == 0) {
+        if Self::is_infinity_vartime(p) || p.y.iter().all(|&w| w == 0) {
             return self.infinity();
         }
         let delta = f.mul(&p.z, &p.z);
@@ -295,13 +304,14 @@ impl<const N: usize> Params<N> {
     }
 
     /// General addition (`add-2007-bl`) with the special cases handled explicitly: either
-    /// operand the identity, equal points (doubling) and opposite points (the identity).
-    fn add(&self, p: &Point<N>, q: &Point<N>) -> Point<N> {
+    /// operand the identity, equal points (doubling) and opposite points (the identity). Variable
+    /// time: each special case is a branch on the operands.
+    fn add_vartime(&self, p: &Point<N>, q: &Point<N>) -> Point<N> {
         let f = &self.fp;
-        if Self::is_infinity(p) {
+        if Self::is_infinity_vartime(p) {
             return *q;
         }
-        if Self::is_infinity(q) {
+        if Self::is_infinity_vartime(q) {
             return *p;
         }
         let z1z1 = f.mul(&p.z, &p.z);
@@ -314,7 +324,7 @@ impl<const N: usize> Params<N> {
         let r = f.sub(&s2, &s1);
         if h.iter().all(|&w| w == 0) {
             return if r.iter().all(|&w| w == 0) {
-                self.double(p)
+                self.double_vartime(p)
             } else {
                 self.infinity()
             };
@@ -337,34 +347,38 @@ impl<const N: usize> Params<N> {
     }
 
     /// `u1 * G + u2 * Q` by Shamir's trick with 4-bit windows: the doublings are shared, and each
-    /// window adds a table entry for each scalar.
-    fn joint_mul(&self, u1: &Limbs<N>, u2: &Limbs<N>, q: &Point<N>) -> Point<N> {
+    /// window adds a table entry for each scalar. Variable time: a window's nibbles index the
+    /// tables and decide whether an addition happens, so both scalars and the point are public.
+    fn joint_mul_vartime(&self, u1: &Limbs<N>, u2: &Limbs<N>, q: &Point<N>) -> Point<N> {
         let mut q_table = [self.infinity(); 16];
         q_table[1] = *q;
         for i in 2..16 {
-            q_table[i] = self.add(&q_table[i - 1], q);
+            q_table[i] = self.add_vartime(&q_table[i - 1], q);
         }
         let mut acc = self.infinity();
         for window in (0..N * 16).rev() {
             for _ in 0..4 {
-                acc = self.double(&acc);
+                acc = self.double_vartime(&acc);
             }
             let (limb, shift) = (window / 16, (window % 16) * 4);
             let a = ((u1[limb] >> shift) & 15) as usize;
             let b = ((u2[limb] >> shift) & 15) as usize;
             if a != 0 {
-                acc = self.add(&acc, &self.g_table[a]);
+                acc = self.add_vartime(&acc, &self.g_table[a]);
             }
             if b != 0 {
-                acc = self.add(&acc, &q_table[b]);
+                acc = self.add_vartime(&acc, &q_table[b]);
             }
         }
         acc
     }
 
-    /// The affine x coordinate (Montgomery form) of a non-identity point.
-    fn affine_x(&self, p: &Point<N>) -> Limbs<N> {
-        let z_inv = self.fp.pow(&p.z, &self.p_minus_2);
+    /// The affine x coordinate (Montgomery form) of a non-identity point. Variable time in the
+    /// exponent of the inversion only, which is the curve constant `p - 2`; the name still says
+    /// `_vartime`, since the routine was written for public points and is not reviewed for others.
+    fn affine_x_vartime(&self, p: &Point<N>) -> Limbs<N> {
+        // Public exponent: `p - 2`, a constant of the curve (a Fermat inverse).
+        let z_inv = self.fp.pow_vartime(&p.z, &self.p_minus_2);
         let z_inv2 = self.fp.mul(&z_inv, &z_inv);
         self.fp.mul(&p.x, &z_inv2)
     }
@@ -390,7 +404,8 @@ impl<const N: usize> Params<N> {
             y: self.fp.to_mont(&qy),
             z: self.fp.one(),
         };
-        if !self.on_curve(&q.x, &q.y) {
+        // Public: the coordinates of the public key.
+        if !self.on_curve_vartime(&q.x, &q.y) {
             return false;
         }
         // The signature: r and s in [1, n - 1].
@@ -412,15 +427,19 @@ impl<const N: usize> Params<N> {
         };
         let z = self.fnn.reduce_once(&z);
         // w = s^-1; u1 = z * w; u2 = r * w (all modulo n). `mul` of a Montgomery-form operand and a
-        // plain one yields a plain product.
-        let w = self.fnn.pow(&self.fnn.to_mont(&s), &self.n_minus_2);
+        // plain one yields a plain product. Public exponent: `n - 2`, a constant of the curve (a
+        // Fermat inverse); the base `s` is a part of the signature, public too.
+        let w = self.fnn.pow_vartime(&self.fnn.to_mont(&s), &self.n_minus_2);
         let u1 = self.fnn.mul(&w, &z);
         let u2 = self.fnn.mul(&w, &r);
-        let big_r = self.joint_mul(&u1, &u2, &q);
-        if Self::is_infinity(&big_r) {
+        // Public: `u1` and `u2` come from the digest and the signature, and `q` is the public key.
+        let big_r = self.joint_mul_vartime(&u1, &u2, &q);
+        // Public: `big_r` is a function of the digest, the signature and the public key.
+        if Self::is_infinity_vartime(&big_r) {
             return false;
         }
-        let x = self.fp.demont(&self.affine_x(&big_r));
+        // Public: the same point.
+        let x = self.fp.demont(&self.affine_x_vartime(&big_r));
         // x < p < 2n for both curves, so one conditional subtraction reduces it modulo n.
         self.fnn.reduce_once(&x) == r
     }
@@ -476,31 +495,33 @@ mod tests {
     fn check_params<const N: usize>(c: &Params<N>) {
         // G is on the curve; (n - 1) G = -G; n G = identity; G + G equals the doubling.
         let g = c.g_table[1];
-        assert!(c.on_curve(&g.x, &g.y));
+        assert!(c.on_curve_vartime(&g.x, &g.y));
         let zero = [0u64; N];
         let nm1 = minus_one(&c.fnn);
-        let neg_g = c.joint_mul(&nm1, &zero, &g);
-        let gx = c.affine_x(&g);
-        assert_eq!(c.affine_x(&neg_g), gx);
-        let sum = c.add(&neg_g, &g);
-        assert!(Params::is_infinity(&sum));
+        let neg_g = c.joint_mul_vartime(&nm1, &zero, &g);
+        let gx = c.affine_x_vartime(&g);
+        assert_eq!(c.affine_x_vartime(&neg_g), gx);
+        let sum = c.add_vartime(&neg_g, &g);
+        assert!(Params::is_infinity_vartime(&sum));
         // u1 = 1, u2 = n - 1 with Q = G: G + (n - 1) G = identity.
         let one = {
             let mut o = [0u64; N];
             o[0] = 1;
             o
         };
-        assert!(Params::is_infinity(&c.joint_mul(&one, &nm1, &g)));
+        assert!(Params::is_infinity_vartime(
+            &c.joint_mul_vartime(&one, &nm1, &g)
+        ));
         // u1 = 1, u2 = 1 with Q = G: 2G through the equal-point branch of add.
-        let two = c.double(&g);
-        let via_add = c.joint_mul(&one, &one, &g);
-        assert_eq!(c.affine_x(&two), c.affine_x(&via_add));
+        let two = c.double_vartime(&g);
+        let via_add = c.joint_mul_vartime(&one, &one, &g);
+        assert_eq!(c.affine_x_vartime(&two), c.affine_x_vartime(&via_add));
         // Every table entry is on the curve.
         for p in &c.g_table[1..] {
-            let zi = c.fp.pow(&p.z, &c.p_minus_2);
+            let zi = c.fp.pow_vartime(&p.z, &c.p_minus_2);
             let zi2 = c.fp.mul(&zi, &zi);
             let zi3 = c.fp.mul(&zi2, &zi);
-            assert!(c.on_curve(&c.fp.mul(&p.x, &zi2), &c.fp.mul(&p.y, &zi3)));
+            assert!(c.on_curve_vartime(&c.fp.mul(&p.x, &zi2), &c.fp.mul(&p.y, &zi3)));
         }
     }
 
@@ -557,7 +578,7 @@ mod tests {
             let x3 = fp.mul(&fp.mul(&xm, &xm), &xm);
             let three_x = fp.add(&fp.add(&xm, &xm), &xm);
             let rhs = fp.add(&fp.sub(&x3, &three_x), &c.b);
-            let ym = fp.pow(&rhs, &sqrt_exp);
+            let ym = fp.pow_vartime(&rhs, &sqrt_exp);
             if fp.mul(&ym, &ym) == rhs {
                 found = Some((x, xm, ym));
             } else {
@@ -565,7 +586,7 @@ mod tests {
             }
         }
         let (x, xm, ym) = found.unwrap();
-        assert!(c.on_curve(&xm, &ym));
+        assert!(c.on_curve_vartime(&xm, &ym));
         let big_r = Point {
             x: xm,
             y: ym,
@@ -581,18 +602,18 @@ mod tests {
         let take = digest.len().min(len);
         zbytes[len - take..].copy_from_slice(&digest[..take]);
         let z = fnn.reduce_once(&from_be_bytes::<N>(&zbytes).unwrap());
-        let r_inv_m = fnn.pow(&fnn.to_mont(&r), &c.n_minus_2);
+        let r_inv_m = fnn.pow_vartime(&fnn.to_mont(&r), &c.n_minus_2);
         let r_inv = fnn.demont(&r_inv_m);
         let neg_z_over_r = fnn.sub(&[0; N], &fnn.mul(&r_inv_m, &z));
         // Q = (-z / r) G + (1 / r) R.
-        let q = c.joint_mul(&neg_z_over_r, &r_inv, &big_r);
-        assert!(!Params::is_infinity(&q));
-        let zi = fp.pow(&q.z, &c.p_minus_2);
+        let q = c.joint_mul_vartime(&neg_z_over_r, &r_inv, &big_r);
+        assert!(!Params::is_infinity_vartime(&q));
+        let zi = fp.pow_vartime(&q.z, &c.p_minus_2);
         let zi2 = fp.mul(&zi, &zi);
         let qx = fp.demont(&fp.mul(&q.x, &zi2));
         let qy = fp.demont(&fp.mul(&q.y, &fp.mul(&zi2, &zi)));
         // The premise: u1 G + u2 Q (u1 = z, u2 = r) really is R, whose x is not below n.
-        let back = c.joint_mul(
+        let back = c.joint_mul_vartime(
             &z,
             &r,
             &Point {
@@ -601,7 +622,7 @@ mod tests {
                 z: fp.one(),
             },
         );
-        assert_eq!(fp.demont(&c.affine_x(&back)), x);
+        assert_eq!(fp.demont(&c.affine_x_vartime(&back)), x);
         assert!(!fnn.is_below_modulus(&x), "x(R) is at least n");
         let mut key = vec![4u8];
         key.extend_from_slice(&be_bytes(&qx));

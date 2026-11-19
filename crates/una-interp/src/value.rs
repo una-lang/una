@@ -507,7 +507,9 @@ fn leaf_equal(a: &Value<'_>, b: &Value<'_>) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Text(x), Value::Text(y)) => Rc::ptr_eq(x, y) || x == y,
         (Value::Unit, Value::Unit) => true,
-        (Value::Hashed(x), Value::Hashed(y)) => Rc::ptr_eq(x, y) || x == y,
+        // One allocation is one value; two are compared whole, in time that does not depend on
+        // where they differ (#1481).
+        (Value::Hashed(x), Value::Hashed(y)) => Rc::ptr_eq(x, y) || crate::host::hashed_equal(x, y),
         // Two reply rights are equal when they name the same exchange (ADR 0123 rule 1).
         (Value::Right(x), Value::Right(y)) => x == y,
         (Value::Data(x), Value::Data(y)) => {
@@ -898,6 +900,71 @@ mod tests {
         let empty = Value::List(Rc::new(Vec::new()));
         assert_eq!(equal_within(&empty, &flat(1, 0), 1), Some(false));
         assert_eq!(equal_within(&empty, &empty.clone(), 0), Some(true));
+    }
+
+    /// `Hashed == Hashed` reads every byte of both values, wherever they differ and whether or
+    /// not they do (#1481): the count of folded bytes is the digest length in every case, so no
+    /// comparison stops at the first difference.
+    #[test]
+    fn hashed_equality_reads_every_byte_wherever_two_values_differ() {
+        use crate::host::HASHED_BYTES_FOLDED;
+        let hashed = |bytes: &[u8]| Value::Hashed(Rc::from(bytes));
+        let folded = |a: &Value<'_>, b: &Value<'_>| {
+            let before = HASHED_BYTES_FOLDED.with(std::cell::Cell::get);
+            let verdict = equal_within(a, b, usize::MAX);
+            (
+                HASHED_BYTES_FOLDED.with(std::cell::Cell::get) - before,
+                verdict,
+            )
+        };
+        let base = [7u8; 32];
+        // Two allocations of the same bytes.
+        assert_eq!(folded(&hashed(&base), &hashed(&base)), (32, Some(true)));
+        // Every single-bit difference, from the first byte to the last, in both orders.
+        for at in 0..32 {
+            for bit in 0..8 {
+                let mut other = base;
+                other[at] ^= 1 << bit;
+                assert_eq!(
+                    folded(&hashed(&base), &hashed(&other)),
+                    (32, Some(false)),
+                    "byte {at}, bit {bit}"
+                );
+                assert_eq!(folded(&hashed(&other), &hashed(&base)), (32, Some(false)));
+            }
+        }
+        // Every byte different.
+        assert_eq!(
+            folded(&hashed(&base), &hashed(&[0xf8u8; 32])),
+            (32, Some(false))
+        );
+        // Lengths are public: a prefix differs at once, and two empty values are equal.
+        assert_eq!(
+            folded(&hashed(&base), &hashed(&base[..31])),
+            (0, Some(false))
+        );
+        assert_eq!(folded(&hashed(&[]), &hashed(&[])), (0, Some(true)));
+        // One allocation is one value.
+        let one = hashed(&base);
+        assert_eq!(folded(&one, &one.clone()), (0, Some(true)));
+        // A keyed hash never equals a value of another kind.
+        assert_eq!(
+            equal_within(&one, &Value::text("x"), usize::MAX),
+            Some(false)
+        );
+        assert_eq!(equal_within(&Value::int(7), &one, usize::MAX), Some(false));
+        // Inside a value with parts, the same routine compares them.
+        let list = |item: Value<'static>| Value::List(Rc::new(vec![Value::int(1), item]));
+        let mut last = base;
+        last[31] ^= 0x80;
+        assert_eq!(
+            folded(&list(hashed(&base)), &list(hashed(&base))),
+            (32, Some(true))
+        );
+        assert_eq!(
+            folded(&list(hashed(&base)), &list(hashed(&last))),
+            (32, Some(false))
+        );
     }
 
     #[test]

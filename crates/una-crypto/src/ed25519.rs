@@ -200,6 +200,7 @@ fn double_scalar_mul(
 }
 
 fn is_identity(p: &Point) -> bool {
+    // Public: every point of a verification comes from the signature and the public key.
     p.x.eq_vartime(Fe::ZERO) && p.y.eq_vartime(p.z)
 }
 
@@ -284,12 +285,15 @@ fn decompress(b: &[u8; 32], k: &Constants) -> Option<Point> {
     let v7 = v3.square().mul(v);
     let mut x = u.mul(v3).mul(u.mul(v7).pow22523());
     let vx2 = v.mul(x.square());
+    // Public: `b` is the encoding of a point of the signature or of the public key.
     if !vx2.eq_vartime(u) {
+        // Public: the same encoding.
         if !vx2.eq_vartime(u.neg()) {
             return None;
         }
         x = x.mul(k.sqrt_m1);
     }
+    // Public: the same encoding.
     if x.eq_vartime(Fe::ZERO) && sign {
         return None;
     }
