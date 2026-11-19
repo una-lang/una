@@ -56,7 +56,9 @@ pretty_assertions = "1.4.1"
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.10.8"
+# `compress`: the public name of the compression function, for the HMAC of `una-interp`, which
+# keeps and wipes its own hash state (#2120). It adds no code and no dependency.
+sha2 = { version = "0.10.8", features = ["compress"] }
 # Ed25519 for the registry client (ADR 0122 rule 38): pure Rust, no C, strict verification.
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
 # Allowed by ADR 0055 for una-codegen and una-rt only.

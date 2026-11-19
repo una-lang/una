@@ -93,6 +93,8 @@ A declaration with tier 0 errors is not elaborated and produces no obligations. 
 
 Allowed without an ADR: `clap`, `serde`, `serde_json`, `toml`, `ariadne` (human diagnostics rendering), `indexmap`, `sha2`, `rayon`, `insta` and `pretty_assertions` (dev only). Anything else needs an ADR stating why the standard library or an allowed crate is insufficient. `Int` and every exact integer step use Una's own big integer, `una_core::bigint` (#1093), not a crate.
 
+`sha2` has its feature `compress` on (#2120): it makes the SHA-256 compression function a public name and adds no code and no dependency. The HMAC of `Keys.hmac`, `una_interp::hmac_sha256`, calls it with a hash state of its own, which it wipes with the padded key before it returns. `una-interp` and `una-rt` still do not depend on `una-crypto` or `zeroize`: the wipe is a write of zeros kept by an optimization barrier (`std::hint::black_box`), best effort, not a volatile write.
+
 Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` only (v0.2): `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-object` and `target-lexicon`.
 
 Allowed by ADR 0074, for `una-http` only (v0.2): `rustls` with its `ring` provider, and `webpki-roots`, the TLS stack of the `Http` capability, with their dependencies (`rustls-webpki`, `rustls-pki-types`, `untrusted`, `subtle`, `zeroize`, `once_cell`, `getrandom`). They are in the trusted base. Executables that never use `Http` do not link them.
