@@ -934,16 +934,35 @@ fn floors_refuse_an_older_root_and_a_point_off_the_lock() {
     assert!(at(Some(&first)).is_ok());
     assert!(at(None).is_ok());
     assert!(at(Some(&FloorDigest::Note(whole.clone()))).is_ok());
+    // Each refusal names the floor's file. Against the digest of a text it says that the chain
+    // forked; against the digest of a whole note it cannot know that, and does not say it.
+    let file = format!(
+        "registry/{}/root-version",
+        una_project::itaoca::registry_id(&registry.pin())
+    );
     for kind in [
         FloorDigest::Note(zeros),
         FloorDigest::Note(text),
         FloorDigest::Text(whole),
     ] {
-        assert!(
-            matches!(at(Some(&kind)), Err(OpenError::Refused(why)) if why.contains("forked")),
-            "{kind:?}"
-        );
+        let Err(OpenError::Refused(why)) = at(Some(&kind)) else {
+            panic!("{kind:?} accepted")
+        };
+        assert!(why.contains(&file) && why.contains(kind.value()), "{why}");
+        match kind {
+            FloorDigest::Text(_) => assert!(why.contains("forked"), "{why}"),
+            FloorDigest::Note(_) => assert!(
+                why.contains("a floor of the earlier form")
+                    && why.contains("another form or another text of root version 1")
+                    && !why.contains("forked"),
+                "{why}"
+            ),
+        }
     }
+    let Err(OpenError::Refused(why)) = at(Some(&other)) else {
+        panic!("another text accepted")
+    };
+    assert!(why.contains(&file), "{why}");
     let mut client = open(&memory, &registry).unwrap();
     let size = client.point.checkpoint.size;
     let own = hash_hex(&client.point.checkpoint.root);
@@ -2966,8 +2985,23 @@ fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
         at(2, &second_note),
         at(1, &first_note),
     ] {
-        let forked = verify(&provenance, &expected, &floor);
-        assert!(refused(forked.clone(), "forked"), "{floor:?}: {forked:?}");
+        let differs = verify(&provenance, &expected, &floor);
+        let says = if matches!(
+            floor,
+            Floor::At {
+                digest: Some(FloorDigest::Note(_)),
+                ..
+            }
+        ) {
+            assert!(!format!("{differs:?}").contains("forked"), "{differs:?}");
+            "another form or another text"
+        } else {
+            "forked"
+        };
+        assert!(
+            refused(differs.clone(), says) && refused(differs.clone(), "/root-version"),
+            "{floor:?}: {differs:?}"
+        );
     }
     assert!(verify(&provenance, &expected, &at(2, &second)).is_ok());
     assert!(verify(&provenance, &expected, &at(1, &first)).is_ok());
@@ -3698,7 +3732,7 @@ fn a_floor_of_the_whole_note_is_upgraded_once_and_only_by_the_same_note() {
     let old = format!("2 {note}\n");
     let new = format!("2 text {text}\n");
 
-    // As v0.4.1 and earlier stored it.
+    // As a release before this form stored it.
     write(&old);
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
@@ -3770,7 +3804,11 @@ fn a_floor_of_the_whole_note_is_upgraded_once_and_only_by_the_same_note() {
     assert!(Registry::open_with("acme", &honest, &registry.pin(), &at, &floors).is_ok());
     assert!(matches!(
         Registry::open_with("acme", &other_form, &registry.pin(), &at, &floors),
-        Err(OpenError::Refused(why)) if why.contains("forked") && why.contains("earlier form")
+        Err(OpenError::Refused(why))
+            if why.contains("another form or another text")
+                && why.contains("earlier form")
+                && why.contains(&format!("registry/{id}/root-version"))
+                && !why.contains("forked")
     ));
 
     // The chain that holds version 2 with exactly the stored note: the floor takes the digest

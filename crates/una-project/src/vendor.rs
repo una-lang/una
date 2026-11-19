@@ -19,7 +19,7 @@ use std::path::Path;
 use una_syntax::ita;
 
 use crate::ita::ITATY;
-use crate::itaoca::Itaoca;
+use crate::itaoca::{FloorDigest, Itaoca};
 use crate::provenance::{self, Expected, Floor};
 use crate::tree::{self, VerifiedTree};
 
@@ -215,6 +215,38 @@ fn check(
     Ok(())
 }
 
+/// Replaces a root-version floor of the earlier form, the digest of a whole signed note, with
+/// the digest of that note's text, from the provenance `bytes` that a load just verified
+/// against it (ADR 0122, amendment of 2026-11-19, items 5 and 6): the provenance's chain,
+/// walked and verified from the pin, holds the floor's version with exactly the note the floor
+/// holds, or the load would have refused it. Only the chain up to the floor's version is
+/// offered, so the floor's version never rises here, and Itaoca compares again under its lock
+/// ([`Itaoca::store_root_chain`]): a note of another digest writes nothing. By the collision
+/// resistance of SHA-256 the note is the one the floor held, so the floor binds the same root
+/// text after as before, whoever supplied the provenance. This is how a floor that an altered
+/// copy poisoned before the floor held the text's digest is repaired with no registry at hand.
+/// Best effort: a failure to write changes nothing of the load.
+fn upgrade_floor(itaoca: &Itaoca, expected: &Expected, floor: &Floor, bytes: &[u8]) {
+    let Floor::At {
+        version,
+        digest: Some(FloorDigest::Note(_)),
+    } = floor
+    else {
+        return;
+    };
+    let Some(mut chain) = provenance::parse(bytes)
+        .ok()
+        .and_then(|read| provenance::walked_roots(&read, &expected.root))
+    else {
+        return;
+    };
+    chain.retain(|walked| walked.version <= *version);
+    if chain.last().is_some_and(|last| last.version == *version) {
+        // A refusal here leaves the floor as it is.
+        let _ = itaoca.store_root_chain(&crate::itaoca::registry_id(&expected.root), &chain);
+    }
+}
+
 /// The vendored copy of the release, verified against the lock and the root-version floor
 /// `floor` this machine stores ([`Floor::of`]), or `None` when the root has none.
 pub fn vendored(
@@ -286,6 +318,7 @@ pub fn stored_at(
         )));
     };
     check(&files, &bytes, expected, floor)?;
+    upgrade_floor(itaoca, expected, floor, &bytes);
     Ok(Some(Loaded {
         place: Place::Itaoca,
         tree: files,
@@ -296,7 +329,9 @@ pub fn stored_at(
 /// Loads the release, verified: from the vendor directory of `root` when it holds it, else
 /// from Itaoca (rule 32). A vendored copy that does not verify is refused, and Itaoca is not
 /// tried in its place. Both are verified against the root-version floor Itaoca stores for the
-/// registry, read at this load; with no Itaoca there is none (trust on first use).
+/// registry, read at this load; with no Itaoca there is none (trust on first use). A floor of
+/// the earlier form that the provenance verified against is replaced with the digest of the
+/// text of the same note (`upgrade_floor`).
 pub fn load(root: &Path, itaoca: Option<&Itaoca>, expected: &Expected) -> Result<Loaded, Problem> {
     load_at(root, itaoca, expected, &Floor::of(itaoca, &expected.root))
 }
@@ -311,6 +346,9 @@ pub fn load_at(
     floor: &Floor,
 ) -> Result<Loaded, Problem> {
     if let Some(loaded) = vendored(root, expected, floor)? {
+        if let Some(itaoca) = itaoca {
+            upgrade_floor(itaoca, expected, floor, &loaded.provenance);
+        }
         return Ok(loaded);
     }
     if let Some(itaoca) = itaoca

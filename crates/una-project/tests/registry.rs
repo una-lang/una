@@ -1372,7 +1372,7 @@ fn a_bundle_with_no_key_cannot_poison_the_root_floor() {
     )
     .unwrap_err();
     assert!(
-        matches!(&problem, Failure::Refused(why) if why.contains("forked") && why.contains("earlier form")),
+        matches!(&problem, Failure::Refused(why) if why.contains("another form or another text") && why.contains("earlier form") && !why.contains("forked")),
         "{problem:?}"
     );
     assert_eq!(

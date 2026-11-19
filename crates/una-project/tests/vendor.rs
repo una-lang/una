@@ -569,20 +569,51 @@ fn every_load_refuses_a_fork_at_the_floor_version() {
         write(&line);
         for at in places() {
             let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
+            // Against the digest of a text, a fork; against the digest of a whole note, another
+            // form or another text, and never "forked". Both name the floor's file.
+            let says = if line.starts_with("1 text ") {
+                "forked"
+            } else {
+                "another form or another text"
+            };
             assert!(
                 matches!(&refusal, Problem::Refused(message)
-                    if message.contains("another digest") && message.contains("forked")),
+                    if message.contains("another digest")
+                        && message.contains(says)
+                        && message.contains(&format!("registry/{id}/root-version"))
+                        && (says == "forked" || !message.contains("forked"))),
                 "{line:?}: {refusal:?}"
             );
         }
-    }
-    for line in [format!("1 text {text}\n"), format!("1 {first}\n")] {
-        write(&line);
-        for at in places() {
-            assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
-        }
-        // An offline load never rewrites the floor.
+        // A refused load leaves the floor as it is.
         assert_eq!(std::fs::read_to_string(&floor).unwrap(), line);
+    }
+    write(&format!("1 text {text}\n"));
+    for at in places() {
+        assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
+    }
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 text {text}\n")
+    );
+    // A floor of the earlier form that holds exactly the provenance's note: the load passes,
+    // and replaces the floor with the digest of that note's text (ADR 0122, amendment of
+    // 2026-11-19, item 6), from the vendor directory and from Itaoca alike. With no Itaoca
+    // given, nothing is written.
+    for at in places() {
+        write(&format!("1 {first}\n"));
+        if at == root {
+            assert!(vendor::load(&at, None, &release.expected).is_ok());
+            assert_eq!(
+                std::fs::read_to_string(&floor).unwrap(),
+                format!("1 {first}\n")
+            );
+        }
+        assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(&floor).unwrap(),
+            format!("1 text {text}\n")
+        );
     }
     write("1\n");
     for at in places() {

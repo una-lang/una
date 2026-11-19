@@ -547,6 +547,25 @@ impl FloorDigest {
         self.value() == self.of(text, note)
     }
 
+    /// How a refusal says that a root chain holds `version`, the floor's version, with another
+    /// digest than the one this floor holds for the registry `id`: what the held digest covers,
+    /// the floor's file in Itaoca, and what the difference shows. Against the digest of a text
+    /// it shows another root text, a fork of the root chain; against the digest of a whole
+    /// signed note, a floor of the earlier form, it shows another form or another text, and
+    /// the sentence never says that the chain forked. It follows the subject and its verb, such
+    /// as `it serves`.
+    pub fn mismatch(&self, version: u64, id: &str) -> String {
+        let held = self.value();
+        match self {
+            FloorDigest::Text(_) => format!(
+                "root version {version} with another digest of the text of its root metadata than {held}, held by the floor `registry/{id}/root-version` in Itaoca, so the root chain forked"
+            ),
+            FloorDigest::Note(_) => format!(
+                "root version {version} with another digest of its whole signed root metadata than {held}, held by the floor `registry/{id}/root-version` in Itaoca, a floor of the earlier form: another form or another text of root version {version}"
+            ),
+        }
+    }
+
     /// What the digest held is of, for a message.
     pub fn covers(&self) -> &'static str {
         match self {
