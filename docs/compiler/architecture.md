@@ -105,7 +105,29 @@ Allowed by ADR 0133 (accepted on 2026-11-02), for `una-http`: `una-crypto`, `get
 
 Allowed by ADR 0133 (accepted on 2026-11-02), for `una-crypto` only: `zeroize`, the volatile wipe of secrets, already in the lockfile through `rustls`; pure Rust. As dev-dependencies of `una-crypto` only: `ring` and `curve25519-dalek` (the references of the differential tests), `serde_json` and `sha2`. No build script, no `-sys` crate, no foreign code.
 
-`una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`. The transport does not trust its peer with memory (#1476): a header line holds at most 4 KiB (`MAX_HEADER_LINE`, its line ending not counted), a frame at most 16 header lines (`MAX_HEADER_LINES`) and a body at most 64 MiB (`MAX_CONTENT_LENGTH`, room for a document of several MiB however JSON escapes it). Input past a bound is refused with an `InvalidData` error before anything of its size is buffered or reserved, and the server then ends the session as at the end of its input, as it does for a frame that is not JSON.
+`una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`. The transport does not trust its peer with memory (#1476): a header line holds at most 4 KiB (`MAX_HEADER_LINE`, its line ending not counted), a frame at most 16 header lines (`MAX_HEADER_LINES`) and a body at most 64 MiB (`MAX_CONTENT_LENGTH`, room for a document of several MiB however JSON escapes it). Input past a bound is refused with an `InvalidData` error before anything of its size is buffered or reserved.
+
+The JSON text of a body has two more bounds (#2100), since the values a parser makes take far more memory than the bytes they are read from: `[{"":0},{"":0},...]` makes about 100 bytes of values for each byte of text, so a 64 MiB body made more than 6 GiB. The transport passes once over the bytes of a body, in O(n) time and O(1) space, before `serde_json` makes any value, and refuses a body nested deeper than 127 arrays and objects (`MAX_DEPTH`, the bound `serde_json` already has) or with more than 131,072 values (`MAX_VALUES`). A value is the body's own value, an element of an array or a member of an object, its key included. The count is exact for JSON, and for other text it is never under what the parser makes before it stops. The arithmetic, for 64-bit targets: a `serde_json::Value` is 32 bytes; the costliest shape is an object with one member, whose map allocates a B-tree leaf with room for 11 keys of 24 bytes and 11 values of 32 bytes, 632 bytes, and whose own slot in the array around it is held up to three times over while the array grows (96 bytes), so 728 bytes for 2 values, 364 a value; the largest cost measured is 373 bytes a value (an object whose members are one-member objects); the bound counts 512 bytes a value, and 131,072 × 512 bytes = 64 MiB. The memory of one frame is then at most:
+
+| What | While the frame is parsed | Once parsed |
+|---|---|---|
+| The body | 64 MiB | freed |
+| The text of its strings | 192 MiB: a string with escapes grows in the parser's buffer, which doubles, and is then copied (3.0 times a 64 MiB string was measured; a string without escapes is 1.0 times) | 64 MiB |
+| Its values | 64 MiB | 64 MiB |
+| Total | 320 MiB, 5 times `MAX_CONTENT_LENGTH` | 128 MiB, 2 times |
+
+The strings and the values share the 64 MiB of the body, so no frame reaches both of their rows at once. A document sent in `didOpen` or `didChange` is one long string: it costs its own size once parsed. The numbers were measured with `serde_json` 1.0.151 and its default features; a test fails if a `Value` grows past 32 bytes.
+
+A refused frame is never silent (#2100). Every refusal writes one line to stderr, `una lsp: ...`, which names the limit, and sends the same text to the editor as a `window/showMessage` notification of type error, which is valid in any state of the protocol and needs no request id (the id of a refused frame is not known, since the frame was not parsed). What follows depends on whether the input is still framed:
+
+| Refused | The input | What the server does |
+|---|---|---|
+| A body past `MAX_DEPTH` or `MAX_VALUES` | Still framed: the body was read whole | Drops the frame and goes on with the next one. A request in a dropped frame gets no response |
+| A header line past `MAX_HEADER_LINE`, a header past `MAX_HEADER_LINES`, a header line that is not UTF-8, a `Content-Length` that is missing, not a number or past `MAX_CONTENT_LENGTH` | Not framed: the body was not read, so where the next frame starts is not known | Cancels the checks in flight, reads no further and exits with code 2 |
+| A body that is not JSON | Read whole, but the peer does not speak the protocol, and a wrong `Content-Length` is the usual cause | The same: exit code 2 |
+| A body cut short by the end of the input, or an error reading the input | Ended | The same: exit code 2; the notification is written whether or not the editor still reads it |
+
+The server never looks for the next header in bytes it refused, so it cannot read a body as headers. The end of the input between two frames is still the normal end of a session, with exit code 0 and no report.
 
 Allowed by ADR 0124 rule 22, for `una-link` only: `object`, already in `Cargo.lock` through `cranelift-object`, with its features `std`, `read_core`, `archive`, `macho` and `elf` (readers only), for the inputs of the link; the writer is `una-link`'s own. `una-link` also uses `sha2`, for the signature's hashes and the UUID.
 
