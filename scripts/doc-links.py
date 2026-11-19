@@ -4,7 +4,7 @@ with mdBook before the website replaced its book.
 
 The documents are the tracked README.md, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md,
 CHANGELOG.md, the charter, the documentation map, the guides, the specification, the release
-records, the ADRs and the security advisories: the set that scripts/site.sh staged, and the
+records, the release notes (#2134), the ADRs and the security advisories: the set that scripts/site.sh staged, and the
 documents that the website publishes besides. In each,
 outside code blocks and inline code, every link that is not a URL, inline or in a reference
 definition `[ref]: target` (#719):
@@ -54,7 +54,15 @@ ROOT_DOCUMENTS = [
     "docs/README.md",
     "docs/release-gates.md",
 ]
-DIRECTORIES = ["docs/guide", "docs/spec", "docs/releases", "docs/validation", "docs/adr", "docs/security"]
+DIRECTORIES = [
+    "docs/guide",
+    "docs/spec",
+    "docs/releases",
+    "docs/release-notes",
+    "docs/validation",
+    "docs/adr",
+    "docs/security",
+]
 
 
 def documents(files):

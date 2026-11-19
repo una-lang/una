@@ -1301,6 +1301,24 @@ fn the_bundle_fails_on_a_pattern_grep_cannot_apply() {
     );
     assert!(stdout.contains("neutrality checked"), "{stdout}");
     assert!(!stdout.contains("sentinel-3c8e"));
+    // #2134: the bundle ships the notes of the workspace's version, with their kind, their title
+    // and the result of the neutrality check.
+    let version = env!("CARGO_PKG_VERSION");
+    let manifest = std::fs::read_to_string(
+        out.join("bundle")
+            .join(format!("una-docs-{version}"))
+            .join("manifest.json"),
+    )
+    .unwrap();
+    let entry = manifest
+        .lines()
+        .find(|line| line.contains(&format!("\"path\":\"docs/release-notes/{version}.md\"")))
+        .expect("the manifest lists the release notes");
+    assert!(
+        entry.contains(&format!("\"kind\":\"notes\",\"title\":\"Una {version}\","))
+            && entry.contains("\"neutral\":true"),
+        "{entry}"
+    );
     let output = bundle_with(&out, "(sentinel-3c8e-bundle|una-pattern-canary");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
