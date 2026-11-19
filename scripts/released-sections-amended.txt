@@ -1,0 +1,12 @@
+# Released sections of CHANGELOG.md amended on purpose after their tags (#2111), read by
+# scripts/check-released-sections.sh. One line per amendment:
+#
+#   <tag> <SHA-256 of the amended `## <tag>` section, heading included> #<card>
+#
+# A section that differs from its tag passes only when its digest is the one recorded here; the
+# script prints the digest of a section that differs. The tag and the release notes published
+# from it keep the original text. A line whose section is identical to its tag fails as stale.
+
+# Neutral wording of released entries (commit 3333a279a, 2026-11-17).
+v0.3.4 bafa53a587fbc4d9b1a5ee5d91ee8d684408ca2786809883ec1777ce240998fb #2111
+v0.3.8 a1cfac98adff68a62f210661f7260a3334ddaa885ce6547741199e0b15a1e4dd #2111

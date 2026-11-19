@@ -6,6 +6,18 @@
 # so an entry that a rebase carries under a released heading, instead of `## Unreleased`, fails
 # here before it merges. Each differing version is named.
 #
+# A released section that was amended on purpose after its tag is recorded in
+# scripts/released-sections-amended.txt (#2111), one line per amendment: the tag, the SHA-256 of
+# the amended section as this script extracts it (heading included), and the card that decided
+# it, as `#<number>`. Blank lines and lines that start with `#` are comments. A section that
+# differs from its tag passes only when its digest is the one recorded for that tag, and is
+# named `amended`; any other text still fails, an amended section edited further included. A
+# record whose section is identical to its tag is stale and fails, as do a line out of that
+# shape, two lines for one tag, and a tag this check does not read. The record is read from the
+# working tree, or from REV when given, as CHANGELOG.md is; without the file there is no
+# amendment. A section that differs is printed with its digest. The tag and the release notes
+# published from it keep the original text.
+#
 # It runs in the git repository of the current directory, and checks its working tree's
 # CHANGELOG.md, or the one at REV when given. Every such tag is checked, so a commit that
 # predates a release fails until it is rebased onto it. With no tag v0.3.0 or later, it fails:
@@ -98,6 +110,16 @@ contains() {
     git merge-base --is-ancestor "$1" "${rev:-HEAD}" 2>/dev/null
 }
 
+# The SHA-256 of file $1, in lower-case hexadecimal; nothing where no tool computes one, which
+# matches no record.
+digest() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | cut -d ' ' -f 1
+    else
+        shasum -a 256 "$1" 2> /dev/null | cut -d ' ' -f 1
+    fi
+}
+
 # The section `## $2` of file $1: its heading and every line up to the next `## ` heading
 # outside a fenced block, so that a `## ` line inside a fence does not end it.
 section() {
@@ -112,7 +134,50 @@ changelog "$rev" "$scratch/checked" 2>/dev/null || {
     echo "error: no CHANGELOG.md ${rev:+at $rev }to check" >&2
     exit 1
 }
+
+# The recorded amendments, as `tag digest card` lines in $scratch/records: none without the
+# file. A line out of shape fails here, before any section is judged.
+amended=scripts/released-sections-amended.txt
+: > "$scratch/raw"
+if [ -z "$rev" ]; then
+    if [ -e "$amended" ] || [ -L "$amended" ]; then
+        cat "$amended" > "$scratch/raw" 2>/dev/null || {
+            echo "error: $amended cannot be read" >&2
+            exit 1
+        }
+    fi
+elif git cat-file -e "$rev:$amended" 2>/dev/null; then
+    git show "$rev:$amended" > "$scratch/raw" 2>/dev/null || {
+        echo "error: $amended at $rev cannot be read" >&2
+        exit 1
+    }
+fi
+awk -v file="$amended" '
+    /^[ \t]*$/ || /^[ \t]*#/ { next }
+    NF != 3 || $1 !~ /^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*$/ \
+        || length($2) != 64 || $2 !~ /^[0-9a-f]+$/ || $3 !~ /^#[0-9]+$/ {
+        printf "error: %s line %d is not `<tag> <sha256, 64 lower-case hex digits> #<card>`\n", \
+            file, NR > "/dev/stderr"
+        bad = 1
+        next
+    }
+    seen[$1]++ {
+        printf "error: %s line %d records %s a second time\n", file, NR, $1 > "/dev/stderr"
+        bad = 1
+        next
+    }
+    { print $1, $2, $3 }
+    END { exit bad }' "$scratch/raw" > "$scratch/records" || exit 1
+while read -r tag _ card; do
+    if ! printf '%s\n' "$tags" | grep -qxF -- "$tag"; then
+        echo "error: $amended records $tag ($card), which is not a tag v0.3.0 or later of this" \
+            "repository" >&2
+        exit 1
+    fi
+done < "$scratch/records"
+
 rc=0
+amendments=0
 for tag in $tags; do
     contains "$tag"
     contained=$?
@@ -153,18 +218,39 @@ for tag in $tags; do
         continue
     fi
     section "$scratch/checked" "$tag" > "$scratch/current"
+    recorded=$(awk -v t="$tag" '$1 == t { print $2 }' "$scratch/records")
+    card=$(awk -v t="$tag" '$1 == t { print $3 }' "$scratch/records")
     if cmp -s "$scratch/published" "$scratch/current"; then
-        echo "$tag: identical"
-    else
-        echo "$tag: DIFFERS from the section published with the tag"
-        diff -u "$scratch/published" "$scratch/current" | sed -n '3,$p' | head -20
-        rc=1
+        if [ -n "$recorded" ]; then
+            echo "$tag: FAIL, the section is identical to its tag, but $amended records an" \
+                "amendment ($card); remove the stale record"
+            rc=1
+        else
+            echo "$tag: identical"
+        fi
+        continue
     fi
+    now=$(digest "$scratch/current")
+    if [ -n "$recorded" ] && [ "$now" = "$recorded" ]; then
+        echo "$tag: amended (recorded, $card)"
+        amendments=$((amendments + 1))
+        continue
+    fi
+    echo "$tag: DIFFERS from the section published with the tag"
+    if [ -n "$recorded" ]; then
+        echo "$tag: and from the amendment that $amended records ($card, sha256 $recorded)"
+    fi
+    diff -u "$scratch/published" "$scratch/current" | sed -n '3,$p' | head -20
+    echo "$tag: sha256 of the checked section: ${now:-not computed, no sha256sum or shasum}"
+    rc=1
 done
-if [ "$rc" -eq 0 ]; then
+if [ "$rc" -ne 0 ]; then
+    echo "error: a released section of CHANGELOG.md is neither the one its tag published nor a" \
+        "recorded amendment of it; move new entries under \`## Unreleased\`" >&2
+elif [ "$amendments" -eq 0 ]; then
     echo "ok: every released section of CHANGELOG.md is the one its tag published"
 else
-    echo "error: a released section of CHANGELOG.md differs from its tag;" \
-        "move new entries under \`## Unreleased\`" >&2
+    echo "ok: every released section of CHANGELOG.md is the one its tag published, or its" \
+        "recorded amendment ($amendments amended)"
 fi
 exit "$rc"
