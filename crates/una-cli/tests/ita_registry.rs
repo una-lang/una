@@ -617,9 +617,12 @@ fn unbundle_refuses_a_fork_at_the_root_version_floor() {
         std::fs::write(at.join("root-version"), text).unwrap();
     };
     let last = registry.roots.len();
-    let digest = una_project::tlog::root::digest(registry.roots.last().unwrap());
+    let digest = una_project::tlog::root::text_digest(registry.roots.last().unwrap()).unwrap();
     let isolated = scratch("ita-registry-store", "bundle-root-fork-isolated");
-    floor(&isolated, &format!("{last} sha256:{}\n", "0".repeat(64)));
+    floor(
+        &isolated,
+        &format!("{last} text sha256:{}\n", "0".repeat(64)),
+    );
     let (status, out, err) = una_in(
         &["una", "--json", "ita", "unbundle", path(&file), path(&dir)],
         &isolated,
@@ -629,7 +632,7 @@ fn unbundle_refuses_a_fork_at_the_root_version_floor() {
     assert!(out.contains("forked"), "{out}");
     assert!(!isolated.join("packages").exists());
     let same = scratch("ita-registry-store", "bundle-root-same-isolated");
-    floor(&same, &format!("{last} {digest}\n"));
+    floor(&same, &format!("{last} text {digest}\n"));
     let (status, out, err) = una_in(&["una", "ita", "unbundle", path(&file), path(&dir)], &same);
     assert_eq!(status, 0, "{out}{err}");
 }

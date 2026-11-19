@@ -36,6 +36,16 @@ fn keypair(seed: u8, name: &str) -> (SigningKey, Key) {
     )
 }
 
+/// One root version of a walked chain, for the root-version floor's store, from a `digest` that
+/// stands for both the digest of its text and the digest of its whole note.
+fn walked(version: u64, digest: &str) -> una_project::itaoca::WalkedRoot {
+    una_project::itaoca::WalkedRoot {
+        version,
+        text: digest.to_owned(),
+        note: digest.to_owned(),
+    }
+}
+
 fn sign_line(pair: &SigningKey, key: &Key, text: &str) -> String {
     let mut bytes = key.id().to_vec();
     bytes.extend_from_slice(&pair.sign(text.as_bytes()).to_bytes());
@@ -490,11 +500,11 @@ fn every_load_reads_the_root_version_floor() {
     vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
     let id = una_project::itaoca::registry_id(&release.expected.root);
     assert!(vendor::load(&root, Some(&itaoca), &release.expected).is_ok());
-    let first = una_project::tlog::root::digest(&release.provenance.roots[0]);
-    itaoca.store_root_version(&id, 1, &first).unwrap();
+    let first = una_project::tlog::root::text_digest(&release.provenance.roots[0]).unwrap();
+    itaoca.store_root_chain(&id, &[walked(1, &first)]).unwrap();
     assert!(vendor::load(&root, Some(&itaoca), &release.expected).is_ok());
     itaoca
-        .store_root_version(&id, 2, &format!("sha256:{}", "0".repeat(64)))
+        .store_root_chain(&id, &[walked(2, &format!("sha256:{}", "0".repeat(64)))])
         .unwrap();
     for place in [Some(root.as_path()), None] {
         let at = place.map_or_else(|| fresh("floor-no-vendor"), std::path::Path::to_path_buf);
@@ -523,11 +533,13 @@ fn every_load_reads_the_root_version_floor() {
     ));
 }
 
-/// ADR 0122, amendment of 2026-11-09 (L3): a stored floor binds the digest of its root version.
-/// A chain whose version of the floor has another digest is a fork of the root chain, refused
-/// (U7010) from the vendor directory and from Itaoca alike; the same digest loads; a floor of
-/// the earlier form, the version alone, is compared by version only; a floor line of neither
-/// form is unreadable (U7013), never no floor.
+/// ADR 0122, amendments of 2026-11-09 (L3) and of 2026-11-19: a stored floor binds the digest
+/// of the text of its root version. A chain whose version of the floor has another digest is a
+/// fork of the root chain, refused (U7010) from the vendor directory and from Itaoca alike; the
+/// same digest loads. A floor of the form of 2026-11-09, the digest of the whole signed note,
+/// is compared as it was stored, and a digest of one kind never passes as the other; a floor of
+/// the earliest form, the version alone, is compared by version only; a floor line of no form
+/// is unreadable (U7013), never no floor.
 #[test]
 fn every_load_refuses_a_fork_at_the_floor_version() {
     let (release, itaoca) = stored("floor-digest");
@@ -535,6 +547,8 @@ fn every_load_refuses_a_fork_at_the_floor_version() {
     vendor::vendor(&root, Some(&itaoca), &release.expected).unwrap();
     let id = una_project::itaoca::registry_id(&release.expected.root);
     let first = una_project::tlog::root::digest(&release.provenance.roots[0]);
+    let text = una_project::tlog::root::text_digest(&release.provenance.roots[0]).unwrap();
+    assert_ne!(first, text);
     let floor = itaoca.root.join("registry").join(&id).join("root-version");
     let write = |text: &str| {
         let _ = std::fs::remove_file(&floor);
@@ -545,18 +559,30 @@ fn every_load_refuses_a_fork_at_the_floor_version() {
         [Some(root.clone()), None]
             .map(|place| place.unwrap_or_else(|| fresh("floor-digest-no-vendor")))
     };
-    write(&format!("1 sha256:{}\n", "0".repeat(64)));
-    for at in places() {
-        let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
-        assert!(
-            matches!(&refusal, Problem::Refused(message)
-                if message.contains("another digest") && message.contains("forked")),
-            "{refusal:?}"
-        );
+    for line in [
+        format!("1 text sha256:{}\n", "0".repeat(64)),
+        format!("1 sha256:{}\n", "0".repeat(64)),
+        // A digest of one kind under the other form.
+        format!("1 text {first}\n"),
+        format!("1 {text}\n"),
+    ] {
+        write(&line);
+        for at in places() {
+            let refusal = vendor::load(&at, Some(&itaoca), &release.expected).unwrap_err();
+            assert!(
+                matches!(&refusal, Problem::Refused(message)
+                    if message.contains("another digest") && message.contains("forked")),
+                "{line:?}: {refusal:?}"
+            );
+        }
     }
-    write(&format!("1 {first}\n"));
-    for at in places() {
-        assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
+    for line in [format!("1 text {text}\n"), format!("1 {first}\n")] {
+        write(&line);
+        for at in places() {
+            assert!(vendor::load(&at, Some(&itaoca), &release.expected).is_ok());
+        }
+        // An offline load never rewrites the floor.
+        assert_eq!(std::fs::read_to_string(&floor).unwrap(), line);
     }
     write("1\n");
     for at in places() {
@@ -566,6 +592,12 @@ fn every_load_refuses_a_fork_at_the_floor_version() {
         format!("1 {first}"),
         format!("1 {first} \n"),
         "1 sha256:00\n".to_owned(),
+        "1 text\n".to_owned(),
+        "1 text sha256:00\n".to_owned(),
+        format!("1 note {first}\n"),
+        format!("1 text  {text}\n"),
+        format!("1 text {text} x\n"),
+        format!("1 TEXT {text}\n"),
     ] {
         write(&text);
         for at in places() {

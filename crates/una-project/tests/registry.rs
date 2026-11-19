@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
-use support::{NOW, TestRegistry, hash_hex, keypair};
+use support::{NOW, TestRegistry, hash_hex, keypair, walked, walked_root};
 use una_project::client::{Misbehavior, Omission, Point, Registry};
 use una_project::content::File;
 use una_project::itaoca::{Itaoca, registry_id};
@@ -1077,13 +1077,15 @@ fn a_bundle_unbundles_verified_into_itaoca() {
     );
     let id = registry_id(&b.expected.root);
     assert!(store.load_checkpoint(&id).unwrap().is_some());
-    // The root-version floor binds the digest of that root metadata (ADR 0122, amendment of
-    // 2026-11-09, L3).
+    // The root-version floor binds the digest of the text of that root metadata (ADR 0122,
+    // amendments of 2026-11-09, L3, and of 2026-11-19).
     assert_eq!(
         store.load_root_version(&id).unwrap(),
         Some(una_project::itaoca::RootFloor {
             version: 1,
-            digest: Some(una_project::tlog::root::digest(&b.test.roots[0])),
+            digest: Some(una_project::itaoca::FloorDigest::Text(
+                una_project::tlog::root::text_digest(&b.test.roots[0]).unwrap()
+            )),
         })
     );
     assert!(done.notes.is_empty(), "{:?}", done.notes);
@@ -1164,7 +1166,7 @@ fn unbundling_respects_the_root_version_floor() {
     };
     let id = registry_id(&b.expected.root);
     let other = format!("sha256:{}", "0".repeat(64));
-    store.store_root_version(&id, 2, &other).unwrap();
+    store.store_root_chain(&id, &[walked(2, &other)]).unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let (_, problem) =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
@@ -1192,9 +1194,9 @@ fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
     let b = bundled();
     let id = registry_id(&b.expected.root);
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
-    let first = una_project::tlog::root::digest(&b.test.roots[0]);
+    let first = una_project::tlog::root::text_digest(&b.test.roots[0]).unwrap();
     let other = format!("sha256:{}", "0".repeat(64));
-    // The floor the unbundling reads: of the earlier form, or none at all.
+    // The floor the unbundling reads: of the earliest form, or none at all.
     for (name, read) in [("old-form", Some("1\n")), ("none", None)] {
         for (case, meanwhile) in [("fork", &other), ("same", &first)] {
             let store = Itaoca {
@@ -1208,7 +1210,9 @@ fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
             let asked = std::cell::Cell::new(false);
             let behind = |_: &str| -> Vec<Box<dyn Transport>> {
                 if !asked.replace(true) {
-                    store.store_root_version(&id, 1, meanwhile).unwrap();
+                    store
+                        .store_root_chain(&id, &[walked(1, meanwhile)])
+                        .unwrap();
                 }
                 Vec::new()
             };
@@ -1216,7 +1220,7 @@ fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
                 bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &behind);
             assert!(asked.get());
             let floor = std::fs::read_to_string(dir.join("root-version")).unwrap();
-            assert_eq!(floor, format!("1 {meanwhile}\n"), "{name} {case}");
+            assert_eq!(floor, format!("1 text {meanwhile}\n"), "{name} {case}");
             if case == "same" {
                 let done = result.unwrap();
                 assert!(done.notes.is_empty(), "{name}: {:?}", done.notes);
@@ -1263,18 +1267,22 @@ fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
     }
 }
 
-/// #2132, the present behavior, reproduced for a bundle: a bundle made by someone who holds no
-/// key poisons the root-version floor for good. The lock was made under root 1 (`last root 1`);
-/// the registry has since rotated to root 2 with the same witnesses. The bundle's copy of the
-/// registry holds the honest root 2 with one junk signature line more, and no latest
-/// checkpoint. It unbundles with no note, and the floor is stored with the digest of the
-/// altered note. From then on the honest bundle of the same lock is refused as forked, and so
-/// is the honest registry read as a place.
+/// #2132, fixed by ADR 0122, amendment of 2026-11-19, for a bundle: a bundle made by someone
+/// who holds no key cannot poison the root-version floor. The lock was made under root 1
+/// (`last root 1`); the registry has since rotated to root 2 with the same witnesses. The
+/// bundle's copy of the registry holds the honest root 2 with one junk signature line more,
+/// and no latest checkpoint. It unbundles with no note, as before, and the floor stored holds
+/// the digest of the text of root 2, which is the honest note's too: the honest bundle of the
+/// same lock unbundles afterwards, and the honest registry is accepted as a place. Before the
+/// fix the floor held the digest of the altered note, and both were refused as forked (U7010).
 ///
-/// This test documents the defect and flips when #2132 is fixed.
+/// A machine whose floor is of the form of 2026-11-09, stored from the honest note: the
+/// altered bundle is refused, as it was, and the honest one upgrades the floor to the digest
+/// of the text of that same note.
 #[test]
-fn a_bundle_with_no_key_poisons_the_root_floor() {
-    use una_project::tlog::root::digest;
+fn a_bundle_with_no_key_cannot_poison_the_root_floor() {
+    use una_project::itaoca::{FloorDigest, RootFloor};
+    use una_project::tlog::root::{digest, text_digest};
 
     let mut b = bundled_with(Rotation::AfterPoint(0));
     // The lock was written under root 1, before the rotation.
@@ -1296,7 +1304,9 @@ fn a_bundle_with_no_key_poisons_the_root_floor() {
         root: scratch("unbundle-root-poison"),
     };
     // What the machine stored when it locked, under root 1.
-    store.store_root_version(&id, 1, &b.test.pin()).unwrap();
+    store
+        .store_root_chain(&id, &[walked_root(1, &b.test.roots[0])])
+        .unwrap();
 
     let done = bundle::unbundle(
         &hostile,
@@ -1307,36 +1317,30 @@ fn a_bundle_with_no_key_poisons_the_root_floor() {
     .unwrap();
     assert_eq!(done.stored, ["acme/ledger 0.3.1"]);
     assert!(done.notes.is_empty(), "{:?}", done.notes);
-    let poisoned = una_project::itaoca::RootFloor {
+    let floor = RootFloor {
         version: 2,
-        digest: Some(digest(&altered)),
+        digest: Some(FloorDigest::Text(text_digest(&b.test.roots[1]).unwrap())),
     };
-    assert_eq!(
-        store.load_root_version(&id).unwrap(),
-        Some(poisoned.clone())
-    );
+    assert_eq!(store.load_root_version(&id).unwrap(), Some(floor.clone()));
 
-    // The honest bundle of the same lock is refused from then on.
-    let (_, problem) = bundle::unbundle(
+    // The honest bundle of the same lock unbundles from then on.
+    let done = bundle::unbundle(
         &honest,
         &store,
         std::slice::from_ref(&b.expected),
         &no_place,
     )
-    .unwrap_err();
-    assert!(
-        matches!(&problem, Failure::Refused(why) if why.contains("another digest") && why.contains("forked")),
-        "#2132 is fixed, flip this test: {problem:?}"
-    );
-    // And so is the honest registry, read as a place at its latest checkpoint.
+    .unwrap();
+    assert!(done.notes.is_empty(), "{:?}", done.notes);
+    // And the honest registry is accepted, read as a place at its latest checkpoint.
     let served = Memory {
         source: "acme".to_owned(),
         files: b.test.files.clone(),
     };
     let floors = una_project::client::Floors {
         checkpoint: None,
-        root_version: Some(poisoned.version),
-        root_digest: poisoned.digest.as_deref(),
+        root_version: Some(floor.version),
+        root_digest: floor.digest.as_ref(),
     };
     let opened = Registry::open_with(
         "acme",
@@ -1346,11 +1350,55 @@ fn a_bundle_with_no_key_poisons_the_root_floor() {
         &floors,
     );
     assert!(
-        matches!(&opened, Err(una_project::client::OpenError::Refused(why)) if why.contains("forked")),
+        opened.is_ok(),
         "{:?}",
         opened.err().map(una_project::client::OpenError::message)
     );
-    assert_eq!(store.load_root_version(&id).unwrap(), Some(poisoned));
+    assert_eq!(store.load_root_version(&id).unwrap(), Some(floor));
+
+    // A floor of the form of 2026-11-09, stored from the honest note of root 2.
+    let store = Itaoca {
+        root: scratch("unbundle-root-poison-earlier-form"),
+    };
+    let dir = store.root.join("registry").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let earlier = format!("2 {}\n", digest(&b.test.roots[1]));
+    std::fs::write(dir.join("root-version"), &earlier).unwrap();
+    let (_, problem) = bundle::unbundle(
+        &hostile,
+        &store,
+        std::slice::from_ref(&b.expected),
+        &no_place,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&problem, Failure::Refused(why) if why.contains("forked") && why.contains("earlier form")),
+        "{problem:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("root-version")).unwrap(),
+        earlier
+    );
+    assert!(!store.contains(&b.expected.digest).unwrap());
+    bundle::unbundle(
+        &honest,
+        &store,
+        std::slice::from_ref(&b.expected),
+        &no_place,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("root-version")).unwrap(),
+        format!("2 text {}\n", text_digest(&b.test.roots[1]).unwrap())
+    );
+    // Upgraded, the floor accepts the other form of the same text.
+    bundle::unbundle(
+        &hostile,
+        &store,
+        std::slice::from_ref(&b.expected),
+        &no_place,
+    )
+    .unwrap();
 }
 
 /// ADR 0122, amendment of 2026-11-09 (L3): unbundling refuses a bundle whose root chain holds
@@ -1363,12 +1411,12 @@ fn unbundling_refuses_a_fork_at_the_floor_version() {
     let b = bundled();
     let id = registry_id(&b.expected.root);
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
-    let first = una_project::tlog::root::digest(&b.test.roots[0]);
+    let first = una_project::tlog::root::text_digest(&b.test.roots[0]).unwrap();
     let store = Itaoca {
         root: scratch("unbundle-root-fork"),
     };
     store
-        .store_root_version(&id, 1, &format!("sha256:{}", "0".repeat(64)))
+        .store_root_chain(&id, &[walked(1, &format!("sha256:{}", "0".repeat(64)))])
         .unwrap();
     let (_, problem) =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap_err();
@@ -1382,7 +1430,7 @@ fn unbundling_refuses_a_fork_at_the_floor_version() {
     let store = Itaoca {
         root: scratch("unbundle-root-same"),
     };
-    store.store_root_version(&id, 1, &first).unwrap();
+    store.store_root_chain(&id, &[walked(1, &first)]).unwrap();
     let done =
         bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place).unwrap();
     assert!(done.notes.is_empty(), "{:?}", done.notes);
@@ -1425,9 +1473,9 @@ fn unbundling_refuses_a_fork_at_the_floor_version() {
     assert!(done.notes.is_empty(), "{:?}", done.notes);
     assert_eq!(
         std::fs::read_to_string(dir.join("root-version")).unwrap(),
-        format!("1 {first}\n")
+        format!("1 text {first}\n")
     );
-    // A floor line of neither form: unavailable (U7013), nothing written.
+    // A floor line of no form: unavailable (U7013), nothing written.
     let store = Itaoca {
         root: scratch("unbundle-root-malformed"),
     };
@@ -2548,7 +2596,7 @@ fn unbundling_verifies_the_provenance_as_every_load_does() {
     };
     let id = registry_id(&b.expected.root);
     store
-        .store_root_version(&id, 3, &format!("sha256:{}", "0".repeat(64)))
+        .store_root_chain(&id, &[walked(3, &format!("sha256:{}", "0".repeat(64)))])
         .unwrap();
     let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
     let (_, failure) =

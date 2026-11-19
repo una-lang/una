@@ -70,7 +70,7 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 
-use crate::itaoca::{self, Itaoca};
+use crate::itaoca::{self, FloorDigest, Itaoca};
 use crate::tlog::merkle::{self, Hash};
 use crate::tlog::note::{self, Key};
 use crate::tlog::release::{self, Statement};
@@ -393,17 +393,18 @@ pub enum Floor {
     /// No Itaoca, or none stored for the registry: the vendored chain past the pin is trusted
     /// on first use.
     None,
-    /// The highest root version this machine accepted, `version`, with `digest`, the digest of
-    /// that root metadata (`spec/30 §14`, Floors): a chain whose version `version` has another
-    /// digest is a fork of the root chain, refused. A floor of the earlier form holds no digest
-    /// (`None`) and is compared by version only, so a chain that reaches that version through
-    /// another root document, which a threshold of root keys would have to sign, is not told
-    /// apart from it.
+    /// The highest root version this machine accepted, `version`, with `digest`, the digest
+    /// the floor holds for it (`spec/30 §14`, Floors): of the text of that root metadata, or,
+    /// for a floor of the earlier form, of its whole signed note. A chain whose version
+    /// `version` has another digest of that kind is a fork of the root chain, refused. A floor
+    /// of the earliest form holds no digest (`None`) and is compared by version only, so a
+    /// chain that reaches that version through another root document, which a threshold of
+    /// root keys would have to sign, is not told apart from it.
     At {
         /// The root version.
         version: u64,
-        /// `sha256:` and the hex of that root metadata, when the floor stores it.
-        digest: Option<String>,
+        /// The digest the floor stores for it, when it stores one.
+        digest: Option<FloorDigest>,
     },
     /// A floor that exists and cannot be read: the load is unavailable (U7013), never one
     /// without it.
@@ -428,16 +429,16 @@ impl Floor {
     }
 
     /// This floor raised to `version`, a root version the registry client accepted in this run
-    /// whether or not it was stored (ADR 0122, amendment of 2026-11-09), with `digest`, the
-    /// digest of that root metadata: the larger of the two. At the same version, the stored
-    /// digest is kept, and a floor of the earlier form takes `digest`; the client that walked
-    /// the chain refused it already if the two differ. A floor that cannot be read stays
-    /// unreadable.
+    /// whether or not it was stored (ADR 0122, amendment of 2026-11-09), with `text`, the
+    /// digest of the text of that root metadata ([`root::text_digest`]): the larger of the two.
+    /// At the same version, the stored digest is kept, and a floor of the earliest form takes
+    /// `text`; the client that walked the chain refused it already if the two differ. A floor
+    /// that cannot be read stays unreadable.
     #[must_use]
-    pub fn at_least(self, version: u64, digest: &str) -> Floor {
+    pub fn at_least(self, version: u64, text: &str) -> Floor {
         let walked = Floor::At {
             version,
-            digest: Some(digest.to_owned()),
+            digest: Some(FloorDigest::Text(text.to_owned())),
         };
         match self {
             Floor::None => walked,
@@ -605,17 +606,21 @@ pub fn verify(
         }
         // With the digest this machine accepted for that version, the chain must hold the same
         // root metadata there: another one of that version is a fork of the root chain. The
-        // chain holds every version from the pinned one to its last, and the floor, stored for
-        // the registry this pin names, is not below the pinned version, so one it lacks is
-        // refused too, never passed.
+        // floor holds the digest of the text, which no signature line changes; one of the
+        // earlier form is compared as it was stored, by the whole note. The chain holds every
+        // version from the pinned one to its last, and the floor, stored for the registry this
+        // pin names, is not below the pinned version, so one it lacks is refused too, never
+        // passed.
         Floor::At {
             version: floor,
             digest: Some(digest),
         } => {
             let held = chain.iter().find(|(root, _)| root.version == *floor);
-            if held.is_none_or(|(_, held)| held != digest) {
+            if held.is_none_or(|(root, note)| !digest.holds(&root.text_digest, note)) {
                 return Err(Problem::Refused(format!(
-                    "the provenance's root chain holds root version {floor} with another digest than {digest}, which this machine has accepted for `{}`, so the root chain forked",
+                    "the provenance's root chain holds root version {floor} with another digest of {} than {}, which this machine has accepted for `{}`, so the root chain forked",
+                    digest.covers(),
+                    digest.value(),
                     expected.source
                 )));
             }
