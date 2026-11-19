@@ -546,26 +546,195 @@ pub fn parse_keys(text: &str) -> Result<BTreeMap<String, Vec<u8>>, String> {
     Ok(keys)
 }
 
-/// HMAC-SHA-256 (RFC 2104) over `sha2`.
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    const BLOCK: usize = 64;
-    let mut block = if key.len() > BLOCK {
-        Sha256::digest(key).to_vec()
+/// The block length of SHA-256, in bytes.
+const HMAC_BLOCK: usize = 64;
+
+/// The output length of SHA-256, in bytes.
+const HMAC_OUTPUT: usize = 32;
+
+/// The initial hash value of SHA-256 (FIPS 180-4 §5.3.3).
+const SHA256_INITIAL: [u32; 8] = [
+    0x6a09_e667,
+    0xbb67_ae85,
+    0x3c6e_f372,
+    0xa54f_f53a,
+    0x510e_527f,
+    0x9b05_688c,
+    0x1f83_d9ab,
+    0x5be0_cd19,
+];
+
+/// Every buffer in which [`hmac_sha256`] holds its key or a value made from it, while it runs
+/// (#2120). Fixed arrays in one place, never a vector: nothing grows, so no reallocation leaves
+/// a copy behind, and one [`HmacScratch::wipe`] covers them all.
+struct HmacScratch {
+    /// The key, padded with zeros to the block length (a key longer than the block: its
+    /// SHA-256), then the same bytes under the inner pad's XOR, then under the outer pad's.
+    /// One buffer, changed in place: the two pads are never separate copies.
+    block: [u8; HMAC_BLOCK],
+    /// The chaining value of the hash in progress. After the block of a pad it is a function of
+    /// the key alone, and whoever holds it can compute MACs without the key.
+    state: [u32; 8],
+    /// The end of the message being hashed, with its padding: one or two blocks. For a key
+    /// longer than the block it holds the last bytes of the key itself.
+    tail: [u8; 2 * HMAC_BLOCK],
+    /// The digest of a key longer than the block, then the inner digest.
+    digest: [u8; HMAC_OUTPUT],
+}
+
+impl HmacScratch {
+    /// A scratch of zeros.
+    const fn new() -> Self {
+        Self {
+            block: [0; HMAC_BLOCK],
+            state: [0; 8],
+            tail: [0; 2 * HMAC_BLOCK],
+            digest: [0; HMAC_OUTPUT],
+        }
+    }
+
+    /// Overwrites every buffer with zeros. The optimization barrier after the writes hands the
+    /// buffers to the compiler as if an unknown reader followed, so it has no ground to drop
+    /// the writes as dead stores, the barrier style of [`hashed_equal`]. `std::hint::black_box`
+    /// is best effort: its documentation promises no more, and this crate forbids `unsafe`, so
+    /// a volatile write is not available here.
+    fn wipe(&mut self) {
+        self.block.fill(0);
+        self.state.fill(0);
+        self.tail.fill(0);
+        self.digest.fill(0);
+        let _ = std::hint::black_box(self);
+    }
+}
+
+/// One step of the SHA-256 compression function over `block`, read where it is.
+fn sha256_block(state: &mut [u32; 8], block: &[u8; HMAC_BLOCK]) {
+    sha2::compress256(state, std::slice::from_ref(block.into()));
+}
+
+/// Ends a SHA-256 whose first `before` bytes (a multiple of the block) are already in `state`:
+/// absorbs `data`, pads (FIPS 180-4 §5.1.1) in `tail` and writes the digest to `digest`. The
+/// whole blocks of `data` are read where they are; only its last, partial block is copied, to
+/// `tail`. Time O(length of `data`), no allocation.
+fn sha256_finish(
+    state: &mut [u32; 8],
+    tail: &mut [u8; 2 * HMAC_BLOCK],
+    digest: &mut [u8; HMAC_OUTPUT],
+    before: u64,
+    data: &[u8],
+) {
+    let (blocks, rest) = data.as_chunks::<HMAC_BLOCK>();
+    for block in blocks {
+        sha256_block(state, block);
+    }
+    // The message's length in bits, modulo 2^64 as the standard counts it.
+    let bits = before.wrapping_add(data.len() as u64).wrapping_mul(8);
+    tail.fill(0);
+    // The rest, the byte 0x80 and the 8 bytes of the length fit in one block, or take two.
+    let padded = if rest.len() + 9 <= HMAC_BLOCK {
+        tail.as_mut_slice().split_at_mut(HMAC_BLOCK).0
     } else {
-        key.to_vec()
+        tail.as_mut_slice()
     };
-    block.resize(BLOCK, 0);
-    let inner_pad: Vec<u8> = block.iter().map(|b| b ^ 0x36).collect();
-    let outer_pad: Vec<u8> = block.iter().map(|b| b ^ 0x5c).collect();
-    let inner = Sha256::new()
-        .chain_update(&inner_pad)
-        .chain_update(data)
-        .finalize();
-    Sha256::new()
-        .chain_update(&outer_pad)
-        .chain_update(inner)
-        .finalize()
-        .to_vec()
+    for (to, from) in padded.iter_mut().zip(rest.iter().chain(&[0x80])) {
+        *to = *from;
+    }
+    // The length is big-endian at the end: its lowest byte is the last byte.
+    for (to, from) in padded.iter_mut().rev().zip(bits.to_le_bytes()) {
+        *to = from;
+    }
+    for block in padded.as_chunks::<HMAC_BLOCK>().0 {
+        sha256_block(state, block);
+    }
+    for (to, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(state.iter()) {
+        *to = word.to_be_bytes();
+    }
+}
+
+/// The HMAC of [`hmac_sha256`], made in the `scratch` of its caller, which it leaves as the
+/// computation left it: the key under the outer pad's XOR, the last chaining value, the inner
+/// digest. Only [`hmac_wiping`] calls it.
+fn hmac_fill(key: &[u8], data: &[u8], scratch: &mut HmacScratch) -> [u8; HMAC_OUTPUT] {
+    let HmacScratch {
+        block,
+        state,
+        tail,
+        digest,
+    } = scratch;
+    // Nothing of what the scratch held before reaches the result.
+    block.fill(0);
+    if key.len() > HMAC_BLOCK {
+        *state = SHA256_INITIAL;
+        sha256_finish(state, tail, digest, 0, key);
+        for (to, from) in block.iter_mut().zip(digest.iter()) {
+            *to = *from;
+        }
+    } else {
+        for (to, from) in block.iter_mut().zip(key) {
+            *to = *from;
+        }
+    }
+    // The inner hash: the key under the inner pad, then the data.
+    for byte in block.iter_mut() {
+        *byte ^= 0x36;
+    }
+    *state = SHA256_INITIAL;
+    sha256_block(state, block);
+    sha256_finish(state, tail, digest, HMAC_BLOCK as u64, data);
+    // The outer hash: the key under the outer pad, then the inner digest.
+    for byte in block.iter_mut() {
+        *byte ^= 0x36 ^ 0x5c;
+    }
+    *state = SHA256_INITIAL;
+    sha256_block(state, block);
+    let mut mac = [0u8; HMAC_OUTPUT];
+    sha256_finish(state, tail, &mut mac, HMAC_BLOCK as u64, digest.as_slice());
+    mac
+}
+
+/// [`hmac_sha256`] over the scratch of its caller, wiped before this returns. There is one
+/// return and the wipe is before it, after the one call that uses the scratch: no path skips
+/// it. Nothing in that call can panic (it indexes nothing, and the one split is at a constant
+/// inside its array), so no unwinding passes the wipe by.
+fn hmac_wiping(key: &[u8], data: &[u8], scratch: &mut HmacScratch) -> [u8; HMAC_OUTPUT] {
+    let mac = hmac_fill(key, data, scratch);
+    scratch.wipe();
+    mac
+}
+
+/// HMAC-SHA-256 (RFC 2104, FIPS 198-1) of `data` under `key`, the routine of `Keys.hmac` in
+/// both engines and of the reduced bodies of a serve trace. Time O(length of the key + length
+/// of the data); space O(1) beyond the result, and no allocation but the result.
+///
+/// It reads the key where its caller holds it and copies it nowhere but into its own scratch,
+/// fixed arrays on its stack, which it overwrites with zeros before it returns (#2120). Wiped,
+/// on every return:
+///
+/// - the key padded to the block, and the same bytes under the inner and the outer pad (one
+///   buffer, changed in place);
+/// - the digest of a key longer than the block, and the last bytes of such a key, which the
+///   hash's padding copies;
+/// - the chaining value of each of the hashes, which after the block of a pad stands for the
+///   key, and the inner digest.
+///
+/// Not wiped, and outside what this routine can reach:
+///
+/// - the working variables of the SHA-256 compression function (`sha2::compress256`): its
+///   message schedule and registers, on the stack or in vector registers for the time of a
+///   call, hold the block of a pad and are left to be overwritten by later calls;
+/// - any copy the compiler makes of the scratch in registers or spill slots;
+/// - the key itself where the caller holds it (the run's table of keys, for the whole run), the
+///   key file's text and its decoding at start-up, and the bearer key of an `Http` request,
+///   which the operations of `Http` copy out of the table and into the request they send;
+/// - the result, which is the value asked for.
+///
+/// The wipe is a plain write of zeros kept by an optimization barrier, not a volatile write:
+/// best effort, as `HmacScratch::wipe` says. `una-interp` and `una-rt` do not depend on
+/// `una-crypto` or `zeroize` (`docs/compiler/architecture.md` §7), so the hash state is this
+/// routine's own and only the compression function is `sha2`'s.
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut scratch = HmacScratch::new();
+    hmac_wiping(key, data, &mut scratch).to_vec()
 }
 
 #[cfg(test)]
@@ -655,24 +824,203 @@ pub fn base64(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// The seven test cases of RFC 4231 §4 for HMAC-SHA-256: key, data, expected MAC in
+    /// hexadecimal (case 5 gives the first 128 bits only).
+    fn rfc_4231() -> Vec<(Vec<u8>, Vec<u8>, &'static str)> {
+        vec![
+            (
+                vec![0x0b; 20],
+                b"Hi There".to_vec(),
+                "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+            ),
+            (
+                b"Jefe".to_vec(),
+                b"what do ya want for nothing?".to_vec(),
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            ),
+            (
+                vec![0xaa; 20],
+                vec![0xdd; 50],
+                "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+            ),
+            (
+                (1..=25).collect(),
+                vec![0xcd; 50],
+                "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
+            ),
+            (
+                vec![0x0c; 20],
+                b"Test With Truncation".to_vec(),
+                "a3b6167473100ee06e0c796c2955552b",
+            ),
+            (
+                vec![0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First".to_vec(),
+                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+            ),
+            (
+                vec![0xaa; 131],
+                b"This is a test using a larger than block-size key and a larger than \
+                  block-size data. The key needs to be hashed before being used by the HMAC \
+                  algorithm."
+                    .to_vec(),
+                "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+            ),
+        ]
+    }
+
+    /// HMAC-SHA-256 as this crate computed it before #2120, on the hash of `sha2` and vectors:
+    /// the reference the routine must agree with bit for bit.
+    fn hmac_reference(key: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut block = if key.len() > HMAC_BLOCK {
+            Sha256::digest(key).to_vec()
+        } else {
+            key.to_vec()
+        };
+        block.resize(HMAC_BLOCK, 0);
+        let inner_pad: Vec<u8> = block.iter().map(|b| b ^ 0x36).collect();
+        let outer_pad: Vec<u8> = block.iter().map(|b| b ^ 0x5c).collect();
+        let inner = Sha256::new()
+            .chain_update(&inner_pad)
+            .chain_update(data)
+            .finalize();
+        Sha256::new()
+            .chain_update(&outer_pad)
+            .chain_update(inner)
+            .finalize()
+            .to_vec()
+    }
+
+    /// Bytes that differ from one position to the next and are never zero.
+    fn pattern(length: usize, seed: usize) -> Vec<u8> {
+        (0..length)
+            .map(|i| ((i * 7 + seed * 13) % 255 + 1) as u8)
+            .collect()
+    }
+
+    /// The fields of a scratch, as one sequence of bytes.
+    fn scratch_bytes(scratch: &HmacScratch) -> Vec<u8> {
+        let mut bytes = scratch.block.to_vec();
+        bytes.extend(scratch.state.iter().flat_map(|word| word.to_be_bytes()));
+        bytes.extend_from_slice(&scratch.tail);
+        bytes.extend_from_slice(&scratch.digest);
+        bytes
+    }
+
     #[test]
     fn hmac_matches_rfc_4231() {
-        // Test case 2 of RFC 4231.
-        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
-        assert_eq!(
-            hex(&mac),
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
-        // Test case 6: a key longer than the block.
-        let key = [0xaa_u8; 131];
-        let mac = hmac_sha256(
-            &key,
-            b"Test Using Larger Than Block-Size Key - Hash Key First",
-        );
-        assert_eq!(
-            hex(&mac),
-            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
-        );
+        let cases = rfc_4231();
+        assert_eq!(cases.len(), 7);
+        for (number, (key, data, expected)) in cases.iter().enumerate() {
+            let mac = hex(&hmac_sha256(key, data));
+            assert_eq!(mac.len(), 64);
+            assert_eq!(
+                &mac[..expected.len()],
+                *expected,
+                "test case {}",
+                number + 1
+            );
+        }
+    }
+
+    #[test]
+    fn hmac_is_bit_identical_to_the_hmac_over_the_hash_of_sha2() {
+        // Every key length around the block (shorter, equal, longer: hashed first) with every
+        // data length around one and two blocks, where the padding takes one block or two.
+        for key_length in (0..=70).chain([127, 128, 129, 131, 200, 1000]) {
+            let key = pattern(key_length, 1);
+            for data_length in (0..=130).chain([191, 192, 193, 1000, 4096]) {
+                let data = pattern(data_length, 2);
+                assert_eq!(
+                    hmac_sha256(&key, &data),
+                    hmac_reference(&key, &data),
+                    "a key of {key_length} bytes, data of {data_length}"
+                );
+            }
+        }
+        // The result does not depend on what the scratch held before.
+        let mut scratch = HmacScratch::new();
+        scratch.block = [0xa5; HMAC_BLOCK];
+        scratch.state = [0xa5a5_a5a5; 8];
+        scratch.tail = [0xa5; 2 * HMAC_BLOCK];
+        scratch.digest = [0xa5; HMAC_OUTPUT];
+        for key_length in [0, 4, 64, 131] {
+            let key = pattern(key_length, 3);
+            assert_eq!(
+                hmac_wiping(&key, b"data", &mut scratch).to_vec(),
+                hmac_reference(&key, b"data")
+            );
+            scratch.tail = [0xa5; 2 * HMAC_BLOCK];
+        }
+    }
+
+    /// The computation alone leaves key material in the scratch, and the routine wipes all of
+    /// it (#2120). The first half shows the second is not vacuous: without the wipe the scratch
+    /// holds the key under a fixed XOR, a chaining value and the inner digest.
+    #[test]
+    fn hmac_wipes_every_buffer_that_held_key_material() {
+        let data = pattern(100, 5);
+        // A key shorter than the block, one of exactly a block, and longer ones, which are
+        // hashed first: 131 bytes leave 3 bytes of the key in the tail, 190 leave 62 and take
+        // two blocks of padding.
+        for key_length in [1, 4, 32, 63, 64, 65, 131, 190] {
+            let key = pattern(key_length, 4);
+            let padded = if key_length > HMAC_BLOCK {
+                Sha256::digest(&key).to_vec()
+            } else {
+                key.clone()
+            };
+            let mut dirty = HmacScratch::new();
+            let mac = hmac_fill(&key, &data, &mut dirty);
+            assert_eq!(mac.to_vec(), hmac_reference(&key, &data));
+            // What the computation leaves: the padded key under the outer pad, ...
+            for (i, byte) in dirty.block.iter().enumerate() {
+                assert_eq!(byte ^ 0x5c, padded.get(i).copied().unwrap_or(0));
+            }
+            // ... the chaining value of the outer hash, which is the MAC, and the inner digest.
+            let state: Vec<u8> = dirty.state.iter().flat_map(|w| w.to_be_bytes()).collect();
+            assert_eq!(state, mac);
+            let inner_pad: Vec<u8> = (0..HMAC_BLOCK)
+                .map(|i| padded.get(i).copied().unwrap_or(0) ^ 0x36)
+                .collect();
+            let inner = Sha256::new()
+                .chain_update(&inner_pad)
+                .chain_update(&data)
+                .finalize();
+            assert_eq!(dirty.digest, inner[..]);
+            assert_eq!(dirty.tail[..HMAC_OUTPUT], inner[..]);
+
+            // The routine: the same MAC, and nothing left, whatever the scratch held before.
+            let mut scratch = HmacScratch::new();
+            scratch.tail = [0xa5; 2 * HMAC_BLOCK];
+            assert_eq!(hmac_wiping(&key, &data, &mut scratch), mac);
+            let left = scratch_bytes(&scratch);
+            assert_eq!(left.len(), HMAC_BLOCK + 32 + 2 * HMAC_BLOCK + HMAC_OUTPUT);
+            assert!(
+                left.iter().all(|byte| *byte == 0),
+                "a key of {key_length} bytes left {left:02x?}"
+            );
+        }
+    }
+
+    /// While a key longer than the block is hashed, its last bytes are in the tail and its
+    /// digest in the digest buffer: both are in the scratch the routine wipes, not elsewhere.
+    #[test]
+    fn hmac_hashes_a_long_key_in_the_scratch() {
+        let key = pattern(131, 6);
+        let mut scratch = HmacScratch::new();
+        scratch.state = SHA256_INITIAL;
+        let HmacScratch {
+            state,
+            tail,
+            digest,
+            ..
+        } = &mut scratch;
+        sha256_finish(state, tail, digest, 0, &key);
+        assert_eq!(scratch.digest, Sha256::digest(&key)[..]);
+        assert_eq!(scratch.tail[..3], key[128..]);
+        scratch.wipe();
+        assert!(scratch_bytes(&scratch).iter().all(|byte| *byte == 0));
     }
 
     /// `2^(64 * limbs - 1) + 1`: an `Int` of exactly `limbs` 64-bit limbs.
