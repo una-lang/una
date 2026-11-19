@@ -3288,6 +3288,207 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A registry whose lock's point, the checkpoint returned with its tree hash, is signed under
+/// root 1, before root 2 rotates the root metadata with the same witnesses and a later
+/// checkpoint is signed under it: the scenario of #2132.
+fn rotated_under_the_same_witnesses() -> (TestRegistry, Point) {
+    let a = keypair(60, "acme.a");
+    let mut registry = TestRegistry::new("acme");
+    registry.register("acme", &a);
+    registry.release("acme/ledger", "0.3.1", "none", "none", &[&a]);
+    let older = registry.checkpoint(NOW - 10 * DAY);
+    let leaves: Vec<Hash> = registry.entries.iter().map(|e| leaf_hash(e)).collect();
+    let hash = hash_hex(&tree_root(&leaves));
+    registry.rotate_witnesses(0, false);
+    registry.release("acme/ledger", "0.3.2", "none", "none", &[&a]);
+    registry.checkpoint(NOW);
+    let at = Point::At { size: older, hash };
+    (registry, at)
+}
+
+/// `document`, a signed note, with one more signature line: the name of a key nobody holds and
+/// bytes that are no signature. Whoever serves a note can add it; it needs no key.
+fn with_a_junk_line(document: &str) -> String {
+    format!(
+        "{document}\u{2014} nobody {}\n",
+        una_project::tlog::note::encode_base64(&[7u8; 68])
+    )
+}
+
+/// Opens `transport` at `point` with the floors `itaoca` stores for `registry`, and stores the
+/// root chain walked as its root-version floor, as `una ita` does for every place it reads
+/// (`una_cli::registry::open`): a fork found by the store is a refusal, any other failure to
+/// store is a note, returned.
+fn open_and_store<'t>(
+    itaoca: &una_project::itaoca::Itaoca,
+    transport: &'t dyn Transport,
+    registry: &TestRegistry,
+    point: &Point,
+) -> Result<(Registry<'t>, Option<String>), OpenError> {
+    use una_project::itaoca::{FloorRefusal, registry_id};
+
+    let id = registry_id(&registry.pin());
+    let stored = itaoca.load_root_version(&id).unwrap();
+    let floors = Floors {
+        checkpoint: None,
+        root_version: stored.as_ref().map(|floor| floor.version),
+        root_digest: stored.as_ref().and_then(|floor| floor.digest.as_deref()),
+    };
+    let client = Registry::open_with("acme", transport, &registry.pin(), point, &floors)?;
+    let chain = client.root_chain();
+    let chain: Vec<(u64, &str)> = chain
+        .iter()
+        .map(|(version, digest)| (*version, digest.as_str()))
+        .collect();
+    match itaoca.store_root_chain(&id, &chain) {
+        Ok(()) => Ok((client, None)),
+        Err(FloorRefusal::Forked { .. }) => Err(OpenError::Refused("forked".to_owned())),
+        Err(FloorRefusal::NotStored(why)) => Ok((client, Some(why))),
+    }
+}
+
+/// #2132, the present behavior, reproduced: a place that holds no key poisons the root-version
+/// floor for good. The lock was made under root 1; the registry has since rotated to root 2
+/// with the same witnesses. A place serves the honest root 2 with one junk signature line more
+/// and no latest checkpoint. The altered note verifies (lines of unknown keys are ignored), no
+/// accepted checkpoint names root 2 (the lock's point names root 1, and the prefix proof is
+/// missing, which fails nothing while no retired witness cosigned the point), the release is
+/// read, and the floor is stored with the digest of the altered note, which covers its
+/// signature lines. From then on the honest registry is refused as forked, at the lock's point
+/// and at its latest checkpoint, and an honest provenance of the same point is refused offline.
+///
+/// This test documents the defect and flips when #2132 is fixed: it then asserts that the
+/// honest registry is accepted after the altered copy.
+#[test]
+fn a_place_with_no_key_poisons_the_root_floor() {
+    use una_project::itaoca::{Itaoca, RootFloor, registry_id};
+    use una_project::tlog::root::digest;
+
+    let (registry, at) = rotated_under_the_same_witnesses();
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let altered = with_a_junk_line(&registry.roots[1]);
+    assert_ne!(digest(&altered), digest(&registry.roots[1]));
+    let mut hostile = Memory {
+        files: registry.files.clone(),
+    };
+    hostile.files.remove("checkpoint");
+    hostile
+        .files
+        .insert("root/2".to_owned(), altered.clone().into_bytes());
+    let itaoca = Itaoca {
+        root: scratch("root-floor-poison"),
+    };
+    let id = registry_id(&registry.pin());
+    // What the machine stored when it locked, under root 1.
+    itaoca.store_root_version(&id, 1, &registry.pin()).unwrap();
+    // The honest provenance of the lock's point, written from the honest registry.
+    let (provenance, expected) = provenance_at(&registry, &at);
+
+    // The fetch from the hostile place: accepted, with no note, and the release reads.
+    let (mut client, note) = open_and_store(&itaoca, &hostile, &registry, &at).unwrap();
+    assert_eq!(note, None);
+    assert_eq!(client.last_root(), Some((2, digest(&altered).as_str())));
+    client
+        .release("acme/ledger", &Version::parse_full("0.3.1").unwrap())
+        .unwrap();
+    drop(client);
+    // The floor holds root version 2 with the digest of the altered note.
+    let poisoned = RootFloor {
+        version: 2,
+        digest: Some(digest(&altered)),
+    };
+    assert_eq!(
+        itaoca.load_root_version(&id).unwrap(),
+        Some(poisoned.clone())
+    );
+
+    // The honest registry is refused from then on, whatever the point.
+    for point in [at.clone(), Point::Latest { now: NOW + 60 }] {
+        match open_and_store(&itaoca, &honest, &registry, &point) {
+            Err(OpenError::Refused(why)) => assert!(
+                why.contains("root version 2 with another digest") && why.contains("forked"),
+                "{why}"
+            ),
+            Err(other) => panic!("{}", other.message()),
+            Ok(_) => panic!("#2132 is fixed: flip this test"),
+        }
+    }
+    // And so is the honest provenance, offline.
+    let offline = verify(
+        &provenance,
+        &expected,
+        &Floor::At {
+            version: 2,
+            digest: poisoned.digest.clone(),
+        },
+    );
+    assert!(refused(offline.clone(), "forked"), "{offline:?}");
+    // Nothing repairs it: the floor is as the hostile place left it.
+    assert_eq!(itaoca.load_root_version(&id).unwrap(), Some(poisoned));
+}
+
+/// L3 of the review of #2128 (card #2132), the present behavior, reproduced without a clock
+/// deciding the outcome: storing a checkpoint proves the stored one consistent with it while it
+/// holds the floor lock, and that proof reads tiles from the place. A place whose read stalls
+/// keeps the lock; another run, whose root chain holds the floor's version with another digest,
+/// cannot take the lock in five seconds, compares nothing, and gets a failure to store, which a
+/// command reports as a note and exit code 0, where the comparison would have refused its
+/// chain as a fork. The next store, with the lock free, does refuse it.
+///
+/// This test documents the defect and flips when the lock is no longer held across the reads.
+#[test]
+fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() {
+    use std::sync::mpsc::channel;
+    use una_project::itaoca::{FloorRefusal, Itaoca, registry_id};
+
+    let itaoca = Itaoca {
+        root: scratch("floor-lock-stall"),
+    };
+    let id = registry_id("sha256:floor-lock-stall");
+    let checkpoint = |size: u64| {
+        format!(
+            "log\n{size}\n47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n\n{dash} log AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+            dash = '\u{2014}'
+        )
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    itaoca
+        .store_checkpoint(&id, &checkpoint(1), &mut |_| Ok(()))
+        .unwrap();
+    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    let (inside, entered) = channel::<()>();
+    let (release, released) = channel::<()>();
+    std::thread::scope(|scope| {
+        let itaoca = &itaoca;
+        let id = &id;
+        // The run whose place stalls: inside the consistency proof until released.
+        let stalled = scope.spawn(move || {
+            itaoca.store_checkpoint(id, &checkpoint(2), &mut |_| {
+                inside.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            })
+        });
+        entered.recv().unwrap();
+        // The other run walked another root metadata of version 2.
+        let refusal = itaoca.store_root_version(id, 2, &digest('b')).unwrap_err();
+        assert!(
+            matches!(&refusal, FloorRefusal::NotStored(why) if why.contains("held the floor lock for five seconds")),
+            "{refusal:?}"
+        );
+        release.send(()).unwrap();
+        stalled.join().unwrap().unwrap();
+    });
+    // With the lock free, the same store is refused as a fork.
+    let refusal = itaoca.store_root_version(&id, 2, &digest('b')).unwrap_err();
+    assert!(
+        matches!(refusal, FloorRefusal::Forked { version: 2, .. }),
+        "{refusal:?}"
+    );
+}
+
 /// Item 2: the last root's expiry is judged at the witness time of the latest checkpoint the
 /// provenance carries, which the current witnesses cosign, never at the older point's.
 #[test]
