@@ -110,6 +110,8 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # one mention each: the reactor's table registers, wakes and removes 10 to 1,000 waits rather
 # than 1,000 to 100,000, a chunked body is read in 256 to 4,096 chunks rather than 4,096 to
 # 65,536, and 1,000 and 10,000 waiters leave the sockets' gate rather than 10,000 and 100,000.
+# And one test of the memory budget between threads (#1943), one mention: the threads whose
+# steps fit make 200 steps each rather than 50,000.
 # And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
@@ -120,7 +122,7 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # Miri does not run: una-http forbids `unsafe` through the workspace lints, so Miri would check
 # only the standard library and the dependencies beneath it there (#1432).
 reduced=$(grep -rn 'miri' crates/una-rt | grep -vc 'cfg_attr(miri, ignore')
-[ "$reduced" = 26 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 26"
+[ "$reduced" = 27 ] || fail "una-rt mentions miri $reduced times outside its ignore attributes, and this script states 27"
 
 asan=$(rustc +"$channel" --print sysroot)/lib/rustlib/$host/lib/librustc-nightly_rt.asan.dylib
 [ -f "$asan" ] || fail "the checking toolchain has no AddressSanitizer runtime at $asan"
