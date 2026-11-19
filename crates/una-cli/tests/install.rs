@@ -38,7 +38,20 @@ fn the_installer_pins_follow_the_repository() {
         .find_map(|line| line.strip_prefix("version = \""))
         .unwrap()
         .trim_end_matches('"');
-    assert_eq!(setting(&script, "DEFAULT_VERSION"), version);
+    // The public install command reads `install.sh` from `main`, where the release pull request
+    // merges hours before its tag exists (#2101): the default is the workspace version, or the
+    // release before it until the pull request that follows the tag moves it.
+    let changelog = read("CHANGELOG.md");
+    let before = changelog
+        .lines()
+        .filter_map(|line| line.strip_prefix("## v"))
+        .find(|released| *released != version)
+        .unwrap();
+    let default = setting(&script, "DEFAULT_VERSION");
+    assert!(
+        default == version || default == before,
+        "install.sh installs {default} by default: neither {version} nor {before}"
+    );
     // Nothing but the archive is downloaded: the installer names no Z3 asset, digest or
     // release (ADR 0124 rule 32).
     for forbidden in [
