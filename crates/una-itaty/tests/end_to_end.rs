@@ -111,6 +111,15 @@ fn root_document(keys: &Keys) -> String {
     note(&text, &signers)
 }
 
+/// The default configuration with a bound of connections whose descriptors (144) fit the
+/// lowest default limit of the systems the tests run on (256 on macOS), which `serve` checks.
+fn test_config() -> ServerConfig {
+    ServerConfig {
+        max_connections: 64,
+        ..ServerConfig::default()
+    }
+}
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -300,14 +309,17 @@ fn a_client_publishes_and_verifies_every_proof() {
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock.clone()).unwrap();
-    let service = Arc::new(Service::new(
-        Arc::clone(&store),
-        registry,
-        ServerConfig {
-            register_token: Some(TOKEN.to_owned()),
-            ..ServerConfig::default()
-        },
-    ));
+    let service = Arc::new(
+        Service::new(
+            Arc::clone(&store),
+            registry,
+            ServerConfig {
+                register_token: Some(TOKEN.to_owned()),
+                ..test_config()
+            },
+        )
+        .unwrap(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -604,11 +616,7 @@ fn publications_take_their_slot_before_their_body_is_read() {
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    let service = Arc::new(Service::new(
-        Arc::clone(&store),
-        registry,
-        ServerConfig::default(),
-    ));
+    let service = Arc::new(Service::new(Arc::clone(&store), registry, test_config()).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -664,11 +672,7 @@ fn bodies_past_their_bound_are_refused_before_they_are_read() {
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    let service = Arc::new(Service::new(
-        Arc::clone(&store),
-        registry,
-        ServerConfig::default(),
-    ));
+    let service = Arc::new(Service::new(Arc::clone(&store), registry, test_config()).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -727,7 +731,7 @@ fn served(name: &str, server: ServerConfig) -> (Arc<Service>, SocketAddr, std::p
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    let service = Arc::new(Service::new(Arc::clone(&store), registry, server));
+    let service = Arc::new(Service::new(Arc::clone(&store), registry, server).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -746,7 +750,7 @@ fn trickling_publications_lose_their_slots_after_the_idle_timeout() {
         "trickle",
         ServerConfig {
             idle_timeout: idle,
-            ..ServerConfig::default()
+            ..test_config()
         },
     );
     let head = format!(
@@ -800,7 +804,7 @@ fn trickling_publications_lose_their_slots_after_the_idle_timeout() {
 /// reads the 503 rather than a reset.
 #[test]
 fn a_publication_refused_before_its_body_reads_its_refusal() {
-    let (service, addr, dir) = served("refused", ServerConfig::default());
+    let (service, addr, dir) = served("refused", test_config());
     let head = format!(
         "POST /publish HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
         una_itaty::http::MAX_PUBLISH_BODY
@@ -858,7 +862,7 @@ fn served_blob(
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    let service = Arc::new(Service::new(Arc::clone(&store), registry, server));
+    let service = Arc::new(Service::new(Arc::clone(&store), registry, server).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -912,7 +916,7 @@ fn a_client_that_never_reads_is_dropped_within_the_write_bound() {
         "unread",
         ServerConfig {
             write_timeout,
-            ..ServerConfig::default()
+            ..test_config()
         },
         spawn_thread,
     );
@@ -955,7 +959,7 @@ fn connections_past_the_bound_are_refused_and_start_no_thread() {
         ServerConfig {
             max_connections: 2,
             write_timeout: Duration::from_secs(5),
-            ..ServerConfig::default()
+            ..test_config()
         },
         move |work| {
             counted.fetch_add(1, Ordering::SeqCst);
@@ -997,7 +1001,7 @@ fn a_thread_that_cannot_start_does_not_stop_the_accept_loop() {
         "spawn",
         ServerConfig {
             max_connections: 1,
-            ..ServerConfig::default()
+            ..test_config()
         },
         move |work| {
             if counted.fetch_add(1, Ordering::SeqCst) < 2 {
@@ -1019,6 +1023,157 @@ fn a_thread_that_cannot_start_does_not_stop_the_accept_loop() {
     // The one slot is free and the loop still accepts.
     assert!(get(addr, "root/1").is_some());
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Connections that send nothing hold their slots for the first-byte timeout, not for the
+/// head's time: they are answered 408 and closed, and the slots serve other clients.
+#[test]
+fn connections_that_send_nothing_lose_their_slots_at_the_first_byte_timeout() {
+    let first_byte_timeout = Duration::from_millis(300);
+    let config = ServerConfig {
+        max_connections: 2,
+        first_byte_timeout,
+        ..test_config()
+    };
+    // Far less than the head's time, which held the slots before.
+    let bound = Duration::from_secs(10);
+    assert!(bound < config.head_timeout);
+    let (service, addr, dir) = served("idle", config);
+    let started = Instant::now();
+    let mut idle: Vec<TcpStream> = (0..2).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    wait_until(bound, "the idle connections took no slot", || {
+        service.connections_in_progress() == 2
+    });
+    wait_until(bound, "the idle connections kept their slots", || {
+        service.connections_in_progress() == 0
+    });
+    assert!(started.elapsed() >= first_byte_timeout);
+    for stream in &mut idle {
+        let response = String::from_utf8_lossy(&read_all(stream)).to_string();
+        assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+        assert!(response.contains("did not start in time"), "{response}");
+    }
+    assert!(get(addr, "root/1").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One address holds at most `max_connections_per_peer` slots: its next connection is
+/// answered 503 while the service has slots left, and is served once it gives one back.
+#[test]
+fn one_address_holds_at_most_its_bound_of_connections() {
+    let (service, addr, dir) = served(
+        "peer",
+        ServerConfig {
+            max_connections: 8,
+            max_connections_per_peer: 2,
+            // The idle connections below hold their slots until they are dropped.
+            first_byte_timeout: Duration::from_secs(25),
+            ..test_config()
+        },
+    );
+    let idle: Vec<TcpStream> = (0..2).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    wait_until(
+        Duration::from_secs(10),
+        "the connections took no slot",
+        || service.connections_in_progress() == 2,
+    );
+    for _ in 0..3 {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert!(
+            response.contains("too many connections from this address"),
+            "{response}"
+        );
+    }
+    // The refusals took no slot of the six the service has left.
+    assert_eq!(service.connections_in_progress(), 2);
+    drop(idle);
+    wait_until(
+        Duration::from_secs(10),
+        "the slots were not given back",
+        || service.connections_in_progress() == 0,
+    );
+    assert!(get(addr, "root/1").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A registry on a fresh file-backed store, not yet served.
+fn opened(name: &str) -> (Arc<dyn Store>, Registry, std::path::PathBuf) {
+    let keys = keys();
+    let root_doc = root_document(&keys);
+    let dir = temp_dir(name);
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&dir).unwrap());
+    store.put("root/1", root_doc.as_bytes()).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(1_900_000_000)));
+    let config = Config {
+        pin: root_digest(&root_doc),
+        log_seed: [20; 32],
+    };
+    let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
+    (store, registry, dir)
+}
+
+/// A configuration with a zero timeout, which a socket takes as no timeout, makes no service.
+#[test]
+fn a_service_is_not_made_with_a_zero_timeout() {
+    let (store, registry, dir) = opened("zero");
+    let refused = Service::new(
+        store,
+        registry,
+        ServerConfig {
+            write_timeout: Duration::ZERO,
+            ..test_config()
+        },
+    )
+    .unwrap_err();
+    assert!(refused.contains("`write_timeout` is zero"), "{refused}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `serve` refuses to start when the process's limit of open descriptors is below what its
+/// connections need, and names both numbers.
+#[test]
+fn serve_refuses_to_start_below_the_descriptors_it_needs() {
+    let (store, registry, dir) = opened("descriptors");
+    // More connections than any limit of descriptors allows.
+    let config = ServerConfig {
+        max_connections: usize::MAX,
+        ..test_config()
+    };
+    assert_eq!(una_itaty::http::descriptors_needed(&config), u64::MAX);
+    let service = Arc::new(Service::new(store, registry, config).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (ended, end) = std::sync::mpsc::channel();
+    std::thread::spawn(move || ended.send(serve(&listener, &service)));
+    let refused = end
+        .recv_timeout(Duration::from_secs(30))
+        .expect("`serve` started under a limit below its need")
+        .unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+    let refused = refused.to_string();
+    assert!(
+        refused.contains("the limit of open descriptors is")
+            && refused.contains(&format!("{} connections need {}", usize::MAX, u64::MAX)),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A listener handed over in non-blocking mode is served: `serve` makes it block (that its
+/// loop cannot spin on one that does not is a unit test of the loop).
+#[test]
+fn a_listener_that_does_not_block_is_served() {
+    let (store, registry, dir) = opened("nonblocking");
+    let service = Arc::new(Service::new(store, registry, test_config()).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || serve(&listener, &service));
+    for _ in 0..3 {
+        assert!(get(addr, "root/1").is_some());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

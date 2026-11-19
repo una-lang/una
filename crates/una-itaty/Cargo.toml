@@ -9,11 +9,15 @@ publish.workspace = true
 # The Itaty registry service (ADR 0122 rules 34 to 46). It speaks the formats of the registry
 # client in `una-project` (`tlog`, `content`), so it reuses that code; it adds no external
 # crate: Ed25519 is the client's `ed25519-dalek`, pure Rust, and HTTP is the standard library.
+# `una-sys` gives the one read the standard library lacks, the process's limit of open
+# descriptors (`una_sys::io::descriptor_limit`, a safe function that exists for the runtime's
+# servers); this crate keeps `unsafe_code` forbidden.
 [dependencies]
 ed25519-dalek.workspace = true
 sha2.workspace = true
 una-project.workspace = true
 una-syntax.workspace = true
+una-sys.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
