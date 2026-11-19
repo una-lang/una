@@ -1,7 +1,10 @@
 //! A dudect-style statistical timing check (ADR 0133 rule 9): two input classes that differ only
 //! in a secret are timed in interleaved random order, the slowest tail is cropped, and Welch's
 //! t statistic must stay small. It is evidence for the release gate, not a proof: it runs on a
-//! quiet machine with `cargo test --release -p una-crypto --test timing -- --ignored --test-threads=1` (parallel tests disturb each other's clocks).
+//! quiet machine with `cargo test --release --locked -p una-crypto --test timing -- --ignored
+//! --test-threads=1 --nocapture` (parallel tests disturb each other's clocks), in the release gate
+//! `timing-channels` of `scripts/release-gates.sh` and in the step of the same name of
+//! `scripts/local-ci.sh` (#2119, `docs/release-gates.md`).
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
@@ -42,7 +45,12 @@ fn measure(mut f: impl FnMut(bool)) -> f64 {
         let ns = start.elapsed().as_nanos() as f64;
         times[usize::from(class)].push(ns);
     }
-    // Crop the slowest 5% of each class (interrupts, frequency changes).
+    cropped_t(times)
+}
+
+/// Crops the slowest 5% of each class (interrupts, frequency changes) and returns Welch's t.
+#[allow(clippy::print_stderr)] // the statistic is the evidence; --nocapture shows it
+fn cropped_t(mut times: [Vec<f64>; 2]) -> f64 {
     for t in &mut times {
         t.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let keep = t.len() * 95 / 100;
@@ -53,18 +61,59 @@ fn measure(mut f: impl FnMut(bool)) -> f64 {
     t
 }
 
+/// Samples discarded before the first one kept, by `measure_in_place`.
+const WARM_UP: usize = 2_000;
+
+/// `measure` for a call of a few tens of nanoseconds, which one reading of the clock cannot
+/// time: a sample is `batch` calls of `f`, so it is far above the clock's resolution, and the
+/// first `WARM_UP` samples are discarded. The two classes share one `state`: `prepare(state,
+/// class)`, outside the timed region, makes it an input of the class, so both classes read the
+/// same addresses and nothing but the secret differs between them (two inputs in two
+/// allocations differ in alignment and cache placement too, which shows as a t of either sign).
+fn measure_in_place<S>(
+    batch: usize,
+    state: &mut S,
+    mut prepare: impl FnMut(&mut S, bool),
+    mut f: impl FnMut(&S),
+) -> f64 {
+    let mut rng = Rng(0x71_3e);
+    let mut times = [Vec::new(), Vec::new()];
+    for sample in 0..WARM_UP + SAMPLES {
+        let class = rng.next() & 1 == 1;
+        prepare(state, class);
+        let start = Instant::now();
+        for _ in 0..batch {
+            f(state);
+        }
+        let ns = start.elapsed().as_nanos() as f64;
+        if sample >= WARM_UP {
+            times[usize::from(class)].push(ns);
+        }
+    }
+    cropped_t(times)
+}
+
 #[test]
 #[ignore = "release evidence: needs a quiet machine and --release"]
 fn comparison_time_does_not_depend_on_the_first_difference() {
+    // One call takes a few tens of nanoseconds, so a sample is 64 calls. The other operand is
+    // one buffer for both classes: before each sample, outside the timed region, it is made to
+    // differ from `a` in its first byte (an early-exit comparison then returns at once) or in
+    // its last (it reads everything). Both bytes are written each time, so the two classes
+    // leave the same cache lines written.
     let a = vec![7u8; 4096];
-    let mut early = a.clone();
-    early[0] ^= 1;
-    let mut late = a.clone();
-    late[4095] ^= 1;
-    let t = measure(|class| {
-        let other = if class { &early } else { &late };
-        black_box(ct::eq(black_box(&a), black_box(other)));
-    });
+    let mut other = a.clone();
+    let t = measure_in_place(
+        64,
+        &mut other,
+        |other, class| {
+            other[0] = 7 ^ u8::from(class);
+            other[4095] = 7 ^ u8::from(!class);
+        },
+        |other| {
+            black_box(ct::eq(black_box(&a), black_box(other)));
+        },
+    );
     assert!(t.abs() < LIMIT, "ct::eq t = {t}");
 }
 

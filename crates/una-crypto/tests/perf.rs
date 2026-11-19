@@ -1,6 +1,10 @@
 //! Performance and scaling sanity (ADR 0133 rule 10): linear time in the message size, and a
 //! floor on throughput so a quadratic or accidental slow path is caught. Optimized builds only;
-//! the bounds are loose (an order of magnitude) because the machine is shared.
+//! the bounds are loose (an order of magnitude) because the machine is shared. The ordinary test
+//! run is a debug build, where each test returns at once; they measure in the release gate
+//! `timing-channels` of `scripts/release-gates.sh` and in the step of the same name of
+//! `scripts/local-ci.sh`, with `cargo test --release --locked -p una-crypto --test perf --
+//! --test-threads=1 --nocapture` (#2119, `docs/release-gates.md`).
 
 // Test code: unwrap, indexing and panics are how a test fails (clippy.toml allows them in `#[test]`
 // functions only, not in their helpers).

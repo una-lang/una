@@ -229,6 +229,70 @@ fn every_timing_oracle_is_ignored_with_the_reason_that_names_its_steps() {
     }
 }
 
+#[test]
+fn the_timing_and_scaling_tests_of_the_cryptography_run_in_the_gate_and_the_step() {
+    // The statistical timing tests of `una-crypto` are ignored in the ordinary run, and its
+    // scaling tests return at once in a debug build, so they are evidence only where a script
+    // runs them in release (#2119): the gate `timing-channels` and the step of the same name of
+    // scripts/local-ci.sh. Read as text: each command is a whole line of each script that is not
+    // a comment, and in the gate it sits in the function of that gate.
+    const COMMANDS: [&str; 2] = [
+        "cargo test --release --locked -p una-crypto --test timing -- --ignored --test-threads=1 --nocapture",
+        "cargo test --release --locked -p una-crypto --test perf -- --test-threads=1 --nocapture",
+    ];
+    let gates = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let gate: Vec<&str> = gates
+        .lines()
+        .skip_while(|line| *line != "gate_timing-channels() {")
+        .take_while(|line| *line != "}")
+        .map(str::trim)
+        .collect();
+    assert!(!gate.is_empty(), "no gate_timing-channels function");
+    let step = std::fs::read_to_string(root().join("scripts/local-ci.sh")).unwrap();
+    let step: Vec<&str> = step.lines().map(str::trim).collect();
+    for command in COMMANDS {
+        // In the gate a failure is kept and the next command still runs.
+        let kept = format!("{command} || status=1");
+        assert!(
+            gate.contains(&kept.as_str()),
+            "the gate timing-channels must run `{kept}`"
+        );
+        assert!(
+            step.contains(&command),
+            "scripts/local-ci.sh must run `{command}`"
+        );
+    }
+    assert!(
+        gate.contains(&"exit \"$status\"'"),
+        "the gate timing-channels must end with the kept status"
+    );
+    // Every test of timing.rs is ignored, so the ordinary run never times on a shared machine,
+    // and every test of perf.rs returns at once in a debug build.
+    let timing = std::fs::read_to_string(root().join("crates/una-crypto/tests/timing.rs")).unwrap();
+    let lines: Vec<&str> = timing.lines().map(str::trim).collect();
+    let tests: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at] == "#[test]")
+        .collect();
+    assert!(!tests.is_empty(), "timing.rs holds no test");
+    for at in tests {
+        assert!(
+            lines
+                .get(at + 1)
+                .is_some_and(|line| line.starts_with("#[ignore = ")),
+            "the test at line {} of timing.rs is not ignored",
+            at + 1
+        );
+    }
+    let perf = std::fs::read_to_string(root().join("crates/una-crypto/tests/perf.rs")).unwrap();
+    assert_eq!(
+        perf.lines().filter(|line| *line == "#[test]").count(),
+        perf.lines()
+            .filter(|line| line.trim() == "if cfg!(debug_assertions) {")
+            .count(),
+        "every test of perf.rs returns at once in a debug build"
+    );
+}
+
 /// The `una` that the release archive of this host ships (#2029), which the website's own flow
 /// gives `scripts/site-website.sh` to check the book and the website's samples with (#2081): the
 /// self-test of `scripts/site-shipped-una.sh` (a book report that carries the shipped library
