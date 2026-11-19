@@ -1324,6 +1324,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    fn a_grant_on_the_current_directory_reaches_its_files_2144() {
+        // #2144: an executable resolves its grants against the current directory, and the
+        // prefix of `files:.:<modes>` was the empty path, which does not resolve, so every
+        // operation under it ended with `NotFound` and the machine was given no path. The
+        // prefix is `.`: the operation is given the canonical current directory joined with
+        // the final component, and a missing directory is still answered with no path.
+        // Cargo runs the tests of a package in its directory, which this test only reads.
+        use super::{FileFault, Grant, on_confined};
+        let here = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+            here
+        );
+        let grant = |spec: &str| {
+            Grant::parse(spec, std::path::Path::new("")).unwrap_or_else(|| panic!("{spec}"))
+        };
+        let read = |spec: &str, relative: &str| {
+            let mut world = Operations::default();
+            let outcome = on_confined(&mut world, &[grant(spec)], relative, false, |world, at| {
+                world.read_file(at).map(|_| ())
+            });
+            (outcome, world.0)
+        };
+        for spec in ["files:.:read", "files:./:read", "files:src/..:read"] {
+            assert_eq!(
+                read(spec, "Cargo.toml"),
+                (Some(Ok(())), vec![("read", here.join("Cargo.toml"))]),
+                "{spec}"
+            );
+            assert_eq!(
+                read(spec, "src/host.rs"),
+                (Some(Ok(())), vec![("read", here.join("src/host.rs"))]),
+                "{spec}"
+            );
+            assert_eq!(read(spec, "../Cargo.toml"), (None, Vec::new()), "{spec}");
+        }
+        for spec in ["files:.:read", "files:src:read", "files:./src:read"] {
+            let directory = if spec == "files:.:read" {
+                here.clone()
+            } else {
+                here.join("src")
+            };
+            // A file that does not exist in a directory that resolves is the operation's.
+            assert_eq!(
+                read(spec, "no-such-file-2144.txt"),
+                (
+                    Some(Err(FileFault::NotFound)),
+                    vec![("read", directory.join("no-such-file-2144.txt"))]
+                ),
+                "{spec}"
+            );
+            // A missing directory is answered by confinement (#1459).
+            assert_eq!(
+                read(spec, "no-such-directory-2144/new.txt"),
+                (Some(Err(FileFault::NotFound)), Vec::new()),
+                "{spec}"
+            );
+        }
+        assert_eq!(
+            read("files:src:read", "host.rs"),
+            (Some(Ok(())), vec![("read", here.join("src/host.rs"))])
+        );
+        // A write is confined by the same route, and is not performed in the source tree.
+        let mut world = Operations::default();
+        let written = on_confined(
+            &mut world,
+            &[grant("files:.:write")],
+            "no-such-file-2144.txt",
+            true,
+            |_, at| Ok::<_, FileFault>(at.to_path_buf()),
+        );
+        assert_eq!(written, Some(Ok(here.join("no-such-file-2144.txt"))));
+        assert_eq!(world.0, Vec::new());
+    }
+
     #[test]
     fn an_operation_site_without_its_outcome_label_fails_to_load() {
         // S-45 (#1552, `spec/11 §5`), review L3 of #1562: the native description's `outcome`

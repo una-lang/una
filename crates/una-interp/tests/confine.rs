@@ -16,6 +16,8 @@
 //!   (`Confined::Absent`), and no outcome carries a path that confinement did not resolve: every
 //!   path returned is a canonical directory inside the canonical prefix joined with the final
 //!   component.
+//! - #2144: the prefix of a grant on the current directory (`files:.:<modes>`) is `.`, which
+//!   resolves, and not the empty path, which does not.
 
 // Tests may unwrap and index freely (compiler/conventions.md §1). Links need Unix.
 #![cfg(unix)]
@@ -25,7 +27,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use una_interp::{Absence, Confined, FileFault, NotText, World, confine, disk_absent, disk_step};
+use una_interp::{
+    Absence, Confined, FileFault, Grant, NotText, World, confine, disk_absent, disk_step,
+};
 
 /// The `World` methods confinement never calls.
 macro_rules! no_io {
@@ -1501,4 +1505,115 @@ fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
         confine(&mut Disk, &long, "a/b/new.txt"),
         Confined::Path(directory.join("new.txt"))
     );
+}
+
+#[test]
+fn a_grant_on_the_current_directory_resolves_2144() {
+    // #2144: the prefix of `files:.:<modes>`, relative to the current directory (the base ``
+    // of a `--grant` flag and of an executable's grants) or to a package root written `.`
+    // (`una run .`), was the empty path, which does not canonicalize: before #1459 the
+    // operation was then given the path as written, and since #1459 every operation under
+    // the grant was `NotFound`. The prefix is `.`, resolved and checked as any other: a path
+    // under it is the canonical current directory joined with the final component, a missing
+    // directory is still answered with no path, and a path that leaves it is denied. Cargo
+    // runs the tests of a package in its directory, which this test only reads.
+    let here = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+        here
+    );
+    let prefix = |spec: &str, base: &str| match Grant::parse(spec, Path::new(base)) {
+        Some(Grant::Files { prefix, .. }) => prefix,
+        other => panic!("{spec} in `{base}`: {other:?}"),
+    };
+    let mut current = vec![PathBuf::new(), PathBuf::from(".")];
+    let mut nested = Vec::new();
+    for base in ["", "."] {
+        for path in [".", "./", "src/.."] {
+            current.push(prefix(&format!("files:{path}:read,write"), base));
+        }
+        for path in ["src", "./src", "src/"] {
+            nested.push(prefix(&format!("files:{path}:read,write"), base));
+        }
+    }
+    let cases = current
+        .iter()
+        .map(|prefix| (prefix, here.clone(), "Cargo.toml", "src/host.rs"))
+        .chain(
+            nested
+                .iter()
+                .map(|prefix| (prefix, here.join("src"), "host.rs", "x/../host.rs")),
+        );
+    for (prefix, directory, file, longer) in cases {
+        for (world, name) in [
+            (&mut Disk as &mut dyn World, "disk"),
+            (&mut DiskDefault, "default step"),
+        ] {
+            let context = format!("`{}` on {name}", prefix.display());
+            // An existing file, and one that does not exist in a directory that resolves.
+            assert_eq!(
+                confine(world, prefix, file),
+                Confined::Path(directory.join(file)),
+                "{context}"
+            );
+            assert_eq!(
+                confine(world, prefix, longer),
+                Confined::Path(here.join("src/host.rs")),
+                "{context}"
+            );
+            assert_eq!(
+                confine(world, prefix, "no-such-file-2144.txt"),
+                Confined::Path(directory.join("no-such-file-2144.txt")),
+                "{context}"
+            );
+            // A missing directory: the answer of #1459, and no path.
+            for missing in ["no-such-directory-2144/new.txt", "no-such-2144/a/b/new.txt"] {
+                assert_eq!(
+                    confine(world, prefix, missing),
+                    Confined::Absent(Absence::Missing),
+                    "{context} {missing}"
+                );
+            }
+            assert_eq!(
+                confine(world, prefix, &format!("{file}/x/new.txt")),
+                Confined::Absent(Absence::NotDirectory),
+                "{context}"
+            );
+            // The prefix itself, and anything outside it.
+            for denied in [
+                "",
+                ".",
+                "..",
+                "../Cargo.toml",
+                "../../Cargo.toml",
+                "/etc/hosts",
+            ] {
+                assert_eq!(
+                    confine(world, prefix, denied),
+                    Confined::Denied,
+                    "{context} {denied}"
+                );
+            }
+        }
+    }
+    // No path is given to the world that is the path as written: every lookup is of the
+    // prefix, of a path that starts with it, or of a canonical directory and one component.
+    let mut world = Recording {
+        world: &mut Disk,
+        seen: Vec::new(),
+    };
+    assert_eq!(
+        confine(&mut world, Path::new(""), "src/no-such-2144/new.txt"),
+        Confined::Absent(Absence::Missing)
+    );
+    let seen = world.seen;
+    assert!(!seen.is_empty());
+    for path in &seen {
+        assert!(
+            path.starts_with(".") || path.starts_with(&here),
+            "{} in {seen:?}",
+            path.display()
+        );
+        assert!(!path.ends_with("new.txt"), "{seen:?}");
+    }
 }
