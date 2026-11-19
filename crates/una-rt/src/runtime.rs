@@ -4544,16 +4544,24 @@ mod tests {
     }
 
     #[test]
-    fn refused_steps_never_fail_the_steps_of_sibling_threads() {
+    #[ignore = "run by `refused_steps_never_fail_the_steps_of_sibling_threads`, in a process of its own"]
+    fn refused_steps_never_fail_the_steps_of_sibling_threads_scenario() {
         // #1943: threads of one run whose steps are refused, for asking more than the ceiling,
         // never make a sibling's step that fits fail. Announced before it was checked, a refused
         // step of `isize::MAX` bytes was in every check made meanwhile, and two at once wrapped
-        // the sum. The ceiling is far above what the process holds and what the other tests of
-        // this binary announce, so only a refused step seen by a sibling can fail a step here.
-        // No timing is assumed: every thread makes a fixed number of steps, and the refused
-        // ones go on until the last fitting one is done.
+        // the sum. The ceiling is far above what the process holds, so only a refused step
+        // seen by a sibling can fail a step here. No timing is assumed: every thread makes a
+        // fixed number of steps, and the refused ones go on until the last fitting one is done.
+        //
+        // The scenario runs in a process of its own. Every step reads `held()`, and beside
+        // the other tests of this binary that reading can be torn: a test that runs a program
+        // lifts the allocator's limit when its run ends, the allocator writes its limit before
+        // its count of the bytes left, and between the two writes `held()` reads close to
+        // `usize::MAX`, past any ceiling. A fitting step that read it then was refused, about
+        // four in 200,000, when `cargo test` ran the tests as threads of one process. Here no
+        // other run changes the limit.
         let ceiling = usize::MAX / 4;
-        let rounds: usize = if cfg!(miri) { 200 } else { 50_000 };
+        let rounds: usize = 50_000;
         let (refusing, fitting) = (2, 4);
         let begin = std::sync::Barrier::new(refusing + fitting);
         let done = AtomicBool::new(false);
@@ -4605,6 +4613,16 @@ mod tests {
             assert!(asked >= rounds);
             assert_eq!(accepted, 0, "a step past the ceiling was accepted");
         }
+        eprintln!("{STEP}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn refused_steps_never_fail_the_steps_of_sibling_threads() {
+        let (code, stderr) =
+            scenario("refused_steps_never_fail_the_steps_of_sibling_threads_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
     }
 
     #[test]
