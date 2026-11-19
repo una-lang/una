@@ -1228,6 +1228,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "uses the file system, which Miri's isolation refuses")]
     #[allow(clippy::unwrap_used)]
     fn an_absent_directory_fails_the_operation_without_a_path_1459() {
         // `spec/14 §3` rule 2, #1459: a read or a write below a directory that confinement
