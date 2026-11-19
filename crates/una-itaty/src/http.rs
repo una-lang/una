@@ -73,9 +73,10 @@
 //! second. The pauses start over at the next connection accepted. A listener that only fails
 //! is not served for ever in silence: once the pauses since the last connection accepted add
 //! up to 30 seconds, [`serve`] ends with the last error, for the operator's process to see.
-//! Two kinds of failure do not count toward those 30 seconds, since they pass by themselves:
+//! Three kinds of failure do not count toward those 30 seconds, since they pass by themselves:
 //! a want of descriptors, buffers or memory (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`), which
-//! the connections that end give back, and a wait for a connection that timed out.
+//! the connections that end give back, a wait for a connection that timed out, and a failure
+//! of one connection, which a peer can cause and so must not be a way to end [`serve`].
 //!
 //! **Descriptors.** A connection holds its socket and, while a file is sent, that file's open
 //! descriptor, for as long as its response is written: up to 2 x `max_connections`
@@ -139,7 +140,8 @@ const ACCEPT_PAUSE_MAX: Duration = Duration::from_secs(1);
 /// a failure used up the connection it concerned, so it cannot repeat by itself.
 const ACCEPT_FREE_RETRIES: u32 = 16;
 /// The most time paused on failures of `accept` in a row, with no connection accepted, before
-/// [`serve`] ends with the error; wants of resources and waits that timed out do not count.
+/// [`serve`] ends with the error; wants of resources, waits that timed out and failures of
+/// one connection do not count.
 const ACCEPT_FAILING_MAX: Duration = Duration::from_secs(30);
 /// The least average rate of a request's head past the first-byte timeout, in bytes per
 /// second: a head of `MAX_HEAD` bytes has 16 seconds more than its first byte.
@@ -1197,7 +1199,9 @@ pub type Work = Box<dyn FnOnce() + Send>;
 /// Serves `listener` until it fails, one thread per connection and at most `max_connections`
 /// of them (the module's rules). It puts `listener` in blocking mode. It ends at once with the
 /// error of a listener that is unusable, and with the last error once its `accept` only
-/// failed, with no connection accepted, through 30 seconds of pauses (the module's rules).
+/// failed, with no connection accepted, through 30 seconds of pauses (the module's rules):
+/// it returns `Err` when the listener keeps failing, and its caller decides whether to start
+/// it again.
 pub fn serve(listener: &TcpListener, service: &Arc<Service>) -> io::Result<()> {
     serve_with(listener, service, |work| {
         std::thread::Builder::new()
@@ -1210,7 +1214,8 @@ pub fn serve(listener: &TcpListener, service: &Arc<Service>) -> io::Result<()> {
 /// Serves `listener` as [`serve`] does, with `spawn` starting each connection's thread: an
 /// operator's own threads, or a test's. The connection's slot is taken before `spawn` is
 /// called; when `spawn` fails, it has dropped the work, which closes the connection and gives
-/// the slot back, and the loop goes on.
+/// the slot back, and the loop goes on. Like [`serve`], it returns `Err` when the listener
+/// keeps failing, and its caller decides whether to start it again.
 pub fn serve_with(
     listener: &TcpListener,
     service: &Arc<Service>,
@@ -1378,7 +1383,7 @@ impl Retries {
                 wait
             }
         };
-        if matches!(failure, Failure::OneConnection | Failure::Other) {
+        if failure == Failure::Other {
             if self.failing >= ACCEPT_FAILING_MAX {
                 return Retry::Never;
             }
@@ -2267,11 +2272,11 @@ mod tests {
         failures.push(io::Error::from_raw_os_error(24));
         let (pauses, _, _) = looped(failures);
         assert_eq!(pauses.last(), Some(&ACCEPT_PAUSE_MIN));
-        // A listener that gives nothing else (one shut down, on some systems) ends the loop
-        // with that error after 30 seconds of those pauses.
+        // They never end the loop, however many a peer causes: far past 30 seconds of those
+        // pauses, it ends only with the scripted `EBADF`.
         let (pauses, _, ended) = looped(aborted(100_000));
-        assert_eq!(ended.kind(), io::ErrorKind::ConnectionAborted);
-        assert_eq!(total(&pauses), ACCEPT_FAILING_MAX);
+        assert_eq!(ended.raw_os_error(), Some(9));
+        assert!(total(&pauses) > 10 * ACCEPT_FAILING_MAX);
     }
 
     #[test]
