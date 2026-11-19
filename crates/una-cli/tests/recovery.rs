@@ -8,6 +8,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[path = "common/cpu.rs"]
+mod cpu;
 #[path = "common/hermetic.rs"]
 mod hermetic;
 #[path = "common/timing.rs"]
@@ -254,13 +256,11 @@ fn underscored(n: usize) -> String {
     text
 }
 
-/// The time to check [`underscored`]`(n)`, whose every U0001 carries its rename.
-fn timed_renames(n: usize) -> Duration {
+/// The measured step, in a child: the check of [`underscored`]`(n)`, whose every U0001 carries
+/// its rename.
+fn check_renames(n: usize) {
     let path = scratch(&format!("underscored-{n}.una"));
-    let text = underscored(n);
-    let start = Instant::now();
-    let diagnostics = check(&path, &text);
-    let took = start.elapsed();
+    let diagnostics = check(&path, &underscored(n));
     let renames = diagnostics
         .iter()
         .filter(|d| {
@@ -271,21 +271,43 @@ fn timed_renames(n: usize) -> Duration {
         })
         .count();
     assert_eq!(renames, 2 * n, "{n}");
-    took
 }
+
+/// The processor seconds of `test`, one of the two tests below, run alone in a child of this
+/// test binary to make the measurement `argument` names: a size, or `idle` for a child that
+/// checks nothing (`common/cpu.rs`, #1662). The check runs in this process, so its elapsed time
+/// grows with what runs beside it: inside the parallel run of a release gate these two tests
+/// read 2.9 and 2.6 times for a doubling that takes about 2 alone (#2111). A child's user and
+/// system time stay what its check costs.
+fn renames_cpu_time(test: &str, argument: &str) -> f64 {
+    cpu::in_child(test, argument)
+}
+
+/// The name of the test below, which its children run.
+const RENAMING: &str = "renaming_underscored_names_takes_linear_cpu_time";
 
 /// The repairs of names that start with `_` read the file's words once, not once per error
 /// (#1573): a doubling of a file with an error in every declaration takes less than 2.5 times
-/// as long, by the shared helper. Reading the file again for each error made it quadratic.
+/// as much processor time past the start of the test binary, by the shared helper. Reading the
+/// file again for each error made it quadratic.
 #[test]
-fn renaming_underscored_names_scales_linearly() {
+fn renaming_underscored_names_takes_linear_cpu_time() {
+    // The child `idle` checks nothing: the start of the test binary, the fixed cost.
+    if let Some(argument) = cpu::child() {
+        if argument != "idle" {
+            check_renames(argument.parse().unwrap());
+        }
+        cpu::ran();
+        return;
+    }
+    let idle = timing::best_of_three(|| renames_cpu_time(RENAMING, "idle"));
     timing::assert_growth(
         "renaming underscored names",
         &[500, 1_000, 2_000, 4_000],
-        0.0,
+        idle,
         timing::FLOOR,
         2.5,
-        |n| timed_renames(n).as_secs_f64(),
+        |n| renames_cpu_time(RENAMING, &n.to_string()),
     );
 }
 
@@ -300,13 +322,11 @@ fn underscored_in_one(n: usize) -> String {
     text
 }
 
-/// The time to check [`underscored_in_one`]`(n)`, whose every U0001 carries its rename.
-fn timed_renames_in_one(n: usize) -> Duration {
+/// The measured step, in a child: the check of [`underscored_in_one`]`(n)`, whose every U0001
+/// carries its rename.
+fn check_renames_in_one(n: usize) {
     let path = scratch(&format!("underscored-in-one-{n}.una"));
-    let text = underscored_in_one(n);
-    let start = Instant::now();
-    let diagnostics = check(&path, &text);
-    let took = start.elapsed();
+    let diagnostics = check(&path, &underscored_in_one(n));
     let renames = diagnostics
         .iter()
         .filter(|d| {
@@ -317,21 +337,33 @@ fn timed_renames_in_one(n: usize) -> Duration {
         })
         .count();
     assert_eq!(renames, 2 * n, "{n}");
-    took
 }
+
+/// The name of the test below, which its children run.
+const RENAMING_IN_ONE: &str = "renaming_underscored_names_in_one_declaration_takes_linear_cpu_time";
 
 /// The repairs of names that start with `_` read each declaration once, not once per error
 /// (#1635): a doubling of one declaration with `n` such names takes less than 2.5 times as
-/// long, by the shared helper. Scanning the declaration again for each error made it quadratic.
+/// much processor time past the start of the test binary, by the shared helper. Scanning the
+/// declaration again for each error made it quadratic.
 #[test]
-fn renaming_underscored_names_in_one_declaration_scales_linearly() {
+fn renaming_underscored_names_in_one_declaration_takes_linear_cpu_time() {
+    // The child `idle` checks nothing: the start of the test binary, the fixed cost.
+    if let Some(argument) = cpu::child() {
+        if argument != "idle" {
+            check_renames_in_one(argument.parse().unwrap());
+        }
+        cpu::ran();
+        return;
+    }
+    let idle = timing::best_of_three(|| renames_cpu_time(RENAMING_IN_ONE, "idle"));
     timing::assert_growth(
         "renaming underscored names in one declaration",
         &[500, 1_000, 2_000, 4_000],
-        0.0,
+        idle,
         timing::FLOOR,
         2.5,
-        |n| timed_renames_in_one(n).as_secs_f64(),
+        |n| renames_cpu_time(RENAMING_IN_ONE, &n.to_string()),
     );
 }
 

@@ -3,6 +3,9 @@
 //! small repository of its own, so it needs the `git` program and nothing of this checkout's
 //! metadata: it runs the same from a checkout, a worktree mounted alone into a container, or a
 //! source copy without `.git`. Where `git` does not run, each test says it is skipped.
+//!
+//! A section amended on purpose after its tag passes only as the text that
+//! `scripts/released-sections-amended.txt` records by its SHA-256 (#2111).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -470,6 +473,271 @@ fn a_heading_inside_a_fenced_block_does_not_end_a_section() {
         "{}",
         stdout(&output)
     );
+}
+
+/// The record of amended sections, as the script reads it in a repository.
+const AMENDED: &str = "scripts/released-sections-amended.txt";
+
+/// `RELEASED` with the entry of v0.3.1 reworded after its tag.
+fn reworded() -> String {
+    RELEASED.replace("- one\n", "- one, reworded\n")
+}
+
+/// The SHA-256 of `section`, a `## vX` section from its heading to the next one, computed here
+/// and not by the script's tool.
+fn digest(section: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(section.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The digest of the reworded section of v0.3.1 in [`reworded`].
+fn reworded_digest() -> String {
+    digest("## v0.3.1\n\n- one, reworded\n\n")
+}
+
+/// Writes `text` as the record of amended sections in the working tree of `dir`.
+fn record(dir: &Path, text: &str) {
+    std::fs::create_dir_all(dir.join("scripts")).unwrap();
+    std::fs::write(dir.join(AMENDED), text).unwrap();
+}
+
+#[test]
+fn a_recorded_amendment_passes_and_is_named() {
+    if !git_runs() {
+        return;
+    }
+    let dir = released("amended");
+    std::fs::write(dir.join("CHANGELOG.md"), reworded()).unwrap();
+    // Without the record, the reworded section fails, and its digest is printed to record.
+    let output = check(&dir, &[], None);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(text.contains("v0.3.1: DIFFERS"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "v0.3.1: sha256 of the checked section: {}\n",
+            reworded_digest()
+        )),
+        "{text}"
+    );
+    // With it, comments and blank lines included, the section is named as amended.
+    record(
+        &dir,
+        &format!(
+            "# Amended sections.\n\n  # Reworded.\nv0.3.1 {} #7\n",
+            reworded_digest()
+        ),
+    );
+    let output = check(&dir, &[], None);
+    assert!(output.status.success(), "{}", stdout(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("v0.3.0: identical\nv0.3.1: amended (recorded, #7)\n"),
+        "{text}"
+    );
+    assert!(text.contains("(1 amended)"), "{text}");
+}
+
+#[test]
+fn a_revision_is_checked_against_its_own_record() {
+    if !git_runs() {
+        return;
+    }
+    let dir = released("amended-revision");
+    // The reworded section committed without a record, then with it.
+    let unrecorded = commit(&dir, &reworded(), None);
+    record(&dir, &format!("v0.3.1 {} #7\n", reworded_digest()));
+    git(&dir, &["add", AMENDED]);
+    git(&dir, &["commit", "--quiet", "--message", "record"]);
+    let recorded = git(&dir, &["rev-parse", "HEAD"]);
+    let output = check(&dir, &[&recorded], None);
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("v0.3.1: amended (recorded, #7)"),
+        "{}",
+        stdout(&output)
+    );
+    // The earlier commit has no record, whatever the working tree holds.
+    let output = check(&dir, &[&unrecorded], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stdout(&output).contains("v0.3.1: DIFFERS"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn an_amended_section_edited_further_fails() {
+    if !git_runs() {
+        return;
+    }
+    let dir = released("amended-further");
+    record(&dir, &format!("v0.3.1 {} #7\n", reworded_digest()));
+    std::fs::write(
+        dir.join("CHANGELOG.md"),
+        reworded().replace(
+            "- one, reworded\n",
+            "- one, reworded\n- carried by a rebase\n",
+        ),
+    )
+    .unwrap();
+    let output = check(&dir, &[], None);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(text.contains("v0.3.0: identical"), "{text}");
+    assert!(
+        text.contains("v0.3.1: DIFFERS from the section published with the tag"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "v0.3.1: and from the amendment that {AMENDED} records (#7, sha256 {})",
+            reworded_digest()
+        )),
+        "{text}"
+    );
+    assert!(text.contains("+- carried by a rebase"), "{text}");
+    // A record of one tag covers no other: the digest of v0.3.1's amendment under v0.3.0.
+    std::fs::write(dir.join("CHANGELOG.md"), reworded()).unwrap();
+    record(&dir, &format!("v0.3.0 {} #7\n", reworded_digest()));
+    let output = check(&dir, &[], None);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(text.contains("v0.3.0: FAIL"), "{text}");
+    assert!(text.contains("v0.3.1: DIFFERS"), "{text}");
+}
+
+#[test]
+fn a_stale_record_fails() {
+    if !git_runs() {
+        return;
+    }
+    // The section is the one its tag published, so the record matches nothing.
+    let dir = released("amended-stale");
+    record(&dir, &format!("v0.3.1 {} #7\n", reworded_digest()));
+    let output = check(&dir, &[], None);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(text.contains("v0.3.0: identical"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "v0.3.1: FAIL, the section is identical to its tag, but {AMENDED} records an \
+             amendment (#7); remove the stale record"
+        )),
+        "{text}"
+    );
+    // So does the digest of the published section itself.
+    record(
+        &dir,
+        &format!("v0.3.1 {} #7\n", digest("## v0.3.1\n\n- one\n\n")),
+    );
+    assert_eq!(check(&dir, &[], None).status.code(), Some(1));
+}
+
+#[test]
+fn a_malformed_record_line_fails() {
+    if !git_runs() {
+        return;
+    }
+    let dir = released("amended-malformed");
+    let good = reworded_digest();
+    let upper = good.to_uppercase();
+    let short = &good[..63];
+    let lines = [
+        // A field missing, or one too many.
+        format!("v0.3.1 {good}\n"),
+        format!("v0.3.1 {good} #7 reworded\n"),
+        "v0.3.1\n".to_owned(),
+        // A digest that is not 64 lower-case hexadecimal digits.
+        format!("v0.3.1 {short} #7\n"),
+        format!("v0.3.1 {good}0 #7\n"),
+        format!("v0.3.1 {upper} #7\n"),
+        format!("v0.3.1 sha256:{good} #7\n"),
+        // A card that is not `#<number>`, or a tag that is not a version.
+        format!("v0.3.1 {good} 7\n"),
+        format!("v0.3.1 {good} #\n"),
+        format!("0.3.1 {good} #7\n"),
+        format!("v0.3.1 {good} #7x\n"),
+        // A line ending of another system.
+        format!("v0.3.1 {good} #7\r\n"),
+    ];
+    // Each fails whether or not the section it names is the recorded amendment.
+    for changelog in [RELEASED.to_owned(), reworded()] {
+        std::fs::write(dir.join("CHANGELOG.md"), &changelog).unwrap();
+        for line in &lines {
+            record(&dir, line);
+            let output = check(&dir, &[], None);
+            assert_eq!(output.status.code(), Some(1), "{line:?}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(&format!(
+                    "error: {AMENDED} line 1 is not `<tag> <sha256, 64 lower-case hex digits> \
+                     #<card>`"
+                )),
+                "{line:?}: {error}"
+            );
+            assert!(!stdout(&output).contains("amended"), "{line:?}");
+        }
+    }
+    // Two lines for one tag, and a tag that is not a release of the repository.
+    std::fs::write(dir.join("CHANGELOG.md"), reworded()).unwrap();
+    record(&dir, &format!("v0.3.1 {good} #7\nv0.3.1 {good} #7\n"));
+    let output = check(&dir, &[], None);
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("line 2 records v0.3.1 a second time"),
+        "{error}"
+    );
+    for tag in ["v0.3.2", "v0.2.9"] {
+        record(&dir, &format!("v0.3.1 {good} #7\n{tag} {good} #7\n"));
+        let output = check(&dir, &[], None);
+        assert_eq!(output.status.code(), Some(1), "{tag}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(&format!(
+                "records {tag} (#7), which is not a tag v0.3.0 or later"
+            )),
+            "{tag}: {error}"
+        );
+    }
+}
+
+/// This repository's own record holds only well-formed lines: the shape the script demands,
+/// read here so that a bad line fails with the tests and not first in a release gate.
+#[test]
+fn the_repository_s_record_is_well_formed() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(AMENDED);
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut tags = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(fields.len(), 3, "{line}");
+        assert!(fields[0].starts_with('v'), "{line}");
+        assert!(
+            fields[1].len() == 64
+                && fields[1]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "{line}"
+        );
+        assert!(
+            fields[2].len() > 1
+                && fields[2].starts_with('#')
+                && fields[2][1..].bytes().all(|byte| byte.is_ascii_digit()),
+            "{line}"
+        );
+        assert!(tags.insert(fields[0]), "{line}");
+    }
 }
 
 /// The evidence of scripts/local-ci.sh and of scripts/release-gates.sh never skips the check
