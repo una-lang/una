@@ -122,7 +122,7 @@ This amendment decides no widening under discussion. The raised base cap and the
 
 ## Amendment (2026-11-19): the base code cap, restated
 
-- Status: Proposed (2026-11-19); needs the Owner's acceptance and the adversarial security review of item 3 of the amendment of 2026-11-03.
+- Status: Accepted (2026-11-19), by the Owner's decision; the adversarial security review of item 3 of the amendment of 2026-11-03 is recorded (pass, 2026-11-19).
 
 **The breach.** The amendment of 2026-10-28 caps the base code of `una-sys` at 1,594 lines and requires a new amendment, with its line count, before a change that takes the base code past that cap merges. The base code passed the cap on 2026-11-08 with no amendment, and is 1,651 lines on `main` (`346a15d51`), 57 lines over. The pull requests that changed the base code since the amendment of 2026-10-28, with the count on `main` after each merge:
 
@@ -156,7 +156,7 @@ find crates/una-sys/src -name '*.rs' -not -path 'crates/una-sys/src/solver/*' -e
 
 **The cap.** The cap of the base code becomes **1,733 lines**: 1,651, the count of the merged code, plus at most 5%, rounded down, the rule of the amendments of 2026-10-25 and 2026-10-28. It replaces the 1,594 lines of the amendment of 2026-10-28, the mention of 1,594 in the note of 2026-11-01, and every earlier number for the base code. The cap rests on merged code only. Pull request #2113 (#1483), open at the time of this amendment, replaces six `unsafe` blocks with safe code and brings the base code to 1,668 lines at its head of today (`e2ffeb863`); that fits under 1,733, and it states its count in its description as every change to the crate does. The cap of the `solver` files (ADR 0124, 1,768 lines) and the 150 lines of `una-z3` stand as written. This amendment adds no place, module, foreign binding or dependent crate; the `dir` module and the bindings that the amendment of 2026-11-03 leaves for their own amendment remain so.
 
-**A raised cap is a widening.** Under item 3 of the amendment of 2026-11-03 this amendment needs an independent adversarial security review, recorded before it merges, besides the Owner's acceptance. The review covers the code that took the base past 1,594 lines: the changes of #1760 and #1944 to `signals.rs` and `poll.rs`.
+**A raised cap is a widening.** Under item 3 of the amendment of 2026-11-03 this amendment needed an independent adversarial security review, recorded before it merged, besides the Owner's acceptance; both are in the status line above. The review covered the code that took the base past 1,594 lines: the changes of #1760 and #1944 to `signals.rs` and `poll.rs`.
 
 **From now on a test enforces the cap.** `crates/una-sys/tests/base_size.rs` counts the base code as the command above does and fails when the count is over the cap, as `solver_size.rs` does for the files of `solver`. The count sees the Rust files under `crates/una-sys/src/` and nothing else, so the same test refuses the ways code could reach the base without being counted. It fails when:
 
