@@ -119,3 +119,49 @@ The places of the workspace's own code that may hold `unsafe` are those that rul
 3. **Any widening needs an adversarial security review.** A widening is a new place that may hold `unsafe`, a new module in one of these places, a new foreign binding in one of them, a new crate that may depend on `una-sys`, or a raised line cap. Besides the dated amendment that the amendments above already require for it, with its line count, it needs an independent adversarial security review, recorded before it merges. Code that a listed module already admits, within its cap and with the bindings already listed, is not a widening; `dir.rs`, which the amendment of 2026-10-25 lists, is such a module. A change that removes `unsafe` code or replaces it with safe code narrows the list and needs only the review that every change to these places already gets.
 
 This amendment decides no widening under discussion. The raised base cap and the new bindings (a directory listing by descriptor, `fstatat`) that the `dir` module of #1094 and #1275 and the proof-cache eviction design need (`docs/plan/proof-cache-eviction.md` section 10 item 9) each remain for their own amendment under item 3.
+
+## Amendment (2026-11-19): the base code cap, restated
+
+- Status: Accepted (2026-11-19), by the Owner's decision; the adversarial security review of item 3 of the amendment of 2026-11-03 is recorded (pass, 2026-11-19).
+
+**The breach.** The amendment of 2026-10-28 caps the base code of `una-sys` at 1,594 lines and requires a new amendment, with its line count, before a change that takes the base code past that cap merges. The base code passed the cap on 2026-11-08 with no amendment, and is 1,651 lines on `main` (`346a15d51`), 57 lines over. The pull requests that changed the base code since the amendment of 2026-10-28, with the count on `main` after each merge:
+
+| Pull request | Merged | Change | Count after | Against 1,594 |
+| --- | --- | --- | --- | --- |
+| #1725 (ADR 0123 S7, `--serve-out`) | 2026-11-08 | `server.rs` +5 | 1,524 | under |
+| #1726 (the reactor's wait with no deadline, #1723) | 2026-11-08 | `poll.rs` +3 | 1,527 | under |
+| #1760 (the wake pipe within a low descriptor limit, #1757) | 2026-11-08 | `signals.rs` +121 | 1,648 | 54 over |
+| #1944 (the contract of `Poller::add`, a doc comment, #1920) | 2026-11-11 | `poll.rs` +3 | 1,651 | 57 over |
+
+#1760 took the base code past the cap, and #1944 added to it. What #1760 changed, of its 121 lines: statements inside the existing `unsafe` block of `open_pipe` in `signals.rs` (the wake pipe's ends move from a start below the soft descriptor limit, and a second `F_DUPFD_CLOEXEC` retries from descriptor 3), with the block's `// SAFETY:` comment updated; 34 lines of unit tests in `src`, which count; and for the rest safe code and doc comments. It added no `unsafe` block, no module and no foreign binding: `fcntl` and `getrlimit` were already bound, once each. #1944 added a doc comment. The breach is of the line cap, but it is not of comments and safe code alone: trusted statements changed, and they were reviewed at the merged head.
+
+Each of the four pull requests has a record of the independent security review that every change to the crate gets, made before it merged, with a passing security verdict on the crate's files as merged; for #1760 and #1944, the two past the cap, the verdict is on the merged head itself. None of the pull requests stated the count in its description, as the amendments of 2026-10-25 and 2026-10-28 require, no review compared the count with the cap, and no check did: the files of `solver` have `crates/una-sys/tests/solver_size.rs`, and the base code had no such test.
+
+**The count.** Counted as the amendment of 2026-10-28 counts, over the same files, on `main` (`346a15d51`):
+
+```sh
+find crates/una-sys/src -name '*.rs' -not -path 'crates/una-sys/src/solver/*' -exec cat {} + | wc -l
+```
+
+| Module | Lines |
+| --- | --- |
+| `attention.rs` | 115 |
+| `coroutine.rs` | 666 |
+| `io.rs` | 39 |
+| `lib.rs` | 27 |
+| `poll.rs` | 180 |
+| `server.rs` | 170 |
+| `signals.rs` | 454 |
+| Total | 1,651 |
+
+**The cap.** The cap of the base code becomes **1,733 lines**: 1,651, the count of the merged code, plus at most 5%, rounded down, the rule of the amendments of 2026-10-25 and 2026-10-28. It replaces the 1,594 lines of the amendment of 2026-10-28, the mention of 1,594 in the note of 2026-11-01, and every earlier number for the base code. The cap rests on merged code only. Pull request #2113 (#1483), open at the time of this amendment, replaces six `unsafe` blocks with safe code and brings the base code to 1,668 lines at its head of today (`e2ffeb863`); that fits under 1,733, and it states its count in its description as every change to the crate does. The cap of the `solver` files (ADR 0124, 1,768 lines) and the 150 lines of `una-z3` stand as written. This amendment adds no place, module, foreign binding or dependent crate; the `dir` module and the bindings that the amendment of 2026-11-03 leaves for their own amendment remain so.
+
+**A raised cap is a widening.** Under item 3 of the amendment of 2026-11-03 this amendment needed an independent adversarial security review, recorded before it merged, besides the Owner's acceptance; both are in the status line above. The review covered the code that took the base past 1,594 lines: the changes of #1760 and #1944 to `signals.rs` and `poll.rs`.
+
+**From now on a test enforces the cap.** `crates/una-sys/tests/base_size.rs` counts the base code as the command above does and fails when the count is over the cap, as `solver_size.rs` does for the files of `solver`. The count sees the Rust files under `crates/una-sys/src/` and nothing else, so the same test refuses the ways code could reach the base without being counted. It fails when:
+
+- a counted file holds a `#[path` attribute or an `include!`, `include_str!` or `include_bytes!` call, which bring in code or data from a file that the count may not see;
+- the crate has a build script (a `build.rs`, or a `build` key in its `Cargo.toml`), which could generate code;
+- `lib.rs` declares the module `solver` without `#[cfg(feature = "solver")]` on the line before it, which would compile the files of `solver` into the base while they count against the other cap.
+
+What the test does not see stays with the review that every change to the crate gets: code placed in another crate, which the workspace's `unsafe_code = "forbid"` and item 3 already cover, and a change of the test's own constant. The constant is the cap of the latest accepted amendment and changes only in the pull request that carries a new dated amendment, with its count and the review of item 3. A change that would take the base code past 1,733 lines needs that amendment before it merges; each pull request that changes the crate states the count in its description, as before.

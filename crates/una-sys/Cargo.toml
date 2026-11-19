@@ -19,9 +19,11 @@ solver = []
 # The workspace lints, except `unsafe_code`: ADR 0058 (amended by ADRs 0116 and 0117) allows
 # `unsafe` in this crate, in the modules that call the operating system or switch stacks:
 # `signals.rs`, `coroutine.rs` (Rust `naked_asm!` only, no assembly files, no build script, no C),
-# `io.rs` and `poll.rs` (kqueue or epoll, ADR 0117 slice S7), each of which opts in. Every other
-# module keeps compiler/conventions.md §1. The crate stays under 1,200 lines, one assembly
-# instruction per line (ADR 0116 amendment).
+# `io.rs` and `poll.rs` (kqueue or epoll, ADR 0117 slice S7), `server.rs` (ADR 0123) and, behind
+# the feature `solver`, the files of `solver/` (ADR 0124), each of which opts in. Every other
+# module keeps compiler/conventions.md §1. The base code stays under its cap of 1,733 lines, which
+# `tests/base_size.rs` enforces (ADR 0058, amendment of 2026-11-19), one assembly instruction per
+# line (ADR 0116 amendment).
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
