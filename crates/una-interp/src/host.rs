@@ -329,16 +329,21 @@ pub fn check_limited_flags(flags: &[String], limit: LimitLabel<'_>) -> Result<()
     Ok(())
 }
 
-/// `path` with `.` removed and `..` applied, lexically. A relative path with no component
-/// left (`.`, `a/..`, the empty path) is `.`, the directory it is relative to, and never the
-/// empty path, which names no directory to the operating system (#2144).
+/// `path` with `.` removed and `..` applied, lexically: a `..` removes the named component
+/// before it, and is kept when there is none, so `../..` stays two levels up and a `..` at
+/// the root stays `/..`, which every host resolves to the root (#2144: a `..` once removed
+/// a `..` before it, so `../../x` was `x`). A relative path with no component left (`.`,
+/// `a/..`, the empty path) is `.`, the directory it is relative to, and never the empty
+/// path, which names no directory to the operating system (#2144).
 pub fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                if !out.pop() {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
                     out.push("..");
                 }
             }
@@ -893,6 +898,40 @@ mod tests {
         assert_eq!(prefix("files:.:read", "/work/app"), Path::new("/work/app"));
         assert_eq!(prefix("files:.:read", "app"), Path::new("app"));
         assert_eq!(prefix("files:..:read", "app"), Path::new("."));
+        // A `..` never removes a `..` before it: a spec that goes up two or more levels names
+        // that directory, not the current one or one in it.
+        for base in ["", ".", "./"] {
+            for (path, expected) in [
+                ("../..", "../.."),
+                ("../../", "../.."),
+                ("../../x", "../../x"),
+                ("../../../x", "../../../x"),
+                ("a/../..", ".."),
+                ("a/../../..", "../.."),
+                ("../a/../..", "../.."),
+                ("../../a/..", "../.."),
+            ] {
+                let spec = format!("files:{path}:read");
+                assert_eq!(
+                    prefix(&spec, base),
+                    Path::new(expected),
+                    "{spec} in `{base}`"
+                );
+            }
+        }
+        assert_eq!(prefix("files:..:read", ".."), Path::new("../.."));
+        assert_eq!(prefix("files:.:read", "../.."), Path::new("../.."));
+        assert_eq!(prefix("files:../..:read", "../pkg"), Path::new("../.."));
+        assert_eq!(prefix("files:../x:read", "../pkg"), Path::new("../x"));
+        // More `..` than an absolute base has components: the rest stays after the root,
+        // where the host reads `/..` as `/`, so the prefix is a path from the root and never
+        // a relative one.
+        assert_eq!(prefix("files:../..:read", "/work"), Path::new("/.."));
+        assert_eq!(prefix("files:../../x:read", "/work"), Path::new("/../x"));
+        assert_eq!(prefix("files:..:read", "/"), Path::new("/.."));
+        assert_eq!(prefix("files:/../../x:read", ""), Path::new("/../../x"));
+        assert_eq!(prefix("files:..:read", "/work"), Path::new("/"));
+        assert_eq!(normalize(Path::new("../..")), Path::new("../.."));
         assert_eq!(normalize(Path::new("")), Path::new("."));
         assert_eq!(normalize(Path::new("/")), Path::new("/"));
         // No path is a spec without a path, as before.

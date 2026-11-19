@@ -3428,7 +3428,8 @@ fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
     // its prefix, which does not resolve: since #1459 every operation under it was `NotFound`
     // and nothing was written. A new file is written and read back, an existing one is read,
     // a missing file and a missing directory are `NotFound`, and a link that leaves the
-    // directory is `Denied`, in the executable as in `una run`, from the canonical directory
+    // directory, as a directory of the path or as its final component, is `Denied`, as is
+    // `..`, in the executable as in `una run`, from the canonical directory
     // and from a link to it, and the same under the relative prefixes `sub` and `./sub`.
     use std::os::unix::fs::symlink;
     runtime();
@@ -3445,6 +3446,8 @@ fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
         ("read", "out/secret.txt"),
         ("write", "out/new.txt"),
         ("write", "../new.txt"),
+        ("read", "final.txt"),
+        ("write", "final.txt"),
     ]
     .into_iter()
     .map(|(operation, path)| (operation, path.to_owned()))
@@ -3462,6 +3465,8 @@ fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
         "denied",
         "denied",
         "denied",
+        "denied",
+        "denied",
     ];
     let expected: Vec<String> = cases
         .iter()
@@ -3470,11 +3475,13 @@ fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
         .map(|(index, ((operation, _), outcome))| format!("{index} {operation}: {outcome}"))
         .collect();
     let program = confined_program(&cases);
-    // `granted`, a directory under a grant: a file, a directory, and a link that leaves it.
+    // `granted`, a directory under a grant: a file, a directory, a link to a directory that
+    // leaves it, and a final component that is a link to a file outside it.
     let tree = |granted: &Path, outside: &Path| {
         std::fs::create_dir_all(granted.join("sub")).unwrap();
         std::fs::write(granted.join("note.txt"), "inside\n").unwrap();
         symlink(outside, granted.join("out")).unwrap();
+        symlink(outside.join("final.txt"), granted.join("final.txt")).unwrap();
     };
     // What one run of the cases left in `granted`, removed for the next run.
     let check = |output: &Output, granted: &Path, outside: &Path, context: &str| {
@@ -3495,6 +3502,16 @@ fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
         }
         assert!(!granted.join("missing").exists(), "{context}");
         assert!(!outside.join("new.txt").exists(), "{context}");
+        // Nothing went through the final link, and `..` wrote nothing above the directory.
+        assert_eq!(
+            std::fs::read_to_string(outside.join("final.txt")).unwrap(),
+            "final\n",
+            "{context}"
+        );
+        assert!(
+            !granted.parent().unwrap().join("new.txt").exists(),
+            "{context}"
+        );
     };
     let place = |name: &str, grants: &str| {
         let dir = package(
@@ -3509,6 +3526,7 @@ fn a_grant_on_the_current_directory_reaches_its_files_in_both_engines_2144() {
         let _ = std::fs::remove_file(&link);
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        std::fs::write(outside.join("final.txt"), "final\n").unwrap();
         symlink(&dir, &link).unwrap();
         tree(&dir, &outside);
         let built = una(&dir, &["build"]);
