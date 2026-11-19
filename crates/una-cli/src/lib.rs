@@ -1446,15 +1446,15 @@ fn run_command(
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, json, stdout, stderr),
-            Command::Lsp => lsp::serve(
-                stdout,
-                solving(
+            Command::Lsp => {
+                let solving = solving(
                     DEFAULT_WALLCLOCK.as_secs(),
                     crate::solver_child::DEFAULT_MEMORY_MIB,
                     false,
                     stderr,
-                ),
-            ),
+                );
+                lsp::serve(stdout, stderr, solving)
+            }
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {

@@ -88,13 +88,16 @@ impl Workspace for CliWorkspace {
 }
 
 /// Serves the language server on the process's stdin and on `stdout`, until the client
-/// sends `exit` or closes the input.
+/// sends `exit` or closes the input. A frame the server refuses is reported with one line on
+/// `stderr` (#2100); when the input can then be read no further, the error is returned, and
+/// the command exits with code 2.
 pub(crate) fn serve(
     stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
     solving: verification::Solving,
 ) -> std::io::Result<ExitStatus> {
     let input = Box::new(BufReader::new(std::io::stdin()));
-    una_lsp::serve(input, stdout, CliWorkspace { solving }).map(|()| ExitStatus::Success)
+    una_lsp::serve(input, stdout, stderr, CliWorkspace { solving }).map(|()| ExitStatus::Success)
 }
 
 /// What the editor asks about, from a check: definitions, hovers, the outline and the proof

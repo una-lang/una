@@ -153,13 +153,18 @@ struct Found {
     lenses: Vec<(Location, String)>,
 }
 
-/// What reaches the serving loop: a message of the client, the end of its input, or a tier 1
-/// check that finished on its own thread.
+/// What reaches the serving loop: a message of the client, a frame that was refused, the end
+/// of its input, or a tier 1 check that finished on its own thread.
 pub(crate) enum Event {
     /// A message of the client.
     Message(Value),
     /// The client closed its input.
     End,
+    /// A frame past a bound of its JSON text, dropped: the input is still read (#2100).
+    Dropped(String),
+    /// The input can be read no further: a header past a bound, a body that is too large,
+    /// cut short or not JSON, or an error of the input itself (#2100).
+    Failed(std::io::Error),
     /// The check of the package at the root, started as the run numbered by the `u64`.
     Checked(PathBuf, u64, Checked),
 }

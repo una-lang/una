@@ -860,3 +860,71 @@ fn tier_0_hints_name_each_kind_of_effect_condition_site() {
     }
     session.finish();
 }
+
+/// Runs `una lsp` on `input` to its end: its exit code, the messages it sent and its stderr.
+fn served(input: &[u8]) -> (Option<i32>, Vec<Value>, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .env_remove("UNA_SOLVER_STAND_IN")
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.to_vec();
+    // Written on a thread, so a server that stops reading never blocks the test.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let output = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    let mut sent = Vec::new();
+    let mut reader = std::io::Cursor::new(output.stdout);
+    while let Some(message) = una_lsp::read_message(&mut reader).unwrap() {
+        sent.push(message);
+    }
+    (
+        output.status.code(),
+        sent,
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+/// A refused frame is never silent (#2100): one line on stderr and a `window/showMessage`
+/// name the limit. A frame past a bound of its JSON is dropped and the session goes on; a
+/// header past a bound ends it with exit code 2.
+#[test]
+fn a_refused_frame_is_reported_on_stderr_and_to_the_editor() {
+    let framed = |body: &str| format!("Content-Length: {}\r\n\r\n{body}", body.len());
+    let shown = |text: &str| {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "window/showMessage",
+            "params": { "type": 1, "message": text },
+        })
+    };
+    let too_many = framed(&format!("[{}0]", "0,".repeat(una_lsp::MAX_VALUES)));
+    let shutdown = framed(r#"{"jsonrpc":"2.0","id":7,"method":"shutdown"}"#);
+    let answered = json!({ "jsonrpc": "2.0", "id": 7, "result": null });
+    let dropped = "una lsp: dropped a message of the editor: a message with more than 131072 values (MAX_VALUES)";
+
+    // Dropped, then answered, then a clean exit.
+    let exit = framed(r#"{"jsonrpc":"2.0","method":"exit"}"#);
+    let (code, sent, stderr) = served(format!("{too_many}{shutdown}{exit}").as_bytes());
+    assert_eq!(sent, vec![shown(dropped), answered.clone()]);
+    assert_eq!(stderr, format!("{dropped}\n"));
+    assert_eq!(code, Some(0));
+
+    // A header line past its bound: the input is read no further.
+    let long_line = format!("X-Pad: {}\r\n", "a".repeat(una_lsp::MAX_HEADER_LINE));
+    let stopped =
+        "una lsp: stopped reading the editor's messages: a header line longer than 4096 bytes";
+    let (code, sent, stderr) =
+        served(format!("{too_many}{shutdown}{long_line}{shutdown}").as_bytes());
+    assert_eq!(sent, vec![shown(dropped), answered, shown(stopped)]);
+    assert_eq!(stderr, format!("{dropped}\n{stopped}\n"));
+    assert_eq!(code, Some(2));
+}

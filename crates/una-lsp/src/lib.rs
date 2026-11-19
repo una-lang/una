@@ -16,31 +16,67 @@ use std::time::Duration;
 pub use position::Encoding;
 use server::Event;
 pub use server::{Checked, HoverText, Server, Symbol, Workspace};
-pub use transport::{read_message, write_message};
+pub use transport::{
+    MAX_CONTENT_LENGTH, MAX_DEPTH, MAX_HEADER_LINE, MAX_HEADER_LINES, MAX_VALUES, read_message,
+    write_message,
+};
+use transport::{Refused, read_frame};
 pub use uri::{path_of, uri_of};
 
 /// How long the server waits for more changes before it checks (ADR 0063 rule 4).
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
+/// The LSP type of an error message (`MessageType.Error`).
+const MESSAGE_ERROR: u8 = 1;
+
+/// The `window/showMessage` notification that shows `text` to the user as an error.
+fn show_message(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "window/showMessage",
+        "params": { "type": MESSAGE_ERROR, "message": text },
+    })
+}
+
 /// Serves LSP on `input` and `output` until `exit` or the end of the input. Messages that
 /// arrive within [`DEBOUNCE`] of each other are handled before the packages they touch are
 /// checked once. Tier 1 checks run on their own threads, so the server keeps answering, and
 /// a newer change cancels them.
+///
+/// A frame that is refused is never silent (#2100). Each refusal writes one line to `log`,
+/// which names the limit, and sends the same text to the client as a `window/showMessage`
+/// notification of type error:
+///
+/// - A frame past [`MAX_DEPTH`] or [`MAX_VALUES`] was read whole, so the input is still
+///   framed: the frame is dropped and the session goes on.
+/// - A header line past [`MAX_HEADER_LINE`], a header past [`MAX_HEADER_LINES`], a
+///   `Content-Length` that is missing, not a number or past [`MAX_CONTENT_LENGTH`], a body
+///   that is cut short or not JSON, and an error of the input leave no known start for the
+///   next frame: the checks in flight are cancelled and `serve` returns the error. The
+///   notification is then sent without regard to whether the client still reads it.
+///
+/// A line that `log` does not take is lost; it changes nothing else.
 pub fn serve<W: Workspace>(
     input: Box<dyn BufRead + Send>,
     output: &mut dyn Write,
+    log: &mut dyn Write,
     workspace: W,
 ) -> io::Result<()> {
     let (sender, receiver) = mpsc::channel();
     let reader = sender.clone();
     std::thread::spawn(move || {
         let mut input = input;
-        while let Ok(Some(message)) = read_message(&mut input) {
-            if reader.send(Event::Message(message)).is_err() {
+        loop {
+            let (event, last) = match read_frame(&mut input) {
+                Ok(Some(message)) => (Event::Message(message), false),
+                Ok(None) => (Event::End, true),
+                Err(Refused::Frame(message)) => (Event::Dropped(message), false),
+                Err(Refused::Stream(error)) => (Event::Failed(error), true),
+            };
+            if reader.send(event).is_err() || last {
                 return;
             }
         }
-        let _ = reader.send(Event::End);
     });
     let mut server = Server::threaded(workspace, sender);
     while let Ok(first) = receiver.recv() {
@@ -65,6 +101,18 @@ pub fn serve<W: Workspace>(
                 Event::End => {
                     server.cancel_all();
                     return Ok(());
+                }
+                Event::Dropped(message) => {
+                    let text = format!("una lsp: dropped a message of the editor: {message}");
+                    let _ = writeln!(log, "{text}").and_then(|()| log.flush());
+                    write_message(output, &show_message(&text))?;
+                }
+                Event::Failed(error) => {
+                    server.cancel_all();
+                    let text = format!("una lsp: stopped reading the editor's messages: {error}");
+                    let _ = writeln!(log, "{text}").and_then(|()| log.flush());
+                    let _ = write_message(output, &show_message(&text));
+                    return Err(error);
                 }
             }
             if changed {
