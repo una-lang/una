@@ -78,13 +78,103 @@ struct Entry<T> {
     value: Option<T>,
 }
 
+/// The vectors of the wheel that grow with its timers: `Vec` itself in every build but the
+/// unit tests of this crate, where [`counted::Slab`] is a `Vec` that counts each access for the
+/// test of the steps of [`Wheel::arm`] and [`Wheel::cancel`] (#2130).
+#[cfg(not(test))]
+type Slab<T> = Vec<T>;
+#[cfg(test)]
+use counted::Slab;
+
+/// The growing vector of the wheel in the unit tests (#2130): a `Vec` that gives only the
+/// accesses the wheel uses and counts each one on its thread, one step for an access to one
+/// element or to the length, and one step per element for the one walk the wheel makes
+/// ([`Wheel::into_armed`]). It gives no slice, no index and no borrowed iterator, so a walk of
+/// the slab or of the free list, or of a slot's list through the slab, is counted element by
+/// element, whatever the machine's load.
+///
+/// Invariant: every method of `Slab` counts, at least one step per element it reaches. A
+/// method added without its count, or a way to the inner `Vec`, takes the walk it allows out
+/// of the count.
+#[cfg(test)]
+mod counted {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The accesses to the wheels' growing vectors made on this thread.
+        static STEPS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// The accesses to the wheels' growing vectors made on this thread so far.
+    pub(super) fn steps() -> u64 {
+        STEPS.with(Cell::get)
+    }
+
+    fn step(count: u64) {
+        STEPS.with(|steps| steps.set(steps.get() + count));
+    }
+
+    /// A `Vec` whose every access counts.
+    pub(super) struct Slab<T>(Vec<T>);
+
+    impl<T> Slab<T> {
+        pub(super) fn with_capacity(capacity: usize) -> Slab<T> {
+            Slab(Vec::with_capacity(capacity))
+        }
+
+        pub(super) fn len(&self) -> usize {
+            step(1);
+            self.0.len()
+        }
+
+        pub(super) fn get(&self, index: usize) -> Option<&T> {
+            step(1);
+            self.0.get(index)
+        }
+
+        pub(super) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+            step(1);
+            self.0.get_mut(index)
+        }
+
+        pub(super) fn push(&mut self, value: T) {
+            step(1);
+            self.0.push(value);
+        }
+
+        pub(super) fn pop(&mut self) -> Option<T> {
+            step(1);
+            self.0.pop()
+        }
+    }
+
+    /// The walk of every element, by value: one step for the walk and one per element.
+    impl<T> IntoIterator for Slab<T> {
+        type Item = T;
+        type IntoIter = std::vec::IntoIter<T>;
+
+        fn into_iter(self) -> std::vec::IntoIter<T> {
+            step(1 + self.0.len() as u64);
+            self.0.into_iter()
+        }
+    }
+}
+
 /// A hierarchical timing wheel over a clock in nanoseconds. See the module documentation.
+///
+/// Invariant of the counted steps (#2130): the two collections that grow with the timers,
+/// `entries` and `free`, are `Slab`s, counted in the unit tests. The others cannot hold a
+/// cost that grows with the timers between two calls: `heads` keeps its `LEVELS * SLOTS + 1`
+/// lists and `occupied` its `LEVELS` words for good, and `batch` and `due` are empty outside
+/// [`Wheel::advance`]. A collection added here that grows with the timers must be a `Slab`;
+/// the test `arming_and_cancelling_take_constant_steps` names every field and its type, so it
+/// does not compile until the new field is listed there.
 pub struct Wheel<T> {
     now: u64,
     heads: Vec<u32>,
     occupied: [u64; LEVELS],
-    entries: Vec<Entry<T>>,
-    free: Vec<u32>,
+    entries: Slab<Entry<T>>,
+    free: Slab<u32>,
     len: usize,
     seq: u64,
     /// Lists taken out while advancing, kept for their capacity so that advancing allocates
@@ -110,8 +200,8 @@ impl<T> Wheel<T> {
             now,
             heads: vec![NIL; DUE + 1],
             occupied: [0; LEVELS],
-            entries: Vec::with_capacity(timers),
-            free: Vec::with_capacity(timers),
+            entries: Slab::with_capacity(timers),
+            free: Slab::with_capacity(timers),
             len: 0,
             seq: 0,
             batch: Vec::with_capacity(timers),
@@ -549,7 +639,7 @@ mod tests {
 
     /// The level of the list the live timer `id` is on, in tests.
     fn level(wheel: &Wheel<u64>, id: TimerId) -> usize {
-        wheel.entries[id.index as usize].list as usize / SLOTS
+        wheel.entries.get(id.index as usize).unwrap().list as usize / SLOTS
     }
 
     #[test]
@@ -753,5 +843,139 @@ mod tests {
             large <= small * 2.0 + 1.0,
             "{small} then {large} moves per timer"
         );
+    }
+
+    /// The most accesses to the slab and to the free list that one call makes, whatever the
+    /// number of timers (#2130), each read off the code path.
+    ///
+    /// `arm` of a new entry: `free.pop`, `entries.len`, `entries.push`, `entries.get_mut` for
+    /// the deadline, then `place`: `entries.get` for the deadline, `entries.get_mut` for the
+    /// links, `entries.get_mut` for the old head of the list (asked for even when the list is
+    /// empty).
+    const ARM_STEPS: u64 = 7;
+    /// `arm` that reuses a freed entry: `free.pop`, `entries.get_mut`, and the three of
+    /// `place`.
+    const REARM_STEPS: u64 = 5;
+    /// `cancel` of a live timer: `entries.get` for the generation, then `unlink`:
+    /// `entries.get` for the links and `entries.get_mut` for the entry before, the entry after
+    /// and the entry itself (the first two asked for even at an end of the list), then
+    /// `release`: `entries.get_mut` and `free.push`.
+    const CANCEL_STEPS: u64 = 7;
+    /// `cancel` of a timer that is gone: `entries.get` for the generation.
+    const STALE_STEPS: u64 = 1;
+
+    /// Arms `count` timers, cancels them, cancels them again, arms `count` more into the freed
+    /// entries and cancels those: the most counted steps of one call of each of the five
+    /// passes, and the steps of all.
+    ///
+    /// Every deadline lies in one slot (group 6 of a time near 2^40 against a wheel at 0), so
+    /// that slot's list holds every live timer: a walk of the list, of the slab or of the free
+    /// list is as long as the wheel is full. The first timers are cancelled in the order they
+    /// were armed, from the tail of the list, and the second in the reverse order, from its
+    /// head, so a walk from either end meets its longest case. The second arming starts with
+    /// `count` freed entries, the longest free list.
+    fn arm_cancel_rearm(count: u64) -> ([u64; 5], u64) {
+        let mut wheel: Wheel<u64> = Wheel::new(0);
+        let far = 1u64 << 40;
+        let mut most = [0u64; 5];
+        let keep = |most: &mut u64, before: u64| {
+            *most = (*most).max(counted::steps() - before);
+        };
+        let first = counted::steps();
+        let mut ids = Vec::new();
+        for value in 0..count {
+            let before = counted::steps();
+            let id = wheel.arm(far + value, value).unwrap();
+            keep(&mut most[0], before);
+            ids.push(id);
+        }
+        assert_eq!(wheel.len() as u64, count);
+        assert_eq!(wheel.occupied_slots(), (1, false));
+        for (value, id) in ids.iter().enumerate() {
+            let before = counted::steps();
+            let cancelled = wheel.cancel(*id);
+            keep(&mut most[1], before);
+            assert_eq!(cancelled, Some(value as u64));
+        }
+        assert!(wheel.is_empty());
+        for id in &ids {
+            let before = counted::steps();
+            let cancelled = wheel.cancel(*id);
+            keep(&mut most[2], before);
+            assert_eq!(cancelled, None);
+        }
+        ids.clear();
+        for value in 0..count {
+            let before = counted::steps();
+            let id = wheel.arm(far + value, value).unwrap();
+            keep(&mut most[3], before);
+            ids.push(id);
+        }
+        assert_eq!(wheel.len() as u64, count);
+        for (value, id) in ids.iter().enumerate().rev() {
+            let before = counted::steps();
+            let cancelled = wheel.cancel(*id);
+            keep(&mut most[4], before);
+            assert_eq!(cancelled, Some(value as u64));
+        }
+        let steps = counted::steps() - first;
+        // The shape of the wheel (#2130): every field by name and type, with no `..`, so a
+        // field added to `Wheel` does not compile here until it is listed. A collection that
+        // grows with the timers must be a counted `Slab`; the others are of a fixed size or
+        // empty between two calls, which the checks below hold them to.
+        let Wheel {
+            now,
+            heads,
+            occupied,
+            entries,
+            free,
+            len,
+            seq,
+            batch,
+            due,
+            moves,
+        } = wheel;
+        let (entries, free): (counted::Slab<Entry<u64>>, counted::Slab<u32>) = (entries, free);
+        let (heads, occupied): (Vec<u32>, [u64; LEVELS]) = (heads, occupied);
+        let (batch, due): (Vec<u32>, Vec<u32>) = (batch, due);
+        let (now, len, seq, moves): (u64, usize, u64, u64) = (now, len, seq, moves);
+        assert_eq!(heads.len(), DUE + 1);
+        assert!(heads.iter().all(|head| *head == NIL));
+        assert_eq!(occupied, [0; LEVELS]);
+        assert!(batch.is_empty() && due.is_empty());
+        assert_eq!((now, len, seq, moves), (0, 0, 2 * count, 2 * count));
+        // The second arming took its entries from the free list: the slab did not grow.
+        assert_eq!(entries.len() as u64, count);
+        assert_eq!(free.len() as u64, count);
+        (most, steps)
+    }
+
+    /// `arm` and `cancel` are O(1), counted (#2130): no call takes more accesses to the slab
+    /// and the free list at 100,000 timers than its constant, and the steps of all are exactly
+    /// the constants times the timers. A scan added to either (a sorted insert into a slot's
+    /// list, a search of the slab for an id, a walk of the free list) fails here at every
+    /// size, on any machine and under any load: nothing is timed.
+    #[test]
+    fn arming_and_cancelling_take_constant_steps() {
+        for count in [1_000u64, 10_000, 100_000] {
+            let (most, steps) = arm_cancel_rearm(count);
+            assert_eq!(
+                most,
+                [
+                    ARM_STEPS,
+                    CANCEL_STEPS,
+                    STALE_STEPS,
+                    REARM_STEPS,
+                    CANCEL_STEPS
+                ],
+                "{count} timers: the most steps of an arm, a cancel, a stale cancel, an arm \
+                 into a freed entry and a cancel"
+            );
+            assert_eq!(
+                steps,
+                count * (ARM_STEPS + CANCEL_STEPS + STALE_STEPS + REARM_STEPS + CANCEL_STEPS),
+                "{count} timers"
+            );
+        }
     }
 }
