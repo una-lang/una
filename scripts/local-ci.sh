@@ -219,13 +219,23 @@ fi
 # in the release gate of the same name, one at a time. Under emulation (UNA_LOCAL_CI_SERIAL, the
 # --linux container through Rosetta on an arm64 Mac, or a shell translated by Rosetta) the real
 # clock measures the emulator, not the runtime, so the step is skipped there, visibly.
+# With them, the cryptography's own timing evidence (#2119), in the same release build: the
+# statistical timing tests of crates/una-crypto/tests/timing.rs (ADR 0133 rule 9), ignored in the
+# ordinary run, and the scaling tests of crates/una-crypto/tests/perf.rs (ADR 0133 rule 10), which
+# return at once in the debug build of the step "Test". They are skipped with the oracles.
 translated=$( (sysctl -n sysctl.proc_translated 2>/dev/null) || echo 0)
 if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ] || [ "$translated" = 1 ]; then
     echo "== Timing channels (security oracles)"
     echo "skipped: under emulation the real clock is not the runtime's; run on a native host (macOS, --linux-arm64)"
+    echo "== Timing channels (cryptography: timing and scaling)"
+    echo "skipped: under emulation the real clock is not the runtime's; run on a native host (macOS, --linux-arm64)"
 else
     step "Timing channels (security oracles)" \
         cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+    step "Timing channels (cryptography: timing)" \
+        cargo test --release --locked -p una-crypto --test timing -- --ignored --test-threads=1 --nocapture
+    step "Timing channels (cryptography: scaling)" \
+        cargo test --release --locked -p una-crypto --test perf -- --test-threads=1 --nocapture
 fi
 # No C math library symbol (#1092), in what ships: a test build unifies the features of
 # dev-dependencies in, so the check builds its own release `una` and `libuna_rt.a`, links with

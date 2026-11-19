@@ -37,8 +37,14 @@
 #   timing-channels
 #                the security timing oracles (#1145): `cargo test --release --locked -p una-cli --test
 #                timing_channels -- --ignored --test-threads=1 --nocapture`, the real-clock tests that a timing
-#                channel stays closed, which the ordinary test run ignores; it runs right after
-#                `native`, with no Docker gate running, so the machine is as quiet as the run gets
+#                channel stays closed, which the ordinary test run ignores; then the statistical
+#                timing tests of the cryptography (#2119, ADR 0133 rule 9): `cargo test --release
+#                --locked -p una-crypto --test timing -- --ignored --test-threads=1 --nocapture`,
+#                and its scaling tests, which do nothing in a debug build (ADR 0133 rule 10):
+#                `cargo test --release --locked -p una-crypto --test perf -- --test-threads=1
+#                --nocapture`; the three always run, and one that fails fails the gate; it runs
+#                right after `native`, with no Docker gate running, so the machine is as quiet
+#                as the run gets
 #   owner-replay scripts/owner-replay-gate.sh (#1997, ADR 0122 Amendment 14): the replay of an
 #                owner's chain (spec/30 §14 rule 5) against the oracle of its contract and
 #                against the literal reference of the amendment, at every question, on every
@@ -688,7 +694,17 @@ gate_timing-channels() {
     # The security timing oracles (#1145, crates/una-cli/tests/timing_channels.rs): each test is
     # ignored in the ordinary run and runs only here and in the step of the same name of
     # scripts/local-ci.sh, one at a time, on the real clock of a native host.
-    run timing-channels cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture
+    # Then the cryptography (#2119), which no other gate times: the statistical timing tests of
+    # crates/una-crypto/tests/timing.rs (ADR 0133 rule 9), ignored in the ordinary run, and the
+    # scaling tests of crates/una-crypto/tests/perf.rs (ADR 0133 rule 10), which return at once
+    # in a debug build. Each of the three runs whatever the others did, so the log holds every
+    # statistic, and one that fails fails the gate.
+    run timing-channels sh -c '
+        status=0
+        cargo test --release --locked -p una-cli --test timing_channels -- --ignored --test-threads=1 --nocapture || status=1
+        cargo test --release --locked -p una-crypto --test timing -- --ignored --test-threads=1 --nocapture || status=1
+        cargo test --release --locked -p una-crypto --test perf -- --test-threads=1 --nocapture || status=1
+        exit "$status"'
 }
 
 gate_owner-replay() {
