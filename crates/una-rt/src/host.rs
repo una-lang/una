@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use una_core::bigint::{BigInt, Sign};
-use una_interp::{Event, EventOutcome, FileFault, Grant, NotText, World};
+use una_interp::{Confined, Event, EventOutcome, FileFault, Grant, NotText, World};
 
 use crate::render::index;
 use crate::runtime::with_state;
@@ -153,8 +153,9 @@ impl World for Machine {
         una_interp::disk_step(directory, name)
     }
 
-    /// Only a component that does not exist leaves a path to the operation (#1380).
-    fn absent(&mut self, path: &Path) -> bool {
+    /// Only a component that does not exist is absence (#1380), which fails the operation
+    /// without a path (#1459).
+    fn absent(&mut self, path: &Path) -> Option<una_interp::Absence> {
         una_interp::disk_absent(path)
     }
 }
@@ -296,19 +297,40 @@ fn not_text(site: i64, message: &str) -> i64 {
     )
 }
 
-/// The path that `relative` names under the first `Files` grant that allows the access, as
-/// `una run` confines it (`spec/14 §3`).
-fn confined(grants: &[Grant], relative: &str, writing: bool) -> Option<PathBuf> {
-    grants.iter().find_map(|grant| match grant {
-        Grant::Files {
-            prefix,
-            read,
-            write,
-        } if (if writing { *write } else { *read }) => {
-            una_interp::confine(&mut Machine, prefix, relative)
-        }
-        _ => None,
-    })
+/// What confinement decides for `relative` under the first `Files` grant of the access that
+/// does not deny it, as `una run` confines it (`spec/14 §3`).
+fn confined(world: &mut dyn World, grants: &[Grant], relative: &str, writing: bool) -> Confined {
+    grants
+        .iter()
+        .filter_map(|grant| match grant {
+            Grant::Files {
+                prefix,
+                read,
+                write,
+            } if (if writing { *write } else { *read }) => Some(prefix),
+            _ => None,
+        })
+        .map(|prefix| una_interp::confine(world, prefix, relative))
+        .find(|outcome| *outcome != Confined::Denied)
+        .unwrap_or(Confined::Denied)
+}
+
+/// A `Files` operation on `relative` in `world`, within `grants`: `None` when it is `Denied`,
+/// and otherwise what `operation` gives on the confined path. An intermediate directory that
+/// confinement confirmed absent fails the operation here, and the world is given no path
+/// (#1459).
+fn on_confined<T>(
+    world: &mut dyn World,
+    grants: &[Grant],
+    relative: &str,
+    writing: bool,
+    operation: impl FnOnce(&mut dyn World, &Path) -> Result<T, FileFault>,
+) -> Option<Result<T, FileFault>> {
+    match confined(world, grants, relative, writing) {
+        Confined::Denied => None,
+        Confined::Absent(absence) => Some(Err(absence.fault())),
+        Confined::Path(target) => Some(operation(world, &target)),
+    }
 }
 
 /// The failure of a file operation. `NotText` never comes from a write, whose content is a
@@ -329,8 +351,9 @@ pub fn files_read(site: i64, path: i64) -> i64 {
     let relative = values::text_value(path);
     let grants = run_grants();
     let read = sched::blocking(Pool::Files, move || {
-        let target = confined(&grants, &relative, false)?;
-        Some(Machine.read_file(&target))
+        on_confined(&mut Machine, &grants, &relative, false, |world, target| {
+            world.read_file(target)
+        })
     });
     match read {
         None => failed(DENIED),
@@ -355,8 +378,9 @@ pub fn files_write(path: i64, content: i64) -> i64 {
     let content = values::text_value(content);
     let grants = run_grants();
     let written = sched::blocking(Pool::Files, move || {
-        let target = confined(&grants, &relative, true)?;
-        Some(Machine.write_file(&target, &content))
+        on_confined(&mut Machine, &grants, &relative, true, |world, target| {
+            world.write_file(target, &content)
+        })
     });
     match written {
         None => failed(DENIED),
@@ -1156,6 +1180,148 @@ mod tests {
         })
         .join()
         .unwrap_or_else(|_| panic!("the test thread panicked"));
+    }
+
+    /// The machine, keeping each path that a file operation is given.
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct Operations(Vec<(&'static str, std::path::PathBuf)>);
+
+    #[cfg(unix)]
+    impl super::World for Operations {
+        fn print(&mut self, _line: &str) {}
+        fn now(&mut self) -> i64 {
+            0
+        }
+        fn env_var(&mut self, _name: &str) -> Result<Option<String>, super::NotText> {
+            Ok(None)
+        }
+        fn read_file(&mut self, path: &std::path::Path) -> Result<String, super::FileFault> {
+            self.0.push(("read", path.to_path_buf()));
+            super::Machine.read_file(path)
+        }
+        fn write_file(
+            &mut self,
+            path: &std::path::Path,
+            content: &str,
+        ) -> Result<(), super::FileFault> {
+            self.0.push(("write", path.to_path_buf()));
+            super::Machine.write_file(path, content)
+        }
+        fn canonical(&mut self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+            super::Machine.canonical(path)
+        }
+        fn is_link(&mut self, path: &std::path::Path) -> bool {
+            super::Machine.is_link(path)
+        }
+        fn step(
+            &mut self,
+            directory: &std::path::Path,
+            name: &std::ffi::OsStr,
+        ) -> Option<std::path::PathBuf> {
+            super::Machine.step(directory, name)
+        }
+        fn absent(&mut self, path: &std::path::Path) -> Option<una_interp::Absence> {
+            super::Machine.absent(path)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn an_absent_directory_fails_the_operation_without_a_path_1459() {
+        // `spec/14 §3` rule 2, #1459: a read or a write below a directory that confinement
+        // confirmed absent fails with `NotFound` (`Io` below a component that is not a
+        // directory), and the machine's file operations are given no path; a final component
+        // that does not exist is created in the canonical form of its directory.
+        use super::{FileFault, Grant, on_confined};
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("una-rt-absent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("box/sub")).unwrap();
+        std::fs::write(dir.join("box/note.txt"), "inside\n").unwrap();
+        symlink("sub", dir.join("box/in_dir")).unwrap();
+        symlink("box", dir.join("boxlink")).unwrap();
+        let canonical = std::fs::canonicalize(dir.join("box")).unwrap();
+        let grant = |prefix: &str| Grant::Files {
+            prefix: dir.join(prefix),
+            read: true,
+            write: true,
+        };
+        let mut world = Operations::default();
+        let mut operate = |grants: &[Grant], relative: &str, writing: bool| {
+            on_confined(&mut world, grants, relative, writing, |world, target| {
+                if writing {
+                    world.write_file(target, "entry")
+                } else {
+                    world.read_file(target).map(|_| ())
+                }
+            })
+        };
+        let absent = [
+            ("box", "missing/new.txt", FileFault::NotFound),
+            ("box", "missing/deeper/new.txt", FileFault::NotFound),
+            ("box", "in_dir/missing/new.txt", FileFault::NotFound),
+            ("boxlink", "in_dir/missing/a/new.txt", FileFault::NotFound),
+            ("box", "note.txt/x/new.txt", FileFault::Io),
+            ("nothing", "new.txt", FileFault::NotFound),
+            ("nothing/deeper", "sub/new.txt", FileFault::NotFound),
+        ];
+        for (prefix, relative, fault) in absent {
+            for writing in [false, true] {
+                assert_eq!(
+                    operate(&[grant(prefix)], relative, writing),
+                    Some(Err(fault)),
+                    "{prefix} {relative} {writing}"
+                );
+            }
+        }
+        // The first grant that does not deny decides, an absent directory included.
+        assert_eq!(
+            operate(&[grant("nothing"), grant("box")], "note.txt", false),
+            Some(Err(FileFault::NotFound))
+        );
+        assert_eq!(operate(&[grant("box")], "../note.txt", false), None);
+        assert_eq!(world.0, Vec::new(), "no file operation was given a path");
+        assert!(!dir.join("box/missing").exists());
+        assert!(!dir.join("nothing").exists());
+        // A final component that does not exist: the operation gets the canonical directory
+        // joined with it, a write creates the file there, and a read fails with `NotFound`.
+        let mut world = Operations::default();
+        let mut operate = |prefix: &str, relative: &str, writing: bool| {
+            on_confined(
+                &mut world,
+                &[grant(prefix)],
+                relative,
+                writing,
+                |world, target| {
+                    if writing {
+                        world.write_file(target, "entry")
+                    } else {
+                        world.read_file(target).map(|_| ())
+                    }
+                },
+            )
+        };
+        assert_eq!(
+            operate("boxlink", "in_dir/gone.txt", false),
+            Some(Err(FileFault::NotFound))
+        );
+        assert_eq!(operate("boxlink", "in_dir/new.txt", true), Some(Ok(())));
+        assert_eq!(operate("box", "in_dir/new.txt", false), Some(Ok(())));
+        assert_eq!(
+            world.0,
+            vec![
+                ("read", canonical.join("sub/gone.txt")),
+                ("write", canonical.join("sub/new.txt")),
+                ("read", canonical.join("sub/new.txt")),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("box/sub/new.txt")).unwrap(),
+            "entry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

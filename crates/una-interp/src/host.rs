@@ -21,6 +21,47 @@ pub enum FileFault {
     NotText,
 }
 
+/// Why an intermediate directory of a confined path is not there, as [`World::absent`] tells
+/// it and [`confine`] answers it ([`Confined::Absent`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Absence {
+    /// A component does not exist (`ENOENT`): the operation fails with `NotFound`.
+    Missing,
+    /// A component that a later one is looked up in is not a directory (`ENOTDIR`): the
+    /// operation fails with `Io`.
+    NotDirectory,
+}
+
+impl Absence {
+    /// The fault of the operation on a path with this absence: what the operation failed with
+    /// when it was given the path (`ENOENT` is `NotFound`, `ENOTDIR` is `Io`), now answered
+    /// without it (#1459).
+    pub fn fault(self) -> FileFault {
+        match self {
+            Absence::Missing => FileFault::NotFound,
+            Absence::NotDirectory => FileFault::Io,
+        }
+    }
+}
+
+/// What [`confine`] decides for a `Files` operation on a path (`spec/14 §3`). A caller handles
+/// each case: only [`Confined::Path`] carries a path, so no other outcome can reach the world's
+/// file operations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confined {
+    /// The operation fails with `Denied`: the world is given no path.
+    Denied,
+    /// An intermediate directory is confirmed absent: the operation fails with
+    /// [`Absence::fault`], `NotFound` for a directory that does not exist, and the world is
+    /// given no path (#1459). Confinement has no canonical directory for such a path, so there
+    /// is nothing checked to open.
+    Absent(Absence),
+    /// The path the operation opens, without following its final component: the canonical
+    /// form of its directory, which lies inside the canonical prefix, joined with the final
+    /// component.
+    Path(PathBuf),
+}
+
 /// A host value that is not valid UTF-8, which the run aborts on with U6005 (S-16, ADR 0086).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NotText;
@@ -58,15 +99,16 @@ pub trait World {
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         self.canonical(&directory.join(name))
     }
-    /// Whether `path`, which [`World::canonical`] did not resolve, does not exist: a component
-    /// of it is missing or is not a directory. Any other failure to resolve it, a host limit
-    /// (a resolved path longer than the host takes, more links than it follows) or a
-    /// directory that may not be searched, is not absence, and [`confine`] denies the path
-    /// (`spec/14 §3` rule 2, #1380): the operation would otherwise open the lexical path,
-    /// through links that confinement never checked. The default is `false`, so a world that
-    /// does not tell denies every path whose directory does not resolve.
-    fn absent(&mut self, _path: &Path) -> bool {
-        false
+    /// Whether `path`, which [`World::canonical`] did not resolve, does not exist, and why: a
+    /// component of it is missing or is not a directory. Any other failure to resolve it, a
+    /// host limit (a resolved path longer than the host takes, more links than it follows) or
+    /// a directory that may not be searched, is not absence, and [`confine`] denies the path
+    /// (`spec/14 §3` rule 2, #1380). The default is `None`, so a world that does not tell
+    /// denies every path whose directory does not resolve. Whatever a world answers here, a
+    /// path whose directory did not resolve is never opened (#1459): the answer only chooses
+    /// between `Denied` and the failure of [`Absence::fault`].
+    fn absent(&mut self, _path: &Path) -> Option<Absence> {
+        None
     }
     /// Takes `event` as it is written, as the trace file of `una run --trace` does (ADR 0117
     /// rule 10): `true` when the run need not keep it. The default keeps every event.
@@ -304,19 +346,27 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// The path that a `Files` operation on `relative` opens under `prefix`, or `None` when the
-/// operation is `Denied` (`spec/14 §3`, ADR 0038 D9):
+/// What a `Files` operation on `relative` under `prefix` does: the path it opens
+/// ([`Confined::Path`]), or the failure it ends with, the world given no path (`spec/14 §3`,
+/// ADR 0038 D9):
 ///
 /// 1. `relative` is normalized lexically, without following links; an absolute path, a `..`
 ///    that leaves the prefix, and a path with no final component are denied;
 /// 2. every intermediate directory, the prefix included, is resolved with its links followed
-///    and must lie inside the canonical prefix; a dangling link there is denied, and a
-///    component that does not exist ([`World::absent`]) leaves the rest to the operation,
-///    which fails with `NotFound` (or `Io` for a component that is not a directory); a
-///    directory that does not resolve for any other reason, a host limit included, is
-///    denied (#1380);
+///    and must lie inside the canonical prefix; a dangling link there is denied; a directory
+///    that does not exist ([`World::absent`]) is [`Confined::Absent`]: the operation fails
+///    with `NotFound` (or `Io` where a component is not a directory), which confinement
+///    answers, since it has no canonical directory to open (#1459); a directory that does
+///    not resolve for any other reason, a host limit included, is denied (#1380);
 /// 3. the final component is never followed: a symbolic link there, dangling or not, is
-///    denied. The world opens the returned path without creating a file through a link.
+///    denied. The world opens the returned path without creating a file through a link. A
+///    final component that does not exist in a directory that resolves is not absence: the
+///    path is returned, so a write creates the file and a read fails with `NotFound` at the
+///    operation.
+///
+/// So every path returned is the canonical form of a directory that confinement resolved,
+/// joined with one component: a path as the program wrote it never reaches the world's
+/// file operations.
 ///
 /// The outcome is that of canonicalizing each lexical prefix `prefix/d1/../dk` of the path in
 /// turn (`confine_by_prefixes`), in O(c) lookups of components for c components (#1343):
@@ -329,14 +379,20 @@ pub fn normalize(path: &Path) -> PathBuf {
 /// decides, in O(c²) lookups: the bound of O(c) holds on the normal path, and the fallback,
 /// which any path can reach, keeps the cost the earlier algorithm had for every path.
 ///
-/// Races between this check and the operation are outside the v0.1 model (D9 rule 4).
-pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
-    let parts = normalized(relative)?;
+/// Races between this check and the operation are outside the v0.1 model (D9 rule 4). An
+/// absence is decided at the check: a directory made after it does not turn the answer into
+/// a late success.
+pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Confined {
+    let Some(parts) = normalized(relative) else {
+        return Confined::Denied;
+    };
     // D-133: a path that names the prefix itself (``, `.`, `a/..`) has no final
     // component to open, and is denied.
-    let (last, directories) = parts.split_last()?;
+    let Some((last, directories)) = parts.split_last() else {
+        return Confined::Denied;
+    };
     let Some(root) = world.canonical(prefix) else {
-        return missing(world, prefix, prefix, &parts);
+        return unresolved(world, prefix);
     };
     // Rule 2, located: `resolved` is the canonical form of `prefix/d1/../d(depth)`, since
     // `canonical(a/b)` is `canonical(canonical(a)/b)` for a normal component `b`.
@@ -357,9 +413,7 @@ pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<P
         return confine_by_prefixes(world, prefix, relative);
     }
     let Some(next) = directories.get(depth) else {
-        // Rule 3: the final component is never followed.
-        let target = resolved.join(last);
-        return (!world.is_link(&target)).then_some(target);
+        return unfollowed(world, resolved.join(last));
     };
     // The resolution stops at the next directory, or leaves the prefix there: decided as by
     // the prefix-by-prefix resolution. D-134: each directory is checked, not only the last,
@@ -367,8 +421,8 @@ pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<P
     // inside.
     lexical.push(next);
     match world.canonical(&lexical) {
-        None => missing(world, &lexical, prefix, &parts),
-        Some(directory) if !directory.starts_with(&root) => None,
+        None => unresolved(world, &lexical),
+        Some(directory) if !directory.starts_with(&root) => Confined::Denied,
         Some(_) => confine_by_prefixes(world, prefix, relative),
     }
 }
@@ -376,29 +430,41 @@ pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<P
 /// [`confine`] by canonicalizing every lexical prefix of the path from the grant prefix, in
 /// O(c²) lookups of components for c components: the definition that [`confine`] keeps, and
 /// what decides when its located resolution and a canonicalization disagree.
-fn confine_by_prefixes(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
+fn confine_by_prefixes(world: &mut dyn World, prefix: &Path, relative: &str) -> Confined {
     // Rule 1: lexical normalization.
-    let parts = normalized(relative)?;
+    let Some(parts) = normalized(relative) else {
+        return Confined::Denied;
+    };
     // D-133: no final component, denied.
-    let (last, directories) = parts.split_last()?;
+    let Some((last, directories)) = parts.split_last() else {
+        return Confined::Denied;
+    };
     // Rule 2: every intermediate directory resolves inside the canonical prefix.
     // D-134: each one is checked, not only the last.
     let mut lexical = prefix.to_path_buf();
     let Some(root) = world.canonical(prefix) else {
-        return missing(world, &lexical, prefix, &parts);
+        return unresolved(world, &lexical);
     };
     let mut resolved = root.clone();
     for part in directories {
         lexical.push(part);
         match world.canonical(&lexical) {
             Some(directory) if directory.starts_with(&root) => resolved = directory,
-            Some(_) => return None,
-            None => return missing(world, &lexical, prefix, &parts),
+            Some(_) => return Confined::Denied,
+            None => return unresolved(world, &lexical),
         }
     }
-    // Rule 3: the final component is never followed.
-    let target = resolved.join(last);
-    (!world.is_link(&target)).then_some(target)
+    unfollowed(world, resolved.join(last))
+}
+
+/// Rule 3 of [`confine`]: `target`, a resolved directory joined with the final component, is
+/// opened unless that component is a symbolic link, which is never followed.
+fn unfollowed(world: &mut dyn World, target: PathBuf) -> Confined {
+    if world.is_link(&target) {
+        Confined::Denied
+    } else {
+        Confined::Path(target)
+    }
 }
 
 /// Rule 1 of [`confine`]: the normal components of `relative` with `.` removed and `..`
@@ -436,32 +502,28 @@ pub fn disk_step(directory: &Path, name: &OsStr) -> Option<PathBuf> {
 /// executables: the canonicalization of `path` fails because a component is missing
 /// (`ENOENT`) or is not a directory (`ENOTDIR`). Any other failure (`ENAMETOOLONG`, `ELOOP`,
 /// `EACCES`, ...), or a canonicalization that now succeeds, is not absence.
-pub fn disk_absent(path: &Path) -> bool {
-    std::fs::canonicalize(path).is_err_and(|error| {
-        matches!(
-            error.kind(),
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-        )
-    })
+pub fn disk_absent(path: &Path) -> Option<Absence> {
+    match std::fs::canonicalize(path).err()?.kind() {
+        std::io::ErrorKind::NotFound => Some(Absence::Missing),
+        std::io::ErrorKind::NotADirectory => Some(Absence::NotDirectory),
+        _ => None,
+    }
 }
 
-/// The outcome of [`confine`] when the intermediate directory `lexical` does not resolve: a
-/// dangling link is denied, a directory that does not exist yields the lexical path, whose
-/// operation then fails with `NotFound` without touching anything outside the prefix, and
-/// any other failure to resolve is denied (#1380): the lexical path would be opened through
-/// links that were never checked.
-fn missing(
-    world: &mut dyn World,
-    lexical: &Path,
-    prefix: &Path,
-    parts: &[&OsStr],
-) -> Option<PathBuf> {
-    if world.is_link(lexical) || !world.absent(lexical) {
-        return None;
+/// The outcome of [`confine`] when `lexical`, the grant prefix or an intermediate directory
+/// as written, does not resolve: a dangling link is denied; a directory that does not exist
+/// is [`Confined::Absent`], the failure the operation had on such a path, answered here; and
+/// any other failure to resolve is denied (#1380). No path is returned (#1459): none of the
+/// directories from `lexical` on was resolved, so a path through them would be opened through
+/// links that were never checked, whatever the world told of its absence.
+fn unresolved(world: &mut dyn World, lexical: &Path) -> Confined {
+    if world.is_link(lexical) {
+        return Confined::Denied;
     }
-    let mut out = prefix.to_path_buf();
-    out.extend(parts);
-    Some(out)
+    match world.absent(lexical) {
+        Some(absence) => Confined::Absent(absence),
+        None => Confined::Denied,
+    }
 }
 
 /// The keys of a key file: a TOML table of key names to base64 keys. The

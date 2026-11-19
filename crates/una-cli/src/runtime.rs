@@ -249,8 +249,9 @@ impl World for HostWorld<'_> {
         una_interp::disk_step(directory, name)
     }
 
-    /// Only a component that does not exist leaves a path to the operation (#1380).
-    fn absent(&mut self, path: &Path) -> bool {
+    /// Only a component that does not exist is absence (#1380), which fails the operation
+    /// without a path (#1459).
+    fn absent(&mut self, path: &Path) -> Option<una_interp::Absence> {
         una_interp::disk_absent(path)
     }
 }

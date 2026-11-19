@@ -12,6 +12,10 @@
 //! - The scaling test of ADR 0132 rule 16 counts the lookups of components in a counting
 //!   world: paths of c and 10c components take at most 20 times as many lookups, with exact
 //!   counts asserted, and the earlier algorithm is shown to exceed that bound.
+//! - #1459: an intermediate directory confirmed absent is answered by confinement
+//!   (`Confined::Absent`), and no outcome carries a path that confinement did not resolve: every
+//!   path returned is a canonical directory inside the canonical prefix joined with the final
+//!   component.
 
 // Tests may unwrap and index freely (compiler/conventions.md §1). Links need Unix.
 #![cfg(unix)]
@@ -21,7 +25,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use una_interp::{FileFault, NotText, World, confine, disk_absent, disk_step};
+use una_interp::{Absence, Confined, FileFault, NotText, World, confine, disk_absent, disk_step};
 
 /// The `World` methods confinement never calls.
 macro_rules! no_io {
@@ -44,49 +48,74 @@ macro_rules! no_io {
 
 /// The algorithm before #1343, kept as the oracle: every intermediate directory is resolved
 /// by canonicalizing the whole lexical prefix up to it, O(c²) lookups for c components.
-fn confine_quadratic(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
+fn confine_quadratic(world: &mut dyn World, prefix: &Path, relative: &str) -> Confined {
     let mut parts: Vec<&OsStr> = Vec::new();
     for component in Path::new(relative).components() {
         match component {
             Component::Normal(part) => parts.push(part),
             Component::CurDir => {}
             Component::ParentDir => {
-                parts.pop()?;
+                if parts.pop().is_none() {
+                    return Confined::Denied;
+                }
             }
-            Component::RootDir | Component::Prefix(_) => return None,
+            Component::RootDir | Component::Prefix(_) => return Confined::Denied,
         }
     }
-    let (last, directories) = parts.split_last()?;
+    let Some((last, directories)) = parts.split_last() else {
+        return Confined::Denied;
+    };
     let mut lexical = prefix.to_path_buf();
     let Some(root) = world.canonical(prefix) else {
-        return quadratic_missing(world, &lexical, prefix, &parts);
+        return quadratic_missing(world, &lexical);
     };
     let mut resolved = root.clone();
     for part in directories {
         lexical.push(part);
         match world.canonical(&lexical) {
             Some(directory) if directory.starts_with(&root) => resolved = directory,
-            Some(_) => return None,
-            None => return quadratic_missing(world, &lexical, prefix, &parts),
+            Some(_) => return Confined::Denied,
+            None => return quadratic_missing(world, &lexical),
         }
     }
     let target = resolved.join(last);
-    (!world.is_link(&target)).then_some(target)
+    if world.is_link(&target) {
+        Confined::Denied
+    } else {
+        Confined::Path(target)
+    }
 }
 
-fn quadratic_missing(
-    world: &mut dyn World,
-    lexical: &Path,
-    prefix: &Path,
-    parts: &[&OsStr],
-) -> Option<PathBuf> {
-    // #1380: only a directory that does not exist leaves the path to the operation.
-    if world.is_link(lexical) || !world.absent(lexical) {
-        return None;
+fn quadratic_missing(world: &mut dyn World, lexical: &Path) -> Confined {
+    // #1380: only a directory that does not exist is absence. #1459: absence is answered
+    // here, and no path is left to the operation.
+    if world.is_link(lexical) {
+        return Confined::Denied;
     }
-    let mut out = prefix.to_path_buf();
-    out.extend(parts);
-    Some(out)
+    world
+        .absent(lexical)
+        .map_or(Confined::Denied, Confined::Absent)
+}
+
+/// The path that the rule before #1459 left to the operation for an absent directory: the
+/// grant prefix joined with the path as written, which the operation then opened.
+fn lexical(prefix: &Path, relative: &str) -> PathBuf {
+    prefix.join(relative)
+}
+
+/// The directory of a returned path is canonical on the disk and lies inside the canonical
+/// form of `prefix` (#1459): the world is given no path that confinement did not resolve.
+fn assert_resolved(outcome: &Confined, prefix: &Path, context: &str) {
+    if let Confined::Path(path) = outcome {
+        let root = std::fs::canonicalize(prefix).unwrap();
+        let directory = path.parent().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(directory).unwrap(),
+            directory,
+            "{context}"
+        );
+        assert!(directory.starts_with(&root), "{context}");
+    }
 }
 
 /// The tree both file systems hold, under a root `{R}`: `(path, kind)`, where a kind is `dir`,
@@ -221,7 +250,7 @@ impl World for Disk {
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         disk_step(directory, name)
     }
-    fn absent(&mut self, path: &Path) -> bool {
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
         disk_absent(path)
     }
 }
@@ -237,13 +266,14 @@ impl World for DiskDefault {
     fn is_link(&mut self, path: &Path) -> bool {
         std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     }
-    fn absent(&mut self, path: &Path) -> bool {
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
         disk_absent(path)
     }
 }
 
 /// `world` with the rule before #1380: every directory that does not resolve and is not a
-/// link counts as absent, so its lexical path is returned whatever stopped the resolution.
+/// link counts as absent, whatever stopped the resolution. Before #1459 its lexical path was
+/// then returned and opened; now such a world gets `NotFound` and no path.
 struct Before<'a>(&'a mut dyn World);
 
 impl World for Before<'_> {
@@ -257,8 +287,8 @@ impl World for Before<'_> {
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         self.0.step(directory, name)
     }
-    fn absent(&mut self, _path: &Path) -> bool {
-        true
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
+        self.0.absent(path).or(Some(Absence::Missing))
     }
 }
 
@@ -432,8 +462,12 @@ impl World for Model {
         self.walk(Model::root(), Model::parts(path), false, true, usize::MAX)
             .is_ok_and(|walk| matches!(self.nodes[walk.last().unwrap().1], Node::Link(_)))
     }
-    fn absent(&mut self, path: &Path) -> bool {
-        matches!(self.resolve(path), Err(Fault::Missing | Fault::NotDir))
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
+        match self.resolve(path) {
+            Err(Fault::Missing) => Some(Absence::Missing),
+            Err(Fault::NotDir) => Some(Absence::NotDirectory),
+            _ => None,
+        }
     }
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         // The directory is held already: walking to it again is not a lookup.
@@ -479,7 +513,7 @@ impl World for ModelDefault<'_> {
     fn is_link(&mut self, path: &Path) -> bool {
         self.0.is_link(path)
     }
-    fn absent(&mut self, path: &Path) -> bool {
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
         self.0.absent(path)
     }
 }
@@ -515,11 +549,14 @@ fn disk_tree(root: &Path) {
 }
 
 /// The outcome of the model under `/r` as the disk's under `root`.
-fn on_disk(outcome: Option<PathBuf>, root: &Path) -> Option<PathBuf> {
-    outcome.map(|path| match path.strip_prefix("/r") {
-        Ok(rest) => root.join(rest),
-        Err(_) => path,
-    })
+fn on_disk(outcome: Confined, root: &Path) -> Confined {
+    match outcome {
+        Confined::Path(path) => Confined::Path(match path.strip_prefix("/r") {
+            Ok(rest) => root.join(rest),
+            Err(_) => path,
+        }),
+        other => other,
+    }
 }
 
 #[test]
@@ -536,11 +573,13 @@ fn confinement_keeps_the_outcomes_of_resolving_every_prefix_1343() {
     let mut checked = 0;
     let mut opened = 0;
     let mut denied = 0;
+    let mut absent = 0;
     for prefix in PREFIXES {
         let on = root.join(prefix);
         let model_prefix = Path::new("/r").join(prefix);
         for relative in &all {
             let expected = confine_quadratic(&mut Disk, &on, relative);
+            assert_resolved(&expected, &on, relative);
             assert_eq!(
                 confine(&mut Disk, &on, relative),
                 expected,
@@ -581,50 +620,268 @@ fn confinement_keeps_the_outcomes_of_resolving_every_prefix_1343() {
             );
             checked += 1;
             match expected {
-                Some(path) if path.exists() => opened += 1,
-                Some(_) => {}
-                None => denied += 1,
+                Confined::Path(path) if path.exists() => opened += 1,
+                Confined::Path(_) => {}
+                Confined::Absent(_) => absent += 1,
+                Confined::Denied => denied += 1,
             }
         }
     }
-    // The cases reach every outcome: opened, missing (`NotFound` later) and denied.
+    // The cases reach every outcome: opened, a final component that does not exist, an absent
+    // directory (`NotFound` or `Io`, answered without a path) and denied.
     assert!(checked > 50_000, "{checked}");
     assert!(opened > 500 && denied > 1_000, "{opened} {denied}");
+    assert!(absent > 1_000, "{absent}");
     // Spot checks of `spec/14 §3`, under `box`.
     let on = root.join("box");
     let box_ = std::fs::canonicalize(&on).unwrap();
     for (relative, outcome) in [
-        ("in_dir/inner.txt", Some(box_.join("sub/inner.txt"))),
-        ("chain/x.txt", Some(box_.join("sub/deeper/x.txt"))),
-        ("back/note.txt", Some(box_.join("note.txt"))),
-        ("sub/up2/note.txt", Some(box_.join("note.txt"))),
-        ("missing/new.txt", Some(on.join("missing/new.txt"))),
         (
-            "missing/deeper/new.txt",
-            Some(on.join("missing/deeper/new.txt")),
+            "in_dir/inner.txt",
+            Confined::Path(box_.join("sub/inner.txt")),
         ),
-        ("note.txt/x/new.txt", Some(on.join("note.txt/x/new.txt"))),
+        ("chain/x.txt", Confined::Path(box_.join("sub/deeper/x.txt"))),
+        ("back/note.txt", Confined::Path(box_.join("note.txt"))),
+        ("sub/up2/note.txt", Confined::Path(box_.join("note.txt"))),
+        // A final component that does not exist, in a directory that resolves: the path is
+        // the canonical directory joined with it, so a write creates the file.
+        ("new.txt", Confined::Path(box_.join("new.txt"))),
+        ("in_dir/new.txt", Confined::Path(box_.join("sub/new.txt"))),
         (
-            "in_dir/missing/new.txt",
-            Some(on.join("in_dir/missing/new.txt")),
+            "chain/new.txt",
+            Confined::Path(box_.join("sub/deeper/new.txt")),
         ),
-        ("in_link", None),
-        ("dangling", None),
-        ("dangling_dir/new.txt", None),
-        ("out_dir/secret.txt", None),
-        ("out_abs/secret.txt", None),
-        ("sub/out2/secret.txt", None),
+        // #1459: an absent directory is answered, with no path.
+        ("missing/new.txt", Confined::Absent(Absence::Missing)),
+        ("missing/deeper/new.txt", Confined::Absent(Absence::Missing)),
+        ("in_dir/missing/new.txt", Confined::Absent(Absence::Missing)),
+        (
+            "note.txt/x/new.txt",
+            Confined::Absent(Absence::NotDirectory),
+        ),
+        ("in_link/x/new.txt", Confined::Absent(Absence::NotDirectory)),
+        ("in_link", Confined::Denied),
+        ("dangling", Confined::Denied),
+        ("dangling_dir/new.txt", Confined::Denied),
+        ("out_dir/secret.txt", Confined::Denied),
+        ("out_abs/secret.txt", Confined::Denied),
+        ("sub/out2/secret.txt", Confined::Denied),
         // D-134: out of the prefix and back into it is denied.
-        ("out_dir/back_in/inner.txt", None),
-        ("out_abs/inner/back/note.txt", None),
-        ("up/outside/back_in/inner.txt", None),
-        ("up/box/note.txt", None),
-        ("loop/x", None),
-        ("../outside/secret.txt", None),
-        ("/etc/hosts", None),
-        (".", None),
+        ("out_dir/back_in/inner.txt", Confined::Denied),
+        ("out_abs/inner/back/note.txt", Confined::Denied),
+        ("up/outside/back_in/inner.txt", Confined::Denied),
+        ("up/box/note.txt", Confined::Denied),
+        ("loop/x", Confined::Denied),
+        ("../outside/secret.txt", Confined::Denied),
+        ("/etc/hosts", Confined::Denied),
+        (".", Confined::Denied),
     ] {
         assert_eq!(confine(&mut Disk, &on, relative), outcome, "{relative}");
+    }
+    // The grant prefix itself: one that does not exist has no canonical directory, so every
+    // path under it is `NotFound` without a path; a dangling link is denied; and under a
+    // prefix that is a link the paths are those of the directory it leads to.
+    for relative in ["new.txt", "sub/new.txt", "missing/deeper/new.txt"] {
+        assert_eq!(
+            confine(&mut Disk, &root.join("nothing"), relative),
+            Confined::Absent(Absence::Missing),
+            "{relative}"
+        );
+        assert_eq!(
+            confine(&mut Disk, &root.join("nothing/deeper"), relative),
+            Confined::Absent(Absence::Missing),
+            "{relative}"
+        );
+        assert_eq!(
+            confine(&mut Disk, &root.join("box/note.txt/under"), relative),
+            Confined::Absent(Absence::NotDirectory),
+            "{relative}"
+        );
+        assert_eq!(
+            confine(&mut Disk, &root.join("dangling_prefix"), relative),
+            Confined::Denied,
+            "{relative}"
+        );
+    }
+    let link = root.join("boxlink");
+    assert_eq!(
+        confine(&mut Disk, &link, "in_dir/new.txt"),
+        Confined::Path(box_.join("sub/new.txt"))
+    );
+    assert_eq!(
+        confine(&mut Disk, &link, "in_dir/missing/new.txt"),
+        Confined::Absent(Absence::Missing)
+    );
+}
+
+/// `world`, keeping every path a method of it is given, a step's as `directory/name`. The
+/// file operations are never reached by confinement.
+struct Recording<'a> {
+    world: &'a mut dyn World,
+    seen: Vec<PathBuf>,
+}
+
+impl World for Recording<'_> {
+    fn print(&mut self, _line: &str) {}
+    fn now(&mut self) -> i64 {
+        0
+    }
+    fn env_var(&mut self, _name: &str) -> Result<Option<String>, NotText> {
+        Ok(None)
+    }
+    fn read_file(&mut self, path: &Path) -> Result<String, FileFault> {
+        panic!("confinement read {}", path.display());
+    }
+    fn write_file(&mut self, path: &Path, _content: &str) -> Result<(), FileFault> {
+        panic!("confinement wrote {}", path.display());
+    }
+    fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
+        self.seen.push(path.to_path_buf());
+        self.world.canonical(path)
+    }
+    fn is_link(&mut self, path: &Path) -> bool {
+        self.seen.push(path.to_path_buf());
+        self.world.is_link(path)
+    }
+    fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
+        self.seen.push(directory.join(name));
+        self.world.step(directory, name)
+    }
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
+        self.seen.push(path.to_path_buf());
+        self.world.absent(path)
+    }
+}
+
+#[test]
+fn an_absent_directory_is_answered_without_a_path_1459() {
+    // `spec/14 §3` rule 2, #1459: once confinement has confirmed that an intermediate
+    // directory does not exist, the outcome is the failure itself. No path is returned, and
+    // confinement gives the world no path below the absent directory: neither the path as
+    // written nor any part of it past the first component that is not there.
+    let root = fresh("absent");
+    disk_tree(&root);
+    let mut model = model_tree();
+    // (prefix, path, the absent directory as written from the prefix, the absence)
+    let cases = [
+        ("box", "missing/new.txt", "missing", Absence::Missing),
+        ("box", "missing/deeper/new.txt", "missing", Absence::Missing),
+        (
+            "box",
+            "missing/a/b/c/d/new.txt",
+            "missing",
+            Absence::Missing,
+        ),
+        (
+            "box",
+            "sub/deeper/missing/a/new.txt",
+            "sub/deeper/missing",
+            Absence::Missing,
+        ),
+        (
+            "box",
+            "in_dir/missing/new.txt",
+            "in_dir/missing",
+            Absence::Missing,
+        ),
+        (
+            "box",
+            "in_abs/deeper/missing/a/new.txt",
+            "in_abs/deeper/missing",
+            Absence::Missing,
+        ),
+        (
+            "box",
+            "self/back/chain/missing/new.txt",
+            "self/back/chain/missing",
+            Absence::Missing,
+        ),
+        ("box", "sub/../missing/new.txt", "missing", Absence::Missing),
+        (
+            "box",
+            "note.txt/x/new.txt",
+            "note.txt/x",
+            Absence::NotDirectory,
+        ),
+        (
+            "box",
+            "in_dir/inner.txt/x/y/new.txt",
+            "in_dir/inner.txt/x",
+            Absence::NotDirectory,
+        ),
+        ("boxlink", "missing/new.txt", "missing", Absence::Missing),
+        (
+            "boxlink",
+            "in_dir/missing/a/new.txt",
+            "in_dir/missing",
+            Absence::Missing,
+        ),
+        ("box/sub", "missing/new.txt", "missing", Absence::Missing),
+        ("nothing", "new.txt", "", Absence::Missing),
+        ("nothing", "sub/new.txt", "", Absence::Missing),
+        ("nothing/deeper", "sub/new.txt", "", Absence::Missing),
+        (
+            "box/note.txt/under",
+            "sub/new.txt",
+            "",
+            Absence::NotDirectory,
+        ),
+    ];
+    for (prefix, relative, stop, absence) in cases {
+        for (name, world, base) in [
+            ("disk", &mut Disk as &mut dyn World, root.as_path()),
+            ("default step", &mut DiskDefault, root.as_path()),
+            ("model", &mut model, Path::new("/r")),
+        ] {
+            let on = base.join(prefix);
+            // `stop` is empty for the prefix itself: `join("")` would add a separator.
+            let gone = if stop.is_empty() {
+                on.clone()
+            } else {
+                on.join(stop)
+            };
+            let mut recording = Recording {
+                world,
+                seen: Vec::new(),
+            };
+            assert_eq!(
+                confine(&mut recording, &on, relative),
+                Confined::Absent(absence),
+                "{name}: {prefix} {relative}"
+            );
+            assert!(
+                recording.seen.contains(&gone),
+                "{name}: {prefix} {relative}"
+            );
+            let written = lexical(&on, relative);
+            for seen in &recording.seen {
+                assert_ne!(*seen, written, "{name}: {prefix} {relative}");
+                assert!(
+                    *seen == gone || !seen.starts_with(&gone),
+                    "{name}: {prefix} {relative}: the world was given {}",
+                    seen.display()
+                );
+            }
+        }
+    }
+    // A final component that does not exist is not absence: its directory resolves, so the
+    // path is the canonical directory joined with it, under a prefix that is a link too.
+    let box_ = std::fs::canonicalize(root.join("box")).unwrap();
+    for (prefix, relative, target) in [
+        ("box", "new.txt", "new.txt"),
+        ("box", "in_dir/new.txt", "sub/new.txt"),
+        ("boxlink", "new.txt", "new.txt"),
+        ("boxlink", "in_abs/deeper/new.txt", "sub/deeper/new.txt"),
+        ("box/sub", "deeper/new.txt", "sub/deeper/new.txt"),
+    ] {
+        let on = root.join(prefix);
+        let outcome = confine(&mut Disk, &on, relative);
+        assert_eq!(
+            outcome,
+            Confined::Path(box_.join(target)),
+            "{prefix} {relative}"
+        );
+        assert_resolved(&outcome, &on, relative);
     }
 }
 
@@ -660,15 +917,11 @@ fn chain_path(c: usize, links: usize) -> String {
 
 /// The lookups that `algorithm` makes in the model for [`chain_path`], which must open
 /// `/r/box/d/../d/f`.
-fn lookups(
-    c: usize,
-    links: usize,
-    algorithm: fn(&mut dyn World, &Path, &str) -> Option<PathBuf>,
-) -> u64 {
+fn lookups(c: usize, links: usize, algorithm: fn(&mut dyn World, &Path, &str) -> Confined) -> u64 {
     let mut model = chain(c);
     let target = algorithm(&mut model, Path::new("/r/box"), &chain_path(c, links));
     let expected = format!("/r/box/{}f", "d/".repeat(c));
-    assert_eq!(target, Some(PathBuf::from(expected)));
+    assert_eq!(target, Confined::Path(PathBuf::from(expected)));
     model.lookups
 }
 
@@ -772,11 +1025,18 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
     let mut newly_denied = 0;
     for relative in &cases {
         let expected = confine_quadratic(&mut Disk, &on, relative);
-        denied += usize::from(expected.is_none());
-        // #1380: a host limit no longer yields the lexical path; nothing else changes.
+        assert_resolved(&expected, &on, relative);
+        denied += usize::from(expected == Confined::Denied);
+        // #1380: a host limit is not absence; nothing else changes.
         let before = confine_quadratic(&mut Before(&mut Disk), &on, relative);
         if before != expected {
-            assert_eq!(expected, None, "only denials are new: {relative}");
+            assert_eq!(
+                expected,
+                Confined::Denied,
+                "only denials are new: {relative}"
+            );
+            // #1459: the rule before #1380 no longer has a path to open either.
+            assert_eq!(before, Confined::Absent(Absence::Missing), "{relative}");
             newly_denied += 1;
         }
         assert_eq!(
@@ -801,11 +1061,16 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
     assert!(denied > 0, "{denied}");
     if past.is_some() {
         assert!(newly_denied > 0, "{newly_denied}");
-        // S-33: the rule before #1380 opened the file outside the prefix.
+        // S-33: the rule before #1380 left the operation the path as written, which opens
+        // the file outside the prefix. #1459: that rule now yields `NotFound` and no path.
         let escape = format!("{below}/esc/secret.txt");
-        let before = confine_quadratic(&mut Before(&mut Disk), &on, &escape).unwrap();
-        assert_eq!(std::fs::read_to_string(before).unwrap(), "secret\n");
-        assert_eq!(confine(&mut Disk, &on, &escape), None);
+        let before = confine_quadratic(&mut Before(&mut Disk), &on, &escape);
+        assert_eq!(before, Confined::Absent(Absence::Missing));
+        assert_eq!(
+            std::fs::read_to_string(lexical(&on, &escape)).unwrap(),
+            "secret\n"
+        );
+        assert_eq!(confine(&mut Disk, &on, &escape), Confined::Denied);
     }
     if cfg!(any(target_os = "macos", target_os = "linux")) {
         assert!(past.is_some(), "{hops}");
@@ -814,9 +1079,13 @@ fn host_limits_keep_the_outcomes_of_resolving_every_prefix_1343() {
         // Past 40 links the prefix ending at the 41st is a link: Denied by both rules.
         for links in 41..=depth {
             let relative = chain_path(depth, links);
-            assert_eq!(confine(&mut Disk, &on, &relative), None, "{relative}");
+            assert_eq!(
+                confine(&mut Disk, &on, &relative),
+                Confined::Denied,
+                "{relative}"
+            );
             let before = confine_quadratic(&mut Before(&mut Disk), &on, &relative);
-            assert_eq!(before, None, "{relative}");
+            assert_eq!(before, Confined::Denied, "{relative}");
         }
     }
 }
@@ -839,7 +1108,7 @@ impl World for Counting<'_> {
     fn step(&mut self, directory: &Path, name: &OsStr) -> Option<PathBuf> {
         disk_step(directory, name)
     }
-    fn absent(&mut self, path: &Path) -> bool {
+    fn absent(&mut self, path: &Path) -> Option<Absence> {
         disk_absent(path)
     }
 }
@@ -913,10 +1182,13 @@ fn case_variant_spellings_keep_the_outcomes_of_resolving_every_prefix_1343() {
         let opened = confine(&mut counting, &on, "SUB/inner.txt");
         assert_eq!(counting.count, 2, "the respelled directory falls back");
         let stored = std::fs::canonicalize(&on).unwrap().join("sub/inner.txt");
-        assert_eq!(opened, Some(stored));
+        assert_eq!(opened, Confined::Path(stored));
         assert!(fell_back > 100, "{fell_back}");
         // Out of the prefix and back into it, respelled: denied.
-        assert_eq!(confine(&mut Disk, &on, "out/BACK/inner.txt"), None);
+        assert_eq!(
+            confine(&mut Disk, &on, "out/BACK/inner.txt"),
+            Confined::Denied
+        );
     }
 }
 
@@ -925,7 +1197,8 @@ fn a_directory_past_the_host_path_limit_is_denied_1380() {
     // A link inside the prefix resolves to a deep directory, and the canonical path of the
     // directory below it is longer than the host takes (1024 bytes, as on macOS), so it does
     // not resolve though it exists. Below it a link leads outside the prefix. The rule before
-    // #1380 returned the lexical path, which the operation then opened through that link.
+    // #1380 returned the lexical path, which the operation then opened through that link;
+    // since #1459 that rule has no path to return.
     let name = "X".repeat(200);
     let deep = |levels: usize| vec![name.as_str(); levels].join("/");
     let mut model = Model::new();
@@ -946,46 +1219,61 @@ fn a_directory_past_the_host_path_limit_is_denied_1380() {
     let before = confine(&mut Before(&mut model), prefix, &relative);
     assert_eq!(
         before,
-        Some(prefix.join(&relative)),
+        Confined::Absent(Absence::Missing),
         "the rule before #1380"
     );
     model.max_path = usize::MAX;
     assert_eq!(
-        model.canonical(&before.unwrap()),
+        model.canonical(&lexical(prefix, &relative)),
         Some(PathBuf::from("/r/outside/secret.txt")),
         "the lexical path leads outside the prefix"
     );
     model.max_path = 1024;
     // Denied, in both routines and with either step.
-    assert_eq!(confine(&mut model, prefix, &relative), None);
-    assert_eq!(confine_quadratic(&mut model, prefix, &relative), None);
+    assert_eq!(confine(&mut model, prefix, &relative), Confined::Denied);
+    assert_eq!(
+        confine_quadratic(&mut model, prefix, &relative),
+        Confined::Denied
+    );
     assert_eq!(
         confine(&mut ModelDefault(&mut model), prefix, &relative),
-        None
+        Confined::Denied
     );
     // A directory past the limit is denied even with nothing below it.
     let new = format!("q/{}/new.txt", deep(2));
-    assert_eq!(confine(&mut model, prefix, &new), None);
-    // Directories that do not exist, or are not directories, still leave the path to the
-    // operation, under the deep link too.
+    assert_eq!(confine(&mut model, prefix, &new), Confined::Denied);
+    // Directories that do not exist, or are not directories, are absent, under the deep link
+    // too: the failure is answered, with no path (#1459).
     model.add(&format!("/r/box/{}/file.txt", deep(5)), Node::File);
-    for relative in [
-        "missing/new.txt".to_owned(),
-        "q/missing/new.txt".to_owned(),
-        format!("q/{name}/missing/new.txt"),
-        format!("q/{name}/file.txt/x/new.txt"),
+    for (relative, absence) in [
+        ("missing/new.txt".to_owned(), Absence::Missing),
+        ("q/missing/new.txt".to_owned(), Absence::Missing),
+        (format!("q/{name}/missing/new.txt"), Absence::Missing),
+        (
+            format!("q/{name}/file.txt/x/new.txt"),
+            Absence::NotDirectory,
+        ),
     ] {
         assert_eq!(
             confine(&mut model, prefix, &relative),
-            Some(prefix.join(&relative)),
+            Confined::Absent(absence),
             "{relative}"
         );
         assert_eq!(
             confine(&mut ModelDefault(&mut model), prefix, &relative),
-            Some(prefix.join(&relative)),
+            Confined::Absent(absence),
             "default step: {relative}"
         );
     }
+    // The table of #1459, second row: the canonical directory is long (1011 bytes of the
+    // 1024 the host takes), the directory below it is missing and short, and the final
+    // component is long, so the canonical directory joined with the rest is past the limit.
+    // The answer is `NotFound`, not a path whose operation would fail on its length.
+    let long = format!("q/{name}/missing/{}", "L".repeat(150));
+    assert_eq!(
+        confine(&mut model, prefix, &long),
+        Confined::Absent(Absence::Missing)
+    );
     // A world that does not tell absence denies every directory that does not resolve.
     struct Silent<'a>(&'a mut Model);
     impl World for Silent<'_> {
@@ -999,11 +1287,11 @@ fn a_directory_past_the_host_path_limit_is_denied_1380() {
     }
     assert_eq!(
         confine(&mut Silent(&mut model), prefix, "missing/new.txt"),
-        None
+        Confined::Denied
     );
     assert_eq!(
         confine(&mut Silent(&mut model), prefix, "note.txt"),
-        Some(prefix.join("note.txt"))
+        Confined::Path(prefix.join("note.txt"))
     );
 }
 
@@ -1024,20 +1312,38 @@ fn a_directory_past_the_host_path_limit_is_denied_on_the_disk_1380() {
     std::os::unix::fs::symlink(root.join("outside"), below.join("esc")).unwrap();
     let relative = format!("{hops}{}/esc/secret.txt", deep(levels));
     if limited {
-        // The rule before #1380 opened the file outside the prefix.
-        let before = confine(&mut Before(&mut Disk), &on, &relative).unwrap();
-        assert_eq!(std::fs::read_to_string(before).unwrap(), "secret\n");
+        // The rule before #1380 left the operation the path as written, which opens the file
+        // outside the prefix; since #1459 that rule has no path to return.
+        assert_eq!(
+            confine(&mut Before(&mut Disk), &on, &relative),
+            Confined::Absent(Absence::Missing)
+        );
+        assert_eq!(
+            std::fs::read_to_string(lexical(&on, &relative)).unwrap(),
+            "secret\n"
+        );
     }
-    assert_eq!(confine(&mut Disk, &on, &relative), None, "{limited}");
-    assert_eq!(confine(&mut DiskDefault, &on, &relative), None, "{limited}");
     assert_eq!(
-        confine_quadratic(&mut Disk, &on, &relative),
-        None,
+        confine(&mut Disk, &on, &relative),
+        Confined::Denied,
         "{limited}"
     );
-    // A missing directory under a hop still leaves the path to the operation.
+    assert_eq!(
+        confine(&mut DiskDefault, &on, &relative),
+        Confined::Denied,
+        "{limited}"
+    );
+    assert_eq!(
+        confine_quadratic(&mut Disk, &on, &relative),
+        Confined::Denied,
+        "{limited}"
+    );
+    // A missing directory under a hop is absent: `NotFound`, with no path (#1459).
     let missing = "h/missing/new.txt";
-    assert_eq!(confine(&mut Disk, &on, missing), Some(on.join(missing)));
+    assert_eq!(
+        confine(&mut Disk, &on, missing),
+        Confined::Absent(Absence::Missing)
+    );
     // On macOS (1024 bytes) and Linux (the C library's limit: 4096 bytes with glibc, lower
     // with musl, #1456) the limit is reached;
     // other hosts may canonicalize longer paths, and then the link below is resolved and
@@ -1045,4 +1351,121 @@ fn a_directory_past_the_host_path_limit_is_denied_on_the_disk_1380() {
     if cfg!(any(target_os = "macos", target_os = "linux")) {
         assert!(limited);
     }
+}
+
+/// Builds under the directory `on` a directory whose canonical path is `length` bytes long,
+/// reached by the short path `a/b`: `a` is a link to its first component and `b`, there, a
+/// link to the rest. Returns the canonical directory.
+fn disk_long(on: &Path, length: usize) -> PathBuf {
+    let mut remaining = length - on.as_os_str().len();
+    let mut names = Vec::new();
+    while remaining > 202 {
+        names.push("N".repeat(200));
+        remaining -= 201;
+    }
+    names.push("N".repeat(remaining - 1));
+    let directory = on.join(names.join("/"));
+    assert_eq!(directory.as_os_str().len(), length);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::os::unix::fs::symlink(&names[0], on.join("a")).unwrap();
+    std::os::unix::fs::symlink(names[1..].join("/"), on.join(&names[0]).join("b")).unwrap();
+    directory
+}
+
+#[test]
+fn the_host_limit_cases_of_a_missing_directory_are_not_found_1459() {
+    // The table of #1459. Before it, a missing directory left the operation the path as
+    // written, and the operation's own failure decided the value: `Io` where that path had
+    // more links than the host follows in one lookup (`ELOOP`), although the directory was
+    // confirmed missing. Now confinement answers `NotFound` (`spec/14 §3` rule 2), the same
+    // value at a host limit as away from it, and the operation gets no path: neither the path
+    // as written nor the canonical directory joined with the rest, which is longer than the
+    // host takes in the last case and would fail with `Io` (`ENAMETOOLONG`).
+    let depth = 40;
+    let root = fresh("limit_cases");
+    disk_chain(&root, depth);
+    let on = root.join("box");
+    std::os::unix::fs::symlink(".", on.join("self")).unwrap();
+    let kind = |path: &Path| std::fs::read(path).unwrap_err().kind();
+    let mut changed = Vec::new();
+    for (link, tail) in [("l/", "missing/f"), ("self/", "missing/f")] {
+        for links in 0..=depth {
+            let relative = format!("{}{tail}", link.repeat(links));
+            let outcome = confine(&mut Disk, &on, &relative);
+            assert_eq!(
+                outcome,
+                confine_quadratic(&mut Disk, &on, &relative),
+                "{relative}"
+            );
+            assert_eq!(
+                outcome,
+                confine(&mut DiskDefault, &on, &relative),
+                "{relative}"
+            );
+            // Never a path: `NotFound`, or `Denied` where a host limit stops the resolution
+            // before the missing directory is confirmed (#1380).
+            assert!(
+                matches!(
+                    outcome,
+                    Confined::Absent(Absence::Missing) | Confined::Denied
+                ),
+                "{relative}: {outcome:?}"
+            );
+            // The value changes only where the path as written failed otherwise.
+            if outcome == Confined::Absent(Absence::Missing)
+                && kind(&lexical(&on, &relative)) != std::io::ErrorKind::NotFound
+            {
+                changed.push((link, links));
+            }
+        }
+    }
+    // Away from the limits the answer is the operation's, as before.
+    for links in 0..=30 {
+        for link in ["l/", "self/"] {
+            let relative = format!("{}missing/f", link.repeat(links));
+            assert_eq!(
+                confine(&mut Disk, &on, &relative),
+                Confined::Absent(Absence::Missing),
+                "{relative}"
+            );
+            assert!(!changed.contains(&(link, links)), "{relative}");
+        }
+    }
+    if cfg!(target_os = "macos") {
+        // 33 links: `realpath` resolves them and confirms the directory missing, while one
+        // lookup of the path as written fails with `ELOOP`, `Io` before.
+        assert_eq!(changed, [("l/", 33), ("self/", 33)]);
+    }
+    // A canonical directory of 897 bytes behind two links, a short missing directory and a
+    // final component of 150 bytes.
+    let long = fresh("limit_long").join("box");
+    std::fs::create_dir(&long).unwrap();
+    let directory = disk_long(&long, 897);
+    assert_eq!(std::fs::canonicalize(long.join("a/b")).unwrap(), directory);
+    let leaf = "L".repeat(150);
+    let relative = format!("a/b/missing/{leaf}");
+    for outcome in [
+        confine(&mut Disk, &long, &relative),
+        confine(&mut DiskDefault, &long, &relative),
+        confine_quadratic(&mut Disk, &long, &relative),
+    ] {
+        assert_eq!(outcome, Confined::Absent(Absence::Missing));
+    }
+    assert_eq!(
+        kind(&lexical(&long, &relative)),
+        std::io::ErrorKind::NotFound
+    );
+    if cfg!(target_os = "macos") {
+        // The canonical directory joined with the rest is 1056 bytes, past the 1024 the host
+        // takes: an operation on it would fail with `Io`.
+        let joined = directory.join("missing").join(&leaf);
+        assert_eq!(joined.as_os_str().len(), 1056);
+        assert_ne!(kind(&joined), std::io::ErrorKind::NotFound);
+    }
+    // A final component that does not exist in that directory is still left to the
+    // operation, in the canonical directory.
+    assert_eq!(
+        confine(&mut Disk, &long, "a/b/new.txt"),
+        Confined::Path(directory.join("new.txt"))
+    );
 }
