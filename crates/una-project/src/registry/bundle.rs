@@ -36,8 +36,9 @@
 //! lock's own point, the root version stored as a floor, the name's whole
 //! chain with its yanks and advisories, and the owner's keys. The release the client reads MUST
 //! be the lock's: its log index and digest. Only when every package verifies is anything
-//! written; then the source's checkpoint and root version are stored as its floors, through
-//! Itaoca's floor lock, so neither ever moves backwards. No
+//! written; then the source's root version and checkpoint are stored as its floors, through
+//! Itaoca's floor lock, so neither ever moves backwards, and a root-version floor that shows
+//! the root chain forked refuses the bundle before any package is written. No
 //! clock freshness is asked: the lock's digests and the proofs decide.
 //!
 //! **A bundle is a place.** Its listing commits to the entries it holds, not to the registry
@@ -58,7 +59,7 @@ use sha2::{Digest, Sha256};
 use super::{decimal, digest_hex, hex};
 use crate::client::{Floors, Omission, OpenError, Point, Registry, shown};
 use crate::content::check_path;
-use crate::itaoca::{Itaoca, registry_id};
+use crate::itaoca::{FloorRefusal, Itaoca, registry_id};
 use crate::provenance::{self, Expected, Floor};
 use crate::transport::{Fallback, Refusal, Transport, segments};
 use crate::tree::VerifiedTree;
@@ -519,6 +520,9 @@ impl From<Problem> for Failure {
     }
 }
 
+/// A root chain walked, each version with its digest ([`Registry::root_chain`]).
+type RootChain = Vec<(u64, String)>;
+
 /// The places behind a bundle's copy of a source: given the source's name, the transports of
 /// the other places that serve it, in their order, for the documents the copy omits.
 pub type Behind<'b> = dyn Fn(&str) -> Vec<Box<dyn Transport>> + 'b;
@@ -533,8 +537,9 @@ fn place_of(copy: &Memory, behind: &Behind<'_>) -> Fallback {
 /// `floors`, the checkpoint and the root version Itaoca stores (rules 35 to 39, no freshness),
 /// proves that the point extends the lock's ([`Registry::extends`]), and checks that each of
 /// those packages is the release the client reads there, by log index and digest, and that its
-/// name's yanks and advisories verify. Returns the checkpoint read and the last root version
-/// with its digest, to store as the source's floors; `Err` gives the package's index and the failure:
+/// name's yanks and advisories verify. Returns the checkpoint read and the root chain walked,
+/// each version with its digest, to store as the source's floors; `Err` gives the package's
+/// index and the failure:
 /// unavailable when no place serves a document it needs, from the client's typed records
 /// ([`OpenError::Unavailable`], [`Registry::take_omitted`]), never from a message.
 fn verify_source(
@@ -542,7 +547,7 @@ fn verify_source(
     behind: &Behind<'_>,
     expected: &[Expected],
     floors: &Floors<'_>,
-) -> Result<(String, u64, String), (usize, Failure)> {
+) -> Result<(String, RootChain), (usize, Failure)> {
     let place = place_of(copy, behind);
     let mut opened: Option<Registry<'_>> = None;
     for (index, package) in expected.iter().enumerate() {
@@ -588,17 +593,7 @@ fn verify_source(
         check_opened(registry, package).map_err(|failure| (index, failure))?;
     }
     opened
-        .map(|registry| {
-            let digest = registry
-                .last_root()
-                .map(|(_, digest)| digest.to_owned())
-                .unwrap_or_default();
-            (
-                registry.point.document.clone(),
-                registry.root.version,
-                digest,
-            )
-        })
+        .map(|registry| (registry.point.document.clone(), registry.root_chain()))
         .ok_or_else(|| {
             (
                 0,
@@ -663,7 +658,8 @@ pub struct Unbundled {
     /// The entries of the bundle that no locked package uses, or that this module does not
     /// store: documents of the per-name state, and packages the lock does not name.
     pub unused: Vec<String>,
-    /// Notes: a floor that could not be stored, which is never a failure.
+    /// Notes: a floor that could not be stored, which is not a failure, unless the stored
+    /// root-version floor shows that the root chain forked ([`unbundle`]).
     pub notes: Vec<String>,
 }
 
@@ -672,7 +668,14 @@ pub struct Unbundled {
 /// archive and provenance. Each source's copy is read as a place with the places `behind`
 /// gives behind it ([`Fallback`]), so a registry file the bundle lacks is an omission. `Err`
 /// gives the index of the package that failed, or none for the bundle itself, and the failure;
-/// then nothing is written.
+/// then no package and no provenance is written.
+///
+/// Each source's root-version floor is stored first, once everything verified and before any
+/// package: the store compares the chain walked with the floor as it is under Itaoca's floor
+/// lock, and a floor that holds one of its versions with another digest, stored by a run at the
+/// same time after this one read the floor, is a fork of the root chain, refused (U7010) with
+/// that stored floor kept. The root-version floor of a source compared before it stays stored:
+/// its chain verified.
 pub fn unbundle(
     bytes: &[u8],
     itaoca: &Itaoca,
@@ -699,7 +702,8 @@ pub fn unbundle(
     // Each source's copy, opened by the client at the lock's resolution point, against the
     // floor Itaoca stores: the releases are the lock's, and their names' states verify.
     // Each source's floors, kept under its registry's identity (`registry_id`, from the pin).
-    let mut floors: Vec<(Memory, Expected, String, u64, String)> = Vec::new();
+    let mut floors: Vec<(Memory, Expected, String)> = Vec::new();
+    let mut roots: Vec<(usize, &str, String, RootChain)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let sources: BTreeSet<&str> = expected.iter().map(|e| e.source.as_str()).collect();
     for source in sources {
@@ -741,9 +745,37 @@ pub fn unbundle(
                 .as_ref()
                 .and_then(|stored| stored.digest.as_deref()),
         };
-        let (document, version, digest) = verify_source(&copy, behind, expected, &stored)
+        let (document, chain) = verify_source(&copy, behind, expected, &stored)
             .map_err(|(index, failure)| (Some(index), failure))?;
-        floors.push((copy, package.clone(), document, version, digest));
+        roots.push((at, source, id, chain));
+        floors.push((copy, package.clone(), document));
+    }
+    // The root-version floors, before anything else is written: the walk above compared each
+    // chain with the floor read with no lock, and the store compares it again with the floor as
+    // it is under the lock.
+    for (at, source, id, chain) in &roots {
+        let chain: Vec<(u64, &str)> = chain
+            .iter()
+            .map(|(version, digest)| (*version, digest.as_str()))
+            .collect();
+        match itaoca.store_root_chain(id, &chain) {
+            Ok(()) => {}
+            Err(FloorRefusal::Forked {
+                version,
+                held,
+                offered,
+            }) => {
+                return Err((
+                    Some(*at),
+                    Failure::Refused(format!(
+                        "the bundle's copy of `{source}` holds root version {version} with the digest {offered}, and another digest is held for the same root version, {held}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca"
+                    )),
+                ));
+            }
+            Err(FloorRefusal::NotStored(why)) => notes.push(format!(
+                "note: the root version of `{source}` was not stored as its floor: {why}"
+            )),
+        }
     }
     let mut stored = Vec::new();
     for (index, (package, packed)) in expected.iter().zip(&verified).enumerate() {
@@ -767,10 +799,11 @@ pub fn unbundle(
             })?;
         stored.push(format!("{} {}", package.name, package.version));
     }
-    // Through Itaoca's floor API, under its lock, each only forward (rule 39); the stored floor
-    // is proven consistent again against the copy, opened anew. A floor that cannot be stored is
-    // a note, never a failure: the packages are stored and verified already.
-    for (copy, package, document, version, digest) in &floors {
+    // The checkpoints, through Itaoca's floor API, under its lock, each only forward (rule 39);
+    // the stored floor is proven consistent again against the copy, opened anew. A checkpoint
+    // that cannot be stored is a note, never a failure: the packages are stored and verified
+    // already.
+    for (copy, package, document) in &floors {
         let source = &copy.source;
         let id = registry_id(&package.root);
         let point = Point::At {
@@ -791,11 +824,6 @@ pub fn unbundle(
                 "note: the checkpoint of `{source}` was not stored as its floor: {}",
                 error.message()
             )),
-        }
-        if let Err(why) = itaoca.store_root_version(&id, *version, digest) {
-            notes.push(format!(
-                "note: the root version of `{source}` was not stored as its floor: {why}"
-            ));
         }
     }
     let unused = read

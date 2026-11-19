@@ -1241,6 +1241,17 @@ impl<'t> Registry<'t> {
             .map(|(root, digest)| (root.version, digest.as_str()))
     }
 
+    /// The root chain walked, from the pinned version to the last, each version with its
+    /// digest, `sha256:` and hex: what [`crate::itaoca::Itaoca::store_root_chain`] compares with
+    /// the stored floor, under its lock, before it stores the last version. O(R).
+    pub fn root_chain(&self) -> Vec<(u64, String)> {
+        self.begin();
+        self.chain
+            .iter()
+            .map(|(root, digest)| (root.version, digest.clone()))
+            .collect()
+    }
+
     /// A failure because what was served does not verify (U7010), one sentence naming the
     /// registry; it is recorded as the last failure.
     fn refuse(&self, why: impl std::fmt::Display) -> Refusal {

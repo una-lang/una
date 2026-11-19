@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use una_diag::Code;
 use una_project::ProjectError;
 use una_project::client::{Failure, Floors, LoggedRelease, OpenError, Point, Registry};
-use una_project::itaoca::Itaoca;
+use una_project::itaoca::{FloorRefusal, Itaoca};
 use una_project::mirrors::{self, Attempt, Mirrors};
 use una_project::transport::{self, Location, Transport};
 use una_syntax::ita;
@@ -253,7 +253,11 @@ pub(crate) fn declared<'m>(read: &'m ita::Manifest, name: &str) -> Option<&'m it
 /// highest root version accepted. For a resolution, the point must also extend `lock_floor`,
 /// the resolution point of the lock it replaces, by its size and root hash. The floors are
 /// stored as soon as the point is accepted, whatever the command then writes; a floor that
-/// cannot be stored is a note, never a failure. Returns the registry and its notes.
+/// cannot be stored is a note, never a failure, with one exception: when the root-version
+/// floor, read again under its lock, holds a version of the chain walked with another digest
+/// (a run at the same time stored it after this one read the floor), the root chain forked,
+/// and the place is refused (U7010) before its checkpoint is stored. Returns the registry and
+/// its notes.
 pub(crate) fn open<'t>(
     source: &ita::Source,
     transport: &'t dyn Transport,
@@ -305,19 +309,37 @@ pub(crate) fn open<'t>(
     }
     if let Some(itaoca) = itaoca {
         let document = registry.point.document.clone();
-        let version = accepted_root_version(&registry);
-        let digest = accepted_root_digest(&registry);
+        // The root version first: the walk compared the chain with the floor read above, with
+        // no lock, and the store compares it again with the floor as it is under the lock. A
+        // chain that forked from the one another run stored meanwhile is refused here, before
+        // its checkpoint can become a floor.
+        let chain = registry.root_chain();
+        let chain: Vec<(u64, &str)> = chain
+            .iter()
+            .map(|(version, digest)| (*version, digest.as_str()))
+            .collect();
+        let root_note = match itaoca.store_root_chain(&id, &chain) {
+            Ok(()) => None,
+            Err(FloorRefusal::Forked {
+                version,
+                held,
+                offered,
+            }) => {
+                return Err(OpenError::Refused(format!(
+                    "the registry `{name}` serves root version {version} with the digest {offered}, and another digest is held for the same root version, {held}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca"
+                )));
+            }
+            Err(FloorRefusal::NotStored(why)) => Some(format!(
+                "note: the root version of `{name}` was not stored as its floor: {why}"
+            )),
+        };
         let mut consistent = |stored: &str| registry.consistent_with(stored);
         if let Err(why) = itaoca.store_checkpoint(&id, &document, &mut consistent) {
             notes.push(format!(
                 "note: the checkpoint of `{name}` was not stored as its floor: {why}"
             ));
         }
-        if let Err(why) = itaoca.store_root_version(&id, version, &digest) {
-            notes.push(format!(
-                "note: the root version of `{name}` was not stored as its floor: {why}"
-            ));
-        }
+        notes.extend(root_note);
     }
     Ok((registry, notes))
 }

@@ -16,7 +16,7 @@
 //!   root version the client accepted (with the digest of that root metadata, [`RootFloor`]),
 //!   each replaced only by a larger one (a root-version floor of the earlier form, the version
 //!   alone, also takes the digest of its own version) under the kernel-held lock of
-//!   `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`], [`Itaoca::store_root_version`]).
+//!   `registry/<id>/floor.lock` ([`Itaoca::store_checkpoint`], [`Itaoca::store_root_chain`]).
 //!
 //! The root itself must not be a symbolic link; what lies above it is the user's choice. A
 //! package is verified on every load, not once: its files are read again as [`crate::tree`]
@@ -375,46 +375,139 @@ impl Itaoca {
 
     /// Stores `version`, a root version the client accepted for the registry `id`, with
     /// `digest`, the digest of that root metadata (`sha256:` and hex), as the floor of its root
-    /// chain: under the floor lock, the floor stored is read again and replaced only when
-    /// `version` is higher, or when it is equal and the stored floor is of the earlier form,
-    /// the version alone, which then takes `digest` (`spec/30 §14`, Floors). A lower version is
-    /// not stored. An equal version with the same digest leaves the floor as it is; with
-    /// another digest it is never stored, and is refused as a fork of the root chain.
+    /// chain: [`Itaoca::store_root_chain`] of that one version. A caller that walked a root
+    /// chain passes the whole chain to [`Itaoca::store_root_chain`] instead, so a stored floor
+    /// of a lower version is compared too.
+    pub fn store_root_version(
+        &self,
+        id: &str,
+        version: u64,
+        digest: &str,
+    ) -> Result<(), FloorRefusal> {
+        self.store_root_chain(id, &[(version, digest)])
+    }
+
+    /// Stores the last version of `chain` as the floor of the root chain of the registry `id`.
+    /// `chain` is the root versions the client walked and verified, in rising order, each with
+    /// the digest of its root metadata (`sha256:` and hex). Under the floor lock, the floor
+    /// stored is read again, whatever the caller read before its walk, and:
     ///
-    /// The caller passes only the last version of a root chain it walked and verified from the
-    /// pin, each version under the threshold of the keys of the one before it, against the
-    /// floor it read (`Registry::open_with`): a floor of the earlier form records the digest on
-    /// that first verified walk at its version, and from then on every load compares by digest.
-    pub fn store_root_version(&self, id: &str, version: u64, digest: &str) -> Result<(), Refusal> {
-        let floor = RootFloor {
+    /// - when `chain` holds the stored floor's version and the floor holds a digest, the two
+    ///   digests must be equal: another digest is [`FloorRefusal::Forked`], and the stored
+    ///   floor is kept as it is (`spec/30 §14`, Floors);
+    /// - else the floor is replaced only when the last version is higher, or when it is equal
+    ///   and the stored floor is of the earlier form, the version alone, which then takes the
+    ///   digest. A lower last version is not stored, and an equal one with the same digest
+    ///   leaves the floor as it is.
+    ///
+    /// Any other failure (a digest that is not one, versions out of order, the lock, the file
+    /// system) is [`FloorRefusal::NotStored`], which says nothing about the chain.
+    ///
+    /// The caller passes only a chain it walked and verified from the pin, each version under
+    /// the threshold of the keys of the one before it (`Registry::open_with`). That walk
+    /// compares against the floor it read without the lock, so a run that stores a floor
+    /// between that read and this store is seen only here: the comparison under the lock is
+    /// what makes two runs at once agree on one root metadata per version.
+    ///
+    /// Across processes: the read, the comparison and the write happen while this process holds
+    /// the kernel's exclusive advisory lock on `registry/<id>/floor.lock`, so no two stores
+    /// that take the lock interleave, and the write is a fresh file renamed onto the name, so a
+    /// reader, which takes no lock, sees the earlier floor or the new one whole. A store that
+    /// cannot take the lock (a file system without locks, or a holder for five seconds) writes
+    /// nothing and compares nothing; a program that writes the file without the lock is not
+    /// excluded. O(R) for the R versions of `chain`.
+    pub fn store_root_chain(&self, id: &str, chain: &[(u64, &str)]) -> Result<(), FloorRefusal> {
+        let not_stored =
+            |why: String| FloorRefusal::NotStored(format!("cannot store the root version: {why}"));
+        let Some(&(version, digest)) = chain.last() else {
+            return Err(not_stored("no root version was walked".to_owned()));
+        };
+        if !chain
+            .iter()
+            .zip(chain.iter().skip(1))
+            .all(|(low, high)| low.0 < high.0)
+        {
+            return Err(not_stored(
+                "the root versions walked are not in rising order".to_owned(),
+            ));
+        }
+        if let Some((_, other)) = chain.iter().find(|(_, digest)| !is_digest(digest)) {
+            return Err(not_stored(format!("`{other}` is not a digest")));
+        }
+        let line = RootFloor {
             version,
             digest: Some(digest.to_owned()),
-        };
-        let line = floor
-            .line()
-            .ok_or_else(|| format!("cannot store the root version: `{digest}` is not a digest"))?;
-        self.locked(id, || {
+        }
+        .line()
+        .ok_or_else(|| not_stored(format!("{version} is not a root version")))?;
+        let stored = self.locked(id, || {
             if let Some(stored) = self.load_root_version(id)? {
-                if stored.version > version {
-                    return Ok(());
-                }
-                if stored.version == version {
-                    match stored.digest.as_deref() {
-                        // The earlier form, the version alone: it takes the digest below.
-                        None => {}
-                        Some(held) if held == digest => return Ok(()),
-                        Some(held) => {
-                            return Err(format!(
-                                "cannot store the root version: root version {version} was accepted with the digest {held}, not {digest}, so its root chain forked; the floor is kept"
-                            ));
-                        }
+                // What the chain holds at the floor's version, against what was accepted there.
+                let walked = chain
+                    .iter()
+                    .find(|(walked, _)| *walked == stored.version)
+                    .map(|(_, digest)| *digest);
+                if let (Some(held), Some(offered)) = (stored.digest.as_deref(), walked) {
+                    if held != offered {
+                        return Ok(Err(FloorRefusal::Forked {
+                            version: stored.version,
+                            held: held.to_owned(),
+                            offered: offered.to_owned(),
+                        }));
                     }
+                    if stored.version == version {
+                        return Ok(Ok(()));
+                    }
+                }
+                // A higher floor is kept. An equal one is here only of the earlier form, the
+                // version alone, and takes the digest below.
+                if stored.version > version {
+                    return Ok(Ok(()));
                 }
             }
             let parent = tree::make_dirs(&self.root, &["registry", id])?;
-            tree::store_file(&parent, "root-version", line.as_bytes(), true)
-                .map_err(|refusal| format!("cannot store the root version: {refusal}"))
-        })
+            tree::store_file(&parent, "root-version", line.as_bytes(), true)?;
+            Ok(Ok(()))
+        });
+        stored.map_err(not_stored)?
+    }
+}
+
+/// Why a root-version floor was not stored ([`Itaoca::store_root_chain`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FloorRefusal {
+    /// The floor stored holds `version` with the digest `held`, and the chain offered holds
+    /// that version with the digest `offered`: another digest is held for the same root
+    /// version, which is refused as a fork of the root chain (U7010 where a command reports
+    /// it). The digest is of the whole signed root metadata, its signature lines included, so
+    /// two digests do not by themselves show two different root texts. The stored floor is
+    /// kept as it is.
+    Forked {
+        /// The root version both hold.
+        version: u64,
+        /// The digest the stored floor holds for it.
+        held: String,
+        /// The digest the chain offered holds for it.
+        offered: String,
+    },
+    /// The floor could not be stored, for a reason that says nothing about the chain: what was
+    /// offered is not a floor, or the lock or the file system failed. Nothing was written.
+    NotStored(Refusal),
+}
+
+impl FloorRefusal {
+    /// The sentence that says why.
+    pub fn message(&self) -> String {
+        match self {
+            FloorRefusal::Forked {
+                version,
+                held,
+                offered,
+            } => format!(
+                "another digest is held for the same root version: root version {version} was accepted with the digest {held}, not {offered}; the floor is kept"
+            ),
+            FloorRefusal::NotStored(why) => why.clone(),
+        }
     }
 }
 
@@ -431,7 +524,7 @@ pub struct RootFloor {
     pub version: u64,
     /// `sha256:` and the lowercase hex of the root metadata of that version, or `None` for a
     /// floor of the earlier form, the version alone, which is compared by version only until a
-    /// verified walk at that version stores its digest ([`Itaoca::store_root_version`]).
+    /// verified walk at that version stores its digest ([`Itaoca::store_root_chain`]).
     pub digest: Option<String>,
 }
 
