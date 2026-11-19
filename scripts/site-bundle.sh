@@ -92,8 +92,10 @@ for command in $commands; do
 done
 
 # --- The documents: the root documents, the guides, the specification, the ADRs, the release's
-# validation summary (#717), the security advisories (#649), the explain pages, the examples and the
-# standard library listing (docs/std/, #648), each with its kind. Only files that git tracks.
+# validation summary (#717), the release notes of every release (docs/release-notes/, #2134, kind
+# `notes`, titled `Una <version>` by their first line), the security advisories (#649), the explain
+# pages, the examples and the standard library listing (docs/std/, #648), each with its kind. Only
+# files that git tracks.
 files=$(
     {
         for f in README.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md CHANGELOG.md docs/00-charter.md; do
@@ -103,6 +105,7 @@ files=$(
         git ls-files 'docs/spec/*.md' | sed 's/^/spec /'
         git ls-files 'docs/adr/*.md' | grep -v '/0000-template\.md$' | sed 's/^/adr /'
         git ls-files "docs/validation/$version.md" | sed 's/^/release /'
+        git ls-files 'docs/release-notes/*.md' | sed 's/^/notes /'
         git ls-files docs/security/advisories.md | sed 's/^/security /'
         git ls-files 'crates/una-explain/explain/U*.md' | sed 's/^/explain /'
         git ls-files examples | sed 's/^/example /'

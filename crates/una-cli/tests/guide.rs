@@ -9,7 +9,8 @@
 //! Each example package's `README.md` holds only such `sh` blocks and `text` blocks, each of
 //! which names what it shows: a command's output or an excerpt of a file of the package (#586,
 //! #827). Every repository path that a guide writes in inline code names a file or directory
-//! of the repository (#651).
+//! of the repository (#651). The release notes (`docs/release-notes/`, #2134) are checked the same
+//! way: each example of every release's notes, and that the workspace's version has its notes.
 //! Tier 1 needs Z3 at the version of `verification.lock` on the path.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -2076,4 +2077,378 @@ fn every_repository_path_in_the_guides_exists() {
         }
     }
     assert!(checked > 0, "no repository path found in docs/guide");
+}
+
+/// The directory of the release notes, one file per release (#2134).
+const RELEASE_NOTES: &str = "docs/release-notes";
+
+/// The `##` headings of a release's notes, in their order (`docs/release-gates.md` §4).
+const NOTES_PARTS: [&str; 4] = [
+    "## Highlights",
+    "## Changes that may need an edit",
+    "## Security",
+    "## Platforms",
+];
+
+/// The workspace's version, as `Cargo.toml` writes it.
+fn workspace_version() -> String {
+    let manifest = std::fs::read_to_string(repository().join("Cargo.toml")).unwrap();
+    manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("Cargo.toml names the workspace's version")
+        .to_owned()
+}
+
+/// The versions that have notes, from the file names of [`RELEASE_NOTES`], sorted.
+fn noted_versions() -> Vec<String> {
+    let directory = std::fs::read_dir(repository().join(RELEASE_NOTES));
+    assert!(directory.is_ok(), "{RELEASE_NOTES} is missing");
+    let mut versions: Vec<String> = directory
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .map(|name| {
+            let version = name.strip_suffix(".md");
+            assert!(
+                version.is_some(),
+                "{RELEASE_NOTES}/{name}: a notes file is <version>.md"
+            );
+            version.unwrap().to_owned()
+        })
+        .collect();
+    versions.sort();
+    versions
+}
+
+/// Checks the package whose files are `files`, written to `dir`: clean and canonical, or
+/// failing with only the code that a leading `-- fails with` line of one of its modules names.
+fn check_notes_package(path: &str, dir: &Path, files: &[&Block]) {
+    let at = files[0].line;
+    complete(dir, "0.2");
+    let (_, found) = check(dir);
+    let fails = files
+        .iter()
+        .filter(|file| file.kind() == "una")
+        .find_map(|file| directives(&file.body).0);
+    if let Some(code) = fails {
+        assert!(
+            !found.is_empty() && found.iter().all(|f| f.starts_with(code)),
+            "{path}, package at line {at}: expected only {code}, found {found:?}"
+        );
+        return;
+    }
+    assert_eq!(found, Vec::<String>::new(), "{path}, package at line {at}");
+    let output = canonical(dir);
+    assert!(
+        output.status.success(),
+        "{path}, package at line {at} is not canonical: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// Checks every block of the notes of `version`, and returns how many modules and packages
+/// were checked, how many outputs and file excerpts were compared, and how many outputs are
+/// pinned to another release and were not run.
+///
+/// The blocks are read in order. A `una` block is a whole module, of the edition its
+/// `-- edition` line names, and blocks after file paths form a package; each checks clean and
+/// canonical, or fails with only the code of its `-- fails with` line, and is the code of the
+/// commands after it. A `sh` block shows commands to the reader: each `una ARGS` line is
+/// followed by the `text una="ARGS"` block of what it prints, and any other line is a line of
+/// `README.md`, such as the install command, which is not run. A `text` block names what it
+/// shows: `file="PATH"`, an excerpt of a file of the repository, or `una="ARGS"`, an anchored
+/// excerpt of what `una --color never ARGS` prints in the code before it (an empty directory
+/// when there is none), or in a copy of the directory of `in="DIR"`: standard error of a `check`, which must reject the code, the
+/// `serving on` lines of a `run` of a package with a `serve` grant, else standard output of a
+/// command that exits with 0. A development build's last line of `--version` is left out.
+/// `release="X.Y.Z"` beside `una` is the marker of an output that only that release prints:
+/// it stands only in the notes of that release, is compared when `una` is that release, and
+/// is counted as not run otherwise. No other block, attribute or fence is accepted.
+fn check_release_notes(version: &str, base: usize) -> [usize; 3] {
+    let path = format!("{RELEASE_NOTES}/{version}.md");
+    let root = repository();
+    let text = std::fs::read_to_string(root.join(&path)).unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    for (number, line) in text.lines().enumerate() {
+        let fence = line.trim_start();
+        assert!(
+            !(fence.starts_with("~~~") || (fence.starts_with("```") && fence.len() != line.len())),
+            "{path}, line {}: a fence of tildes, or an indented fence, is not read; write ``` at the start of the line",
+            number + 1
+        );
+    }
+    let all = blocks(&text);
+    let mut counted = [0; 3];
+    // The directory of the code that the next commands run in.
+    let mut code: Option<PathBuf> = None;
+    // The `una ARGS` lines of the last `sh` block that no `text` block has shown yet.
+    let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut index = 0;
+    while index < all.len() {
+        let block = &all[index];
+        let at = block.line;
+        if let Some(number) = block.package {
+            assert!(
+                pending.is_empty(),
+                "{path}, line {at}: no output shown for `una {}`",
+                pending[0]
+            );
+            let files: Vec<&Block> = all[index..]
+                .iter()
+                .take_while(|file| file.package == Some(number))
+                .collect();
+            let dir = scratch(base + at);
+            for file in &files {
+                let target = dir.join(file.path.as_deref().unwrap());
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(&target, &file.body).unwrap();
+            }
+            check_notes_package(&path, &dir, &files);
+            index += files.len();
+            code = Some(dir);
+            counted[0] += 1;
+            continue;
+        }
+        index += 1;
+        let attributes = block.attributes();
+        assert!(
+            attributes.is_ok(),
+            "{path}, block at line {at}: {}",
+            attributes.unwrap_err()
+        );
+        let attributes = attributes.unwrap();
+        let value = |wanted: &str| {
+            attributes
+                .iter()
+                .find(|(key, _)| *key == wanted)
+                .map(|(_, value)| *value)
+        };
+        assert!(
+            ["una", "sh", "text"].contains(&block.kind()),
+            "{path}, block at line {at}: a `{}` block is not checked",
+            block.lang
+        );
+        if block.kind() != "text" {
+            assert!(
+                pending.is_empty(),
+                "{path}, line {at}: no output shown for `una {}`",
+                pending[0]
+            );
+            assert!(attributes.is_empty(), "{path}, block at line {at}");
+        }
+        match block.kind() {
+            "una" => {
+                let (fails, edition) = directives(&block.body);
+                let dir = scratch(base + at);
+                let file = dir.join(module_file(&block.body));
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(&file, &block.body).unwrap();
+                complete(&dir, edition);
+                let (_, found) = check(&dir);
+                match fails {
+                    Some(code) => assert!(
+                        !found.is_empty() && found.iter().all(|f| f.starts_with(code)),
+                        "{path}, block at line {at}: expected only {code}, found {found:?}"
+                    ),
+                    None => {
+                        assert_eq!(found, Vec::<String>::new(), "{path}, block at line {at}");
+                        let output = canonical(&dir);
+                        assert!(
+                            output.status.success(),
+                            "{path}, block at line {at} is not canonical: {}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
+                    }
+                }
+                code = Some(dir);
+                counted[0] += 1;
+            }
+            "sh" => {
+                for line in block.body.lines().filter(|line| !line.trim().is_empty()) {
+                    match line.strip_prefix("una ") {
+                        Some(args) => pending.push_back(args.trim().to_owned()),
+                        None => assert!(
+                            readme.lines().any(|have| have == line),
+                            "{path}, block at line {at}: `{line}` is neither a `una` command nor a line of README.md"
+                        ),
+                    }
+                }
+            }
+            "text" => {
+                if let Some(file) = value("file") {
+                    assert_eq!(attributes.len(), 1, "{path}, block at line {at}");
+                    let whole = std::fs::read_to_string(root.join(file));
+                    assert!(whole.is_ok(), "{path}, block at line {at}: no file {file}");
+                    let whole = whole.unwrap();
+                    assert!(
+                        is_excerpt(&block.body, &whole, false),
+                        "{path}, block at line {at}: not an excerpt of {file}"
+                    );
+                    counted[1] += 1;
+                    continue;
+                }
+                let args = value("una");
+                assert!(
+                    args.is_some(),
+                    "{path}, block at line {at}: a `text` block names what it shows, file=\"PATH\" or una=\"ARGS\""
+                );
+                let args = args.unwrap();
+                for (key, _) in &attributes {
+                    assert!(
+                        ["una", "in", "release"].contains(key),
+                        "{path}, block at line {at}: no attribute `{key}`"
+                    );
+                }
+                assert_eq!(
+                    pending.pop_front().as_deref(),
+                    Some(args),
+                    "{path}, block at line {at}: the `sh` block before it shows another command"
+                );
+                if let Some(release) = value("release") {
+                    assert_eq!(
+                        release, version,
+                        "{path}, block at line {at}: only the notes of {release} pin an output to it"
+                    );
+                    if release != env!("CARGO_PKG_VERSION") {
+                        counted[2] += 1;
+                        continue;
+                    }
+                }
+                let dir = match value("in") {
+                    Some(dir) => {
+                        let copy = scratch(base + at).join(Path::new(dir).file_name().unwrap());
+                        copy_dir(&root.join(dir), &copy);
+                        copy
+                    }
+                    None => code.clone().unwrap_or_else(|| scratch(base + at)),
+                };
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let serves = std::fs::read_to_string(dir.join("ita.una"))
+                    .is_ok_and(|manifest| manifest.contains("    serve \""));
+                if words[0] == "run" && serves {
+                    let (code, written) = serve(&dir, &words[2..], &format!("{path}:{at}"));
+                    assert_eq!(code, Some(0), "{path}, block at line {at}");
+                    assert_eq!(
+                        written, block.body,
+                        "{path}, block at line {at}: what `una {args}` writes"
+                    );
+                    counted[1] += 1;
+                    continue;
+                }
+                let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                    .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                    .env_remove("UNA_PROOF_KEY")
+                    .args(["--color", "never"])
+                    .args(&words)
+                    .current_dir(&dir)
+                    .output()
+                    .unwrap();
+                let printed = if words[0] == "check" {
+                    assert!(
+                        !output.status.success(),
+                        "{path}, block at line {at}: `una {args}` accepts the code"
+                    );
+                    String::from_utf8_lossy(&output.stderr).into_owned()
+                } else {
+                    assert!(
+                        output.status.success(),
+                        "{path}, block at line {at}: `una {args}` fails: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                    match stdout.strip_suffix("development build\n") {
+                        Some(release) if words == ["--version"] => release.to_owned(),
+                        _ => stdout,
+                    }
+                };
+                assert!(
+                    is_excerpt(&block.body, &printed, true),
+                    "{path}, block at line {at}: not an excerpt of what `una {args}` prints:\n{}\nIt prints:\n{printed}",
+                    block.body
+                );
+                counted[1] += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        pending.is_empty(),
+        "{path}: no output shown for `una {}`",
+        pending[0]
+    );
+    counted
+}
+
+#[test]
+fn the_workspace_version_has_its_release_notes() {
+    // #2134, `docs/release-gates.md` §4: the release pull request, which sets the version,
+    // adds the notes of that version.
+    let version = workspace_version();
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    assert!(
+        repository()
+            .join(RELEASE_NOTES)
+            .join(format!("{version}.md"))
+            .is_file(),
+        "{RELEASE_NOTES}/{version}.md is missing: the release pull request adds the notes of its version"
+    );
+}
+
+#[test]
+fn every_release_note_has_the_parts_of_the_format() {
+    // #2134: the website renders the notes by this format (una#2133). The first line is the
+    // title, `# Una <version>`; the `##` headings are those of `NOTES_PARTS`, in their order;
+    // the last line links the full list in `CHANGELOG.md`, which has the release's section.
+    let changelog = std::fs::read_to_string(repository().join("CHANGELOG.md")).unwrap();
+    let versions = noted_versions();
+    assert!(!versions.is_empty(), "{RELEASE_NOTES} holds no notes");
+    for version in &versions {
+        let path = format!("{RELEASE_NOTES}/{version}.md");
+        let text = std::fs::read_to_string(repository().join(&path)).unwrap();
+        assert_eq!(
+            text.lines().next(),
+            Some(format!("# Una {version}").as_str()),
+            "{path}: the first line"
+        );
+        // The headings outside the code blocks.
+        let mut inside = false;
+        let mut parts = Vec::new();
+        for line in text.lines() {
+            if line.starts_with("```") {
+                inside = !inside;
+            } else if !inside && line.starts_with("## ") {
+                parts.push(line);
+            }
+        }
+        assert_eq!(parts, NOTES_PARTS, "{path}: the `##` headings");
+        let last = text.lines().last().unwrap();
+        assert!(
+            last.contains("](../../CHANGELOG.md)") && last.contains(&format!("`v{version}`")),
+            "{path}: the last line links the `v{version}` section of CHANGELOG.md"
+        );
+        assert!(
+            changelog
+                .lines()
+                .any(|line| line == format!("## v{version}")),
+            "{path}: CHANGELOG.md has no `## v{version}` section"
+        );
+    }
+}
+
+#[test]
+fn every_example_of_the_release_notes_is_checked() {
+    // #2134: the notes of every release are checked with this `una`, as the guides are; the
+    // notes of the workspace's version pin no output to a release, so each one they show is
+    // compared, and they show at least one.
+    let current = workspace_version();
+    for (index, version) in noted_versions().iter().enumerate() {
+        let [_, shown, pinned] = check_release_notes(version, 6_000_000 + index * 100_000);
+        if *version == current {
+            assert!(
+                shown > 0 && pinned == 0,
+                "{RELEASE_NOTES}/{version}.md: {shown} outputs compared, {pinned} not run"
+            );
+        }
+    }
 }
