@@ -76,8 +76,16 @@ reactor::tests::own_stop_with_the_handlers_installed
 runtime::tests::a_cancellation_from_another_thread_scenario
 runtime::tests::a_cancellation_from_another_thread_stops_the_next_check
 runtime::tests::a_program_with_tasks_starts_every_thread_before_main
+runtime::tests::a_refused_step_announces_nothing
+runtime::tests::a_refused_step_announces_nothing_scenario
+runtime::tests::a_step_between_the_reads_of_a_pass_is_never_missed
+runtime::tests::a_step_between_the_reads_of_a_pass_scenario
 runtime::tests::a_table_the_build_did_not_foresee_faults_at_its_site
 runtime::tests::a_table_the_build_did_not_foresee_scenario
+runtime::tests::refused_steps_never_fail_the_steps_of_sibling_threads
+runtime::tests::refused_steps_never_fail_the_steps_of_sibling_threads_scenario
+runtime::tests::steps_that_fit_only_one_at_a_time_are_never_accepted_together
+runtime::tests::steps_that_fit_only_one_at_a_time_scenario
 runtime::tests::the_checks_scaling_scenario
 runtime::tests::the_checks_take_the_fast_path_at_every_size_and_depth
 runtime::tests::the_depth_limit_fires_at_its_exact_call
