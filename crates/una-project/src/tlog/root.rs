@@ -22,8 +22,11 @@
 //!
 //! Each threshold is at least 1 and at most the number of keys after it, and no key name or
 //! key appears twice. Its digest, which `sources` pins and the lock records, is `sha256:` and the
-//! hex SHA-256 of the whole signed note. Costs: one pass to parse, and one verification per
-//! signature line per key tried.
+//! hex SHA-256 of the whole signed note. The root-version floor holds another digest, of the
+//! note's text alone ([`text_digest`]): a note's signature lines can be changed by whoever serves
+//! it, with no key, and what is stored from one place must compare equal for every form of one
+//! root text (ADR 0122, amendment of 2026-11-19). Costs: one pass to parse, and one verification
+//! per signature line per key tried.
 
 use sha2::{Digest, Sha256};
 
@@ -63,8 +66,11 @@ pub struct Root {
     pub security: Keys,
     /// The keys of Itaúna, the official set (rule 38.1).
     pub itauna: Keys,
-    /// The digest of the document.
+    /// The digest of the document, the whole signed note.
     pub digest: String,
+    /// The digest of the note's text alone, without its signature lines ([`text_digest`]): what
+    /// a root-version floor holds and is compared by.
+    pub text_digest: String,
 }
 
 /// The digest of a root metadata document.
@@ -75,6 +81,15 @@ pub fn digest(document: &str) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// The digest of the text of the root metadata `document`, `sha256:` and the hex SHA-256 of the
+/// bytes its signature lines sign, up to and including the line feed before the blank line: the
+/// digest a root-version floor holds (`spec/30 §14`, Floors; ADR 0122, amendment of 2026-11-19).
+/// Every note of one text has it, whatever its signature lines. `Err` when `document` is not a
+/// signed note. It verifies nothing: the caller compares it only for a note it walked.
+pub fn text_digest(document: &str) -> Result<String, String> {
+    Ok(digest(&parse_note(document)?.text))
 }
 
 /// Reads root metadata from a document, without verifying its signatures.
@@ -193,6 +208,7 @@ fn parse(document: &str) -> Result<(Root, Note), String> {
             security,
             itauna,
             digest: digest(document),
+            text_digest: digest(&note.text),
         },
         note,
     ))

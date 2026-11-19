@@ -20,7 +20,7 @@ use una_project::tlog::map::{Head, build_tiles};
 use una_project::tlog::merkle::{Hash, leaf_hash, root as tree_root};
 use una_project::tlog::note::{Key, encode_base64};
 use una_project::tlog::owner::{chain_name as owner_chain, fingerprint};
-use una_project::tlog::root::digest;
+use una_project::tlog::root::{digest, text_digest};
 use una_project::tlog::tile::{WIDTH, entries_path, tile_path};
 
 /// A signing key and its public key, from a seed.
@@ -758,6 +758,26 @@ impl TestRegistry {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, bytes).unwrap();
         }
+    }
+}
+
+/// One root version of a walked chain, for the root-version floor's store, from a made-up
+/// `digest` that stands for both the digest of its text and the digest of its whole note.
+pub fn walked(version: u64, digest: &str) -> una_project::itaoca::WalkedRoot {
+    una_project::itaoca::WalkedRoot {
+        version,
+        text: digest.to_owned(),
+        note: digest.to_owned(),
+    }
+}
+
+/// The root metadata `document` of `version` as one version of a walked chain: the digest of
+/// its text, which the floor stores, and the digest of its whole signed note.
+pub fn walked_root(version: u64, document: &str) -> una_project::itaoca::WalkedRoot {
+    una_project::itaoca::WalkedRoot {
+        version,
+        text: text_digest(document).unwrap(),
+        note: digest(document),
     }
 }
 
