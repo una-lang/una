@@ -1180,6 +1180,88 @@ fn unbundling_respects_the_root_version_floor() {
     assert!(store.load_checkpoint(&id).unwrap().is_none());
 }
 
+/// A run at the same time stores the root-version floor after the unbundling read it and before
+/// the unbundling stores its own (#2099, `spec/30 §14`, Floors). The places behind the bundle
+/// are asked for only after the floors are read, so storing from there is that other run,
+/// deterministically. With another digest at the version the bundle's chain holds, the
+/// unbundling holds two root metadata of one version: refused (U7010) as a fork, at the
+/// source's first package, with the other run's floor kept and no package, provenance or
+/// checkpoint written. With the same digest, it unbundles, with no note.
+#[test]
+fn unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root() {
+    let b = bundled();
+    let id = registry_id(&b.expected.root);
+    let bytes = bundle_of(&b, &b.archive, &b.provenance, &b.files);
+    let first = una_project::tlog::root::digest(&b.test.roots[0]);
+    let other = format!("sha256:{}", "0".repeat(64));
+    // The floor the unbundling reads: of the earlier form, or none at all.
+    for (name, read) in [("old-form", Some("1\n")), ("none", None)] {
+        for (case, meanwhile) in [("fork", &other), ("same", &first)] {
+            let store = Itaoca {
+                root: scratch(&format!("unbundle-root-race-{name}-{case}")),
+            };
+            let dir = store.root.join("registry").join(&id);
+            if let Some(text) = read {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("root-version"), text).unwrap();
+            }
+            let asked = std::cell::Cell::new(false);
+            let behind = |_: &str| -> Vec<Box<dyn Transport>> {
+                if !asked.replace(true) {
+                    store.store_root_version(&id, 1, meanwhile).unwrap();
+                }
+                Vec::new()
+            };
+            let result =
+                bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &behind);
+            assert!(asked.get());
+            let floor = std::fs::read_to_string(dir.join("root-version")).unwrap();
+            assert_eq!(floor, format!("1 {meanwhile}\n"), "{name} {case}");
+            if case == "same" {
+                let done = result.unwrap();
+                assert!(done.notes.is_empty(), "{name}: {:?}", done.notes);
+                assert!(store.contains(&b.expected.digest).unwrap());
+                assert!(store.load_checkpoint(&id).unwrap().is_some());
+                continue;
+            }
+            let (at, problem) = result.unwrap_err();
+            assert_eq!(at, Some(0), "{name}");
+            assert!(
+                matches!(
+                    &problem,
+                    Failure::Refused(why)
+                        if why.contains("forked")
+                            && why.contains("a run at the same time")
+                            && why.contains(&first)
+                            && why.contains(&other)
+                ),
+                "{name}: {problem:?}"
+            );
+            assert!(!store.contains(&b.expected.digest).unwrap());
+            assert!(store.load_checkpoint(&id).unwrap().is_none());
+            assert!(
+                store
+                    .load_provenance(
+                        &b.expected.source,
+                        &b.expected.name,
+                        &b.expected.version,
+                        b.expected.checkpoint_size,
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            // The next unbundling reads the floor with its digest, and refuses in the walk.
+            let (_, again) =
+                bundle::unbundle(&bytes, &store, std::slice::from_ref(&b.expected), &no_place)
+                    .unwrap_err();
+            assert!(
+                matches!(&again, Failure::Refused(why) if why.contains("forked")),
+                "{again:?}"
+            );
+        }
+    }
+}
+
 /// ADR 0122, amendment of 2026-11-09 (L3): unbundling refuses a bundle whose root chain holds
 /// the floor's version with another digest than the one stored, a fork of the root chain
 /// (U7010), and writes nothing; with the same digest, or a floor of the earlier form, it

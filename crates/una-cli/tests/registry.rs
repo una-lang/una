@@ -617,6 +617,83 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
     );
 }
 
+/// A command that loses the root-floor race fails (U7010), it does not end with a note (#2099,
+/// `spec/30 §14`, Floors). Another run is played by this test: it holds the floor lock while
+/// `una ita lock --check` and `una ita lock` each read the floor of the earlier form, walk the
+/// chain and wait for the lock, stores another digest at the floor's version, and lets go. The
+/// command then compares under the lock and holds two root metadata of version 1: exit 1,
+/// U7010, the other run's floor kept, the checkpoint floor as it was. With the same digest
+/// from the other run, the command passes, with no note.
+///
+/// The other run cannot see when the command has read the floor, so it waits before it stores.
+/// On a machine so loaded that the command reads the floor only after that, the command meets
+/// the digest in its walk instead, which is the same refusal by another sentence: the test
+/// accepts both, and never fails for timing. The store's own comparison is tested without a
+/// clock in `una-project` (`a_store_that_finds_another_digest_under_the_lock_is_a_fork`,
+/// `unbundling_fails_when_a_run_at_the_same_time_stored_a_forked_root`).
+#[test]
+fn a_command_that_loses_the_root_floor_race_fails() {
+    let (registry, _) = acme();
+    let (dir, _, itaoca) = project("floor-race", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let floors = floor_dir(&itaoca, &registry);
+    let floor = floors.join("root-version");
+    let checkpoint = std::fs::read(floors.join("checkpoint")).unwrap();
+    let first = una_project::tlog::root::digest(&registry.roots[0]);
+    let other = format!("sha256:{}", "0".repeat(64));
+    let write = |text: &str| {
+        std::fs::remove_file(&floor).unwrap();
+        std::fs::write(&floor, text).unwrap();
+    };
+    // Runs `args` while another run holds the floor lock and stores `meanwhile` as the floor.
+    let raced = |args: &[&str], meanwhile: &str| {
+        write("1\n");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(floors.join("floor.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        std::thread::scope(|scope| {
+            let command = scope.spawn(|| una_in(args, &itaoca));
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            write(meanwhile);
+            lock.unlock().unwrap();
+            command.join().unwrap()
+        })
+    };
+    for args in [
+        &["una", "ita", "lock", "--check", arg(&dir)][..],
+        &["una", "ita", "lock", arg(&dir)][..],
+    ] {
+        let forked = format!("1 {other}\n");
+        let (code, out, err) = raced(args, &forked);
+        assert_eq!(code, 1, "{args:?}: {out}{err}");
+        assert!(
+            err.contains("U7010") && err.contains("forked") && err.contains(&other),
+            "{args:?}: {err}"
+        );
+        assert!(!err.contains("not stored as its floor"), "{args:?}: {err}");
+        assert_eq!(std::fs::read_to_string(&floor).unwrap(), forked);
+        assert_eq!(
+            std::fs::read(floors.join("checkpoint")).unwrap(),
+            checkpoint
+        );
+        // Legitimate: the other run stored the digest this command walked.
+        let same = format!("1 {first}\n");
+        let (code, out, err) = raced(args, &same);
+        assert_eq!(code, 0, "{args:?}: {out}{err}");
+        assert!(
+            !err.contains("not stored") && !err.contains("U7010"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&floor).unwrap(), same);
+    }
+}
+
 /// Floors are stored as soon as a checkpoint is accepted, even when nothing is written; and a
 /// registry whose log does not extend the lock's point is refused, with no floor stored.
 #[test]

@@ -2961,6 +2961,187 @@ fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
     );
 }
 
+/// Two runs read a root-version floor at the same time and each walks a root chain; the store
+/// compares again under the floor lock, with the floor as the other run left it (`spec/30 §14`,
+/// Floors; #2099). The run whose chain holds the stored floor's version with another digest
+/// holds two root metadata of one version: its store fails as a fork, typed, and the floor the
+/// first run stored is kept byte for byte, with nothing else left in the directory. The same
+/// digest from both runs, and a higher version whose chain holds the floor's version with the
+/// stored digest, still pass.
+#[test]
+fn a_store_that_finds_another_digest_under_the_lock_is_a_fork() {
+    use una_project::itaoca::{FloorRefusal, Itaoca, registry_id};
+
+    let dir = std::env::temp_dir().join(format!("una-root-floor-fork-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let itaoca = Itaoca { root: dir.clone() };
+    let id = registry_id("sha256:root-floor-fork");
+    let registry = dir.join("registry").join(&id);
+    let file = registry.join("root-version");
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let (a, b, c, d) = (digest('a'), digest('b'), digest('c'), digest('d'));
+    let entries = || {
+        let mut names: Vec<String> = std::fs::read_dir(&registry)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    };
+    let write = |text: &str| {
+        std::fs::create_dir_all(&registry).unwrap();
+        let _ = std::fs::remove_file(&file);
+        std::fs::write(&file, text).unwrap();
+    };
+
+    // Both runs read the floor of the earlier form, `2`. The first stores its digest.
+    write("2\n");
+    itaoca.store_root_version(&id, 2, &a).unwrap();
+    // The second walked another root metadata of version 2: a fork, and the floor is kept.
+    let fork = itaoca.store_root_version(&id, 2, &b).unwrap_err();
+    assert_eq!(
+        fork,
+        FloorRefusal::Forked {
+            version: 2,
+            held: a.clone(),
+            offered: b.clone(),
+        }
+    );
+    assert!(
+        fork.message().contains("forked") && fork.message().contains("the floor is kept"),
+        "{fork:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+    // Nothing half-written: the floor, the lock file, and no fresh directory beside them.
+    assert_eq!(entries(), ["floor.lock", "root-version"]);
+    // A second run with the same digest: no failure, the floor as it is.
+    itaoca.store_root_version(&id, 2, &a).unwrap();
+    itaoca.store_root_chain(&id, &[(1, &c), (2, &a)]).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+
+    // Both runs read no floor at all: the same comparison.
+    std::fs::remove_file(&file).unwrap();
+    itaoca.store_root_chain(&id, &[(1, &c), (2, &a)]).unwrap();
+    let fork = itaoca
+        .store_root_chain(&id, &[(1, &c), (2, &b)])
+        .unwrap_err();
+    assert!(
+        matches!(fork, FloorRefusal::Forked { version: 2, .. }),
+        "{fork:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+
+    // A chain that goes higher but holds the floor's version with another digest forked below
+    // its last version: refused, and the floor does not move to it.
+    let fork = itaoca
+        .store_root_chain(&id, &[(1, &c), (2, &b), (3, &d)])
+        .unwrap_err();
+    assert_eq!(
+        fork,
+        FloorRefusal::Forked {
+            version: 2,
+            held: a.clone(),
+            offered: b.clone(),
+        }
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+    // A higher version whose chain holds the floor's version with the stored digest: stored.
+    itaoca
+        .store_root_chain(&id, &[(1, &c), (2, &a), (3, &d)])
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("3 {d}\n"));
+    // A run whose chain ends below the floor stored meanwhile is not stored, and is no fork:
+    // the floor holds one digest, of a version that chain does not reach.
+    itaoca.store_root_chain(&id, &[(1, &c), (2, &b)]).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("3 {d}\n"));
+    assert_eq!(entries(), ["floor.lock", "root-version"]);
+
+    // What is not a chain is not stored, and is not a fork.
+    for chain in [
+        &[][..],
+        &[(2, a.as_str()), (2, a.as_str())][..],
+        &[(3, d.as_str()), (2, a.as_str())][..],
+        &[(3, "sha256:zz"), (4, a.as_str())][..],
+    ] {
+        let refusal = itaoca.store_root_chain(&id, chain).unwrap_err();
+        assert!(matches!(refusal, FloorRefusal::NotStored(_)), "{refusal:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("3 {d}\n"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The race itself, with threads, each with its own handle of the lock file, as two processes
+/// have: eight runs read the floor `3` of the earlier form and store, at once, four different
+/// root metadata of version 3, two runs each. Whatever the order, one digest is stored, the two
+/// runs that hold it succeed, the six others fail with that digest as the one held, and the
+/// file is one whole floor line (#2099).
+#[test]
+fn stores_of_different_digests_at_once_agree_on_one() {
+    use std::sync::{Arc, Barrier};
+    use una_project::itaoca::{FloorRefusal, Itaoca, RootFloor, registry_id};
+
+    let dir = std::env::temp_dir().join(format!("una-root-floor-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let id = registry_id("sha256:root-floor-race");
+    let registry = dir.join("registry").join(&id);
+    std::fs::create_dir_all(&registry).unwrap();
+    let file = registry.join("root-version");
+    for round in 0..8 {
+        let _ = std::fs::remove_file(&file);
+        std::fs::write(&file, "3\n").unwrap();
+        let barrier = Arc::new(Barrier::new(8));
+        let runs: Vec<_> = (0..8usize)
+            .map(|run| {
+                let barrier = Arc::clone(&barrier);
+                let itaoca = Itaoca { root: dir.clone() };
+                let id = id.clone();
+                std::thread::spawn(move || {
+                    let digest = format!(
+                        "sha256:{}",
+                        ((b'a' + (run % 4) as u8) as char).to_string().repeat(64)
+                    );
+                    // Each run read the floor before any stored: by version only.
+                    assert_eq!(
+                        itaoca.load_root_version(&id).unwrap(),
+                        Some(RootFloor {
+                            version: 3,
+                            digest: None
+                        })
+                    );
+                    barrier.wait();
+                    let stored = itaoca.store_root_version(&id, 3, &digest);
+                    (digest, stored)
+                })
+            })
+            .collect();
+        let results: Vec<_> = runs.into_iter().map(|run| run.join().unwrap()).collect();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let floor = RootFloor::parse(&text).unwrap();
+        let held = floor.digest.clone().unwrap();
+        assert_eq!(floor.version, 3, "round {round}");
+        let mut passed = 0;
+        for (digest, stored) in &results {
+            if *digest == held {
+                assert_eq!(*stored, Ok(()), "round {round}");
+                passed += 1;
+            } else {
+                assert_eq!(
+                    *stored,
+                    Err(FloorRefusal::Forked {
+                        version: 3,
+                        held: held.clone(),
+                        offered: digest.clone(),
+                    }),
+                    "round {round}"
+                );
+            }
+        }
+        assert_eq!(passed, 2, "round {round}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The root-version floor file (`spec/30 §14`, Floors; ADR 0122, amendment of 2026-11-09, L3):
 /// stored as `<n> sha256:<hex>` and a line feed, read back the same; the earlier form `<n>` is
 /// read as a floor without a digest; any other content is unreadable (U7013 where a load
@@ -2969,7 +3150,7 @@ fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
 /// the earlier form takes the digest of its own version (#1970).
 #[test]
 fn the_root_version_floor_file_round_trips_and_moves_only_up() {
-    use una_project::itaoca::{Itaoca, RootFloor, registry_id};
+    use una_project::itaoca::{FloorRefusal, Itaoca, RootFloor, registry_id};
 
     let dir = std::env::temp_dir().join(format!("una-root-floor-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2998,7 +3179,8 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     );
     // Equal, with another digest: a fork of the root chain, refused, never stored.
     let fork = itaoca.store_root_version(&id, 2, &digest('b')).unwrap_err();
-    assert!(fork.contains("forked"), "{fork}");
+    assert!(matches!(fork, FloorRefusal::Forked { .. }), "{fork:?}");
+    assert!(fork.message().contains("forked"), "{fork:?}");
     // Lower: never stored.
     itaoca.store_root_version(&id, 1, &digest('c')).unwrap();
     assert_eq!(
@@ -3012,8 +3194,12 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         floor(3, Some(digest('d')))
     );
     // A digest that is not one is never stored.
-    assert!(itaoca.store_root_version(&id, 4, "sha256:zz").is_err());
-    assert!(itaoca.store_root_version(&id, 0, &digest('e')).is_err());
+    for refusal in [
+        itaoca.store_root_version(&id, 4, "sha256:zz").unwrap_err(),
+        itaoca.store_root_version(&id, 0, &digest('e')).unwrap_err(),
+    ] {
+        assert!(matches!(refusal, FloorRefusal::NotStored(_)), "{refusal:?}");
+    }
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         floor(3, Some(digest('d')))
@@ -3034,7 +3220,7 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         format!("3 {}\n", digest('a'))
     );
     let fork = itaoca.store_root_version(&id, 3, &digest('b')).unwrap_err();
-    assert!(fork.contains("forked"), "{fork}");
+    assert!(matches!(fork, FloorRefusal::Forked { .. }), "{fork:?}");
     itaoca.store_root_version(&id, 2, &digest('b')).unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
