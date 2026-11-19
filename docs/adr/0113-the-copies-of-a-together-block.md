@@ -327,3 +327,28 @@ The tasks of a batch are coroutines, not threads, and a join parks its task. Rul
 ## Note (2026-10-31): read through ADR 0106's amendment (#1311)
 
 ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release path of `una build --release` is Una's own code generation over Core IR. No rule of this record changes. Rule 5's "ADR 0106's C backend" reads as that release path, which keeps the 32-bit count and mark and their limits exactly as stated there. `docs/plan/c-emission-inventory.md` lists the passage.
+
+## Amendment (2026-11-19): the reservation is checked before it is announced
+
+- Status: Proposed (2026-11-19); needs the Owner's acceptance.
+- Card: #1943.
+
+Rule 4, "The reservation", says that a step adds its bytes to `reserved`, then checks `held() +sat reserved ≤ mem_ceiling`. A step that the check refuses has then been in `reserved` from its addition to the drop of its guard, and the check of every other thread's step made in that interval counted its bytes. A step of a sibling task that fit the budget could so be refused too, and the U6003 reported at the sibling's block instead of, or as well as, at the block whose step asked for too much (#1943, found through #1920).
+
+**What changes.** The order. A step is checked first and announced only when it fits: its bytes are added to `reserved` in one atomic step with the check that `held() +sat (reserved + bytes) ≤ mem_ceiling`, and are not added when it does not hold. A refused step is never in `reserved`, so it is never visible to another thread's check, and it has nothing to subtract. A step that would take `reserved` itself past the largest value of the count is refused the same way, in a run or outside one, so `reserved` never wraps.
+
+**What is kept.**
+- The quantity compared: `held() +sat reserved`, the step's own bytes included, against `mem_ceiling`.
+- The guard: an accepted step subtracts exactly its bytes when its guard is dropped, after the allocation or while a panic unwinds.
+- "Counted twice, briefly": between a step's allocation and its subtraction its bytes are in both `held()` and `reserved`.
+- "It never sees fewer": a step is accepted only on a view that counts every step accepted before it, in `reserved` or in `held()`. The implementation keeps `reserved` as two counts that only grow, the bytes announced and the bytes given back; a pass reads the bytes announced, the bytes given back, then `held()`, the order in which a step's bytes move, and its compare-exchange on the bytes announced fails when any step was accepted since its first read. A counter that rises and falls could not show that: a release and an announcement of the same size leave it unchanged.
+- "Concurrent copies": steps cannot together take `held()` past the ceiling; a step that would is refused.
+- Rule 6 and the invariants I1 to I11, and every check of `spec/11 §7`, which reads `held()` alone.
+
+**The bound on the transient excess.** Rule 4 says that a concurrent step can see "up to one step's bytes more than are held". With k steps in flight at once, a check can count twice the bytes of up to k − 1 other steps, each between its allocation and its subtraction, and of every reservation the threads of those steps hold at once (a start's reservation is held until the fork answer; an adoption holds its own and the trace's). That was so under the accepted order too, and this amendment does not change it: the excess only refuses earlier, never later.
+
+**Cost.** Time O(1) expected per step, space O(1): one more atomic read, and one compare-exchange in place of one addition. A step is lock-free, not wait-free: a pass is repeated only when another thread's step of positive size was accepted meanwhile, so some step always completes, but one step beside siblings whose steps keep being accepted has no bound of its own. Under the accepted order a step was one addition and always completed. The copies of one block are sequential (rules 2 and 3), so steps are concurrent only between blocks of sibling tasks and with the runtime's other announced allocations in tasks.
+
+**One case stays looser, in theory.** The counts are 64 bits wide on every target and wrap. A pass would miss accepted steps if the steps that other threads had accepted between its first read and its compare-exchange summed to an exact positive multiple of 2^64 bytes. No run reaches that within one pass, and ADR 0061's hard ceiling stays under every allocation.
+
+Until this amendment is accepted, the accepted text of rule 4 above stands as the record's decision, and the pull request of #1943 waits for it.
