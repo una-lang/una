@@ -1,1 +1,0 @@
-- **The `sanitize` gate counts the Miri reduction of the #1943 test** (#1943, `scripts/sanitize.sh`). The test of refused steps beside sibling threads makes 200 steps under Miri rather than 50,000, one more mention of `miri` in `una-rt`: the script states 27, where 26 failed the gate on `main`.
