@@ -4068,7 +4068,8 @@ impl<'p, 'w> Machine<'p, 'w> {
             ("Files", "read" | "write") => {
                 let writing = op == "write";
                 let path = text(0);
-                let mut target = None;
+                // The first grant of the access that does not deny the path decides.
+                let mut target = host::Confined::Denied;
                 for grant in self.grants {
                     if let Grant::Files {
                         prefix,
@@ -4078,23 +4079,26 @@ impl<'p, 'w> Machine<'p, 'w> {
                         && (if writing { *write } else { *read })
                     {
                         target = host::confine(&mut **self.run.world.borrow_mut(), prefix, &path);
-                        if target.is_some() {
+                        if target != host::Confined::Denied {
                             break;
                         }
                     }
                 }
-                let Some(target) = target else {
-                    return Err(file_error("Denied", 1));
-                };
-                let done = if writing {
-                    self.run
+                let done = match target {
+                    host::Confined::Denied => return Err(file_error("Denied", 1)),
+                    // #1459: an intermediate directory is confirmed absent, so the operation
+                    // fails here and the world is given no path.
+                    host::Confined::Absent(absence) => Err(absence.fault()),
+                    host::Confined::Path(target) if writing => self
+                        .run
                         .world
                         .borrow_mut()
                         .write_file(&target, &text(1))
-                        .map(|()| Value::Unit)
-                } else {
-                    let read = self.run.world.borrow_mut().read_file(&target);
-                    read.map(|t| Value::text(&t))
+                        .map(|()| Value::Unit),
+                    host::Confined::Path(target) => {
+                        let read = self.run.world.borrow_mut().read_file(&target);
+                        read.map(|t| Value::text(&t))
+                    }
                 };
                 done.map_err(|problem| match problem {
                     FileFault::NotFound => file_error("NotFound", 0),

@@ -3421,6 +3421,141 @@ fn the_executable_confines_files_through_links_as_una_run_does_1343() {
 
 #[cfg(unix)]
 #[test]
+fn a_missing_directory_is_not_found_in_both_engines_1459() {
+    // `spec/14 §3` rule 2, #1459: below a directory that does not exist, a read and a write
+    // fail with `NotFound`, which confinement answers, in the executable as in `una run`, and
+    // the value is the same at the host's limits: after more links than one lookup follows
+    // and for a path as written longer than the host takes, the two classes where that path
+    // failed with `Io` before, and below a canonical directory so long that the directory
+    // joined with the rest is past the host's limit. A component that
+    // is not a directory is `Io`, as before, and a final component that does not exist in a
+    // directory that resolves is still left to the operation.
+    use std::os::unix::fs::symlink;
+    runtime();
+    let depth = 40;
+    let leaf = "L".repeat(150);
+    let mut cases: Vec<(&str, String)> = [
+        "missing/new.txt",
+        "missing/deeper/new.txt",
+        "in_dir/missing/new.txt",
+        "note.txt/x/new.txt",
+    ]
+    .into_iter()
+    .flat_map(|path| [("read", path.to_owned()), ("write", path.to_owned())])
+    .collect();
+    cases.extend([
+        ("read", "in_dir/gone.txt".to_owned()),
+        ("write", "in_dir/new.txt".to_owned()),
+        ("read", "in_dir/new.txt".to_owned()),
+    ]);
+    let fixed = cases.len();
+    cases.push(("read", format!("a/b/missing/{leaf}")));
+    cases.push(("write", format!("a/b/missing/{leaf}")));
+    // A path as written longer than the host takes (1024 bytes on macOS, 4096 on Linux),
+    // below a missing directory: `ENAMETOOLONG` on that path, `Io`, before.
+    for components in [6, 25] {
+        let path = format!("missing/{}/f", vec!["P".repeat(200); components].join("/"));
+        cases.push(("read", path.clone()));
+        cases.push(("write", path));
+    }
+    for links in [1, 10, 25] {
+        cases.push(("read", format!("{}missing/f", "l/".repeat(links))));
+        cases.push(("write", format!("{}missing/f", "self/".repeat(links))));
+    }
+    let limits = cases.len();
+    // Around the number of links that some host follows in one path (33 on macOS, 40 on
+    // Linux), the links of the grant prefix's own path counted.
+    for links in 28..=depth {
+        cases.push(("read", format!("{}missing/f", "l/".repeat(links))));
+        cases.push(("write", format!("{}missing/f", "self/".repeat(links))));
+    }
+    let dir = package(
+        "absent",
+        "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:boxlink:read,write\"]\n",
+        &[("src/files.una", &confined_program(&cases))],
+    );
+    let boxed = dir.join("box");
+    std::fs::create_dir_all(boxed.join("sub")).unwrap();
+    std::fs::write(boxed.join("note.txt"), "inside\n").unwrap();
+    symlink("box", dir.join("boxlink")).unwrap();
+    symlink("sub", boxed.join("in_dir")).unwrap();
+    symlink(".", boxed.join("self")).unwrap();
+    let mut at = boxed.clone();
+    for _ in 0..depth {
+        symlink("d", at.join("l")).unwrap();
+        at.push("d");
+        std::fs::create_dir(&at).unwrap();
+    }
+    // A canonical directory of 897 bytes, reached by the short path `a/b` through two links.
+    let boxed = std::fs::canonicalize(&boxed).unwrap();
+    let mut remaining = 897 - boxed.as_os_str().len();
+    let mut names = Vec::new();
+    while remaining > 202 {
+        names.push("N".repeat(200));
+        remaining -= 201;
+    }
+    names.push("N".repeat(remaining - 1));
+    let long = boxed.join(names.join("/"));
+    assert_eq!(long.as_os_str().len(), 897);
+    std::fs::create_dir_all(&long).unwrap();
+    symlink(&names[0], boxed.join("a")).unwrap();
+    symlink(names[1..].join("/"), boxed.join(&names[0]).join("b")).unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/absent"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    // The write of `in_dir/new.txt` created the file in the canonical directory: removed, so
+    // `una run` meets the tree the executable met.
+    assert_eq!(
+        std::fs::read_to_string(boxed.join("sub/new.txt")).unwrap(),
+        "entry"
+    );
+    std::fs::remove_file(boxed.join("sub/new.txt")).unwrap();
+    let interpreted = una(&dir, &["run"]);
+    assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
+    let stdout = String::from_utf8_lossy(&native.stdout);
+    assert_eq!(stdout, String::from_utf8_lossy(&interpreted.stdout));
+    let outcomes: Vec<&str> = stdout.lines().collect();
+    assert_eq!(outcomes.len(), cases.len(), "{stdout}");
+    let mut expected = vec!["not found"; 6];
+    expected.extend(["io", "io", "not found", "written", "read"]);
+    assert_eq!(expected.len(), fixed);
+    // Below the long canonical directory, for the paths as written past the host's length
+    // limit, and after links well within what a host follows.
+    expected.resize(limits, "not found");
+    for (index, outcome) in expected.iter().enumerate() {
+        assert_eq!(
+            outcomes[index],
+            format!("{index} {}: {outcome}", cases[index].0),
+            "{}",
+            cases[index].1
+        );
+    }
+    // Near the host's limit the missing directory is confirmed, `NotFound`, until the
+    // resolution itself stops at the limit, which is `Denied` from there on (#1380). It is
+    // never `Io`: the path as written, on which the operation failed with `ELOOP` at the
+    // last links that the canonicalization still follows on macOS, is no longer given to it.
+    for operation in ["read", "write"] {
+        let near: Vec<&str> = (limits..cases.len())
+            .filter(|&index| cases[index].0 == operation)
+            .map(|index| outcomes[index].split_once(": ").unwrap().1)
+            .collect();
+        let confirmed = near.iter().take_while(|o| **o == "not found").count();
+        assert!(confirmed > 0, "{operation}: {near:?}");
+        assert!(
+            near[confirmed..].iter().all(|o| *o == "denied"),
+            "{operation}: {near:?}"
+        );
+    }
+    assert!(!boxed.join("missing").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
 fn the_executable_denies_a_directory_past_the_host_path_limit_as_una_run_does_1380() {
     // `spec/14 §3` rule 2, #1380: a directory that exists but whose canonical path is longer
     // than the host takes does not resolve; it is denied in both engines, not opened through
