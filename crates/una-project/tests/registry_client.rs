@@ -3836,19 +3836,21 @@ fn a_floor_of_the_whole_note_is_upgraded_once_and_only_by_the_same_note() {
     assert_eq!(read(), format!("3 text {third}\n"));
 }
 
-/// L3 of the review of #2128 (card #2132), the present behavior, reproduced without a clock
-/// deciding the outcome: storing a checkpoint proves the stored one consistent with it while it
-/// holds the floor lock, and that proof reads tiles from the place. A place whose read stalls
-/// keeps the lock; another run, whose root chain holds the floor's version with another digest,
-/// cannot take the lock in five seconds, compares nothing, and gets a failure to store, which a
-/// command reports as a note and exit code 0, where the comparison would have refused its
-/// chain as a fork. The next store, with the lock free, does refuse it.
+/// L3 of the review of #2128 (card #2132; ADR 0122, amendment of 2026-11-19, item 7): the floor
+/// lock is not held while a checkpoint store proves the stored checkpoint consistent with its
+/// own, which reads tiles from a place. While one run's proof stalls, another run, whose root
+/// chain holds the floor's version with another digest, takes the lock at once, compares, and
+/// is refused as a fork. Before the fix it waited five seconds for the lock, compared nothing,
+/// and got a failure to store, which a command reports as a note and exit code 0.
 ///
-/// This test documents the defect and flips when the lock is no longer held across the reads.
+/// The stalled store still writes only against the checkpoint it proved: one that another run
+/// stored meanwhile is proven again, a proof that then fails stores nothing, and a stored
+/// checkpoint that keeps being replaced ends the store after a bounded number of proofs.
 #[test]
-fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() {
+fn a_stalled_checkpoint_store_does_not_hold_the_floor_lock() {
     use std::sync::mpsc::channel;
     use una_project::itaoca::{FloorRefusal, Itaoca, registry_id};
+    use una_project::tlog::note::{parse_checkpoint, parse_note};
 
     let itaoca = Itaoca {
         root: scratch("floor-lock-stall"),
@@ -3860,6 +3862,12 @@ fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() 
             dash = '\u{2014}'
         )
     };
+    let size_of = |text: &str| {
+        parse_checkpoint(&parse_note(text).unwrap().text)
+            .unwrap()
+            .size
+    };
+    let stored_size = || size_of(&itaoca.load_checkpoint(&id).unwrap().unwrap());
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
     itaoca
         .store_checkpoint(&id, &checkpoint(1), &mut |_| Ok(()))
@@ -3869,37 +3877,82 @@ fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() 
         .unwrap();
     let (inside, entered) = channel::<()>();
     let (release, released) = channel::<()>();
-    std::thread::scope(|scope| {
+    let proved = std::thread::scope(|scope| {
         let itaoca = &itaoca;
         let id = &id;
-        // The run whose place stalls: inside the consistency proof until released.
+        // The run whose place stalls: inside its first consistency proof until released.
         let stalled = scope.spawn(move || {
-            itaoca.store_checkpoint(id, &checkpoint(2), &mut |_| {
-                inside.send(()).unwrap();
-                released.recv().unwrap();
+            let mut proved: Vec<u64> = Vec::new();
+            let stored = itaoca.store_checkpoint(id, &checkpoint(3), &mut |stored| {
+                proved.push(size_of(stored));
+                if proved.len() == 1 {
+                    inside.send(()).unwrap();
+                    released.recv().unwrap();
+                }
                 Ok(())
-            })
+            });
+            (stored, proved)
         });
         entered.recv().unwrap();
-        // The other run walked another root metadata of version 2.
+        // The other run walked another root metadata of version 2: compared under the lock,
+        // which the stalled run does not hold, and refused as a fork.
         let refusal = itaoca
             .store_root_chain(id, &[walked(2, &digest('b'))])
             .unwrap_err();
-        assert!(
-            matches!(&refusal, FloorRefusal::NotStored(why) if why.contains("held the floor lock for five seconds")),
-            "{refusal:?}"
+        assert_eq!(
+            refusal,
+            FloorRefusal::Forked {
+                version: 2,
+                held: FloorDigest::Text(digest('a')),
+                offered: digest('b'),
+            }
         );
+        // And a third run stores a larger checkpoint meanwhile.
+        itaoca
+            .store_checkpoint(id, &checkpoint(2), &mut |_| Ok(()))
+            .unwrap();
         release.send(()).unwrap();
-        stalled.join().unwrap().unwrap();
+        let (stored, proved) = stalled.join().unwrap();
+        stored.unwrap();
+        proved
     });
-    // With the lock free, the same store is refused as a fork.
-    let refusal = itaoca
-        .store_root_chain(&id, &[walked(2, &digest('b'))])
-        .unwrap_err();
+    // The stalled run proved against the checkpoint of size 1, found the one of size 2 under
+    // the lock, proved against that one, and only then stored its own.
+    assert_eq!(proved, [1, 2]);
+    assert_eq!(stored_size(), 3);
+
+    // A proof against the checkpoint stored meanwhile that fails: nothing is stored.
+    let mut calls = 0;
+    let refused = itaoca.store_checkpoint(&id, &checkpoint(9), &mut |stored| {
+        calls += 1;
+        if size_of(stored) == 3 {
+            // Another run, while this proof is made.
+            itaoca.store_checkpoint(&id, &checkpoint(4), &mut |_| Ok(()))
+        } else {
+            Err("another log".to_owned())
+        }
+    });
+    assert_eq!(refused, Err("another log".to_owned()));
+    assert_eq!((calls, stored_size()), (2, 4));
+
+    // A stored checkpoint replaced during every proof: the store ends, bounded, with nothing
+    // of its own written. The store made inside the proof takes the lock, so it also shows
+    // that the lock is not held there.
+    let mut calls = 0;
+    let refused = itaoca.store_checkpoint(&id, &checkpoint(99), &mut |stored| {
+        calls += 1;
+        itaoca.store_checkpoint(&id, &checkpoint(size_of(stored) + 1), &mut |_| Ok(()))
+    });
     assert!(
-        matches!(refusal, FloorRefusal::Forked { version: 2, .. }),
-        "{refusal:?}"
+        matches!(&refused, Err(why) if why.contains("replaced by other runs")),
+        "{refused:?}"
     );
+    assert_eq!((calls, stored_size()), (3, 7));
+    // Left alone, it stores.
+    itaoca
+        .store_checkpoint(&id, &checkpoint(99), &mut |_| Ok(()))
+        .unwrap();
+    assert_eq!(stored_size(), 99);
 }
 
 /// Item 2: the last root's expiry is judged at the witness time of the latest checkpoint the

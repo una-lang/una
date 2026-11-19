@@ -323,12 +323,21 @@ impl Itaoca {
         result
     }
 
-    /// Stores `document`, a checkpoint the client accepted for the registry `id`, as its floor,
-    /// under the floor lock: the floor stored is read again under the lock, and `document` is
-    /// written, through a fresh file and a rename, only when it is larger and `consistent`
-    /// accepts the stored one against it (a consistency proof between the two). So the floor
-    /// never moves backwards, nor to another log, even with runs at once (rule 39). A refusal
-    /// says why it was not stored; it never makes the checkpoint less valid.
+    /// Stores `document`, a checkpoint the client accepted for the registry `id`, as its floor.
+    /// `document` is written, through a fresh file and a rename, only when it is larger than
+    /// the stored checkpoint and `consistent` accepts the stored one against it (a consistency
+    /// proof between the two). So the floor never moves backwards, nor to another log, even
+    /// with runs at once (rule 39). A refusal says why it was not stored; it never makes the
+    /// checkpoint less valid.
+    ///
+    /// `consistent` reads tiles from a place, so it is never called while the floor lock is
+    /// held (ADR 0122, amendment of 2026-11-19, item 7): a place whose reads stall would
+    /// otherwise keep the lock, and every other run of the machine from comparing its root
+    /// chain under it ([`Itaoca::store_root_chain`]). The stored checkpoint is read with no
+    /// lock and proven consistent; then, under the lock, it is read again, and `document` is
+    /// written only when the stored checkpoint is still, byte for byte, the one the proof was
+    /// made against. When another run replaced it meanwhile, the lock is released and the
+    /// proof is made again against the new one, at most [`CHECKPOINT_TRIES`] times in all.
     pub fn store_checkpoint(
         &self,
         id: &str,
@@ -342,17 +351,32 @@ impl Itaoca {
             Ok(note::parse_checkpoint(&signed.text)?.size)
         };
         let new = size(document)?;
-        self.locked(id, || {
-            if let Some(stored) = self.load_checkpoint(id)? {
-                if size(&stored).is_ok_and(|old| old >= new) {
+        for _ in 0..CHECKPOINT_TRIES {
+            // With no lock: the stored floor, and the proof against it, which reads a place.
+            let proven = self.load_checkpoint(id)?;
+            if let Some(stored) = &proven {
+                if size(stored).is_ok_and(|old| old >= new) {
                     return Ok(());
                 }
-                consistent(&stored)?;
+                consistent(stored)?;
             }
-            let parent = tree::make_dirs(&self.root, &["registry", id])?;
-            tree::store_file(&parent, "checkpoint", document.as_bytes(), true)
-                .map_err(|refusal| format!("cannot store the checkpoint: {refusal}"))
-        })
+            // Under the lock: nothing but local reads, a comparison and the write.
+            let written = self.locked(id, || {
+                if self.load_checkpoint(id)? != proven {
+                    return Ok(false);
+                }
+                let parent = tree::make_dirs(&self.root, &["registry", id])?;
+                tree::store_file(&parent, "checkpoint", document.as_bytes(), true)
+                    .map_err(|refusal| format!("cannot store the checkpoint: {refusal}"))?;
+                Ok(true)
+            })?;
+            if written {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "the stored checkpoint was replaced by other runs {CHECKPOINT_TRIES} times while this one proved its own consistent with it"
+        ))
     }
 
     /// The highest root version of the registry `id` accepted, the floor of its root chain
@@ -574,6 +598,10 @@ impl FloorRefusal {
         }
     }
 }
+
+/// How many times [`Itaoca::store_checkpoint`] proves its checkpoint consistent with the stored
+/// one before it gives up, each time because another run replaced the stored one meanwhile.
+const CHECKPOINT_TRIES: usize = 3;
 
 /// The most bytes a stored root-version floor holds: a version of at most 20 digits, a space,
 /// `text` and a space, `sha256:` and 64 hex digits, and a line feed.
