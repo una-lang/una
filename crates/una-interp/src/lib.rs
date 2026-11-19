@@ -27,7 +27,7 @@ pub use harness::{
 };
 pub use host::{
     FileFault, Grant, LimitLabel, NotText, World, check_limited_flags, confine, disk_absent,
-    disk_step, hex, hmac_sha256, invalid_grant, parse_keys,
+    disk_step, hashed_equal, hex, hmac_sha256, invalid_grant, parse_keys,
 };
 pub use machine::{Abort, Drive, Event, EventOutcome, Limits, fixed_method};
 pub use trace::{EventDoc, OutcomeDoc, Pairs, event_json, trace_json};

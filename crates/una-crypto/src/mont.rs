@@ -11,7 +11,8 @@
 //! [`DynMont`] is the same arithmetic for a modulus whose limb count is only known at run time
 //! (RSA, 2048 to 8192 bits, ADR 0133 rule 18), on stack arrays of [`MAX_LIMBS`] limbs. It is used
 //! on public data only (the public key and the signature), and its exponentiation is variable
-//! time in the exponent; [`Mont::pow`] is public-exponent only for the same reason.
+//! time in the exponent; [`Mont::pow_vartime`] is public-exponent only for the same reason. Both
+//! carry the fact in their names (`_vartime`, `_public`), so a call site shows it.
 // Indices are constants or loop counters over fixed arrays (ADR 0133 rule 6).
 #![allow(clippy::indexing_slicing)]
 
@@ -187,8 +188,9 @@ impl<const N: usize> Mont<N> {
     /// index taken from the exponent, so both the memory access pattern and (through the cache) the
     /// timing depend on its value; the squarings and the `N * 16` windows do not. Every use here
     /// has a public exponent (`m - 2` for a Fermat inverse, with `m` a published curve parameter).
-    /// A secret exponent needs a different routine (a scan of the whole table with masks).
-    pub(crate) fn pow(&self, a: &Limbs<N>, e: &Limbs<N>) -> Limbs<N> {
+    /// A secret exponent needs a different routine (a scan of the whole table with masks). The
+    /// name says so at each call site (#1481): a caller states why its exponent is public.
+    pub(crate) fn pow_vartime(&self, a: &Limbs<N>, e: &Limbs<N>) -> Limbs<N> {
         let mut table = [self.r1; 16];
         for i in 1..16 {
             table[i] = self.mul(&table[i - 1], a);
@@ -465,7 +467,7 @@ mod tests {
         for e in [1u64, 2, 3, 65537, (1 << 33) - 1, 0xdead_beef_1234] {
             let mut e_limbs = [0u64; 4];
             e_limbs[0] = e;
-            let expected = fixed.demont(&fixed.pow(&fixed.to_mont(&a), &e_limbs));
+            let expected = fixed.demont(&fixed.pow_vartime(&fixed.to_mont(&a), &e_limbs));
             assert_eq!(&dynamic.pow_public(&wa, e)[..4], &expected, "e = {e}");
         }
         assert!(dynamic.is_below_modulus(&wa));
@@ -554,9 +556,9 @@ mod tests {
             e[0] += 1;
             e
         };
-        assert_eq!(f.pow(&x, &e), f.one());
+        assert_eq!(f.pow_vartime(&x, &e), f.one());
         // x * x^(m-2) = 1.
-        assert_eq!(f.mul(&x, &f.pow(&x, &f.modulus_minus_2())), f.one());
+        assert_eq!(f.mul(&x, &f.pow_vartime(&x, &f.modulus_minus_2())), f.one());
         // add and sub are inverse, and wrap at the modulus.
         assert_eq!(f.sub(&f.add(&x, &nm1), &nm1), x);
         assert_eq!(f.add(&m_minus(&m, 1), &[1, 0, 0, 0]), [0; 4]);

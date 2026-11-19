@@ -1097,7 +1097,6 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         Int(BigInt),
         /// A text, whose value is not taken: two texts are compared in place before a leaf is.
         Text,
-        Bytes(Vec<u8>),
         Right(u64),
         Float(u64),
         Variant(i64),
@@ -1120,11 +1119,15 @@ fn leaf_equal(a: i64, b: i64) -> bool {
     if is_text(a) && is_text(b) {
         return with_texts(a, b, |x, y| x == y);
     }
+    // Two keyed hashes are read in place and compared whole, in time that does not depend on
+    // where they differ (#1481).
+    if let Some(same) = hashed_pair_equal(a, b) {
+        return same;
+    }
     let leaf = |word: i64| {
         with(word, |object| match object {
             Object::Int(value) => Leaf::Int(value.clone()),
             Object::Text(_) => Leaf::Text,
-            Object::Hashed(bytes) => Leaf::Bytes(bytes.clone()),
             // Two reply rights are equal when they name one exchange (ADR 0123 rule 1).
             Object::Right(word) => Leaf::Right(*word),
             // `==` on `F64` is identity of the canonical bits (ADR 0114 rule 5.1).
@@ -1139,10 +1142,30 @@ fn leaf_equal(a: i64, b: i64) -> bool {
         })
     };
     match (leaf(a), leaf(b)) {
-        // A text and a non-text differ: two texts returned above.
+        // A text and a non-text differ: two texts returned above. So do a keyed hash and a value
+        // that is not one, since two keyed hashes returned above: a hash is `Leaf::Other` here.
         (Some(x), Some(y)) => x != Leaf::Other && x != Leaf::Text && x == y,
         _ => false,
     }
+}
+
+/// Whether the keyed hashes `a` and `b` hold the same bytes, `None` unless both words are live
+/// keyed hashes. The bytes are borrowed from the heap, with no copy, and compared by the one
+/// routine of both engines, which reads every byte whatever the two hold (#1481): time
+/// O(length) always. It counts no fault: a word that is not a live object reaches the lookups of
+/// the caller, which count it.
+fn hashed_pair_equal(a: i64, b: i64) -> Option<bool> {
+    HEAP.with(|heap| {
+        let heap = heap.borrow();
+        let read = |word: i64| match slot(word)
+            .and_then(|index| heap.slots.get(index))
+            .and_then(|slot| slot.object.as_ref())
+        {
+            Some(Object::Hashed(bytes)) => Some(bytes.as_slice()),
+            _ => None,
+        };
+        Some(una_interp::hashed_equal(read(a)?, read(b)?))
+    })
 }
 
 /// A pair met by a structural equality: `true` when it is equal at once (one word, or two equal
@@ -1971,7 +1994,7 @@ fn node_matches(object: &Object, node: &Node, index: impl Fn(i64) -> Option<usiz
     match (object, node) {
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
-        (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::Hashed(a), Node::Hashed(b)) => una_interp::hashed_equal(a, b),
         (Object::Right(a), Node::Right(b)) => a == b,
         (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
@@ -2246,7 +2269,7 @@ fn node_matches_made(object: &Object, node: &Node, words: &[i64]) -> bool {
     match (object, node) {
         (Object::Int(a), Node::Int(b)) => a == b,
         (Object::Text(a), Node::Text(b)) => a.as_str() == b,
-        (Object::Hashed(a), Node::Hashed(b)) => a == b,
+        (Object::Hashed(a), Node::Hashed(b)) => una_interp::hashed_equal(a, b),
         (Object::Right(a), Node::Right(b)) => a == b,
         (Object::F64(a), Node::F64(b)) => una_core::float::to_bits(*a) == *b,
         (Object::Data { tag, fields }, Node::Data { tag: t, fields: f }) => {
@@ -4052,6 +4075,60 @@ mod tests {
             assert_eq!(steps_of(items), (n + 1, n + 1), "n = {n}");
             release(items);
         }
+    }
+
+    /// `Hashed == Hashed` is decided by all the bytes of both values, by the routine the
+    /// interpreter uses, whose own test counts that every byte is read (#1481): equal bytes in
+    /// two objects are equal, and a difference in any one bit, first byte or last, differs.
+    #[test]
+    fn keyed_hashes_are_equal_by_all_their_bytes_wherever_they_differ() {
+        let before = faults();
+        let base = [7u8; 32];
+        let hash = hashed_word(base.to_vec());
+        let same = hashed_word(base.to_vec());
+        assert_ne!(hash, same);
+        assert_eq!(hashed_pair_equal(hash, same), Some(true));
+        assert!(leaf_equal(hash, same));
+        assert!(leaf_equal(hash, hash));
+        assert_eq!(equal_words(hash, same, usize::MAX), Some(true));
+        for at in 0..32 {
+            for bit in 0..8 {
+                let mut bytes = base;
+                bytes[at] ^= 1 << bit;
+                let other = hashed_word(bytes.to_vec());
+                assert_eq!(hashed_pair_equal(hash, other), Some(false));
+                assert!(!leaf_equal(hash, other), "byte {at}, bit {bit}");
+                assert!(!leaf_equal(other, hash), "byte {at}, bit {bit}");
+                release(other);
+            }
+        }
+        // Lengths are public: a prefix differs.
+        let prefix = hashed_word(base[..31].to_vec());
+        assert!(!leaf_equal(hash, prefix));
+        assert!(!leaf_equal(prefix, hash));
+        // A keyed hash never equals a value of another kind, which is not a pair of hashes.
+        let text = text_word("x".to_owned());
+        let big = int_word(&(BigInt::from(1) << 100));
+        for other in [text, big, n(7)] {
+            assert_eq!(hashed_pair_equal(hash, other), None);
+            assert_eq!(hashed_pair_equal(other, hash), None);
+            assert!(!leaf_equal(hash, other));
+            assert!(!leaf_equal(other, hash));
+        }
+        // Inside a value with parts, the same comparison decides.
+        let mut last = base;
+        last[31] ^= 0x80;
+        let differs = hashed_word(last.to_vec());
+        assert_eq!(
+            equal_words(record(n(1), hash), record(n(1), same), usize::MAX),
+            Some(true)
+        );
+        assert_eq!(
+            equal_words(record(n(1), hash), record(n(1), differs), usize::MAX),
+            Some(false)
+        );
+        // No comparison read a word that is not a live object.
+        assert_eq!(faults(), before);
     }
 
     #[test]

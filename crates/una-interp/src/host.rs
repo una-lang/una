@@ -506,6 +506,35 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
         .to_vec()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The pairs of bytes the `Hashed` comparisons of this thread folded, in tests (#1481).
+    pub(crate) static HASHED_BYTES_FOLDED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Whether two `Hashed` values hold the same bytes, the `==` of both engines on them (#1481).
+///
+/// Its time does not depend on where the two differ, or on whether they do: every pair of bytes
+/// is read and the differences are folded into one byte, which is tested once, after an
+/// optimization barrier that keeps a compiler from turning the fold into an early exit. Time
+/// O(length) always. The lengths are public (a keyed hash has its algorithm's length), so two
+/// values of different lengths differ at once. Defense in depth: a `Hashed` is a pseudonymous
+/// key, not a tag under verification, and timing stays outside the verification model.
+#[must_use]
+pub fn hashed_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        difference |= x ^ y;
+        #[cfg(test)]
+        HASHED_BYTES_FOLDED.with(|folded| folded.set(folded.get() + 1));
+    }
+    std::hint::black_box(difference) == 0
+}
+
 /// The domain of `fake_hash`'s preimages: a fixed prefix whose final zero byte ends it before the
 /// seed's encoding starts, so a seed never shifts into the prefix.
 const FAKE_HASH_DOMAIN: &[u8] = b"una.testing.fake_hash.int\0";

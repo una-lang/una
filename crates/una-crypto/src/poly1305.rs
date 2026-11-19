@@ -4,6 +4,7 @@
 // Indices are constants or loop counters over fixed arrays (ADR 0133 rule 6).
 #![allow(clippy::indexing_slicing)]
 
+use crate::ct::mask32;
 use zeroize::Zeroize;
 
 const M26: u32 = 0x03ff_ffff;
@@ -142,7 +143,9 @@ impl Poly1305 {
         c = g3 >> 26;
         g3 &= M26;
         let g4 = (h4 + c).wrapping_sub(1 << 26);
-        let keep_g = (g4 >> 31).wrapping_sub(1);
+        // The mask passes the optimization barrier, as every other select of the crate does
+        // (ADR 0133 rule 5, #1481): `g4 >> 31` is 1 when `g` is negative, and then `h` is kept.
+        let keep_g = mask32((g4 >> 31) ^ 1);
         let keep_h = !keep_g;
         h0 = (h0 & keep_h) | (g0 & keep_g);
         h1 = (h1 & keep_h) | (g1 & keep_g);
@@ -180,5 +183,53 @@ impl Drop for Poly1305 {
         self.pad.zeroize();
         self.buf.zeroize();
         self.fill.zeroize();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tag of `blocks` under `r = 1` and `s = 0`: the sum of the blocks, each with its high
+    /// bit `2^128`, modulo `2^130 - 5`, so a test chooses the value the final reduction meets.
+    fn sum_tag(blocks: &[[u8; 16]]) -> [u8; 16] {
+        let mut key = [0u8; 32];
+        key[0] = 1;
+        let mut mac = Poly1305::new(&key);
+        for block in blocks {
+            mac.update(block);
+        }
+        mac.finalize()
+    }
+
+    /// A 16-byte little-endian block of the value `2^128 - 1 - below`.
+    fn top_block(below: u8) -> [u8; 16] {
+        let mut block = [0xffu8; 16];
+        block[0] -= below;
+        block
+    }
+
+    /// The final select takes `h` just below the modulus and `h - p` at and above it (#1481: the
+    /// mask of that select passes the optimization barrier, and both of its arms stay right).
+    /// Three blocks sum to `3 * 2^128 + m`, and `p = 2^130 - 5 = 3 * 2^128 + (2^128 - 5)`.
+    #[test]
+    fn the_final_reduction_selects_on_both_sides_of_the_modulus() {
+        let zero = [0u8; 16];
+        let small = |value: u8| {
+            let mut tag = [0u8; 16];
+            tag[0] = value;
+            tag
+        };
+        // h = p - 1: below the modulus, kept. Its low 128 bits are 2^128 - 6.
+        assert_eq!(sum_tag(&[top_block(5), zero, zero]), top_block(5));
+        // h = p: reduced to 0.
+        assert_eq!(sum_tag(&[top_block(4), zero, zero]), small(0));
+        // h = p + 1 up to p + 4 = 2^130 - 1, the largest value below 2^130: reduced to 1 up to 4.
+        assert_eq!(sum_tag(&[top_block(3), zero, zero]), small(1));
+        assert_eq!(sum_tag(&[top_block(0), zero, zero]), small(4));
+        // h = 2^128 + 1, one block of the value 1: far below the modulus, kept.
+        let mut one = [0u8; 16];
+        one[0] = 1;
+        assert_eq!(sum_tag(&[one]), one);
     }
 }

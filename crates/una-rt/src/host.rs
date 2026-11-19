@@ -366,13 +366,22 @@ pub fn files_write(path: i64, content: i64) -> i64 {
 }
 
 /// `Keys.hmac(key_name, data)`.
+///
+/// The key is read where the run holds it (#1481): the operation takes a reference to the run's
+/// table of keys, a count and never a copy of a key, and the HMAC reads the key there. The key's
+/// name and the data are read in place in the heap too, so the operation leaves no copy of the
+/// key or of the data behind it. Time O(length of the data).
 pub fn keys_hmac(key_name: i64, data: i64) -> i64 {
-    let key = with_state(|state| state.keys.get(&values::text_value(key_name)).cloned()).flatten();
-    match key {
-        Some(key) => values::hashed_word(una_interp::hmac_sha256(
-            &key,
-            values::text_value(data).as_bytes(),
-        )),
+    let Some(keys) = with_state(|state| Arc::clone(&state.keys)) else {
+        return failed(UNKNOWN_KEY);
+    };
+    // The HMAC runs under the heap's borrow and does not call back into the heap.
+    let mac = values::with_texts(key_name, data, |name, data| {
+        keys.get(name)
+            .map(|key| una_interp::hmac_sha256(key, data.as_bytes()))
+    });
+    match mac {
+        Some(mac) => values::hashed_word(mac),
         None => failed(UNKNOWN_KEY),
     }
 }
@@ -1100,6 +1109,48 @@ pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
 mod tests {
     use super::http_error_index;
     use una_http::client::Error;
+
+    /// `Keys.hmac` over the key in the run's table (#1481): the HMAC of RFC 4231 test case 2,
+    /// an unknown key and a key name that is not a text, with the table left as it was, held by
+    /// the run alone and its key unchanged.
+    #[test]
+    fn keys_hmac_reads_the_key_in_the_table_of_the_run() {
+        use crate::runtime::with_state;
+        use crate::values;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        std::thread::spawn(|| {
+            crate::runtime::install_test_state_as("0".to_owned(), false, String::new());
+            let keys = BTreeMap::from([("phone".to_owned(), b"Jefe".to_vec())]);
+            with_state(|state| state.keys = Arc::new(keys));
+            let held = || with_state(|state| Arc::strong_count(&state.keys));
+            assert_eq!(held(), Some(1));
+            let data = values::text_word("what do ya want for nothing?".to_owned());
+            let mac = super::keys_hmac(values::text_word("phone".to_owned()), data);
+            assert_eq!(super::host_failed(), 0);
+            assert_eq!(
+                una_interp::hex(&values::bytes(mac)),
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+            );
+            // The same operation again gives an equal value, a new object.
+            let again = super::keys_hmac(values::text_word("phone".to_owned()), data);
+            assert_ne!(mac, again);
+            assert_eq!(values::equal_at(0, mac, again), Some(true));
+            // An unknown key, and a key name that is not a text (it reads as the empty text).
+            for name in [values::text_word("other".to_owned()), mac] {
+                assert_eq!(super::keys_hmac(name, data), super::UNKNOWN_KEY);
+                assert_eq!(super::host_failed(), 1);
+            }
+            // The operation holds no reference to the table once it returns, and the key is the
+            // one the run loaded.
+            assert_eq!(held(), Some(1));
+            let key = with_state(|state| state.keys.get("phone").cloned()).flatten();
+            assert_eq!(key.as_deref(), Some(&b"Jefe"[..]));
+            drop(crate::runtime::leave_task());
+        })
+        .join()
+        .unwrap_or_else(|_| panic!("the test thread panicked"));
+    }
 
     #[test]
     fn an_operation_site_without_its_outcome_label_fails_to_load() {
