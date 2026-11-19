@@ -14,10 +14,11 @@ mod registry;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use registry::{NOW, TestRegistry, hash_hex, key_text, keypair};
+use registry::{NOW, TestRegistry, hash_hex, key_text, keypair, walked, walked_root};
 use una_project::client::{
     Failure, Floors, Misbehavior, Omission, OpenError, Point, Registry, owner_of, shown,
 };
+use una_project::itaoca::FloorDigest;
 use una_project::provenance::{Expected, Floor, signed_name, verify};
 use una_project::tlog::merkle::{
     Hash, consistency_proof, inclusion_proof, leaf_hash, node_hash, root as tree_root,
@@ -902,12 +903,18 @@ fn floors_refuse_an_older_root_and_a_point_off_the_lock() {
         &floors,
     );
     assert!(matches!(refused, Err(OpenError::Refused(why)) if why.contains("root version")));
-    // ADR 0122, amendment of 2026-11-09 (L3): the floor's version served with other root
-    // metadata than the one accepted is a fork of the root chain, refused; with the same
-    // digest, or a floor of the earlier form (no digest), the chain is accepted.
-    let first = una_project::tlog::root::digest(&registry.roots[0]);
-    let other = format!("sha256:{}", "0".repeat(64));
-    let at = |digest: Option<&str>| {
+    // ADR 0122, amendments of 2026-11-09 (L3) and of 2026-11-19: the floor's version served
+    // with other root metadata than the one accepted is a fork of the root chain, refused;
+    // with the same digest, of the text, or a floor of the earliest form (no digest), the chain
+    // is accepted. A floor of the form of 2026-11-09 is compared by the whole note's digest, and
+    // a digest of one kind never passes as the other.
+    let whole = una_project::tlog::root::digest(&registry.roots[0]);
+    let text = una_project::tlog::root::text_digest(&registry.roots[0]).unwrap();
+    assert_ne!(whole, text);
+    let zeros = format!("sha256:{}", "0".repeat(64));
+    let first = FloorDigest::Text(text.clone());
+    let other = FloorDigest::Text(zeros.clone());
+    let at = |digest: Option<&FloorDigest>| {
         Registry::open_with(
             "acme",
             &memory,
@@ -926,6 +933,17 @@ fn floors_refuse_an_older_root_and_a_point_off_the_lock() {
     );
     assert!(at(Some(&first)).is_ok());
     assert!(at(None).is_ok());
+    assert!(at(Some(&FloorDigest::Note(whole.clone()))).is_ok());
+    for kind in [
+        FloorDigest::Note(zeros),
+        FloorDigest::Note(text),
+        FloorDigest::Text(whole),
+    ] {
+        assert!(
+            matches!(at(Some(&kind)), Err(OpenError::Refused(why)) if why.contains("forked")),
+            "{kind:?}"
+        );
+    }
     let mut client = open(&memory, &registry).unwrap();
     let size = client.point.checkpoint.size;
     let own = hash_hex(&client.point.checkpoint.root);
@@ -1105,13 +1123,17 @@ fn floors_never_move_backwards() {
     );
     assert_eq!(size_of(&itaoca.load_checkpoint(&id).unwrap().unwrap()), 39);
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-    itaoca.store_root_version(&id, 3, &digest('a')).unwrap();
-    itaoca.store_root_version(&id, 2, &digest('b')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(3, &digest('a'))])
+        .unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(2, &digest('b'))])
+        .unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         Some(RootFloor {
             version: 3,
-            digest: Some(digest('a'))
+            digest: Some(FloorDigest::Text(digest('a')))
         })
     );
     // The lock file stays; its existence means nothing.
@@ -2650,12 +2672,25 @@ fn a_provenance_carries_the_prefix_proof_of_an_older_point() {
         una_project::provenance::parse(&encoded).unwrap(),
         provenance
     );
-    let digests: Vec<String> = registry
+    let digests: Vec<FloorDigest> = registry
         .roots
         .iter()
-        .map(|document| una_project::tlog::root::digest(document))
+        .map(|document| FloorDigest::Text(una_project::tlog::root::text_digest(document).unwrap()))
+        .collect();
+    let notes: Vec<FloorDigest> = registry
+        .roots
+        .iter()
+        .map(|document| FloorDigest::Note(una_project::tlog::root::digest(document)))
         .collect();
     for floor in [
+        Floor::At {
+            version: 1,
+            digest: Some(notes[0].clone()),
+        },
+        Floor::At {
+            version: 2,
+            digest: Some(notes[1].clone()),
+        },
         Floor::None,
         Floor::At {
             version: 1,
@@ -2908,13 +2943,32 @@ fn the_offline_load_is_anchored_to_the_floor_and_the_lock() {
 fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
     let (registry, at) = rotated_with_older_point(2);
     let (provenance, expected) = provenance_at(&registry, &at);
-    let first = una_project::tlog::root::digest(&registry.roots[0]);
-    let second = una_project::tlog::root::digest(&registry.roots[1]);
+    let first = una_project::tlog::root::text_digest(&registry.roots[0]).unwrap();
+    let second = una_project::tlog::root::text_digest(&registry.roots[1]).unwrap();
     let other = format!("sha256:{}", "0".repeat(64));
     let at = |version: u64, digest: &str| Floor::At {
         version,
-        digest: Some(digest.to_owned()),
+        digest: Some(FloorDigest::Text(digest.to_owned())),
     };
+    // A floor of the form of 2026-11-09: by the digest of the whole signed note.
+    let whole = |version: u64, digest: &str| Floor::At {
+        version,
+        digest: Some(FloorDigest::Note(digest.to_owned())),
+    };
+    let first_note = una_project::tlog::root::digest(&registry.roots[0]);
+    let second_note = una_project::tlog::root::digest(&registry.roots[1]);
+    assert!(verify(&provenance, &expected, &whole(2, &second_note)).is_ok());
+    assert!(verify(&provenance, &expected, &whole(1, &first_note)).is_ok());
+    for floor in [
+        whole(2, &other),
+        whole(2, &second),
+        whole(1, &first),
+        at(2, &second_note),
+        at(1, &first_note),
+    ] {
+        let forked = verify(&provenance, &expected, &floor);
+        assert!(refused(forked.clone(), "forked"), "{floor:?}: {forked:?}");
+    }
     assert!(verify(&provenance, &expected, &at(2, &second)).is_ok());
     assert!(verify(&provenance, &expected, &at(1, &first)).is_ok());
     for floor in [at(2, &other), at(2, &first), at(1, &other), at(1, &second)] {
@@ -2955,6 +3009,11 @@ fn a_floor_with_a_digest_refuses_a_fork_of_the_root_chain() {
         at(2, &second)
     );
     assert_eq!(at(3, &other).at_least(2, &second), at(3, &other));
+    assert_eq!(
+        whole(2, &second_note).at_least(2, &second),
+        whole(2, &second_note)
+    );
+    assert_eq!(whole(1, &first_note).at_least(2, &second), at(2, &second));
     assert_eq!(
         Floor::Unreadable("denied".to_owned()).at_least(2, &second),
         Floor::Unreadable("denied".to_owned())
@@ -2997,14 +3056,14 @@ fn a_store_that_finds_another_digest_under_the_lock_is_a_fork() {
 
     // Both runs read the floor of the earlier form, `2`. The first stores its digest.
     write("2\n");
-    itaoca.store_root_version(&id, 2, &a).unwrap();
+    itaoca.store_root_chain(&id, &[walked(2, &a)]).unwrap();
     // The second walked another root metadata of version 2: a fork, and the floor is kept.
-    let fork = itaoca.store_root_version(&id, 2, &b).unwrap_err();
+    let fork = itaoca.store_root_chain(&id, &[walked(2, &b)]).unwrap_err();
     assert_eq!(
         fork,
         FloorRefusal::Forked {
             version: 2,
-            held: a.clone(),
+            held: FloorDigest::Text(a.clone()),
             offered: b.clone(),
         }
     );
@@ -3014,62 +3073,92 @@ fn a_store_that_finds_another_digest_under_the_lock_is_a_fork() {
             && fork.message().contains("the floor is kept"),
         "{fork:?}"
     );
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("2 text {a}\n")
+    );
     // Nothing half-written: the floor, the lock file, and no fresh directory beside them.
     assert_eq!(entries(), ["floor.lock", "root-version"]);
     // A second run with the same digest: no failure, the floor as it is.
-    itaoca.store_root_version(&id, 2, &a).unwrap();
-    itaoca.store_root_chain(&id, &[(1, &c), (2, &a)]).unwrap();
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+    itaoca.store_root_chain(&id, &[walked(2, &a)]).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(1, &c), walked(2, &a)])
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("2 text {a}\n")
+    );
 
     // Both runs read no floor at all: the same comparison.
     std::fs::remove_file(&file).unwrap();
-    itaoca.store_root_chain(&id, &[(1, &c), (2, &a)]).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(1, &c), walked(2, &a)])
+        .unwrap();
     let fork = itaoca
-        .store_root_chain(&id, &[(1, &c), (2, &b)])
+        .store_root_chain(&id, &[walked(1, &c), walked(2, &b)])
         .unwrap_err();
     assert!(
         matches!(fork, FloorRefusal::Forked { version: 2, .. }),
         "{fork:?}"
     );
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("2 text {a}\n")
+    );
 
     // A chain that goes higher but holds the floor's version with another digest forked below
     // its last version: refused, and the floor does not move to it.
     let fork = itaoca
-        .store_root_chain(&id, &[(1, &c), (2, &b), (3, &d)])
+        .store_root_chain(&id, &[walked(1, &c), walked(2, &b), walked(3, &d)])
         .unwrap_err();
     assert_eq!(
         fork,
         FloorRefusal::Forked {
             version: 2,
-            held: a.clone(),
+            held: FloorDigest::Text(a.clone()),
             offered: b.clone(),
         }
     );
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("2 {a}\n"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("2 text {a}\n")
+    );
     // A higher version whose chain holds the floor's version with the stored digest: stored.
     itaoca
-        .store_root_chain(&id, &[(1, &c), (2, &a), (3, &d)])
+        .store_root_chain(&id, &[walked(1, &c), walked(2, &a), walked(3, &d)])
         .unwrap();
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("3 {d}\n"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("3 text {d}\n")
+    );
     // A run whose chain ends below the floor stored meanwhile is not stored, and is no fork:
     // the floor holds one digest, of a version that chain does not reach.
-    itaoca.store_root_chain(&id, &[(1, &c), (2, &b)]).unwrap();
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("3 {d}\n"));
+    itaoca
+        .store_root_chain(&id, &[walked(1, &c), walked(2, &b)])
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("3 text {d}\n")
+    );
     assert_eq!(entries(), ["floor.lock", "root-version"]);
 
     // What is not a chain is not stored, and is not a fork.
+    let mut half = walked(4, &a);
+    half.note = "sha256:zz".to_owned();
     for chain in [
-        &[][..],
-        &[(2, a.as_str()), (2, a.as_str())][..],
-        &[(3, d.as_str()), (2, a.as_str())][..],
-        &[(3, "sha256:zz"), (4, a.as_str())][..],
+        vec![],
+        vec![walked(2, &a), walked(2, &a)],
+        vec![walked(3, &d), walked(2, &a)],
+        vec![walked(3, "sha256:zz"), walked(4, &a)],
+        vec![half],
     ] {
-        let refusal = itaoca.store_root_chain(&id, chain).unwrap_err();
+        let refusal = itaoca.store_root_chain(&id, &chain).unwrap_err();
         assert!(matches!(refusal, FloorRefusal::NotStored(_)), "{refusal:?}");
     }
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("3 {d}\n"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("3 text {d}\n")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3112,7 +3201,7 @@ fn stores_of_different_digests_at_once_agree_on_one() {
                         })
                     );
                     barrier.wait();
-                    let stored = itaoca.store_root_version(&id, 3, &digest);
+                    let stored = itaoca.store_root_chain(&id, &[walked(3, &digest)]);
                     (digest, stored)
                 })
             })
@@ -3121,10 +3210,11 @@ fn stores_of_different_digests_at_once_agree_on_one() {
         let text = std::fs::read_to_string(&file).unwrap();
         let floor = RootFloor::parse(&text).unwrap();
         let held = floor.digest.clone().unwrap();
+        assert!(matches!(held, FloorDigest::Text(_)), "round {round}");
         assert_eq!(floor.version, 3, "round {round}");
         let mut passed = 0;
         for (digest, stored) in &results {
-            if *digest == held {
+            if *digest == held.value() {
                 assert_eq!(*stored, Ok(()), "round {round}");
                 passed += 1;
             } else {
@@ -3144,12 +3234,14 @@ fn stores_of_different_digests_at_once_agree_on_one() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The root-version floor file (`spec/30 §14`, Floors; ADR 0122, amendment of 2026-11-09, L3):
-/// stored as `<n> sha256:<hex>` and a line feed, read back the same; the earlier form `<n>` is
-/// read as a floor without a digest; any other content is unreadable (U7013 where a load
-/// reports it), never no floor; and a stored floor is replaced only by a higher version, never
-/// by an equal one with another digest (refused as a fork), nor by a lower one, while a floor of
-/// the earlier form takes the digest of its own version (#1970).
+/// The root-version floor file (`spec/30 §14`, Floors; ADR 0122, amendments of 2026-11-09, L3,
+/// and of 2026-11-19): stored as `<n> text sha256:<hex>` and a line feed, the digest of the
+/// text of that root metadata, read back the same; the earlier forms, `<n> sha256:<hex>`, the
+/// digest of the whole signed note, and `<n>`, are read as what they are; any other content is
+/// unreadable (U7013 where a load reports it), never no floor; and a stored floor is replaced
+/// only by a higher version, never by an equal one with another digest (refused as a fork), nor
+/// by a lower one, while a floor of the earliest form takes the digest of its own version
+/// (#1970).
 #[test]
 fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     use una_project::itaoca::{FloorRefusal, Itaoca, RootFloor, registry_id};
@@ -3161,44 +3253,63 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     let id = registry_id("sha256:root-floor");
     let file = dir.join("registry").join(&id).join("root-version");
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-    let floor = |version: u64, digest: Option<String>| Some(RootFloor { version, digest });
+    let floor = |version: u64, digest: Option<String>| {
+        Some(RootFloor {
+            version,
+            digest: digest.map(FloorDigest::Text),
+        })
+    };
 
     assert_eq!(itaoca.load_root_version(&id).unwrap(), None);
-    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(2, &digest('a'))])
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("2 {}\n", digest('a'))
+        format!("2 text {}\n", digest('a'))
     );
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         floor(2, Some(digest('a')))
     );
     // Equal, with the same digest: kept as it is.
-    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(2, &digest('a'))])
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("2 {}\n", digest('a'))
+        format!("2 text {}\n", digest('a'))
     );
     // Equal, with another digest: a fork of the root chain, refused, never stored.
-    let fork = itaoca.store_root_version(&id, 2, &digest('b')).unwrap_err();
+    let fork = itaoca
+        .store_root_chain(&id, &[walked(2, &digest('b'))])
+        .unwrap_err();
     assert!(matches!(fork, FloorRefusal::Forked { .. }), "{fork:?}");
     assert!(fork.message().contains("the floor is kept"), "{fork:?}");
     // Lower: never stored.
-    itaoca.store_root_version(&id, 1, &digest('c')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(1, &digest('c'))])
+        .unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         floor(2, Some(digest('a')))
     );
     // Higher: stored, with its digest.
-    itaoca.store_root_version(&id, 3, &digest('d')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(3, &digest('d'))])
+        .unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         floor(3, Some(digest('d')))
     );
     // A digest that is not one is never stored.
     for refusal in [
-        itaoca.store_root_version(&id, 4, "sha256:zz").unwrap_err(),
-        itaoca.store_root_version(&id, 0, &digest('e')).unwrap_err(),
+        itaoca
+            .store_root_chain(&id, &[walked(4, "sha256:zz")])
+            .unwrap_err(),
+        itaoca
+            .store_root_chain(&id, &[walked(0, &digest('e'))])
+            .unwrap_err(),
     ] {
         assert!(matches!(refusal, FloorRefusal::NotStored(_)), "{refusal:?}");
     }
@@ -3207,23 +3318,31 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         floor(3, Some(digest('d')))
     );
 
-    // The earlier form, as builds before v0.4.0 write it: the version alone, read without a
-    // digest. A lower version leaves it as it is; the equal version takes its digest, in the new
-    // form (#1970), after which another digest at that version is a fork, refused, and a lower
+    // The earliest form, as builds before v0.4.0 write it: the version alone, read without a
+    // digest. A lower version leaves it as it is; the equal version takes its digest, of the
+    // text (#1970), after which another digest at that version is a fork, refused, and a lower
     // one is still not stored; a higher one replaces it.
     std::fs::remove_file(&file).unwrap();
     std::fs::write(&file, "3\n").unwrap();
     assert_eq!(itaoca.load_root_version(&id).unwrap(), floor(3, None));
-    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(2, &digest('a'))])
+        .unwrap();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "3\n");
-    itaoca.store_root_version(&id, 3, &digest('a')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(3, &digest('a'))])
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("3 {}\n", digest('a'))
+        format!("3 text {}\n", digest('a'))
     );
-    let fork = itaoca.store_root_version(&id, 3, &digest('b')).unwrap_err();
+    let fork = itaoca
+        .store_root_chain(&id, &[walked(3, &digest('b'))])
+        .unwrap_err();
     assert!(matches!(fork, FloorRefusal::Forked { .. }), "{fork:?}");
-    itaoca.store_root_version(&id, 2, &digest('b')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(2, &digest('b'))])
+        .unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         floor(3, Some(digest('a')))
@@ -3231,10 +3350,16 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
     // A digest that is not one never upgrades a floor of the earlier form.
     std::fs::remove_file(&file).unwrap();
     std::fs::write(&file, "3\n").unwrap();
-    assert!(itaoca.store_root_version(&id, 3, "").is_err());
-    assert!(itaoca.store_root_version(&id, 3, "sha256:zz").is_err());
+    assert!(itaoca.store_root_chain(&id, &[walked(3, "")]).is_err());
+    assert!(
+        itaoca
+            .store_root_chain(&id, &[walked(3, "sha256:zz")])
+            .is_err()
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "3\n");
-    itaoca.store_root_version(&id, 4, &digest('a')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(4, &digest('a'))])
+        .unwrap();
     assert_eq!(
         itaoca.load_root_version(&id).unwrap(),
         floor(4, Some(digest('a')))
@@ -3263,6 +3388,23 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         format!("3 sha256:{hex}\r\n"),
         "99999999999999999999\n".to_owned(),
         format!("3 sha256:{hex} 4\n"),
+        "3 text\n".to_owned(),
+        "3 text \n".to_owned(),
+        format!("3 text  sha256:{hex}\n"),
+        format!("3  text sha256:{hex}\n"),
+        format!("3 text sha256:{hex} \n"),
+        format!("3 text sha256:{hex} 4\n"),
+        format!("3 text sha256:{hex}"),
+        format!("3 text sha256:{}\n", "a".repeat(63)),
+        format!("3 text sha512:{hex}\n"),
+        format!("3 text {hex}\n"),
+        format!("3 TEXT sha256:{hex}\n"),
+        format!("3 note sha256:{hex}\n"),
+        format!("3 text text sha256:{hex}\n"),
+        format!("3 sha256:{hex} text\n"),
+        format!("text sha256:{hex}\n"),
+        format!("0 text sha256:{hex}\n"),
+        format!("3\ttext sha256:{hex}\n"),
     ] {
         std::fs::remove_file(&file).unwrap();
         std::fs::write(&file, &text).unwrap();
@@ -3280,10 +3422,32 @@ fn the_root_version_floor_file_round_trips_and_moves_only_up() {
         },
         RootFloor {
             version: u64::MAX,
-            digest: Some(digest('f')),
+            digest: Some(FloorDigest::Text(digest('f'))),
+        },
+        RootFloor {
+            version: u64::MAX,
+            digest: Some(FloorDigest::Note(digest('f'))),
         },
     ] {
         assert_eq!(RootFloor::parse(&floor.line().unwrap()), Some(floor));
+    }
+    // The three forms, each read as what it is, and the longest one within the read's bound.
+    for (text, digest) in [
+        ("3\n".to_owned(), None),
+        (
+            format!("3 sha256:{hex}\n"),
+            Some(FloorDigest::Note(format!("sha256:{hex}"))),
+        ),
+        (
+            format!("18446744073709551615 text sha256:{hex}\n"),
+            Some(FloorDigest::Text(format!("sha256:{hex}"))),
+        ),
+    ] {
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, &text).unwrap();
+        let read = itaoca.load_root_version(&id).unwrap().unwrap();
+        assert_eq!(read.digest, digest, "{text:?}");
+        assert_eq!(read.line().unwrap(), text);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -3332,101 +3496,344 @@ fn open_and_store<'t>(
     let floors = Floors {
         checkpoint: None,
         root_version: stored.as_ref().map(|floor| floor.version),
-        root_digest: stored.as_ref().and_then(|floor| floor.digest.as_deref()),
+        root_digest: stored.as_ref().and_then(|floor| floor.digest.as_ref()),
     };
     let client = Registry::open_with("acme", transport, &registry.pin(), point, &floors)?;
-    let chain = client.root_chain();
-    let chain: Vec<(u64, &str)> = chain
-        .iter()
-        .map(|(version, digest)| (*version, digest.as_str()))
-        .collect();
-    match itaoca.store_root_chain(&id, &chain) {
+    match itaoca.store_root_chain(&id, &client.root_chain()) {
         Ok(()) => Ok((client, None)),
         Err(FloorRefusal::Forked { .. }) => Err(OpenError::Refused("forked".to_owned())),
         Err(FloorRefusal::NotStored(why)) => Ok((client, Some(why))),
     }
 }
 
-/// #2132, the present behavior, reproduced: a place that holds no key poisons the root-version
-/// floor for good. The lock was made under root 1; the registry has since rotated to root 2
-/// with the same witnesses. A place serves the honest root 2 with one junk signature line more
-/// and no latest checkpoint. The altered note verifies (lines of unknown keys are ignored), no
-/// accepted checkpoint names root 2 (the lock's point names root 1, and the prefix proof is
-/// missing, which fails nothing while no retired witness cosigned the point), the release is
-/// read, and the floor is stored with the digest of the altered note, which covers its
-/// signature lines. From then on the honest registry is refused as forked, at the lock's point
-/// and at its latest checkpoint, and an honest provenance of the same point is refused offline.
+/// #2132, fixed by ADR 0122, amendment of 2026-11-19: a place that holds no key cannot poison
+/// the root-version floor. The lock was made under root 1; the registry has since rotated to
+/// root 2 with the same witnesses. A place serves the honest root 2 in another form, its
+/// signature lines changed with no key (a junk line added, the lines in another order, or a
+/// further root key's line present or dropped), and no latest checkpoint, so that no accepted
+/// checkpoint names root 2. Each form verifies and is accepted, as before; the floor stored
+/// holds the digest of the text, which is the honest note's too, so the honest registry is
+/// accepted afterwards at the lock's point and at its latest checkpoint, and the honest
+/// provenance loads offline. Before the fix the floor held the digest of the altered note,
+/// and every one of those was refused as forked (U7010).
 ///
-/// This test documents the defect and flips when #2132 is fixed: it then asserts that the
-/// honest registry is accepted after the altered copy.
+/// What the floor still refuses: another text of version 2, which a threshold of root keys
+/// signed.
 #[test]
-fn a_place_with_no_key_poisons_the_root_floor() {
+fn a_place_with_no_key_cannot_poison_the_root_floor() {
     use una_project::itaoca::{Itaoca, RootFloor, registry_id};
-    use una_project::tlog::root::digest;
+    use una_project::tlog::root::{digest, text_digest};
 
     let (registry, at) = rotated_under_the_same_witnesses();
     let honest = Memory {
         files: registry.files.clone(),
     };
-    let altered = with_a_junk_line(&registry.roots[1]);
-    assert_ne!(digest(&altered), digest(&registry.roots[1]));
-    let mut hostile = Memory {
-        files: registry.files.clone(),
-    };
-    hostile.files.remove("checkpoint");
-    hostile
-        .files
-        .insert("root/2".to_owned(), altered.clone().into_bytes());
-    let itaoca = Itaoca {
-        root: scratch("root-floor-poison"),
-    };
-    let id = registry_id(&registry.pin());
-    // What the machine stored when it locked, under root 1.
-    itaoca.store_root_version(&id, 1, &registry.pin()).unwrap();
-    // The honest provenance of the lock's point, written from the honest registry.
-    let (provenance, expected) = provenance_at(&registry, &at);
-
-    // The fetch from the hostile place: accepted, with no note, and the release reads.
-    let (mut client, note) = open_and_store(&itaoca, &hostile, &registry, &at).unwrap();
-    assert_eq!(note, None);
-    assert_eq!(client.last_root(), Some((2, digest(&altered).as_str())));
-    client
-        .release("acme/ledger", &Version::parse_full("0.3.1").unwrap())
-        .unwrap();
-    drop(client);
-    // The floor holds root version 2 with the digest of the altered note.
-    let poisoned = RootFloor {
+    let second = &registry.roots[1];
+    let text = second.split_once("\n\n").unwrap().0.to_owned() + "\n";
+    let lines: Vec<&str> = second
+        .split_once("\n\n")
+        .unwrap()
+        .1
+        .split_terminator('\n')
+        .collect();
+    assert_eq!(lines.len(), 2);
+    let third = &registry.keys.roots[2];
+    let forms = [
+        ("a junk line", with_a_junk_line(second)),
+        (
+            "another order",
+            format!("{text}\n{}\n{}\n", lines[1], lines[0]),
+        ),
+        (
+            "a further signer",
+            format!("{second}{}", registry::sign_line(&third.0, &third.1, &text)),
+        ),
+    ];
+    let floor_of_the_text = RootFloor {
         version: 2,
-        digest: Some(digest(&altered)),
+        digest: Some(FloorDigest::Text(text_digest(second).unwrap())),
     };
-    assert_eq!(
-        itaoca.load_root_version(&id).unwrap(),
-        Some(poisoned.clone())
-    );
+    // The honest provenance of the lock's point, written from the honest registry, and what
+    // the lock says: it was written under root 1, so it records `last root 1`.
+    let (provenance, mut expected) = provenance_at(&registry, &at);
+    expected.last_root = 1;
+    expected.last_root_digest = registry.pin();
+    for (name, altered) in &forms {
+        assert_ne!(digest(altered), digest(second), "{name}");
+        assert_eq!(
+            text_digest(altered).unwrap(),
+            text_digest(second).unwrap(),
+            "{name}"
+        );
+        let mut hostile = Memory {
+            files: registry.files.clone(),
+        };
+        hostile.files.remove("checkpoint");
+        hostile
+            .files
+            .insert("root/2".to_owned(), altered.clone().into_bytes());
+        let itaoca = Itaoca {
+            root: scratch("root-floor-poison"),
+        };
+        let id = registry_id(&registry.pin());
+        // What the machine stored when it locked, under root 1.
+        itaoca
+            .store_root_chain(&id, &[walked_root(1, &registry.roots[0])])
+            .unwrap();
 
-    // The honest registry is refused from then on, whatever the point.
-    for point in [at.clone(), Point::Latest { now: NOW + 60 }] {
-        match open_and_store(&itaoca, &honest, &registry, &point) {
+        // The fetch from the hostile place: accepted, with no note, and the release reads.
+        let (mut client, note) = open_and_store(&itaoca, &hostile, &registry, &at).unwrap();
+        assert_eq!(note, None, "{name}");
+        assert_eq!(client.last_root(), Some((2, digest(altered).as_str())));
+        let release = client
+            .release("acme/ledger", &Version::parse_full("0.3.1").unwrap())
+            .unwrap();
+        // The provenance it writes holds the altered note.
+        let key = release.signer().unwrap().clone();
+        let from_hostile = client.provenance(&release, &key).unwrap();
+        assert_eq!(from_hostile.roots[1], *altered);
+        drop(client);
+        // The floor holds root version 2 with the digest of the text: the honest note's.
+        assert_eq!(
+            itaoca.load_root_version(&id).unwrap(),
+            Some(floor_of_the_text.clone()),
+            "{name}"
+        );
+
+        // The honest registry is accepted from then on, whatever the point, and stores nothing
+        // new.
+        for point in [at.clone(), Point::Latest { now: NOW + 60 }] {
+            match open_and_store(&itaoca, &honest, &registry, &point) {
+                Ok((_, note)) => assert_eq!(note, None, "{name}"),
+                Err(error) => panic!("{name}: {}", error.message()),
+            }
+        }
+        assert_eq!(
+            itaoca.load_root_version(&id).unwrap(),
+            Some(floor_of_the_text.clone())
+        );
+        // Offline, the floor accepts the honest provenance and the one written from the
+        // hostile place alike: one root text.
+        let floor = Floor::At {
+            version: 2,
+            digest: floor_of_the_text.digest.clone(),
+        };
+        let offline = verify(&provenance, &expected, &floor);
+        assert!(offline.is_ok(), "{name}: {offline:?}");
+        let offline = verify(&from_hostile, &expected, &floor);
+        assert!(offline.is_ok(), "{name}: {offline:?}");
+
+        // Another text of version 2, signed by the threshold of the root keys (here it expires
+        // a second later): the fork the floor is for, refused, and the floor is kept.
+        let roots: Vec<&una_project::tlog::note::Key> =
+            registry.keys.roots.iter().map(|(_, key)| key).collect();
+        let other_text = registry::root_text_with(
+            "acme",
+            2,
+            registry::EXPIRES + 1,
+            &registry.keys,
+            &roots,
+            2,
+            &[],
+        );
+        let forked = registry::signed(
+            &other_text,
+            &[&registry.keys.roots[0], &registry.keys.roots[1]],
+        );
+        let mut fork = Memory {
+            files: registry.files.clone(),
+        };
+        fork.files.remove("checkpoint");
+        fork.files
+            .insert("root/2".to_owned(), forked.clone().into_bytes());
+        // With no floor, that place is accepted at the lock's point, as the altered note was.
+        let unanchored =
+            Registry::open_with("acme", &fork, &registry.pin(), &at, &Floors::default());
+        assert!(unanchored.is_ok(), "{:?}", unanchored.err());
+        match open_and_store(&itaoca, &fork, &registry, &at) {
             Err(OpenError::Refused(why)) => assert!(
-                why.contains("root version 2 with another digest") && why.contains("forked"),
+                why.contains("root version 2 with another digest of the text")
+                    && why.contains("forked"),
                 "{why}"
             ),
             Err(other) => panic!("{}", other.message()),
-            Ok(_) => panic!("#2132 is fixed: flip this test"),
+            Ok(_) => panic!("{name}: a fork of the root chain accepted"),
         }
+        assert_eq!(
+            itaoca.load_root_version(&id).unwrap(),
+            Some(floor_of_the_text.clone())
+        );
     }
-    // And so is the honest provenance, offline.
-    let offline = verify(
-        &provenance,
-        &expected,
-        &Floor::At {
+}
+
+/// ADR 0122, amendment of 2026-11-19, item 5: a floor of the form of 2026-11-09, the digest of
+/// the whole signed note, is compared as it was stored, and is upgraded to the digest of the
+/// text once, under the lock, only by a chain that holds its version with exactly that note,
+/// and then to the digest of that same note's text. A note of another whole-note digest, the
+/// same text in another form included, is refused as before and the floor is kept byte for
+/// byte, so the upgrade accepts nothing the stored floor refused. A higher version replaces it
+/// by the ordinary rule; a chain that ends below it changes nothing.
+#[test]
+fn a_floor_of_the_whole_note_is_upgraded_once_and_only_by_the_same_note() {
+    use una_project::itaoca::{FloorRefusal, Itaoca, RootFloor, registry_id};
+    use una_project::tlog::root::{digest, text_digest};
+
+    let (registry, at) = rotated_under_the_same_witnesses();
+    let (first, second) = (&registry.roots[0], &registry.roots[1]);
+    let altered = with_a_junk_line(second);
+    let note = digest(second);
+    let text = text_digest(second).unwrap();
+    let itaoca = Itaoca {
+        root: scratch("root-floor-upgrade"),
+    };
+    let id = registry_id(&registry.pin());
+    let dir = itaoca.root.join("registry").join(&id);
+    let file = dir.join("root-version");
+    let write = |line: &str| {
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(&file);
+        std::fs::write(&file, line).unwrap();
+    };
+    let read = || std::fs::read_to_string(&file).unwrap();
+    let old = format!("2 {note}\n");
+    let new = format!("2 text {text}\n");
+
+    // As v0.4.1 and earlier stored it.
+    write(&old);
+    assert_eq!(
+        itaoca.load_root_version(&id).unwrap(),
+        Some(RootFloor {
             version: 2,
-            digest: poisoned.digest.clone(),
-        },
+            digest: Some(FloorDigest::Note(note.clone())),
+        })
     );
-    assert!(refused(offline.clone(), "forked"), "{offline:?}");
-    // Nothing repairs it: the floor is as the hostile place left it.
-    assert_eq!(itaoca.load_root_version(&id).unwrap(), Some(poisoned));
+    // The same text in another form: another whole-note digest, refused as it was before, and
+    // nothing is upgraded.
+    let fork = itaoca
+        .store_root_chain(&id, &[walked_root(1, first), walked_root(2, &altered)])
+        .unwrap_err();
+    assert_eq!(
+        fork,
+        FloorRefusal::Forked {
+            version: 2,
+            held: FloorDigest::Note(note.clone()),
+            offered: digest(&altered),
+        }
+    );
+    assert!(fork.message().contains("a floor of the earlier form"));
+    assert_eq!(read(), old);
+    // Nor by a chain that goes higher past another note of version 2.
+    let fork = itaoca
+        .store_root_chain(
+            &id,
+            &[
+                walked_root(1, first),
+                walked_root(2, &altered),
+                walked(3, &format!("sha256:{}", "3".repeat(64))),
+            ],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(fork, FloorRefusal::Forked { version: 2, .. }),
+        "{fork:?}"
+    );
+    assert_eq!(read(), old);
+    // A digest that is the stored one, but offered as a text's: not the same note.
+    let mut posing = walked_root(2, &altered);
+    posing.text.clone_from(&note);
+    assert!(matches!(
+        itaoca.store_root_chain(&id, &[posing]).unwrap_err(),
+        FloorRefusal::Forked { version: 2, .. }
+    ));
+    assert_eq!(read(), old);
+    // A chain that ends below the floor: not stored, nothing upgraded.
+    itaoca
+        .store_root_chain(&id, &[walked_root(1, first)])
+        .unwrap();
+    assert_eq!(read(), old);
+    // The client's walk compares such a floor by the whole note too.
+    let floors = Floors {
+        checkpoint: None,
+        root_version: Some(2),
+        root_digest: Some(&FloorDigest::Note(note.clone())),
+    };
+    let honest = Memory {
+        files: registry.files.clone(),
+    };
+    let mut other_form = Memory {
+        files: registry.files.clone(),
+    };
+    other_form
+        .files
+        .insert("root/2".to_owned(), altered.clone().into_bytes());
+    other_form.files.remove("checkpoint");
+    assert!(Registry::open_with("acme", &honest, &registry.pin(), &at, &floors).is_ok());
+    assert!(matches!(
+        Registry::open_with("acme", &other_form, &registry.pin(), &at, &floors),
+        Err(OpenError::Refused(why)) if why.contains("forked") && why.contains("earlier form")
+    ));
+
+    // The chain that holds version 2 with exactly the stored note: the floor takes the digest
+    // of that note's text, at the same version.
+    itaoca
+        .store_root_chain(&id, &[walked_root(1, first), walked_root(2, second)])
+        .unwrap();
+    assert_eq!(read(), new);
+    assert_eq!(
+        itaoca.load_root_version(&id).unwrap(),
+        Some(RootFloor {
+            version: 2,
+            digest: Some(FloorDigest::Text(text.clone())),
+        })
+    );
+    // Once: the next stores of that text, in any form, write nothing.
+    #[cfg(unix)]
+    let written = {
+        use std::os::unix::fs::MetadataExt;
+        || std::fs::metadata(&file).unwrap().ino()
+    };
+    #[cfg(unix)]
+    let before = written();
+    for form in [second.as_str(), altered.as_str()] {
+        itaoca
+            .store_root_chain(&id, &[walked_root(1, first), walked_root(2, form)])
+            .unwrap();
+        assert_eq!(read(), new);
+    }
+    #[cfg(unix)]
+    assert_eq!(written(), before, "the floor was written again");
+    // And from then on the comparison is by the text: another text is a fork, whatever its
+    // whole-note digest, the stored one included.
+    let mut same_note_other_text = walked_root(2, second);
+    same_note_other_text.text = format!("sha256:{}", "0".repeat(64));
+    let fork = itaoca
+        .store_root_chain(&id, &[same_note_other_text])
+        .unwrap_err();
+    assert_eq!(
+        fork,
+        FloorRefusal::Forked {
+            version: 2,
+            held: FloorDigest::Text(text.clone()),
+            offered: format!("sha256:{}", "0".repeat(64)),
+        }
+    );
+    assert_eq!(read(), new);
+
+    // A higher version, from a floor of the earlier form whose note the chain holds: replaced
+    // by the ordinary rule, in the new form.
+    write(&old);
+    let third = format!("sha256:{}", "3".repeat(64));
+    itaoca
+        .store_root_chain(
+            &id,
+            &[
+                walked_root(1, first),
+                walked_root(2, second),
+                walked(3, &third),
+            ],
+        )
+        .unwrap();
+    assert_eq!(read(), format!("3 text {third}\n"));
 }
 
 /// L3 of the review of #2128 (card #2132), the present behavior, reproduced without a clock
@@ -3457,7 +3864,9 @@ fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() 
     itaoca
         .store_checkpoint(&id, &checkpoint(1), &mut |_| Ok(()))
         .unwrap();
-    itaoca.store_root_version(&id, 2, &digest('a')).unwrap();
+    itaoca
+        .store_root_chain(&id, &[walked(2, &digest('a'))])
+        .unwrap();
     let (inside, entered) = channel::<()>();
     let (release, released) = channel::<()>();
     std::thread::scope(|scope| {
@@ -3473,7 +3882,9 @@ fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() 
         });
         entered.recv().unwrap();
         // The other run walked another root metadata of version 2.
-        let refusal = itaoca.store_root_version(id, 2, &digest('b')).unwrap_err();
+        let refusal = itaoca
+            .store_root_chain(id, &[walked(2, &digest('b'))])
+            .unwrap_err();
         assert!(
             matches!(&refusal, FloorRefusal::NotStored(why) if why.contains("held the floor lock for five seconds")),
             "{refusal:?}"
@@ -3482,7 +3893,9 @@ fn a_stalled_checkpoint_store_keeps_another_run_from_comparing_its_root_chain() 
         stalled.join().unwrap().unwrap();
     });
     // With the lock free, the same store is refused as a fork.
-    let refusal = itaoca.store_root_version(&id, 2, &digest('b')).unwrap_err();
+    let refusal = itaoca
+        .store_root_chain(&id, &[walked(2, &digest('b'))])
+        .unwrap_err();
     assert!(
         matches!(refusal, FloorRefusal::Forked { version: 2, .. }),
         "{refusal:?}"
