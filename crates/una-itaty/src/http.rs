@@ -15,7 +15,13 @@
 //! - `/cosign`: a checkpoint's size in decimal, a line feed, and a witness's cosignature line.
 //!
 //! **Limits, before allocation.** A request's head is at most 16 KiB and 64 header lines, read
-//! within 30 seconds; a body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
+//! within 30 seconds. Its first byte arrives within 5 seconds (the first-byte timeout) of the
+//! moment the connection starts to be read, which is when its thread starts, right after its
+//! acceptance; and at every moment the head so far has arrived within the first-byte timeout
+//! and a second per KiB received. So a connection that sends nothing gives its slot back
+//! after 5 seconds, one that sends a byte and stops does a millisecond later, and holding a
+//! slot for the 21 seconds the largest head allows costs its 16 KiB; a head that an honest
+//! client sends whole, in one write, is not concerned. A body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
 //! note, the archive's bound for a publication), and is read with no more than 60 seconds
 //! without progress and at least 64 KiB per second on average past its first minute (the
 //! idle timeout), counted on the bytes that arrived, within a total of the idle timeout and a
@@ -39,25 +45,61 @@
 //! be read to its length ends the connection short of its `Content-Length`.
 //!
 //! **Connections.** Each connection serves one request. At most `max_connections` are served
-//! at once, from the request's first byte to the response's last: a connection holds its slot
-//! while its response is written. [`serve`] takes the slot before it starts the connection's
-//! thread, so it runs at most `max_connections` connection threads; a connection past the
-//! bound is answered 503 by one write that never waits, then closed, and starts no thread. A
-//! thread that cannot start closes its connection and gives its slot back, and the loop goes
-//! on accepting. An `accept` that fails for one connection goes on at once, and one that
-//! fails for want of descriptors or memory goes on after a pause that doubles from 5 ms to a
-//! second; any other failure of the listener ends [`serve`]. At most two
-//! publications are read and checked at once, since each holds its archive in memory: a
-//! publication takes its slot once its head is checked, before its body is read.
+//! at once, each from its acceptance to its response's last byte: a connection takes its slot
+//! when it is accepted, before any byte of its request, and holds it while its response is
+//! written. Of those, at most `max_connections_per_peer` come from one peer, which is an IPv4
+//! address or an IPv6 /64 prefix, so one such peer cannot hold every slot. That is the whole
+//! of the protection: at the defaults four peers hold every slot between them, and a client
+//! with four addresses or a wider IPv6 prefix is not bounded by it. Connections from a
+//! loopback address are not bounded per peer, since they are a terminator's on the same
+//! host; a terminator on another host is one peer (see [`ServerConfig`]). [`serve`] takes the
+//! slot before it starts the connection's thread, so it runs at most `max_connections`
+//! connection threads; a connection past either bound is answered 503 by one write that never
+//! waits, then closed, and starts no thread. A thread that cannot start closes its connection
+//! and gives its slot back, and the loop goes on accepting.
+//!
+//! **Timeouts are never absent.** A configuration with a zero timeout is refused
+//! ([`ServerConfig::check`]), since the operating system reads a zero socket timeout as none.
+//! A read or a write happens only after its timeout was set on the socket: when the socket
+//! refuses a timeout, the request is not read further, the response is not written further,
+//! and the connection closes.
+//!
+//! **The accept loop.** [`serve`] puts the listener in blocking mode, so an `accept` waits for
+//! a connection. Only an error that says the listener itself is unusable (`EBADF`, `EINVAL`,
+//! `ENOTSOCK`, `EFAULT`) ends [`serve`] at once. An `accept` that fails for the connection it
+//! would have given (aborted, reset, interrupted) goes on at once, up to 16 times in a row,
+//! then after a fixed pause of 5 ms each. Every other failure goes on after a pause that
+//! doubles from 5 ms to a second, so an error that persists costs at most one `accept` a
+//! second. The pauses start over at the next connection accepted. A listener that only fails
+//! is not served for ever in silence: once the pauses since the last connection accepted add
+//! up to 30 seconds, [`serve`] ends with the last error, for the operator's process to see.
+//! Three kinds of failure do not count toward those 30 seconds, since they pass by themselves:
+//! a want of descriptors, buffers or memory (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`), which
+//! the connections that end give back, a wait for a connection that timed out, and a failure
+//! of one connection, which a peer can cause and so must not be a way to end [`serve`].
+//!
+//! **Descriptors.** A connection holds its socket and, while a file is sent, that file's open
+//! descriptor, for as long as its response is written: up to 2 x `max_connections`
+//! descriptors, and 16 more for the listener, the standard streams, a connection being
+//! refused and the store's own files ([`descriptors_needed`]; 528 at the default). Below that,
+//! a publication's write could fail for want of a descriptor, which stops the registry until
+//! it is reopened. The service does not read the process's limit of open descriptors: the
+//! standard library has no such read, so the operator sets a limit of at least the need
+//! (`ulimit -n`) or lowers `max_connections` before starting it.
+//!
+//! **Publications.** At most two publications are read and checked at once, since each holds
+//! its archive in memory: a publication takes its slot once its head is checked, before its
+//! body is read.
 //!
 //! TLS is not here: the service is meant to sit behind a terminator that serves HTTPS
 //! (rule 39: TLS keeps a private registry's credentials confidential; integrity rests on
 //! digests, signatures and proofs).
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::registry::{Refusal, Registry};
@@ -89,20 +131,53 @@ pub const SEND_CHUNK: usize = 64 << 10;
 /// The least average rate at which a peer takes a response past its first write timeout, in
 /// bytes per second: the mirror of [`MIN_BODY_RATE`].
 const MIN_SEND_RATE: u128 = 64 << 10;
-/// The first pause after an `accept` that failed for want of descriptors or memory.
+/// The first pause after an `accept` that failed and is tried again after a pause.
 const ACCEPT_PAUSE_MIN: Duration = Duration::from_millis(5);
 /// The longest such pause; each failure in a row doubles it up to this.
 const ACCEPT_PAUSE_MAX: Duration = Duration::from_secs(1);
+/// How many failures of one connection in a row an `accept` is tried again after at once;
+/// past them, each is followed by a pause of `ACCEPT_PAUSE_MIN`, which does not double: such
+/// a failure used up the connection it concerned, so it cannot repeat by itself.
+const ACCEPT_FREE_RETRIES: u32 = 16;
+/// The most time paused on failures of `accept` in a row, with no connection accepted, before
+/// [`serve`] ends with the error; wants of resources, waits that timed out and failures of
+/// one connection do not count.
+const ACCEPT_FAILING_MAX: Duration = Duration::from_secs(30);
+/// The least average rate of a request's head past the first-byte timeout, in bytes per
+/// second: a head of `MAX_HEAD` bytes has 16 seconds more than its first byte.
+const MIN_HEAD_RATE: u64 = 1 << 10;
+/// The descriptors the service needs besides its connections': the standard streams, the
+/// listener, the store's lock, a connection being refused, the files the registry reads and
+/// writes (one at a time, under its lock), and a margin for the operator's own.
+pub const RESERVED_DESCRIPTORS: u64 = 16;
 
 /// How the endpoints run.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     /// The operator's bearer token for `/register`; registration is closed without one.
     pub register_token: Option<String>,
-    /// How many connections are served at once, each from its request's first byte to its
-    /// response's last; [`serve`] runs at most this many connection threads.
+    /// How many connections are served at once, each from its acceptance to its response's
+    /// last byte; [`serve`] runs at most this many connection threads. At least 1. Each
+    /// connection can hold two descriptors, its socket and the file it is sent, so the process
+    /// needs a limit of open descriptors of at least [`descriptors_needed`], which the
+    /// operator sets: the service does not check it.
     pub max_connections: usize,
-    /// The time to read a request's head.
+    /// How many of those connections one peer holds at once; a peer is an IPv4 address or an
+    /// IPv6 /64 prefix. At least 1. The default, 64, is a quarter of the default
+    /// `max_connections`, so one address cannot hold every slot (four can). Connections from
+    /// a loopback address are not counted against it: they are a terminator's on the same
+    /// host, which bounds its clients itself. A terminator on another host is one peer: for
+    /// it, set this to `max_connections` and bound the clients at the terminator.
+    pub max_connections_per_peer: usize,
+    /// The longest wait for a request's first byte, counted from the moment the connection
+    /// starts to be read, right after its acceptance, within the head's time; past it, the
+    /// head has a second more for each KiB of it that arrived. A client sends its request as
+    /// soon as it is connected, so the default, 5 seconds, covers a retransmission of a lost
+    /// first segment (1 second, then 2) with a margin, while a connection that sends nothing
+    /// holds its slot a sixth of the head's 30 seconds. It is also the default wait for a
+    /// request's first byte of the language's own servers (`spec/31`, `idle`).
+    pub first_byte_timeout: Duration,
+    /// The longest time to read a request's head, however fast it arrives.
     pub head_timeout: Duration,
     /// The longest wait for progress on a body.
     pub idle_timeout: Duration,
@@ -116,11 +191,52 @@ impl Default for ServerConfig {
         ServerConfig {
             register_token: None,
             max_connections: 256,
+            max_connections_per_peer: 64,
+            first_byte_timeout: Duration::from_secs(5),
             head_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(60),
             write_timeout: Duration::from_secs(60),
         }
     }
+}
+
+impl ServerConfig {
+    /// Refuses a configuration the service cannot run safely: a zero timeout, which a socket
+    /// takes as no timeout at all, or a bound of zero connections. [`Service::new`] calls it.
+    pub fn check(&self) -> Result<(), String> {
+        for (name, timeout) in [
+            ("first_byte_timeout", self.first_byte_timeout),
+            ("head_timeout", self.head_timeout),
+            ("idle_timeout", self.idle_timeout),
+            ("write_timeout", self.write_timeout),
+        ] {
+            if timeout.is_zero() {
+                return Err(format!(
+                    "`{name}` is zero, which would leave the socket with no timeout"
+                ));
+            }
+        }
+        for (name, bound) in [
+            ("max_connections", self.max_connections),
+            ("max_connections_per_peer", self.max_connections_per_peer),
+        ] {
+            if bound == 0 {
+                return Err(format!(
+                    "`{name}` is zero, so no connection would be served"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The descriptors a service with `config` needs: two for each of its `max_connections` (the
+/// socket, and the file it is sent) and [`RESERVED_DESCRIPTORS`].
+pub fn descriptors_needed(config: &ServerConfig) -> u64 {
+    u64::try_from(config.max_connections)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(2)
+        .saturating_add(RESERVED_DESCRIPTORS)
 }
 
 /// A request, read and checked.
@@ -204,8 +320,54 @@ pub struct Service {
     store: Arc<dyn Store>,
     registry: Arc<Mutex<Registry>>,
     config: ServerConfig,
-    connections: AtomicUsize,
+    connections: Places,
     publishing: AtomicUsize,
+}
+
+/// The connection slots: how many are taken, and by which peers.
+struct Places {
+    /// The most slots taken at once.
+    limit: usize,
+    /// The most of them one peer takes.
+    per_peer: usize,
+    /// How many are taken; it changes only under the lock of `peers`.
+    taken: AtomicUsize,
+    /// How many each peer holds: an entry exists only while its count is positive, so the map
+    /// holds at most `limit` entries.
+    peers: Mutex<BTreeMap<Peer, usize>>,
+}
+
+/// Whose connections are counted together: an IPv4 address, or the /64 prefix of an IPv6
+/// address, since one host commonly holds a whole /64. An IPv4-mapped IPv6 address counts as
+/// its IPv4 address. The loopback addresses (`127.0.0.0/8`, `::1`) are this host, whose
+/// connections are not bounded per peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Peer {
+    Loopback,
+    V4([u8; 4]),
+    V6([u8; 8]),
+}
+
+impl Peer {
+    fn of(address: IpAddr) -> Peer {
+        match address.to_canonical() {
+            address if address.is_loopback() => Peer::Loopback,
+            IpAddr::V4(v4) => Peer::V4(v4.octets()),
+            IpAddr::V6(v6) => {
+                let [a, b, c, d, e, f, g, h, ..] = v6.octets();
+                Peer::V6([a, b, c, d, e, f, g, h])
+            }
+        }
+    }
+}
+
+/// Which bound refuses a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Busy {
+    /// `max_connections` are being served.
+    Service,
+    /// `max_connections_per_peer` of them are the peer's.
+    Peer,
 }
 
 impl std::fmt::Debug for Service {
@@ -225,22 +387,27 @@ impl Drop for Slot<'_> {
 
 /// A connection slot taken before its thread starts, released when dropped: by the thread
 /// when its connection is done, or with the thread's work when the thread cannot start.
-struct Held(Arc<Service>);
+struct Held(Arc<Service>, Peer);
 
 impl Held {
-    fn take(service: &Arc<Service>) -> Option<Held> {
-        let previous = service.connections.fetch_add(1, Ordering::SeqCst);
-        if previous >= service.config.max_connections {
-            service.connections.fetch_sub(1, Ordering::SeqCst);
-            return None;
-        }
-        Some(Held(Arc::clone(service)))
+    fn take(service: &Arc<Service>, peer: Peer) -> Result<Held, Busy> {
+        service.connections.enter(peer)?;
+        Ok(Held(Arc::clone(service), peer))
     }
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        self.0.connections.fetch_sub(1, Ordering::SeqCst);
+        self.0.connections.leave(self.1);
+    }
+}
+
+/// A connection slot of a caller that holds the service, released when dropped.
+struct Entered<'a>(&'a Places, Peer);
+
+impl Drop for Entered<'_> {
+    fn drop(&mut self) {
+        self.0.leave(self.1);
     }
 }
 
@@ -282,17 +449,81 @@ fn servable(path: &str) -> Option<bool> {
 }
 
 impl Service {
-    /// The endpoints of `registry`, serving the files of `store`, which is the registry's.
-    pub fn new(store: Arc<dyn Store>, registry: Registry, config: ServerConfig) -> Service {
-        Service {
+    /// The endpoints of `registry`, serving the files of `store`, which is the registry's;
+    /// refused when `config` is one [`ServerConfig::check`] refuses.
+    pub fn new(
+        store: Arc<dyn Store>,
+        registry: Registry,
+        config: ServerConfig,
+    ) -> Result<Service, String> {
+        config.check()?;
+        Ok(Service {
             store,
             registry: Arc::new(Mutex::new(registry)),
+            connections: Places::new(config.max_connections, config.max_connections_per_peer),
             config,
-            connections: AtomicUsize::new(0),
             publishing: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl Places {
+    fn new(limit: usize, per_peer: usize) -> Places {
+        Places {
+            limit,
+            per_peer,
+            taken: AtomicUsize::new(0),
+            peers: Mutex::new(BTreeMap::new()),
         }
     }
 
+    fn taken(&self) -> usize {
+        self.taken.load(Ordering::SeqCst)
+    }
+
+    /// The counts of the peers. The map is whole after every statement made under its lock
+    /// (no code that can panic runs between them), so a poisoned lock still guards counts
+    /// that are right.
+    fn peers(&self) -> MutexGuard<'_, BTreeMap<Peer, usize>> {
+        self.peers.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes a connection slot for `peer`, or says which bound refuses it. Both counts change
+    /// under the lock of the peers, so a refusal leaves no trace in either. A loopback peer
+    /// is under the bound of the service alone, and has no entry among the peers.
+    fn enter(&self, peer: Peer) -> Result<(), Busy> {
+        let mut peers = self.peers();
+        let held = peers.get(&peer).copied().unwrap_or(0);
+        if peer != Peer::Loopback && held >= self.per_peer {
+            return Err(Busy::Peer);
+        }
+        if self.taken() >= self.limit {
+            return Err(Busy::Service);
+        }
+        self.taken.fetch_add(1, Ordering::SeqCst);
+        if peer != Peer::Loopback {
+            peers.insert(peer, held.saturating_add(1));
+        }
+        Ok(())
+    }
+
+    /// Gives back a slot [`Places::enter`] took for `peer`: the peer's first, so a caller
+    /// that sees the count of connections fall finds the peer's count fallen too.
+    fn leave(&self, peer: Peer) {
+        let mut peers = self.peers();
+        match peers.get(&peer).copied() {
+            Some(held) if held > 1 => {
+                peers.insert(peer, held - 1);
+            }
+            _ => {
+                peers.remove(&peer);
+            }
+        }
+        self.taken.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Service {
     /// The registry, for an operator's tools and tests.
     pub fn registry(&self) -> &Mutex<Registry> {
         &self.registry
@@ -300,7 +531,7 @@ impl Service {
 
     /// How many connections hold a connection slot now, for an operator's tools and tests.
     pub fn connections_in_progress(&self) -> usize {
-        self.connections.load(Ordering::SeqCst)
+        self.connections.taken()
     }
 
     /// How many publications hold a publishing slot now, for an operator's tools and tests.
@@ -482,12 +713,20 @@ impl Service {
 
     /// Serves one connection: takes a connection slot, reads one request within the limits,
     /// answers it within the write limits, and closes; the slot is held to the response's
-    /// last byte. Past `max_connections`, the connection is answered 503 by one write that
-    /// never waits, and closed.
+    /// last byte. Past `max_connections`, or `max_connections_per_peer` for its peer, the
+    /// connection is answered 503 by one write that never waits, and closed; a connection
+    /// whose peer cannot be read is closed.
     pub fn handle(&self, stream: TcpStream) {
-        match take(&self.connections, self.config.max_connections) {
-            None => refuse_busy(stream),
-            Some(_slot) => self.answer(stream),
+        let Ok(address) = stream.peer_addr() else {
+            return;
+        };
+        let peer = Peer::of(address.ip());
+        match self.connections.enter(peer) {
+            Err(busy) => refuse_busy(stream, busy),
+            Ok(()) => {
+                let _entered = Entered(&self.connections, peer);
+                self.answer(stream);
+            }
         }
     }
 
@@ -517,9 +756,15 @@ impl Service {
 /// Answers a connection past the bound 503 by one write that never waits, and closes it: a
 /// refusal of a few hundred bytes fits in a fresh connection's buffer, and a peer that does
 /// not take it gets the close alone.
-fn refuse_busy(mut stream: TcpStream) {
-    let _ = stream.set_nonblocking(true);
-    let _ = write_response(&mut stream, &text(503, "too many connections; try again"));
+fn refuse_busy(mut stream: TcpStream, busy: Busy) {
+    let refusal = match busy {
+        Busy::Service => "too many connections; try again",
+        Busy::Peer => "too many connections from this address; try again",
+    };
+    // A socket that cannot be made non-blocking is closed unanswered: a write could wait.
+    if stream.set_nonblocking(true).is_ok() {
+        let _ = write_response(&mut stream, &text(503, refusal));
+    }
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
@@ -568,7 +813,9 @@ fn drain(stream: &mut impl Conn) {
         else {
             return;
         };
-        stream.wait_at_most(wait);
+        if stream.wait_at_most(wait).is_err() {
+            return;
+        }
         match stream.read(chunk.get_mut(..left.min(4096)).unwrap_or_default()) {
             Ok(0) | Err(_) => return,
             Ok(n) => left = left.saturating_sub(n),
@@ -602,9 +849,10 @@ fn publication(body: &[u8]) -> Result<(&[u8], usize), String> {
 }
 
 /// A connection the requests are read from: bytes, a bound on the wait for each read, and the
-/// clock its limits are measured with.
+/// clock its limits are measured with. A bound that cannot be set is an error, and its caller
+/// does not read.
 trait Conn: Read {
-    fn wait_at_most(&mut self, wait: Duration);
+    fn wait_at_most(&mut self, wait: Duration) -> io::Result<()>;
 
     fn now(&self) -> Instant {
         Instant::now()
@@ -612,9 +860,14 @@ trait Conn: Read {
 }
 
 impl Conn for TcpStream {
-    fn wait_at_most(&mut self, wait: Duration) {
-        let _ = self.set_read_timeout(Some(wait));
+    fn wait_at_most(&mut self, wait: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(wait))
     }
+}
+
+/// The refusal of a request whose socket took no read timeout: it is not read without one.
+fn no_timeout() -> Response {
+    text(503, "the connection's timeout could not be set")
 }
 
 /// A request's head, read and checked, with the bytes of its body that came with it.
@@ -667,16 +920,30 @@ fn read_head(stream: &mut impl Conn, config: &ServerConfig) -> Result<Head, Resp
         if head.len() > MAX_HEAD + 3 {
             return Err(text(431, "the request's head is too large"));
         }
-        let left = config
-            .head_timeout
+        // The head so far has the first-byte timeout and a second per `MIN_HEAD_RATE` bytes
+        // of it, within the head's time: nothing received has the first-byte timeout alone,
+        // and a byte now and then buys a millisecond each, not the head's whole time.
+        let earned = (head.len() as u64).saturating_mul(1_000_000_000) / MIN_HEAD_RATE;
+        let allowed = config
+            .first_byte_timeout
+            .saturating_add(Duration::from_nanos(earned))
+            .min(config.head_timeout);
+        let late = if head.is_empty() {
+            "the request did not start in time"
+        } else {
+            "the request's head took too long"
+        };
+        let left = allowed
             .checked_sub(stream.now().saturating_duration_since(started))
             .filter(|d| !d.is_zero())
-            .ok_or_else(|| text(408, "the request's head took too long"))?;
-        stream.wait_at_most(left);
+            .ok_or_else(|| text(408, late))?;
+        if stream.wait_at_most(left).is_err() {
+            return Err(no_timeout());
+        }
         match stream.read(&mut chunk) {
             Ok(0) => return Err(text(400, "the connection closed inside the request's head")),
             Ok(n) => head.extend_from_slice(chunk.get(..n).unwrap_or_default()),
-            Err(e) if is_timeout(&e) => return Err(text(408, "the request's head took too long")),
+            Err(e) if is_timeout(&e) => return Err(text(408, late)),
             Err(_) => return Err(text(400, "the request could not be read")),
         }
     };
@@ -762,13 +1029,17 @@ fn read_body(
         return Err(text(400, "the body is longer than `Content-Length`"));
     }
     let started = stream.now();
-    let deadline = config.idle_timeout + Duration::from_secs((length / (64 << 10)) as u64);
+    let deadline = config
+        .idle_timeout
+        .saturating_add(Duration::from_secs((length / (64 << 10)) as u64));
     // The buffer grows with the bytes that arrived, never by the declared length alone, so a
     // peer that declares a large body and sends little holds little memory.
     let before = already.len();
     let mut body = already;
     let mut chunk = vec![0u8; 64 << 10];
-    stream.wait_at_most(config.idle_timeout);
+    if stream.wait_at_most(config.idle_timeout).is_err() {
+        return Err(no_timeout());
+    }
     while body.len() < length {
         #[cfg(test)]
         BODY_RESERVED.with(|c| c.set(c.get().max(body.capacity())));
@@ -926,7 +1197,11 @@ pub fn write_response(stream: &mut impl Write, response: &Response) -> io::Resul
 pub type Work = Box<dyn FnOnce() + Send>;
 
 /// Serves `listener` until it fails, one thread per connection and at most `max_connections`
-/// of them (the module's rules).
+/// of them (the module's rules). It puts `listener` in blocking mode. It ends at once with the
+/// error of a listener that is unusable, and with the last error once its `accept` only
+/// failed, with no connection accepted, through 30 seconds of pauses (the module's rules):
+/// it returns `Err` when the listener keeps failing, and its caller decides whether to start
+/// it again.
 pub fn serve(listener: &TcpListener, service: &Arc<Service>) -> io::Result<()> {
     serve_with(listener, service, |work| {
         std::thread::Builder::new()
@@ -939,60 +1214,190 @@ pub fn serve(listener: &TcpListener, service: &Arc<Service>) -> io::Result<()> {
 /// Serves `listener` as [`serve`] does, with `spawn` starting each connection's thread: an
 /// operator's own threads, or a test's. The connection's slot is taken before `spawn` is
 /// called; when `spawn` fails, it has dropped the work, which closes the connection and gives
-/// the slot back, and the loop goes on.
+/// the slot back, and the loop goes on. Like [`serve`], it returns `Err` when the listener
+/// keeps failing, and its caller decides whether to start it again.
 pub fn serve_with(
     listener: &TcpListener,
     service: &Arc<Service>,
     spawn: impl Fn(Work) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut pause = ACCEPT_PAUSE_MIN;
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => {
-                pause = ACCEPT_PAUSE_MIN;
-                stream
+    // An `accept` waits for a connection: on a non-blocking listener it would fail at once,
+    // again and again. The loop pauses on that failure too, should the mode change under it.
+    listener.set_nonblocking(false)?;
+    accept_loop(
+        || listener.accept(),
+        std::thread::sleep,
+        |stream, address| match Held::take(service, Peer::of(address.ip())) {
+            Err(busy) => refuse_busy(stream, busy),
+            Ok(held) => {
+                let _ = spawn(Box::new(move || {
+                    held.0.answer(stream);
+                    drop(held);
+                }));
             }
-            Err(e) if fails_one_connection(&e) => continue,
-            Err(e) if fails_for_resources(&e) => {
-                std::thread::sleep(pause);
-                pause = pause.saturating_mul(2).min(ACCEPT_PAUSE_MAX);
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-        let Some(held) = Held::take(service) else {
-            refuse_busy(stream);
-            continue;
-        };
-        let _ = spawn(Box::new(move || {
-            held.0.answer(stream);
-            drop(held);
-        }));
-    }
-    Ok(())
-}
-
-/// Whether a failed `accept` concerns only the connection it would have given.
-fn fails_one_connection(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::Interrupted
-            | io::ErrorKind::WouldBlock
+        },
     )
 }
 
-/// Whether a failed `accept` lacked descriptors (`ENFILE`, `EMFILE`: 23 and 24 on Linux and
-/// macOS) or memory, which the connections that end give back.
-fn fails_for_resources(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::OutOfMemory || matches!(e.raw_os_error(), Some(23 | 24))
+/// The accept loop of [`serve_with`], over what accepts a connection, what pauses, and what
+/// serves a connection accepted. It ends only with an error: that of a listener that is
+/// unusable, or the last of the failures that went on too long.
+fn accept_loop(
+    mut accept: impl FnMut() -> io::Result<(TcpStream, SocketAddr)>,
+    mut pause: impl FnMut(Duration),
+    mut connection: impl FnMut(TcpStream, SocketAddr),
+) -> io::Result<()> {
+    let mut retries = Retries::new();
+    loop {
+        let (stream, address) = match accept() {
+            Ok(accepted) => {
+                retries = Retries::new();
+                accepted
+            }
+            Err(e) => match retries.after(&e) {
+                Retry::Never => return Err(e),
+                Retry::AtOnce => continue,
+                Retry::After(wait) => {
+                    pause(wait);
+                    continue;
+                }
+            },
+        };
+        connection(stream, address);
+    }
+}
+
+/// What a failed `accept` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    /// Only the connection it would have given failed.
+    OneConnection,
+    /// The listener is unusable, and no later `accept` can succeed.
+    Listener,
+    /// A want of descriptors, buffers or memory, which the connections that end give back.
+    Resources,
+    /// No connection came within the wait: a listener with a timeout, or one that does not
+    /// block.
+    Waiting,
+    /// Anything else: a pending network error of a connection, or an error this module does
+    /// not know.
+    Other,
+}
+
+/// `EBADF`, `EFAULT` and `EINVAL`, the same numbers on Linux and macOS, and `ENOTSOCK`: the
+/// errors of `accept(2)` that say the listener is not a listening socket any more.
+const LISTENER_ERRORS: [i32; 4] = [
+    9,
+    14,
+    22,
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        88
+    } else {
+        38
+    },
+];
+
+/// `ENOMEM`, `ENFILE` and `EMFILE`, the same numbers on Linux and macOS, and `ENOBUFS`.
+const RESOURCE_ERRORS: [i32; 4] = [
+    12,
+    23,
+    24,
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        105
+    } else {
+        55
+    },
+];
+
+/// Sorts a failed `accept`. Only the errors that name the listener itself end the loop at
+/// once; `accept(2)` documents the others (`ECONNABORTED`, `EMFILE`, `ENFILE`, `ENOBUFS`,
+/// `ENOMEM`, `EPERM`, `EPROTO`, `ENETDOWN`, `ENOPROTOOPT`, `EHOSTDOWN`, `ENONET`,
+/// `EHOSTUNREACH`, `EOPNOTSUPP`, `ENETUNREACH`, `EAGAIN`, `ETIMEDOUT`) as passing or as one
+/// connection's.
+fn accept_failure(e: &io::Error) -> Failure {
+    let numbered = |errors: &[i32]| {
+        e.raw_os_error()
+            .is_some_and(|errno| errors.contains(&errno))
+    };
+    if e.kind() == io::ErrorKind::InvalidInput || numbered(&LISTENER_ERRORS) {
+        return Failure::Listener;
+    }
+    if numbered(&RESOURCE_ERRORS) {
+        return Failure::Resources;
+    }
+    match e.kind() {
+        io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::Interrupted => Failure::OneConnection,
+        io::ErrorKind::OutOfMemory => Failure::Resources,
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failure::Waiting,
+        _ => Failure::Other,
+    }
+}
+
+/// When a failed `accept` is tried again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Retry {
+    AtOnce,
+    After(Duration),
+    Never,
+}
+
+/// The failures of `accept` since the last connection it gave.
+struct Retries {
+    /// The failures of one connection tried again at once.
+    free: u32,
+    /// The next pause that doubles.
+    pause: Duration,
+    /// The pauses made on the failures that count toward `ACCEPT_FAILING_MAX`.
+    failing: Duration,
+}
+
+impl Retries {
+    fn new() -> Retries {
+        Retries {
+            free: 0,
+            pause: ACCEPT_PAUSE_MIN,
+            failing: Duration::ZERO,
+        }
+    }
+
+    /// When to try again after the failure `e`. Never when the listener is unusable. At once
+    /// for the first failures in a row of one connection, then after `ACCEPT_PAUSE_MIN` each.
+    /// Otherwise after a pause that doubles up to `ACCEPT_PAUSE_MAX`, so no error that
+    /// persists makes the loop spin. And never once the pauses on failures that do not pass
+    /// by themselves add up to `ACCEPT_FAILING_MAX`, so a listener that only fails ends the
+    /// loop with its error.
+    fn after(&mut self, e: &io::Error) -> Retry {
+        let failure = accept_failure(e);
+        let wait = match failure {
+            Failure::Listener => return Retry::Never,
+            Failure::OneConnection if self.free < ACCEPT_FREE_RETRIES => {
+                self.free += 1;
+                return Retry::AtOnce;
+            }
+            Failure::OneConnection => ACCEPT_PAUSE_MIN,
+            Failure::Resources | Failure::Waiting | Failure::Other => {
+                let wait = self.pause;
+                self.pause = wait.saturating_mul(2).min(ACCEPT_PAUSE_MAX);
+                wait
+            }
+        };
+        if failure == Failure::Other {
+            if self.failing >= ACCEPT_FAILING_MAX {
+                return Retry::Never;
+            }
+            self.failing = self.failing.saturating_add(wait);
+        }
+        Retry::After(wait)
+    }
 }
 
 /// A connection a response is written to: bytes, a bound on the wait for each write, and the
-/// clock its limits are measured with.
+/// clock its limits are measured with. A bound that cannot be set is an error, and its caller
+/// does not write.
 trait Out: Write {
-    fn wait_to_send_at_most(&mut self, wait: Duration);
+    fn wait_to_send_at_most(&mut self, wait: Duration) -> io::Result<()>;
 
     fn now(&self) -> Instant {
         Instant::now()
@@ -1000,8 +1405,8 @@ trait Out: Write {
 }
 
 impl Out for TcpStream {
-    fn wait_to_send_at_most(&mut self, wait: Duration) {
-        let _ = self.set_write_timeout(Some(wait));
+    fn wait_to_send_at_most(&mut self, wait: Duration) -> io::Result<()> {
+        self.set_write_timeout(Some(wait))
     }
 }
 
@@ -1048,7 +1453,9 @@ impl<'a, O: Out> Sender<'a, O> {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
             }
-            self.out.wait_to_send_at_most(left.min(self.write_timeout));
+            // A socket that takes no timeout is not written to: the error closes it.
+            self.out
+                .wait_to_send_at_most(left.min(self.write_timeout))?;
             let part = bytes.get(..SEND_CHUNK.min(bytes.len())).unwrap_or_default();
             match self.out.write(part) {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
@@ -1195,7 +1602,9 @@ mod tests {
     }
 
     impl Conn for Trickle {
-        fn wait_at_most(&mut self, _: Duration) {}
+        fn wait_at_most(&mut self, _: Duration) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     fn trickle(data: &[u8], step: usize) -> Trickle {
@@ -1312,6 +1721,10 @@ mod tests {
         tick: Duration,
         reads: u32,
         closes: bool,
+        /// The bound of each wait asked for, in order.
+        waits: Vec<Duration>,
+        /// Whether setting a bound fails, as on a socket that refuses a timeout.
+        refuses_timeouts: bool,
     }
 
     impl Read for Paced {
@@ -1332,7 +1745,13 @@ mod tests {
     }
 
     impl Conn for Paced {
-        fn wait_at_most(&mut self, _: Duration) {}
+        fn wait_at_most(&mut self, wait: Duration) -> io::Result<()> {
+            self.waits.push(wait);
+            if self.refuses_timeouts {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            Ok(())
+        }
 
         fn now(&self) -> Instant {
             self.start + self.tick * self.reads
@@ -1348,6 +1767,8 @@ mod tests {
             tick,
             reads: 0,
             closes: false,
+            waits: Vec::new(),
+            refuses_timeouts: false,
         }
     }
 
@@ -1522,6 +1943,8 @@ mod tests {
         tick: Duration,
         writes: u32,
         longest_wait: Duration,
+        /// Whether setting a bound fails, as on a socket that refuses a timeout.
+        refuses_timeouts: bool,
     }
 
     impl Write for Taker {
@@ -1541,8 +1964,12 @@ mod tests {
     }
 
     impl Out for Taker {
-        fn wait_to_send_at_most(&mut self, wait: Duration) {
+        fn wait_to_send_at_most(&mut self, wait: Duration) -> io::Result<()> {
+            if self.refuses_timeouts {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
             self.longest_wait = self.longest_wait.max(wait);
+            Ok(())
         }
 
         fn now(&self) -> Instant {
@@ -1559,6 +1986,7 @@ mod tests {
             tick,
             writes: 0,
             longest_wait: Duration::ZERO,
+            refuses_timeouts: false,
         }
     }
 
@@ -1691,6 +2119,15 @@ mod tests {
         assert_eq!(failed.kind(), io::ErrorKind::UnexpectedEof);
     }
 
+    /// The numbers of the errors `accept(2)` documents as passing or as one connection's,
+    /// besides those the standard library names: `EPERM`, `EAGAIN`, `ENOBUFS`, `EPROTO`,
+    /// `ENETDOWN`, `ENETUNREACH`, `ENOPROTOOPT`, `EHOSTDOWN`, `EHOSTUNREACH`, `EOPNOTSUPP`,
+    /// `ETIMEDOUT`, and on Linux `ENONET`.
+    #[cfg(target_os = "linux")]
+    const PASSING: &[i32] = &[1, 11, 105, 71, 100, 101, 92, 112, 113, 95, 110, 64];
+    #[cfg(not(target_os = "linux"))]
+    const PASSING: &[i32] = &[1, 35, 55, 100, 50, 51, 42, 64, 65, 102, 60];
+
     #[test]
     fn a_failed_accept_goes_on_unless_the_listener_is_broken() {
         for kind in [
@@ -1698,14 +2135,477 @@ mod tests {
             io::ErrorKind::ConnectionReset,
             io::ErrorKind::Interrupted,
         ] {
-            assert!(fails_one_connection(&kind.into()));
+            assert_eq!(accept_failure(&kind.into()), Failure::OneConnection);
         }
-        for errno in [23, 24] {
-            assert!(fails_for_resources(&io::Error::from_raw_os_error(errno)));
+        // A want of descriptors (`ENFILE`, `EMFILE`), of memory or of buffers goes on, after
+        // a pause.
+        for errno in [23, 24, 12, PASSING[2]] {
+            let e = io::Error::from_raw_os_error(errno);
+            assert_eq!(accept_failure(&e), Failure::Resources, "errno {errno}");
+            assert!(matches!(Retries::new().after(&e), Retry::After(_)));
         }
-        assert!(fails_for_resources(&io::ErrorKind::OutOfMemory.into()));
+        assert_eq!(
+            accept_failure(&io::ErrorKind::OutOfMemory.into()),
+            Failure::Resources
+        );
+        // So do the pending network errors, a wait that timed out, a listener that does not
+        // block, and an error with no number at all.
+        for errno in PASSING {
+            let e = io::Error::from_raw_os_error(*errno);
+            assert!(
+                matches!(
+                    accept_failure(&e),
+                    Failure::Other | Failure::Resources | Failure::Waiting
+                ),
+                "errno {errno}"
+            );
+            assert!(matches!(Retries::new().after(&e), Retry::After(_)));
+        }
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            assert_eq!(accept_failure(&kind.into()), Failure::Waiting);
+        }
+        assert_eq!(accept_failure(&io::ErrorKind::Other.into()), Failure::Other);
+        // Only the listener's own errors end the loop at once.
         let other = io::Error::from(io::ErrorKind::InvalidInput);
-        assert!(!fails_one_connection(&other) && !fails_for_resources(&other));
+        assert_eq!(accept_failure(&other), Failure::Listener);
+        assert_eq!(Retries::new().after(&other), Retry::Never);
+        for errno in LISTENER_ERRORS {
+            let e = io::Error::from_raw_os_error(errno);
+            assert_eq!(accept_failure(&e), Failure::Listener, "errno {errno}");
+        }
+        assert!(PASSING.iter().all(|n| !LISTENER_ERRORS.contains(n)));
+        assert!(RESOURCE_ERRORS.iter().all(|n| !LISTENER_ERRORS.contains(n)));
+    }
+
+    /// Runs the accept loop over `failures`, then `EBADF`, which ends it if nothing did
+    /// before; the pauses it made, how many times it called `accept`, and the error it ended
+    /// with.
+    fn looped(failures: Vec<io::Error>) -> (Vec<Duration>, usize, io::Error) {
+        let mut script = failures.into_iter();
+        let mut pauses = Vec::new();
+        let mut calls = 0;
+        let ended = accept_loop(
+            || {
+                calls += 1;
+                Err(script
+                    .next()
+                    .unwrap_or_else(|| io::Error::from_raw_os_error(9)))
+            },
+            |wait| pauses.push(wait),
+            |_, _| panic!("no connection was accepted"),
+        )
+        .unwrap_err();
+        (pauses, calls, ended)
+    }
+
+    fn total(pauses: &[Duration]) -> Duration {
+        pauses.iter().sum()
+    }
+
+    #[test]
+    fn a_failure_of_accept_that_persists_cannot_spin() {
+        // A thousand failures in a row for want of buffers (`ENOBUFS`): each is followed by a
+        // pause, from 5 ms doubling to a second, so they take more than 16 minutes, not none.
+        // A want of resources passes when connections end, so it never ends the loop.
+        for errno in [PASSING[2], 23, 24, 12] {
+            let failures = (0..1000).map(|_| io::Error::from_raw_os_error(errno));
+            let (pauses, calls, ended) = looped(failures.collect());
+            assert_eq!((pauses.len(), calls), (1000, 1001), "errno {errno}");
+            assert_eq!(ended.raw_os_error(), Some(9));
+            assert_eq!(pauses[..3], [5, 10, 20].map(Duration::from_millis));
+            assert!(pauses.windows(2).all(|w| w[0] <= w[1]));
+            assert_eq!(pauses.iter().max(), Some(&ACCEPT_PAUSE_MAX));
+            assert!(total(&pauses) > Duration::from_secs(990));
+        }
+        // A listener that does not block, or whose wait times out, fails every `accept` with
+        // no connection waiting: paused from the first, and no reason to end either.
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            let (pauses, _, ended) = looped((0..1000).map(|_| kind.into()).collect());
+            assert_eq!((pauses.len(), ended.raw_os_error()), (1000, Some(9)));
+            assert!(total(&pauses) > Duration::from_secs(990));
+        }
+    }
+
+    #[test]
+    fn a_listener_that_only_fails_ends_the_loop_with_its_error() {
+        // `EPERM` for ever, which no rule of the module knows to pass: tried again through 30
+        // seconds of pauses, at most a second apart, then the loop ends with that error.
+        let failures = (0..1000).map(|_| io::Error::from_raw_os_error(1));
+        let (pauses, calls, ended) = looped(failures.collect());
+        assert_eq!(ended.raw_os_error(), Some(1));
+        assert!(total(&pauses) >= ACCEPT_FAILING_MAX);
+        assert!(total(&pauses) < ACCEPT_FAILING_MAX + ACCEPT_PAUSE_MAX);
+        assert_eq!(calls, pauses.len() + 1);
+        assert!(calls < 50, "{calls} calls of `accept`");
+        // An error with no number is the same.
+        let failures = (0..1000).map(|_| io::Error::other("unknown"));
+        let (pauses, _, ended) = looped(failures.collect());
+        assert_eq!(ended.kind(), io::ErrorKind::Other);
+        assert!(total(&pauses) >= ACCEPT_FAILING_MAX);
+        // Wants of resources between them do not count, and do not start the count over.
+        let failures =
+            (0..2000).map(|i| io::Error::from_raw_os_error(if i % 2 == 0 { 1 } else { 24 }));
+        let (pauses, calls, ended) = looped(failures.collect());
+        assert_eq!(ended.raw_os_error(), Some(1));
+        assert!(total(&pauses) >= 2 * ACCEPT_FAILING_MAX - 2 * ACCEPT_PAUSE_MAX);
+        assert!(calls < 100, "{calls} calls of `accept`");
+    }
+
+    #[test]
+    fn failures_of_one_connection_pause_briefly_and_do_not_escalate() {
+        // Aborted connections go on at once 16 times in a row, then after 5 ms each, never
+        // more: a peer that queues aborted connections does not buy a second apiece.
+        let aborted = |n: usize| -> Vec<io::Error> {
+            (0..n)
+                .map(|_| io::ErrorKind::ConnectionAborted.into())
+                .collect()
+        };
+        let (pauses, calls, ended) = looped(aborted(1000));
+        assert_eq!(ended.raw_os_error(), Some(9));
+        assert_eq!(
+            (pauses.len(), calls),
+            (1000 - ACCEPT_FREE_RETRIES as usize, 1001)
+        );
+        assert!(pauses.iter().all(|wait| *wait == ACCEPT_PAUSE_MIN));
+        // They do not raise the pause of the other failures either.
+        let mut failures = aborted(100);
+        failures.push(io::Error::from_raw_os_error(24));
+        let (pauses, _, _) = looped(failures);
+        assert_eq!(pauses.last(), Some(&ACCEPT_PAUSE_MIN));
+        // They never end the loop, however many a peer causes: far past 30 seconds of those
+        // pauses, it ends only with the scripted `EBADF`.
+        let (pauses, _, ended) = looped(aborted(100_000));
+        assert_eq!(ended.raw_os_error(), Some(9));
+        assert!(total(&pauses) > 10 * ACCEPT_FAILING_MAX);
+    }
+
+    #[test]
+    fn an_accepted_connection_starts_the_pauses_over() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let enobufs = PASSING[2];
+        let mut step = 0;
+        let mut pauses = Vec::new();
+        let mut accepted = 0;
+        let ended = accept_loop(
+            || {
+                step += 1;
+                match step {
+                    1..=3 | 5 => Err(io::Error::from_raw_os_error(enobufs)),
+                    4 => listener.accept(),
+                    _ => Err(io::Error::from_raw_os_error(9)),
+                }
+            },
+            |wait| pauses.push(wait),
+            |_, _| accepted += 1,
+        )
+        .unwrap_err();
+        assert_eq!(ended.raw_os_error(), Some(9));
+        assert_eq!(accepted, 1);
+        assert_eq!(pauses, [5, 10, 20, 5].map(Duration::from_millis));
+        // The 30 seconds start over too: 23 seconds of pauses on each side of a connection
+        // accepted do not end the loop, which the scripted `EBADF` does.
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let eperm = || io::Error::from_raw_os_error(1);
+        let mut step = 0;
+        let mut pauses = Vec::new();
+        let ended = accept_loop(
+            || {
+                step += 1;
+                match step {
+                    1..=30 | 32..=61 => Err(eperm()),
+                    31 => listener.accept(),
+                    _ => Err(io::Error::from_raw_os_error(9)),
+                }
+            },
+            |wait| pauses.push(wait),
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert_eq!((ended.raw_os_error(), pauses.len()), (Some(9), 60));
+    }
+
+    fn v4(last: u8) -> Peer {
+        Peer::of(IpAddr::from([192, 0, 2, last]))
+    }
+
+    #[test]
+    fn one_peer_holds_at_most_its_bound_of_slots() {
+        let places = Places::new(4, 2);
+        assert_eq!(places.enter(v4(1)), Ok(()));
+        assert_eq!(places.enter(v4(1)), Ok(()));
+        // The peer's third is refused and leaves no trace; another peer is served.
+        assert_eq!(places.enter(v4(1)), Err(Busy::Peer));
+        assert_eq!(places.taken(), 2);
+        assert_eq!(places.enter(v4(2)), Ok(()));
+        assert_eq!(places.enter(v4(3)), Ok(()));
+        // The bound of the service refuses a peer that holds nothing, and counts nothing.
+        assert_eq!(places.enter(v4(4)), Err(Busy::Service));
+        assert_eq!(places.enter(v4(2)), Err(Busy::Service));
+        assert_eq!((places.taken(), places.peers().len()), (4, 3));
+        // A slot given back is the peer's again.
+        places.leave(v4(1));
+        assert_eq!(places.enter(v4(1)), Ok(()));
+        // The map holds a peer only while it holds a slot.
+        for peer in [v4(1), v4(1), v4(2), v4(3)] {
+            places.leave(peer);
+        }
+        assert_eq!((places.taken(), places.peers().len()), (0, 0));
+    }
+
+    #[test]
+    fn loopback_peers_are_bounded_by_the_service_alone() {
+        let of = |text: &str| Peer::of(text.parse().unwrap());
+        for local in ["127.0.0.1", "127.8.9.10", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(of(local), Peer::Loopback, "{local}");
+        }
+        for remote in [
+            "192.0.2.1",
+            "126.255.255.255",
+            "128.0.0.1",
+            "::2",
+            "2001:db8::1",
+        ] {
+            assert_ne!(of(remote), Peer::Loopback, "{remote}");
+        }
+        // Past the bound of a peer, up to the bound of the service, with no entry kept.
+        let places = Places::new(4, 1);
+        for _ in 0..4 {
+            assert_eq!(places.enter(Peer::Loopback), Ok(()));
+        }
+        assert_eq!(places.enter(Peer::Loopback), Err(Busy::Service));
+        assert_eq!((places.taken(), places.peers().len()), (4, 0));
+        // Another address is still bounded while they hold slots, and they give theirs back.
+        places.leave(Peer::Loopback);
+        assert_eq!(places.enter(v4(1)), Ok(()));
+        places.leave(Peer::Loopback);
+        assert_eq!(places.enter(v4(1)), Err(Busy::Peer));
+        assert_eq!(places.enter(Peer::Loopback), Ok(()));
+        for peer in [Peer::Loopback, Peer::Loopback, Peer::Loopback, v4(1)] {
+            places.leave(peer);
+        }
+        assert_eq!((places.taken(), places.peers().len()), (0, 0));
+    }
+
+    #[test]
+    fn a_peer_is_an_ipv4_address_or_an_ipv6_prefix() {
+        let of = |text: &str| Peer::of(text.parse().unwrap());
+        assert_ne!(of("192.0.2.1"), of("192.0.2.2"));
+        // An IPv4-mapped address is its IPv4 address.
+        assert_eq!(of("::ffff:192.0.2.1"), of("192.0.2.1"));
+        // The addresses of one /64 are one peer; the next /64 is another.
+        assert_eq!(
+            of("2001:db8:0:1::1"),
+            of("2001:db8:0:1:ffff:ffff:ffff:ffff")
+        );
+        assert_ne!(of("2001:db8:0:1::1"), of("2001:db8:0:2::1"));
+    }
+
+    #[test]
+    fn a_configuration_without_a_timeout_or_a_connection_is_refused() {
+        assert_eq!(ServerConfig::default().check(), Ok(()));
+        let zero = Duration::ZERO;
+        let default = ServerConfig::default;
+        for (name, config) in [
+            (
+                "first_byte_timeout",
+                ServerConfig {
+                    first_byte_timeout: zero,
+                    ..default()
+                },
+            ),
+            (
+                "head_timeout",
+                ServerConfig {
+                    head_timeout: zero,
+                    ..default()
+                },
+            ),
+            (
+                "idle_timeout",
+                ServerConfig {
+                    idle_timeout: zero,
+                    ..default()
+                },
+            ),
+            (
+                "write_timeout",
+                ServerConfig {
+                    write_timeout: zero,
+                    ..default()
+                },
+            ),
+            (
+                "max_connections",
+                ServerConfig {
+                    max_connections: 0,
+                    ..default()
+                },
+            ),
+            (
+                "max_connections_per_peer",
+                ServerConfig {
+                    max_connections_per_peer: 0,
+                    ..default()
+                },
+            ),
+        ] {
+            let refused = config.check().unwrap_err();
+            assert!(
+                refused.starts_with(&format!("`{name}` is zero")),
+                "{refused}"
+            );
+        }
+        // The smallest timeout that is not zero is a timeout.
+        let least = ServerConfig {
+            write_timeout: Duration::from_nanos(1),
+            ..default()
+        };
+        assert_eq!(least.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_socket_refuses_a_zero_timeout_and_the_refusal_is_an_error() {
+        // What the standard library does with a zero timeout: an error, and no timeout set.
+        // The module no longer ignores it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        assert!(stream.wait_at_most(Duration::ZERO).is_err());
+        assert!(stream.wait_to_send_at_most(Duration::ZERO).is_err());
+        assert!(stream.wait_at_most(Duration::from_nanos(1)).is_ok());
+        assert!(stream.wait_to_send_at_most(Duration::from_nanos(1)).is_ok());
+    }
+
+    #[test]
+    fn a_connection_that_takes_no_timeout_is_neither_read_nor_written() {
+        let config = ServerConfig::default();
+        let refusing = || {
+            let mut conn = paced(
+                b"GET /checkpoint HTTP/1.1\r\n\r\n".to_vec(),
+                1024,
+                Duration::ZERO,
+            );
+            conn.refuses_timeouts = true;
+            conn
+        };
+        // The head, a body and the discarding of a refused body: no read without a timeout.
+        let mut conn = refusing();
+        let refused = read_head(&mut conn, &config).err().unwrap();
+        assert_eq!((refused.status, conn.reads), (503, 0));
+        let mut conn = refusing();
+        let refused = read_body(&mut conn, Vec::new(), 10, &config).err().unwrap();
+        assert_eq!((refused.status, conn.reads), (503, 0));
+        let mut conn = refusing();
+        drain(&mut conn);
+        assert_eq!(conn.reads, 0);
+        // A response, whole or a file: no write without a timeout, and the file is not sent.
+        let mut peer = taker(usize::MAX, usize::MAX, Duration::from_millis(1));
+        peer.refuses_timeouts = true;
+        let failed = send(&mut peer, Answer::Whole(text(200, "x")), &config).unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::InvalidInput);
+        let (answer, _) = lazy_file(1 << 20, 1 << 20);
+        assert!(send(&mut peer, answer, &config).is_err());
+        assert_eq!((peer.writes, peer.taken), (0, 0));
+    }
+
+    /// How long `conn` was read, on its own clock.
+    fn held(conn: &Paced) -> Duration {
+        conn.now().saturating_duration_since(conn.start)
+    }
+
+    #[test]
+    fn a_request_starts_within_the_first_byte_timeout() {
+        let config = ServerConfig::default();
+        assert!(config.first_byte_timeout < config.head_timeout);
+        // Nothing arrives: one wait, of the first-byte timeout, then the refusal.
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        let refused = read_head(&mut conn, &config).err().unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(String::from_utf8_lossy(&refused.body).contains("did not start"));
+        assert_eq!(conn.waits, [config.first_byte_timeout]);
+        // A first-byte timeout past the head's is the head's.
+        let long = ServerConfig {
+            first_byte_timeout: Duration::from_secs(3600),
+            ..ServerConfig::default()
+        };
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        assert_eq!(read_head(&mut conn, &long).err().unwrap().status, 408);
+        assert_eq!(conn.waits, [long.head_timeout]);
+    }
+
+    #[test]
+    fn a_head_sent_slowly_loses_its_slot_soon_after_the_first_byte_timeout() {
+        let config = ServerConfig::default();
+        let first = config.first_byte_timeout;
+        let refused_late = |conn: &mut Paced| {
+            let refused = read_head(conn, &config).err().unwrap();
+            assert_eq!(refused.status, 408);
+            assert!(String::from_utf8_lossy(&refused.body).contains("head took too long"));
+        };
+        // The review's case: one byte at once, then nothing. The second wait ends a
+        // millisecond past the first-byte timeout, not at the head's 30 seconds.
+        let mut conn = paced(b"G".to_vec(), 1, Duration::from_millis(1));
+        refused_late(&mut conn);
+        assert_eq!(conn.waits.len(), 2);
+        assert!(conn.waits[1] <= first, "{:?}", conn.waits);
+        // A byte a second: refused at the first-byte timeout, a few milliseconds late.
+        let mut conn = paced(vec![b'a'; 4096], 1, Duration::from_secs(1));
+        refused_late(&mut conn);
+        assert!(
+            held(&conn) <= first + Duration::from_secs(1),
+            "{:?}",
+            held(&conn)
+        );
+        assert!(conn.at <= 6, "{} bytes read", conn.at);
+        // Half the least rate, 512 bytes a second: refused within twice the timeout or so,
+        // long before the 32 seconds the largest head would take at that pace.
+        let mut conn = paced(head_of(MAX_HEAD), 512, Duration::from_secs(1));
+        refused_late(&mut conn);
+        assert!(
+            held(&conn) <= 2 * first + Duration::from_secs(1),
+            "{:?}",
+            held(&conn)
+        );
+        // No wait is ever past the head's time or the time the bytes received earned.
+        assert!(conn.waits.iter().all(|w| *w <= config.head_timeout));
+    }
+
+    #[test]
+    fn a_head_at_the_least_rate_is_read_within_the_head_timeout() {
+        let config = ServerConfig::default();
+        // The largest head at 1 KiB a second, the least rate: read whole in 16 seconds.
+        let mut conn = paced(head_of(MAX_HEAD), 1 << 10, Duration::from_secs(1));
+        assert_eq!(read_head(&mut conn, &config).unwrap().path, "checkpoint");
+        assert_eq!(held(&conn), Duration::from_secs(16));
+        // A small head sent in a few parts within the first-byte timeout is read.
+        let head = b"GET /checkpoint HTTP/1.1\r\n\r\n";
+        let mut conn = paced(head.to_vec(), 7, Duration::from_secs(1));
+        assert_eq!(read_head(&mut conn, &config).unwrap().path, "checkpoint");
+        // The head's time bounds a head however many bytes it earned: with a head timeout of
+        // 8 seconds, the largest head at the least rate is refused at 8 seconds.
+        let short = ServerConfig {
+            head_timeout: Duration::from_secs(8),
+            ..ServerConfig::default()
+        };
+        let mut conn = paced(head_of(MAX_HEAD), 1 << 10, Duration::from_secs(1));
+        let refused = read_head(&mut conn, &short).err().unwrap();
+        assert_eq!((refused.status, held(&conn)), (408, Duration::from_secs(8)));
+    }
+
+    #[test]
+    fn the_descriptors_needed_are_two_a_connection_and_the_reserve() {
+        assert_eq!(descriptors_needed(&ServerConfig::default()), 2 * 256 + 16);
+        let small = ServerConfig {
+            max_connections: 100,
+            ..ServerConfig::default()
+        };
+        assert_eq!(descriptors_needed(&small), 216);
+        // The largest bound does not overflow.
+        let huge = ServerConfig {
+            max_connections: usize::MAX,
+            ..ServerConfig::default()
+        };
+        assert_eq!(descriptors_needed(&huge), u64::MAX);
     }
 
     #[test]
