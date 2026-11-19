@@ -177,20 +177,40 @@ fn report_parked() {
     let _ = io::stdout().flush();
 }
 
-/// The bytes that the steps of copies have announced and not yet allocated, process-wide
-/// (ADR 0113 rule 4): a step checks `held() + reserved` before it allocates, so that copies made
-/// at once, by blocks in sibling tasks, see each other.
-static RESERVED: AtomicUsize = AtomicUsize::new(0);
+/// The bytes that the steps of copies have ever announced, process-wide, modulo 2^64 on every
+/// target (ADR 0113 rule 4). With [`RELEASED`] it gives `reserved`, the bytes
+/// announced and not yet allocated: a step checks `held() + reserved` before it allocates, so
+/// that copies made at once, by blocks in sibling tasks, see each other.
+///
+/// The count only grows, and only by the compare-exchange of an accepted step in
+/// [`try_reserve`]: a value read twice with nothing else read between says that no step of
+/// positive size was accepted between the two reads. One counter that rises and falls could
+/// not say so: a release and an announcement of the same size would leave it as it was.
+static ANNOUNCED: AtomicU64 = AtomicU64::new(0);
 
-/// The bytes of one step, counted in [`RESERVED`] until the value is dropped: after the step
+/// The bytes that the dropped reservations have given back, process-wide, modulo 2^64 as
+/// [`ANNOUNCED`]: each [`Reservation`] adds here, once, exactly what its step added there.
+static RELEASED: AtomicU64 = AtomicU64::new(0);
+
+/// `reserved`: the bytes announced and not yet given back. The two counts are read one after
+/// the other, so the figure is exact only when no reservation is made or dropped meanwhile; it
+/// is for a debug trace and for tests. [`try_reserve`] reads the counts in its own order.
+#[cfg(any(test, debug_assertions))]
+fn reserved() -> u64 {
+    let announced = ANNOUNCED.load(Ordering::SeqCst);
+    announced.wrapping_sub(RELEASED.load(Ordering::SeqCst))
+}
+
+/// The bytes of one step, counted in `reserved` until the value is dropped: after the step
 /// allocated, or while a panic unwinds. Between the allocation and the drop, the bytes are counted
-/// twice, in `held()` too, which only makes a concurrent step stricter.
+/// twice, in `held()` too, which only makes a concurrent step stricter. Only an accepted step has
+/// a reservation, so the drop gives back exactly the bytes that [`try_reserve`] added.
 #[must_use = "a reservation counts until it is dropped, after the allocation it announces"]
-pub(crate) struct Reservation(usize);
+pub(crate) struct Reservation(u64);
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        RESERVED.fetch_sub(self.0, Ordering::SeqCst);
+        RELEASED.fetch_add(self.0, Ordering::SeqCst);
         #[cfg(test)]
         LIVE_RESERVATIONS.with(|live| live.set(live.get() - 1));
     }
@@ -204,12 +224,102 @@ thread_local! {
     /// Refuses steps of this thread, in tests: `Some((k, n))` lets k steps pass and refuses the
     /// next n, as a heap at its ceiling would, then lets the later ones pass.
     pub(crate) static REFUSE_STEP: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    /// The passes of the loop of [`try_reserve`] this thread made, in tests: one per step when
+    /// no other thread's step is accepted meanwhile, however many reservations are alive.
+    static PASSES: Cell<usize> = const { Cell::new(0) };
+    /// What this thread does once inside a pass of [`try_reserve`], in tests: `Some((n, act))`
+    /// runs `act` after the pass's n-th read (1 the bytes announced, 2 the bytes given back, 3
+    /// the bytes held, in the order the pass makes them), as another thread's step that falls
+    /// there would.
+    static BETWEEN_READS: Cell<Option<ReadAction>> = const { Cell::new(None) };
 }
 
-/// Announces a step of `bytes` and checks it: the reservation, when `held() + reserved` stays
-/// within the run's ceiling, or `None` when it would not, with nothing announced. A step larger
-/// than any allocation can be (`isize::MAX` bytes) is refused before it is announced, so the
-/// process-wide sum never wraps.
+/// A read of a pass of [`try_reserve`], counted from 1, and what a test does after it.
+#[cfg(test)]
+type ReadAction = (usize, fn());
+
+/// Runs the action a test set for after the `read`-th read of a pass, once: the action is taken
+/// off first, so neither a step it makes nor a repeated pass runs it again.
+#[cfg(test)]
+fn between_reads(read: usize) {
+    if let Some((at, act)) = BETWEEN_READS.with(Cell::get)
+        && at == read
+    {
+        BETWEEN_READS.with(|cell| cell.set(None));
+        act();
+    }
+}
+
+/// Checks a step of `bytes` and, when it fits, announces it: the reservation, when
+/// `held() + reserved + bytes` stays within the run's ceiling, or `None` when it would not.
+/// A refused step is never announced (#1943): it adds nothing to [`ANNOUNCED`], so no other
+/// thread's check ever sees its bytes, and there is nothing to give back. On a thread outside a
+/// run no ceiling applies, and the step is announced whenever the sum below does not overflow.
+///
+/// The order, check then announce, is that of ADR 0113's amendment of 2026-11-19; the text of
+/// rule 4 before it says announce, then check. What is compared, the guard, the double count
+/// and "it never sees fewer" are those of rule 4.
+///
+/// No sum wraps. A step larger than any allocation can be (`isize::MAX` bytes) is refused at
+/// once, a step that would take `reserved` past `usize::MAX` is refused, and the sum with
+/// `held()` saturates, as the `+sat` of ADR 0113. So `reserved`, the difference of two counts
+/// that each wrap, is always the true sum of the reservations alive, at most `usize::MAX`.
+/// The second of these refusals also applies outside a run, where the earlier code accepted
+/// every step: it fails closed, and the caller reports U6003. It takes 2^64 bytes of
+/// reservations alive at once on a 64-bit target, 4 GiB on a 32-bit one.
+///
+/// O(1) expected and lock-free, not wait-free: one pass is three atomic reads, [`charged`] and
+/// one compare-exchange, and a pass is repeated only when another thread's step of positive
+/// size was accepted meanwhile. So some step always completes, and the compare-exchange never
+/// fails without one, but no bound holds for one step alone: a step beside siblings that keep
+/// having steps accepted can repeat its pass any number of times.
+///
+/// # Orderings and interleavings
+///
+/// A step's bytes move one way: into `ANNOUNCED` (accepted), into `held()` (allocated), into
+/// `RELEASED` (dropped). One pass reads against that flow, the source first: `ANNOUNCED` at
+/// t1, `RELEASED` at t2, `held()` at t3, and its compare-exchange at t4 succeeds only if
+/// `ANNOUNCED` still has the value read at t1. The accesses of the two counts are `SeqCst`, so
+/// they are in one order for all threads. The allocator's count is not part of that order (its
+/// writes are `Acquire` and `Release`, and [`charged`] reads the stack charge `Relaxed`), and
+/// need not be: a step's allocation happens before its own `RELEASED.fetch_add`, on one thread
+/// or across the fork handshake of a task's start, and a pass that reads that value of
+/// `RELEASED` at t2 is ordered after it, so its read of `held()` at t3 cannot return a value
+/// older than that allocation. For a pass that is accepted, and any other step X:
+///
+/// - X accepted before t1 and not released before t2 is counted in `reserved`. If it has
+///   allocated before t3 it is counted in `held()` too: the double count that ADR 0113 rule 4
+///   states, which refuses earlier and never later.
+/// - X released before t2 had allocated before that, if it allocated at all, so `held()` at t3
+///   counts its bytes, unless they were freed since, and then they are not held.
+/// - X accepted between t1 and t4 changes `ANNOUNCED`, so the compare-exchange fails and the
+///   pass is repeated: no step is accepted on a view that misses an accepted step. This is why
+///   the count never falls; a release between t1 and t4 does not fail the pass, and need not,
+///   since it only removes bytes that the pass counted.
+/// - X accepted after t4 reads an `ANNOUNCED` that holds this step's bytes, and its own pass
+///   counts them by the first two cases.
+///
+/// So of two concurrent steps the later accepted one counts the earlier, in `reserved` or in
+/// `held()`: steps cannot together take `held()` past the ceiling (ADR 0113 rule 4), as with the
+/// earlier add-then-check, and a pass sees no fewer bytes than are announced or held. A refusal
+/// is decided on such a view too: when the sum does not fit, `ANNOUNCED` is read again, and a
+/// changed value repeats the pass, since `RELEASED` at t2 may then hold the release of a step
+/// accepted after t1 and make the difference meaningless.
+///
+/// What remains inexact, all within what ADR 0113 states of the budget:
+///
+/// - Stricter: the double count above. With k steps in flight a pass can count twice the
+///   bytes of up to k - 1 of them, and of every reservation their threads hold at once, as the
+///   earlier add-then-check could.
+/// - Neither: the allocations that are not steps. `held()` counts them when they happen,
+///   before or after t3, as it did for the earlier add-then-check; ADR 0113 rule 6 covers them
+///   by the checks of `spec/11 §7` and the allocator's hard ceiling, not by the steps.
+/// - Looser in one case only: `ANNOUNCED` could show at t4 the value read at t1 after other
+///   threads had steps accepted in between whose sizes sum to a positive multiple of 2^64
+///   bytes exactly, and the pass would miss those steps. Each of them was accepted within its
+///   own ceiling, so this takes 2^64 bytes of steps within one pass of another thread, which
+///   no run reaches; the counts are 64 bits wide on every target for this reason. The
+///   allocator's hard ceiling (ADR 0061 rule 3) stays under every step either way.
 pub(crate) fn try_reserve(bytes: usize) -> Option<Reservation> {
     #[cfg(test)]
     {
@@ -231,15 +341,47 @@ pub(crate) fn try_reserve(bytes: usize) -> Option<Reservation> {
     if bytes > isize::MAX as usize {
         return None;
     }
-    let reserved = RESERVED
-        .fetch_add(bytes, Ordering::SeqCst)
-        .saturating_add(bytes);
-    let reservation = Reservation(bytes);
-    #[cfg(test)]
-    LIVE_RESERVATIONS.with(|live| live.set(live.get() + 1));
-    let held = charged();
-    HOT.with(|hot| !hot.active.get() || held.saturating_add(reserved) <= hot.mem_ceiling.get())
-        .then_some(reservation)
+    let step = u64::try_from(bytes).ok()?;
+    let ceiling = HOT.with(|hot| hot.active.get().then(|| hot.mem_ceiling.get()));
+    loop {
+        #[cfg(test)]
+        PASSES.with(|passes| passes.set(passes.get() + 1));
+        let announced = ANNOUNCED.load(Ordering::SeqCst);
+        #[cfg(test)]
+        between_reads(1);
+        let released = RELEASED.load(Ordering::SeqCst);
+        #[cfg(test)]
+        between_reads(2);
+        let held = charged();
+        #[cfg(test)]
+        between_reads(3);
+        let fits = announced
+            .wrapping_sub(released)
+            .checked_add(step)
+            .and_then(|reserved| usize::try_from(reserved).ok())
+            .is_some_and(|reserved| {
+                ceiling.is_none_or(|ceiling| held.saturating_add(reserved) <= ceiling)
+            });
+        if !fits {
+            if ANNOUNCED.load(Ordering::SeqCst) == announced {
+                return None;
+            }
+            continue;
+        }
+        if ANNOUNCED
+            .compare_exchange(
+                announced,
+                announced.wrapping_add(step),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            #[cfg(test)]
+            LIVE_RESERVATIONS.with(|live| live.set(live.get() + 1));
+            return Some(Reservation(step));
+        }
+    }
 }
 
 /// The message of a copy's refused step: `message`, or the message of a call over the memory
@@ -3519,7 +3661,7 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
             crate::peak(),
             state.baseline,
             STACK_CHARGE.load(Ordering::Relaxed),
-            RESERVED.load(Ordering::SeqCst),
+            reserved(),
             STACKS.load(Ordering::SeqCst),
             crate::ffi::thread_allocated(),
             mem_ceiling(state.baseline, state.max_memory),
@@ -4121,6 +4263,348 @@ mod tests {
     /// How many steps a scenario passed.
     fn steps(stderr: &str) -> usize {
         stderr.lines().filter(|line| line.starts_with(STEP)).count()
+    }
+
+    /// Runs `f` as a thread of a run whose steps check `ceiling`: what [`try_reserve`] reads of
+    /// the thread, set and put back.
+    fn with_ceiling<T>(ceiling: usize, f: impl FnOnce() -> T) -> T {
+        let before = HOT.with(|hot| (hot.active.replace(true), hot.mem_ceiling.replace(ceiling)));
+        let out = f();
+        HOT.with(|hot| {
+            hot.active.set(before.0);
+            hot.mem_ceiling.set(before.1);
+        });
+        out
+    }
+
+    /// The two counts of the reservations, as a test sees them.
+    fn counts() -> (u64, u64) {
+        (
+            ANNOUNCED.load(Ordering::SeqCst),
+            RELEASED.load(Ordering::SeqCst),
+        )
+    }
+
+    #[test]
+    #[ignore = "run by `a_refused_step_announces_nothing`, in a process of its own"]
+    fn a_refused_step_announces_nothing_scenario() {
+        // #1943: a refused step leaves both counts as they were, so no other thread's check can
+        // have seen its bytes, and an accepted one moves them by exactly its bytes. `ANNOUNCED`
+        // only grows, so an announcement taken back would show in it too. The process has one
+        // test thread, and nothing allocates between a read of `charged()` and the steps
+        // checked against it.
+        let live = || LIVE_RESERVATIONS.with(Cell::get);
+        let start = counts();
+        let most = isize::MAX as usize;
+
+        // Past any allocation: refused before the loop, in a run or outside one.
+        assert!(try_reserve(most + 1).is_none());
+        assert!(try_reserve(usize::MAX).is_none());
+        assert_eq!((counts(), live()), (start, 0));
+
+        // A run with room for 4096 bytes.
+        with_ceiling(charged() + 4096, || {
+            for bytes in [4097, 1 << 59, most] {
+                assert!(try_reserve(bytes).is_none(), "{bytes}");
+                assert_eq!((counts(), live()), (start, 0), "{bytes}");
+            }
+            // The whole room is accepted, and counted against the next step until its drop.
+            let whole = try_reserve(4096);
+            assert!(whole.is_some());
+            assert_eq!((counts(), live()), ((start.0 + 4096, start.1), 1));
+            for bytes in [1, 1 << 59, most] {
+                assert!(try_reserve(bytes).is_none(), "{bytes}");
+                assert_eq!((counts(), live()), ((start.0 + 4096, start.1), 1));
+            }
+            let nothing = try_reserve(0);
+            assert!(nothing.is_some());
+            drop(nothing);
+            drop(whole);
+            assert_eq!((counts(), live()), ((start.0 + 4096, start.1 + 4096), 0));
+            assert_eq!(reserved(), 0);
+            // The room is back.
+            drop(try_reserve(4096).unwrap());
+            assert!(try_reserve(4097).is_none());
+        });
+
+        // The #1920 size in a run of the default budget, 4096 MiB: refused, nothing announced.
+        let before = counts();
+        with_ceiling(mem_ceiling(crate::held(), 4096), || {
+            assert!(try_reserve(1 << 59).is_none());
+            assert!(try_reserve(1 << 20).is_some());
+        });
+        assert_eq!(counts(), (before.0 + (1 << 20), before.1 + (1 << 20)));
+
+        // Outside a run no ceiling applies, and the sum of the reservations still never wraps:
+        // two steps of `isize::MAX` and one byte fill it, and anything more is refused.
+        let before = counts();
+        let (a, b) = (try_reserve(most), try_reserve(most));
+        assert!(a.is_some() && b.is_some());
+        assert_eq!(reserved(), u64::MAX - 1);
+        let full = (before.0.wrapping_add(u64::MAX - 1), before.1);
+        for bytes in [2, most] {
+            assert!(try_reserve(bytes).is_none(), "{bytes}");
+            assert_eq!((counts(), live()), (full, 2), "{bytes}");
+        }
+        // A thread of a run sees the bytes announced outside it, and its sum with what the
+        // process holds saturates instead of wrapping to a small figure.
+        with_ceiling(usize::MAX - 1, || assert!(try_reserve(0).is_none()));
+        with_ceiling(usize::MAX, || assert!(try_reserve(0).is_some()));
+        assert_eq!((counts(), live()), (full, 2));
+        let c = try_reserve(1);
+        assert!(c.is_some());
+        assert_eq!(reserved(), u64::MAX);
+        assert!(try_reserve(1).is_none());
+        drop((a, b, c));
+        assert_eq!((reserved(), live()), (0, 0));
+        assert_eq!(counts().0, before.0.wrapping_add(u64::MAX));
+        assert_eq!(counts().0, counts().1);
+
+        // O(1): a step is one pass of the loop, accepted or refused, whatever the number of
+        // reservations alive, since no other thread's step is accepted meanwhile.
+        for alive in [1, 1_000, 100_000] {
+            let held: Vec<_> = (0..alive).map(|_| try_reserve(1)).collect();
+            assert!(held.iter().all(Option::is_some));
+            let room = charged() + alive + 8;
+            let before = PASSES.with(Cell::get);
+            with_ceiling(room, || {
+                assert!(try_reserve(8).is_some());
+                assert!(try_reserve(9).is_none());
+            });
+            assert_eq!(PASSES.with(Cell::get) - before, 2, "{alive}");
+            assert_eq!(reserved(), alive as u64);
+            drop(held);
+        }
+        assert_eq!((reserved(), live()), (0, 0));
+        eprintln!("{STEP}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_refused_step_announces_nothing() {
+        let (code, stderr) = scenario("a_refused_step_announces_nothing_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
+    }
+
+    /// One step's bytes in the scenarios of the room for one step.
+    const ROOM_STEP: usize = 1 << 20;
+
+    thread_local! {
+        /// A step accepted before a pass begins, for an action of `BETWEEN_READS` to finish.
+        static PENDING: RefCell<Option<Reservation>> = const { RefCell::new(None) };
+        /// The bytes that the actions allocated, and the reservations they keep.
+        static ALLOCATED: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+        static KEPT: RefCell<Vec<Reservation>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// The pending step allocates its bytes and drops its reservation.
+    fn the_pending_step_allocates_and_releases() {
+        let step = PENDING.with(|cell| cell.borrow_mut().take()).unwrap();
+        ALLOCATED.with(|cell| cell.borrow_mut().push(Vec::with_capacity(ROOM_STEP)));
+        drop(step);
+    }
+
+    /// Another step is accepted and keeps its reservation.
+    fn another_step_is_accepted() {
+        let step = try_reserve(ROOM_STEP).unwrap();
+        KEPT.with(|cell| cell.borrow_mut().push(step));
+    }
+
+    /// Another step is accepted, allocates, releases and frees its bytes.
+    fn another_step_comes_and_goes() {
+        let step = try_reserve(ROOM_STEP).unwrap();
+        let bytes: Vec<u8> = Vec::with_capacity(ROOM_STEP);
+        std::hint::black_box(&bytes);
+        drop(step);
+        drop(bytes);
+    }
+
+    #[test]
+    #[ignore = "run by `a_step_between_the_reads_of_a_pass_is_never_missed`, in a process of its own"]
+    fn a_step_between_the_reads_of_a_pass_scenario() {
+        // ADR 0113 rule 4, "it never sees fewer": a run with room for one step and half of
+        // another, and a second step whose pass is interrupted, after each of its three reads
+        // in turn, by what another thread's step would do there. One thread, so every
+        // interleaving below is exact. The containers of the actions are grown first, so that
+        // the room is not spent on them.
+        ALLOCATED.with(|cell| cell.borrow_mut().reserve(8));
+        KEPT.with(|cell| cell.borrow_mut().reserve(8));
+        let passes = || PASSES.with(Cell::get);
+        with_ceiling(charged() + ROOM_STEP + ROOM_STEP / 2, || {
+            for read in 1..=3 {
+                // A step accepted earlier allocates and releases inside the pass: its bytes
+                // leave `reserved` for `held()`, and the pass counts them in one or both.
+                // Reading the bytes given back after the bytes held would count them in
+                // neither, for the action after the first of those two reads.
+                let first = try_reserve(ROOM_STEP);
+                assert!(first.is_some());
+                PENDING.with(|cell| *cell.borrow_mut() = first);
+                BETWEEN_READS.with(|cell| {
+                    cell.set(Some((read, the_pending_step_allocates_and_releases)));
+                });
+                assert!(try_reserve(ROOM_STEP).is_none(), "after read {read}");
+                assert!(BETWEEN_READS.with(Cell::get).is_none());
+                ALLOCATED.with(|cell| cell.borrow_mut().clear());
+                assert_eq!(reserved(), 0);
+
+                // Another step is accepted inside the pass: the pass's compare-exchange
+                // fails, and its second pass counts that step. An addition in place of the
+                // compare-exchange would accept both.
+                let before = passes();
+                BETWEEN_READS.with(|cell| cell.set(Some((read, another_step_is_accepted))));
+                assert!(try_reserve(ROOM_STEP).is_none(), "after read {read}");
+                assert_eq!(passes() - before, 3, "two passes, and the other step's one");
+                assert_eq!(reserved(), ROOM_STEP as u64);
+                KEPT.with(|cell| cell.borrow_mut().clear());
+                assert_eq!(reserved(), 0);
+
+                // Another step comes and goes inside the pass, and leaves the room: the
+                // pass is repeated, since a step was accepted, and its second pass fits.
+                let before = passes();
+                BETWEEN_READS.with(|cell| cell.set(Some((read, another_step_comes_and_goes))));
+                let step = try_reserve(ROOM_STEP);
+                assert!(step.is_some(), "after read {read}");
+                assert_eq!(passes() - before, 3, "two passes, and the other step's one");
+                drop(step);
+                assert_eq!(reserved(), 0);
+            }
+        });
+        assert_eq!(LIVE_RESERVATIONS.with(Cell::get), 0);
+        eprintln!("{STEP}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_step_between_the_reads_of_a_pass_is_never_missed() {
+        let (code, stderr) = scenario("a_step_between_the_reads_of_a_pass_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
+    }
+
+    #[test]
+    #[ignore = "run by `steps_that_fit_only_one_at_a_time_are_never_accepted_together`, in a process of its own"]
+    fn steps_that_fit_only_one_at_a_time_scenario() {
+        // ADR 0113 rule 4, "Concurrent copies": steps cannot together take `held()` past the
+        // ceiling. The run has room for one step of `STEP_BYTES` and half of another, and
+        // every thread asks for one step at a time, allocates it, drops its reservation and
+        // frees it. `inside` counts the threads between an accepted step and the moment
+        // before its bytes are freed: it is never 2, since a second step fits only once the
+        // first one's bytes are neither reserved nor held. That fails if the acceptance is not
+        // one atomic step with its check (an add in place of the compare-exchange), or if a
+        // pass reads `RELEASED` after `held()` (a step that allocates and releases between
+        // the two reads is then in neither; `a_step_between_the_reads_of_a_pass_is_never_missed`
+        // places that step exactly, where this test meets it only by schedule). The process
+        // has only these threads, so nothing else moves `held()` by half a step. Fixed rounds
+        // and a barrier: no timing.
+        const STEP_BYTES: usize = ROOM_STEP;
+        let (threads, rounds) = (8, 40_000);
+        let begin = std::sync::Barrier::new(threads);
+        let inside = AtomicUsize::new(0);
+        let ceiling = charged() + STEP_BYTES + STEP_BYTES / 2;
+        let accepted: usize = std::thread::scope(|scope| {
+            let all: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        with_ceiling(ceiling, || {
+                            begin.wait();
+                            let mut accepted = 0usize;
+                            for _ in 0..rounds {
+                                let Some(step) = try_reserve(STEP_BYTES) else {
+                                    continue;
+                                };
+                                assert_eq!(inside.fetch_add(1, Ordering::SeqCst), 0);
+                                // Seen, so that no profile removes the allocation.
+                                let bytes: Vec<u8> = Vec::with_capacity(STEP_BYTES);
+                                std::hint::black_box(&bytes);
+                                drop(step);
+                                std::thread::yield_now();
+                                assert_eq!(inside.fetch_sub(1, Ordering::SeqCst), 1);
+                                drop(bytes);
+                                accepted += 1;
+                            }
+                            accepted
+                        })
+                    })
+                })
+                .collect();
+            all.into_iter().map(|t| t.join().unwrap()).sum()
+        });
+        assert!(accepted > 0);
+        assert_eq!(reserved(), 0);
+        eprintln!("{STEP} {accepted}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn steps_that_fit_only_one_at_a_time_are_never_accepted_together() {
+        let (code, stderr) = scenario("steps_that_fit_only_one_at_a_time_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
+    }
+
+    #[test]
+    fn refused_steps_never_fail_the_steps_of_sibling_threads() {
+        // #1943: threads of one run whose steps are refused, for asking more than the ceiling,
+        // never make a sibling's step that fits fail. Announced before it was checked, a refused
+        // step of `isize::MAX` bytes was in every check made meanwhile, and two at once wrapped
+        // the sum. The ceiling is far above what the process holds and what the other tests of
+        // this binary announce, so only a refused step seen by a sibling can fail a step here.
+        // No timing is assumed: every thread makes a fixed number of steps, and the refused
+        // ones go on until the last fitting one is done.
+        let ceiling = usize::MAX / 4;
+        let rounds: usize = if cfg!(miri) { 200 } else { 50_000 };
+        let (refusing, fitting) = (2, 4);
+        let begin = std::sync::Barrier::new(refusing + fitting);
+        let done = AtomicBool::new(false);
+        let (refused, failed) = std::thread::scope(|scope| {
+            let hammers: Vec<_> = (0..refusing)
+                .map(|_| {
+                    scope.spawn(|| {
+                        with_ceiling(ceiling, || {
+                            begin.wait();
+                            let (mut asked, mut accepted) = (0usize, 0usize);
+                            while asked < rounds || !done.load(Ordering::SeqCst) {
+                                accepted += usize::from(try_reserve(isize::MAX as usize).is_some());
+                                asked += 1;
+                            }
+                            assert_eq!(LIVE_RESERVATIONS.with(Cell::get), 0);
+                            (asked, accepted)
+                        })
+                    })
+                })
+                .collect();
+            let begin = &begin;
+            let workers: Vec<_> = (0..fitting)
+                .map(|worker| {
+                    scope.spawn(move || {
+                        with_ceiling(ceiling, || {
+                            begin.wait();
+                            let mut failed = 0usize;
+                            for round in 0..rounds {
+                                let step = try_reserve(64 + worker + round % 4096);
+                                failed += usize::from(step.is_none());
+                                if round % 64 == 0 {
+                                    std::thread::yield_now();
+                                }
+                                drop(step);
+                            }
+                            assert_eq!(LIVE_RESERVATIONS.with(Cell::get), 0);
+                            failed
+                        })
+                    })
+                })
+                .collect();
+            let failed: usize = workers.into_iter().map(|t| t.join().unwrap()).sum();
+            done.store(true, Ordering::SeqCst);
+            let refused: Vec<_> = hammers.into_iter().map(|t| t.join().unwrap()).collect();
+            (refused, failed)
+        });
+        assert_eq!(failed, 0, "fitting steps refused beside refused ones");
+        for (asked, accepted) in refused {
+            assert!(asked >= rounds);
+            assert_eq!(accepted, 0, "a step past the ceiling was accepted");
+        }
     }
 
     #[test]

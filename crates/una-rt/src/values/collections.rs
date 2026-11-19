@@ -1324,10 +1324,12 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "asks for 2^59 bytes, which Miri cannot refuse")]
     fn a_bit_set_the_allocator_cannot_give_is_refused_and_the_runtime_stays_usable() {
-        // The scenario below runs in a process of its own (#1920): its step announces 2^59
-        // bytes in the process-wide `RESERVED` until the allocator refuses them, and a test of
-        // this binary that runs a program at the same time, on another thread, would see its
-        // own step over its budget and end the whole binary with U6003.
+        // The scenario below runs in a process of its own (#1920): outside a run no ceiling
+        // applies, so its step is accepted and announces 2^59 bytes process-wide until the
+        // allocator refuses them, and a test of this binary that runs a program at the same
+        // time, on another thread, would see its own step over its budget and end the whole
+        // binary with U6003. A step refused for its run's ceiling announces nothing (#1943),
+        // but this one is not refused.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--ignored",
