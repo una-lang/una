@@ -1482,7 +1482,6 @@ dependencies = [
  "sha2",
  "una-project",
  "una-syntax",
- "una-sys",
 ]
 
 [[package]]

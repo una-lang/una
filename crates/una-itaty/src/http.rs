@@ -71,9 +71,9 @@
 //! descriptors, and 16 more for the listener, the standard streams, a connection being
 //! refused and the store's own files ([`descriptors_needed`]; 528 at the default). Below that,
 //! a publication's write could fail for want of a descriptor, which stops the registry until
-//! it is reopened, so [`serve`] reads the process's soft limit of open descriptors when it
-//! starts and refuses to start under a limit below the need, naming both numbers. An operator
-//! who calls [`Service::handle`] from a loop of their own checks the limit themselves.
+//! it is reopened. The service does not read the process's limit of open descriptors: the
+//! standard library has no such read, so the operator sets a limit of at least the need
+//! (`ulimit -n`) or lowers `max_connections` before starting it.
 //!
 //! **Publications.** At most two publications are read and checked at once, since each holds
 //! its archive in memory: a publication takes its slot once its head is checked, before its
@@ -139,8 +139,8 @@ pub struct ServerConfig {
     /// How many connections are served at once, each from its acceptance to its response's
     /// last byte; [`serve`] runs at most this many connection threads. At least 1. Each
     /// connection can hold two descriptors, its socket and the file it is sent, so the process
-    /// needs a limit of open descriptors of at least [`descriptors_needed`], which [`serve`]
-    /// checks when it starts.
+    /// needs a limit of open descriptors of at least [`descriptors_needed`], which the
+    /// operator sets: the service does not check it.
     pub max_connections: usize,
     /// How many of those connections one peer holds at once; a peer is an IPv4 address or an
     /// IPv6 /64 prefix. At least 1. The default, 64, is a quarter of the default
@@ -215,25 +215,6 @@ pub fn descriptors_needed(config: &ServerConfig) -> u64 {
         .unwrap_or(u64::MAX)
         .saturating_mul(2)
         .saturating_add(RESERVED_DESCRIPTORS)
-}
-
-/// Refuses to serve under a soft `limit` of open descriptors below the need of `config`, or
-/// one that could not be read.
-fn check_descriptors(limit: Option<u64>, config: &ServerConfig) -> io::Result<()> {
-    let needed = descriptors_needed(config);
-    let refused = match limit {
-        Some(limit) if limit >= needed => return Ok(()),
-        Some(limit) => format!(
-            "the limit of open descriptors is {limit}, and {} connections need {needed} (two \
-             each and {RESERVED_DESCRIPTORS} more): raise the limit or lower `max_connections`",
-            config.max_connections
-        ),
-        None => format!(
-            "the limit of open descriptors cannot be read, and {} connections need {needed}",
-            config.max_connections
-        ),
-    };
-    Err(io::Error::new(io::ErrorKind::InvalidInput, refused))
 }
 
 /// A request, read and checked.
@@ -1184,8 +1165,7 @@ pub fn write_response(stream: &mut impl Write, response: &Response) -> io::Resul
 pub type Work = Box<dyn FnOnce() + Send>;
 
 /// Serves `listener` until it fails, one thread per connection and at most `max_connections`
-/// of them (the module's rules). It puts `listener` in blocking mode, and refuses to start
-/// under a limit of open descriptors below [`descriptors_needed`].
+/// of them (the module's rules). It puts `listener` in blocking mode.
 pub fn serve(listener: &TcpListener, service: &Arc<Service>) -> io::Result<()> {
     serve_with(listener, service, |work| {
         std::thread::Builder::new()
@@ -1204,7 +1184,6 @@ pub fn serve_with(
     service: &Arc<Service>,
     spawn: impl Fn(Work) -> io::Result<()>,
 ) -> io::Result<()> {
-    check_descriptors(una_sys::io::descriptor_limit(), &service.config)?;
     // An `accept` waits for a connection: on a non-blocking listener it would fail at once,
     // again and again. The loop pauses on that failure too, should the mode change under it.
     listener.set_nonblocking(false)?;
@@ -2377,30 +2356,14 @@ mod tests {
     }
 
     #[test]
-    fn the_descriptors_needed_are_checked_against_the_limit() {
-        let config = ServerConfig::default();
-        assert_eq!(descriptors_needed(&config), 2 * 256 + 16);
-        assert!(check_descriptors(Some(528), &config).is_ok());
-        assert!(check_descriptors(Some(u64::MAX), &config).is_ok());
-        // The default soft limit of macOS, 256, is below the need: refused, with the numbers.
-        for limit in [0, 256, 527] {
-            let refused = check_descriptors(Some(limit), &config).unwrap_err();
-            assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
-            let refused = refused.to_string();
-            assert!(
-                refused.contains(&format!("is {limit},"))
-                    && refused.contains("256 connections need 528"),
-                "{refused}"
-            );
-        }
-        // A limit that cannot be read is refused too.
-        assert!(check_descriptors(None, &config).is_err());
-        // A lower bound of connections needs less; the largest bound does not overflow.
+    fn the_descriptors_needed_are_two_a_connection_and_the_reserve() {
+        assert_eq!(descriptors_needed(&ServerConfig::default()), 2 * 256 + 16);
         let small = ServerConfig {
             max_connections: 100,
             ..ServerConfig::default()
         };
-        assert!(check_descriptors(Some(256), &small).is_ok());
+        assert_eq!(descriptors_needed(&small), 216);
+        // The largest bound does not overflow.
         let huge = ServerConfig {
             max_connections: usize::MAX,
             ..ServerConfig::default()
