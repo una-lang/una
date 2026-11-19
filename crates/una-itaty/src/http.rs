@@ -24,31 +24,39 @@
 //! client sends whole, in one write, is not concerned. A body needs `Content-Length`, at most
 //! the endpoint's bound (64 KiB for a note, the archive's bound for a publication), and is
 //! read under the head's rule, with a body's numbers: at every moment the bytes of the body
-//! read since the head have arrived within the first-byte timeout (or the idle timeout, when
-//! that is shorter) and a second per 64 KiB of them, with no more than 60 seconds (the idle
-//! timeout) without progress, within a total of the idle timeout and a second per 64 KiB
-//! declared. So a head that declares a body and sends none of it gives its slot back after 5
-//! seconds, and the longest a note's body holds a slot is the 6 seconds that cost its 64 KiB;
-//! a publication's body holds its slot only while it keeps 64 KiB per second on average past
-//! those 5 seconds, and at most two publications are read at once. Chunked bodies, percent-encoding, queries,
+//! read since the head have arrived within a first allowance and a second per 64 KiB of them,
+//! with no more than 60 seconds (the idle timeout) without progress, within a total of the
+//! idle timeout and a second per 64 KiB declared. The first allowance of a note, a
+//! registration or a cosignature is the first-byte timeout (or the idle timeout, when that is
+//! shorter): a head that declares such a body and sends none of it gives its slot back after
+//! 5 seconds, and the longest such a body holds a slot is the 6 seconds that cost a note's 64
+//! KiB. The first allowance of a publication is the idle timeout, 60 seconds, as it was: at
+//! most two publications are read at once, whatever the connections, so their bodies cannot
+//! take the connection slots, and a publisher on a slow line keeps its margin. A steady
+//! publisher is read when its body of `S` bytes arrives within 60 seconds and `S` / 64 KiB
+//! seconds: the largest publication (260 MiB) needs 63.1 KiB per second, an uplink of about
+//! 520 kbit per second for 70 minutes, and one of 400 kbit per second publishes up to 12 MiB.
+//! The rule counts the bytes as they arrive at the service, not as the client writes them.
+//! Chunked bodies, percent-encoding, queries,
 //! repeated `Content-Length` and folded headers are refused, so no byte of a body's framing
 //! is outside the rule; `Expect` is not answered, so a client that waits for `100 Continue`
-//! before it sends its body has the body's first-byte time to give up waiting. A body's
+//! before it sends its body has the body's first allowance to give up waiting. A body's
 //! buffer grows with the bytes that arrive, doubling from 64 KiB, and takes its whole
 //! declared length at once only after its first MiB arrived, so a reallocation never holds
 //! more than the length and that MiB; the search for a head's end resumes where it stopped,
 //! so its work is linear in the head.
 //!
 //! **Refused before the body.** What the head alone decides is answered with no read for the
-//! body (only the bytes of it that came with the head's reads were taken): a head or a framing that is refused, a body past the endpoint's bound (413, by
-//! its `Content-Length`), a publication with no publishing slot (503), and a registration
-//! whose head does not carry the operator's token (403 when registration is closed, 401 for a
-//! credential that is absent, malformed or wrong). A request refused so gets its answer, then
-//! the service stops writing and discards what the body still declares, at most 64 KiB of it
-//! for at most a second, before it closes, so a client that sent a small body reads the
-//! refusal rather than a reset; the discarding ends with the body, so it waits for nothing
-//! once a small body is whole. The other endpoints carry their credential, a signature, in
-//! the body, which is therefore read first, under the rule above.
+//! body (only the bytes of it that came with the head's reads were taken): a head or a framing
+//! that is refused, a body past the endpoint's bound (413, by its `Content-Length`), a
+//! publication with no publishing slot (503), and a registration whose head does not carry the
+//! operator's token (403 when registration is closed, 401 for a credential that is absent,
+//! malformed or wrong). A request refused so gets its answer, then the service stops writing
+//! and discards what the body still declares, at most 64 KiB of it for at most a second,
+//! before it closes, so a client that sent a small body reads the refusal rather than a reset;
+//! the discarding ends with the body, so it waits for nothing once a small body is whole. The
+//! other endpoints carry their credential, a signature, in the body, which is therefore read
+//! first, under the rule above.
 //!
 //! **Writing a response.** Every response is written within the write timeout and the least
 //! rate, the mirror of a body's: no write waits more than the write timeout (60 seconds) for
@@ -136,7 +144,7 @@ pub const MAX_COSIGN_BODY: usize = 2 << 10;
 const MAX_SERVED: usize = MAX_ARCHIVE;
 /// How many publications are checked at once.
 const MAX_PUBLISHING: usize = 2;
-/// The least average rate of a request's body past its first-byte time, in bytes per second:
+/// The least average rate of a request's body past its first allowance, in bytes per second:
 /// the rate the body's total time already assumed (a second per 64 KiB declared), and the
 /// mirror of [`MIN_SEND_RATE`]. A note of 64 KiB has one second more than its first byte.
 const MIN_BODY_RATE: u64 = 64 << 10;
@@ -193,15 +201,17 @@ pub struct ServerConfig {
     /// soon as it is connected, so the default, 5 seconds, covers a retransmission of a lost
     /// first segment (1 second, then 2) with a margin, while a connection that sends nothing
     /// holds its slot a sixth of the head's 30 seconds. It is also the default wait for a
-    /// request's first byte of the language's own servers (`spec/31`, `idle`). A body has the
-    /// same wait for its first byte, counted from the end of the head, and past it a second
-    /// more for each 64 KiB of it that arrived; when the idle timeout is shorter than this,
-    /// the body's wait is the idle timeout.
+    /// request's first byte of the language's own servers (`spec/31`, `idle`). The body of a
+    /// note, a registration or a cosignature has the same wait for its first byte, counted
+    /// from the end of the head, and past it a second more for each 64 KiB of it that
+    /// arrived; when the idle timeout is shorter than this, that wait is the idle timeout. A
+    /// publication's body has the idle timeout instead.
     pub first_byte_timeout: Duration,
     /// The longest time to read a request's head, however fast it arrives.
     pub head_timeout: Duration,
-    /// The longest wait for progress on a body, however much of it arrived, and with a second
-    /// per 64 KiB declared the longest time to read it.
+    /// The longest wait for progress on a body, however much of it arrived; with a second
+    /// per 64 KiB declared, the longest time to read it; and the first allowance of a
+    /// publication's body, past which it keeps 64 KiB per second on average.
     pub idle_timeout: Duration,
     /// The longest wait for the peer to take bytes of a response, and the time past which it
     /// takes them at the least rate.
@@ -1036,6 +1046,11 @@ fn read_head(stream: &mut impl Conn, config: &ServerConfig) -> Result<Head, Resp
                 format!("the body is larger than the {limit} bytes this endpoint takes"),
             ));
         }
+        // With the other refusals of the framing, before anything else is decided by the
+        // head: more of a body came with the head than it declared.
+        (Some(_), Some(length)) if already.len() > length => {
+            return Err(text(400, "the body is longer than `Content-Length`"));
+        }
         (Some(_), Some(length)) => Some(length),
     };
     Ok(Head {
@@ -1078,6 +1093,12 @@ impl Head {
     fn read_body(self, stream: &mut impl Conn, config: &ServerConfig) -> Result<Request, Response> {
         let body = match self.length {
             None => Vec::new(),
+            // A publication keeps the first allowance it always had, the idle timeout:
+            // `MAX_PUBLISHING` bounds how many such bodies are read at once, so they cannot
+            // take the connection slots, and a publisher on a slow line keeps its margin.
+            Some(length) if self.publishes() => {
+                read_body_within(stream, self.already, length, config.idle_timeout, config)?
+            }
             Some(length) => read_body(stream, self.already, length, config)?,
         };
         Ok(Request {
@@ -1096,10 +1117,25 @@ fn is_timeout(e: &io::Error) -> bool {
     )
 }
 
+/// Reads a body that is not a publication's: its first allowance is the request's first-byte
+/// timeout, and never past the idle timeout, the longest wait for a body's progress.
 fn read_body(
     stream: &mut impl Conn,
     already: Vec<u8>,
     length: usize,
+    config: &ServerConfig,
+) -> Result<Vec<u8>, Response> {
+    let first = config.first_byte_timeout.min(config.idle_timeout);
+    read_body_within(stream, already, length, first, config)
+}
+
+/// Reads a body of `length` bytes, of which `already` came with the head, under the rule of
+/// the module with the first allowance `first`.
+fn read_body_within(
+    stream: &mut impl Conn,
+    already: Vec<u8>,
+    length: usize,
+    first: Duration,
     config: &ServerConfig,
 ) -> Result<Vec<u8>, Response> {
     if already.len() > length {
@@ -1109,9 +1145,6 @@ fn read_body(
     let deadline = config
         .idle_timeout
         .saturating_add(Duration::from_secs((length / (64 << 10)) as u64));
-    // The wait for the body's first byte is the request's, and never past the idle timeout,
-    // the longest wait for a body's progress.
-    let first = config.first_byte_timeout.min(config.idle_timeout);
     // The buffer grows with the bytes that arrived, never by the declared length alone, so a
     // peer that declares a large body and sends little holds little memory.
     let before = already.len();
@@ -1121,13 +1154,13 @@ fn read_body(
         #[cfg(test)]
         BODY_RESERVED.with(|c| c.set(c.get().max(body.capacity())));
         // The head's rule, with the body's numbers: the bytes read since the head have the
-        // first-byte time and a second per `MIN_BODY_RATE` of them, within the body's total
-        // time. So a body that does not come loses its slot at the first-byte time, and one
+        // first allowance and a second per `MIN_BODY_RATE` of them, within the body's total
+        // time. So a body that does not come loses its slot at the first allowance, and one
         // that sends a byte now and then a moment later, however large the length declared.
-        // The bytes that came with the head earn nothing: they cost the peer no time here.
+        // The bytes the head's own reads took earn nothing: they cost the peer no time here.
         let received = body.len().saturating_sub(before);
         let allowed = time_earned(first, received, MIN_BODY_RATE, deadline);
-        let late = if body.is_empty() {
+        let late = if received == 0 {
             "the body did not start in time"
         } else if allowed >= deadline {
             "the body took too long"
@@ -1319,16 +1352,23 @@ pub fn serve_with(
 /// address `accept` gives with it, the one `max_connections_per_peer` bounds: [`serve_with`]
 /// gives the address the listener reported, and a caller that gives another answers for it.
 /// `accept` waits for a connection; one that fails at once, again and again, is paused on as
-/// the module says.
+/// the module says. `accept` must not read the connection it gives (to learn its peer from a
+/// header, say): it runs in the accept loop, under none of the module's limits, so one slow
+/// peer would stop every acceptance. A connection given in non-blocking mode is put in
+/// blocking mode, since its reads are bounded by timeouts; one that cannot be is closed.
 pub fn serve_from(
     accept: impl FnMut() -> io::Result<(TcpStream, SocketAddr)>,
     service: &Arc<Service>,
     spawn: impl Fn(Work) -> io::Result<()>,
 ) -> io::Result<()> {
-    accept_loop(
-        accept,
-        std::thread::sleep,
-        |stream, address| match Held::take(service, Peer::of(address.ip())) {
+    accept_loop(accept, std::thread::sleep, |stream, address| {
+        // A read that does not block fails at once with the error of a timeout, and
+        // would be answered 408: the connection blocks, or it is not served.
+        if stream.set_nonblocking(false).is_err() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        match Held::take(service, Peer::of(address.ip())) {
             Err(busy) => refuse_busy(stream, busy),
             Ok(held) => {
                 let _ = spawn(Box::new(move || {
@@ -1336,8 +1376,8 @@ pub fn serve_from(
                     drop(held);
                 }));
             }
-        },
-    )
+        }
+    })
 }
 
 /// The accept loop of [`serve_with`], over what accepts a connection, what pauses, and what
@@ -2058,6 +2098,125 @@ mod tests {
         assert!(String::from_utf8_lossy(&refused.body).contains("no progress"));
         assert!(conn.waits.iter().all(|w| *w <= config.idle_timeout));
         assert_eq!(conn.waits.last(), Some(&config.idle_timeout));
+    }
+
+    /// A publication's head that declares `length` bytes, then `body`, `step` bytes a second.
+    fn publishing(length: usize, body: usize, step: usize) -> Paced {
+        let mut data =
+            format!("POST /publish HTTP/1.1\r\nContent-Length: {length}\r\n\r\n").into_bytes();
+        data.resize(data.len() + body, b'p');
+        paced(data, step, Duration::from_secs(1))
+    }
+
+    #[test]
+    fn a_publication_keeps_the_idle_timeout_as_its_first_allowance() {
+        let config = ServerConfig::default();
+        let mib = 1 << 20;
+        let read = |mut conn: Paced, config: &ServerConfig| {
+            let head = read_head(&mut conn, config).unwrap();
+            assert!(head.publishes());
+            let before = conn.waits.len();
+            let answer = head
+                .read_body(&mut conn, config)
+                .map(|request| request.body.len())
+                .map_err(|refused| {
+                    assert_eq!(refused.status, 408);
+                    String::from_utf8_lossy(&refused.body).to_string()
+                });
+            (answer, conn.waits.split_off(before))
+        };
+        // A publication that does not come: one wait of the idle timeout, as before, not of
+        // the first-byte timeout, which bounds the bodies read without a publishing slot.
+        let (answer, waits) = read(publishing(MAX_PUBLISH_BODY, 0, 1024), &config);
+        assert!(answer.unwrap_err().contains("did not start"));
+        assert_eq!(waits, [config.idle_timeout]);
+        // Whatever the first-byte timeout is.
+        for first_byte_timeout in [Duration::from_secs(1), Duration::from_secs(3600)] {
+            let other = ServerConfig {
+                first_byte_timeout,
+                ..ServerConfig::default()
+            };
+            let (_, waits) = read(publishing(MAX_PUBLISH_BODY, 0, 1024), &other);
+            assert_eq!(waits, [other.idle_timeout]);
+        }
+        // The review's case: an uplink of 400 kbit a second, 50,000 bytes a second. It
+        // publishes 11 MiB, as it did (60 seconds and a second per 64 KiB: 236 seconds for
+        // the 231 it takes), and not 12.5 MiB (260 seconds for 262).
+        let (answer, _) = read(publishing(11 * mib, 11 * mib, 50_000), &config);
+        assert_eq!(answer, Ok(11 * mib));
+        let (answer, _) = read(publishing(25 * mib / 2, 25 * mib / 2, 50_000), &config);
+        assert!(answer.unwrap_err().contains("slower"));
+        // Under the first allowance of the other bodies, 5 seconds, the same 11 MiB at the
+        // same pace are refused within a minute: that allowance is not a publication's.
+        let mut conn = paced(vec![b'p'; 11 * mib], 50_000, Duration::from_secs(1));
+        let refused = read_body(&mut conn, Vec::new(), 11 * mib, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(held(&conn) < Duration::from_secs(30), "{:?}", held(&conn));
+        // A note read through its head has the first-byte timeout.
+        let mut conn = paced(
+            b"POST /submit HTTP/1.1\r\nContent-Length: 65536\r\n\r\n".to_vec(),
+            1024,
+            Duration::from_secs(1),
+        );
+        let head = read_head(&mut conn, &config).unwrap();
+        assert!(head.read_body(&mut conn, &config).is_err());
+        assert_eq!(conn.waits.last(), Some(&config.first_byte_timeout));
+    }
+
+    #[test]
+    fn the_text_of_a_late_body_says_whether_any_of_it_came() {
+        let config = ServerConfig::default();
+        let why = |refused: Response| String::from_utf8_lossy(&refused.body).to_string();
+        // Bytes of the body that came with the head, then nothing: the body did not start
+        // in the time it had, whatever came before that time began.
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, vec![b'y'; 100], MAX_NOTE_BODY, &config);
+        assert!(why(refused.err().unwrap()).contains("did not start"));
+        // The same when the first allowance is the body's whole time.
+        let whole = ServerConfig {
+            first_byte_timeout: Duration::from_secs(3600),
+            ..ServerConfig::default()
+        };
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, Vec::new(), 100, &whole);
+        assert!(why(refused.err().unwrap()).contains("did not start"));
+        // One byte read for the body, then nothing: it came too slowly.
+        let mut conn = paced(b"x".to_vec(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, vec![b'y'; 100], MAX_NOTE_BODY, &config);
+        assert!(why(refused.err().unwrap()).contains("slower"));
+    }
+
+    #[test]
+    fn more_body_than_declared_is_refused_before_the_credential() {
+        let open = ServerConfig {
+            register_token: Some("operator".to_owned()),
+            ..ServerConfig::default()
+        };
+        // The review's case: a registration with no token, `Content-Length: 3`, and ten
+        // bytes of body with the head. The framing is refused, 400, as before, and not the
+        // credential; so is it with the token, and on the other endpoints.
+        for (path, lines) in [
+            ("register", ""),
+            ("register", "Authorization: Bearer operator\r\n"),
+            ("submit", ""),
+            ("cosign", ""),
+            ("publish", ""),
+        ] {
+            let data =
+                format!("POST /{path} HTTP/1.1\r\nContent-Length: 3\r\n{lines}\r\n0123456789");
+            let refused = read_head(&mut trickle(data.as_bytes(), 1024), &open)
+                .err()
+                .unwrap();
+            assert_eq!(refused.status, 400, "{path} {lines:?}");
+            assert!(String::from_utf8_lossy(&refused.body).contains("longer than"));
+        }
+        // A body that is whole with its head is not concerned: the credential decides.
+        let data = b"POST /register HTTP/1.1\r\nContent-Length: 3\r\n\r\n012";
+        let head = read_head(&mut trickle(data, 1024), &open).unwrap();
+        assert_eq!(head.unread(), 0);
+        assert_eq!(head.refused(&open).map(|r| r.status), Some(401));
     }
 
     #[test]

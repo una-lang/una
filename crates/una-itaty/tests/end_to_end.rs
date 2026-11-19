@@ -607,12 +607,8 @@ fn publications_take_their_slot_before_their_body_is_read() {
         log_seed: [20; 32],
     };
     let registry = Registry::open(Arc::clone(&store), &config, clock).unwrap();
-    // The stalled publications below hold their slots until they are dropped.
-    let server = ServerConfig {
-        first_byte_timeout: Duration::from_secs(45),
-        ..ServerConfig::default()
-    };
-    let service = Arc::new(Service::new(Arc::clone(&store), registry, server).unwrap());
+    let service =
+        Arc::new(Service::new(Arc::clone(&store), registry, ServerConfig::default()).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     {
@@ -801,14 +797,7 @@ fn trickling_publications_lose_their_slots_after_the_idle_timeout() {
 /// reads the 503 rather than a reset.
 #[test]
 fn a_publication_refused_before_its_body_reads_its_refusal() {
-    // The stalled publications below hold their slots until the test ends.
-    let (service, addr, dir) = served(
-        "refused",
-        ServerConfig {
-            first_byte_timeout: Duration::from_secs(45),
-            ..ServerConfig::default()
-        },
-    );
+    let (service, addr, dir) = served("refused", ServerConfig::default());
     let head = format!(
         "POST /publish HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
         una_itaty::http::MAX_PUBLISH_BODY
@@ -1156,17 +1145,18 @@ fn a_body_that_does_not_come_loses_its_slot_at_the_first_byte_timeout() {
     let (service, addr, dir) = served("bodyhold", config);
     let started = Instant::now();
     // The review's case, with no credential: the largest note declared, nothing sent; the
-    // same for a cosignature; and a note of which one byte comes, with the head or after it.
+    // same for a cosignature; and a note of which a part comes: 4 KiB, more than the head's
+    // own read takes, so some of it is read for the body whether or not it came with the head.
     let mut silent = head_alone(addr, "submit", 65536, "");
     let mut cosign = head_alone(addr, "cosign", 2048, "");
-    let mut one_byte = head_alone(addr, "submit", 65536, "");
-    one_byte.write_all(b"x").unwrap();
+    let mut part = head_alone(addr, "submit", 65536, "");
+    part.write_all(&[b'x'; 4096]).unwrap();
     // Each read ends when the service closes the connection: no state is waited for that
     // lasts only for a time.
     for (stream, why) in [
         (&mut silent, "the body did not start in time"),
         (&mut cosign, "the body did not start in time"),
-        (&mut one_byte, "slower than 64 KiB per second"),
+        (&mut part, "slower than 64 KiB per second"),
     ] {
         let response = String::from_utf8_lossy(&read_all(stream)).to_string();
         assert!(response.starts_with("HTTP/1.1 408"), "{response}");
@@ -1213,6 +1203,15 @@ fn a_registration_without_the_token_is_answered_before_its_body() {
             "{lines:?}: {response}"
         );
     }
+    // More body with the head than it declares is refused for its framing, as before, and
+    // not for its credential.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .write_all(b"POST /register HTTP/1.1\r\nContent-Length: 3\r\n\r\n0123456789")
+        .unwrap();
+    let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    assert!(response.contains("longer than"), "{response}");
     // A client that sent a small body whole reads the refusal, and the connection closes as
     // soon as that body was discarded.
     let (status, _) = request(addr, "POST", "register", &[], &[b'r'; 4096]);
@@ -1244,7 +1243,8 @@ fn a_registration_without_the_token_is_answered_before_its_body() {
 /// A peer that is not a loopback address holds at most `max_connections_per_peer` slots: its
 /// next connection is answered 503 "from this address" by the accept loop, while other peers
 /// are served. The test's connections are loopback ones, so the loop is given, through
-/// `serve_from`, the address each one is counted under.
+/// `serve_from`, the address each one is counted under; it is given them in non-blocking
+/// mode, which `serve_from` undoes.
 #[test]
 fn a_peer_past_its_bound_is_refused_from_its_address() {
     let (store, registry, dir) = opened("peer");
@@ -1276,6 +1276,9 @@ fn a_peer_past_its_bound_is_refused_from_its_address() {
                 || {
                     let (stream, address) = listener.accept()?;
                     assert!(address.ip().is_loopback());
+                    // A connection given in non-blocking mode is served as any other: left
+                    // so, its first read would fail at once and be answered 408.
+                    stream.set_nonblocking(true)?;
                     Ok((
                         stream,
                         SocketAddr::new(*from.lock().unwrap(), address.port()),
