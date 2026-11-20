@@ -1290,7 +1290,7 @@ fn serve_prefix_run(
 }
 
 /// The oracle of `serve_prefix_secret` and `serve_prefix_early_peers`: key 0 and key 1 run 20
-/// times each, alternating, with key 1 measured again as the control; the probe's times are
+/// times each, in counterbalanced orders, with key 1 measured again as the control; the probe's times are
 /// judged by the rank test of the header, and every probe must be answered. The set-up of key 1 must have taken at least 100 ms more than key 0's, so
 /// that the input compared is the channel's.
 #[allow(clippy::print_stderr)]
@@ -1309,11 +1309,25 @@ fn serve_prefix_oracle(label: &str, early: bool, engine: Engine) {
         serve_package(&names[0], port, &prefix_program(0, work, setup), engine),
         serve_package(&names[1], port, &prefix_program(1, work, setup), engine),
     ];
+    // Sample 0 is key 0, samples 1 and 2 are key 1 (sample 2 the control). Run `r` measures
+    // them in the order `ORDERS[r % 6]`, the counterbalanced orders of the placement oracle:
+    // in the fixed order 0, 1, 2, sample 1 always followed the other package and sample 2 the
+    // same package, and that difference of condition alone separated the control (nightly of
+    // 2026-11-19, #2157). Over 20 runs each sample takes each place 6 or 7 times.
+    const ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+    ];
     let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut readies: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
     let mut bodies = std::collections::BTreeSet::new();
     for run in 0..20 {
-        for (sample, key) in [0usize, 1, 1].into_iter().enumerate() {
+        for sample in ORDERS[run % ORDERS.len()] {
+            let key = usize::from(sample != 0);
             let (ready, took, body) =
                 serve_prefix_run(&dirs[key], &names[key], port, early, engine);
             eprintln!(
