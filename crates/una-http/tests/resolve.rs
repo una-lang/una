@@ -70,16 +70,23 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     resolve::start(8).unwrap();
     assert_eq!(resolve::threads(), (2, 8));
     let deadline = Duration::from_millis(300);
-    // Each bound is on the resolver's own delay: beside the measured requests, control threads
-    // sleep the same wait, and their lateness, the machine's share (a loaded machine wakes a
-    // thread late, nightly of 2026-11-20, #2161), is added to the bound, never a wider margin.
-    let controls: Vec<_> = (0..4).map(|_| control(deadline)).collect();
-    let requests: Vec<_> = (0..4)
-        .map(|_| std::thread::spawn(move || get(deadline, None)))
-        .collect();
-    let late = latest(controls);
-    for request in requests {
-        let (result, took) = request.join().unwrap();
+    // Each bound is on the resolver's own delay (150 ms; 400 ms for the abandon). Beside the
+    // measured requests, control threads sleep the same wait; how late they wake is the
+    // machine's share at that moment (a loaded machine wakes a thread late: nightly of
+    // 2026-11-20, #2161), and it is added to the bound, up to `MACHINE_SHARE` at most. A
+    // measurement whose controls woke later than that is repeated, at most `ATTEMPTS` times,
+    // and the test fails as inconclusive when none was quiet enough: the share never widens
+    // the bound by more than `MACHINE_SHARE`.
+    let (taken, late) = measured(deadline, 4, || {
+        let requests: Vec<_> = (0..4)
+            .map(|_| std::thread::spawn(move || get(deadline, None)))
+            .collect();
+        requests
+            .into_iter()
+            .map(|request| request.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for (result, took) in taken {
         assert_eq!(result, Err(Error::TimedOut));
         assert!(
             took >= deadline && took < deadline + Duration::from_millis(150) + late,
@@ -89,23 +96,49 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     assert_eq!(resolve::threads(), (2, 8));
     // With the pool still full of hung lookups, a request whose task is cancelled stops waiting
     // at the abandon, long before its deadline, and the next one still meets its own deadline.
-    let controls = vec![control(Duration::from_millis(100))];
-    let (result, took) = get(Duration::from_secs(30), Some(Duration::from_millis(100)));
-    let late = latest(controls);
+    let ((result, took), late) = measured(Duration::from_millis(100), 1, || {
+        get(Duration::from_secs(30), Some(Duration::from_millis(100)))
+    });
     assert_eq!(result, Err(Error::Interrupted));
     assert!(
         took < Duration::from_millis(400) + late,
         "{took:?}, the control {late:?} late"
     );
-    let controls = vec![control(deadline)];
-    let (result, took) = get(deadline, None);
-    let late = latest(controls);
+    let ((result, took), late) = measured(deadline, 1, || get(deadline, None));
     assert_eq!(result, Err(Error::TimedOut));
     assert!(
-        took < deadline + Duration::from_millis(150) + late,
+        took >= deadline && took < deadline + Duration::from_millis(150) + late,
         "{took:?}, the control {late:?} late"
     );
     assert_eq!(resolve::threads(), (2, 8));
+}
+
+/// The most of the machine's lateness that a bound of this test takes in.
+const MACHINE_SHARE: Duration = Duration::from_millis(150);
+
+/// How many times a measurement whose controls woke too late is taken again.
+const ATTEMPTS: usize = 3;
+
+/// Runs `measure` beside `controls` control threads that each sleep `wait`, and returns its
+/// result with the greatest lateness of the controls: the first attempt whose controls woke at
+/// most `MACHINE_SHARE` late, out of `ATTEMPTS`. Every attempt keeps the pool as it was: the
+/// hung lookup of `hang.test` is the one a new request joins.
+fn measured<T>(wait: Duration, controls: usize, mut measure: impl FnMut() -> T) -> (T, Duration) {
+    let mut lateness = Vec::new();
+    for _ in 0..ATTEMPTS {
+        let started: Vec<_> = (0..controls).map(|_| control(wait)).collect();
+        let result = measure();
+        let late = started
+            .into_iter()
+            .map(|control| control.join().unwrap())
+            .max()
+            .unwrap_or_default();
+        if late <= MACHINE_SHARE {
+            return (result, late);
+        }
+        lateness.push(late);
+    }
+    panic!("inconclusive: the machine woke the controls too late in every attempt: {lateness:?}")
 }
 
 /// A control thread: it sleeps `wait` and returns how much later than `wait` it woke, the
@@ -116,13 +149,4 @@ fn control(wait: Duration) -> std::thread::JoinHandle<Duration> {
         std::thread::sleep(wait);
         started.elapsed().saturating_sub(wait)
     })
-}
-
-/// The greatest lateness of `controls`.
-fn latest(controls: Vec<std::thread::JoinHandle<Duration>>) -> Duration {
-    controls
-        .into_iter()
-        .map(|control| control.join().unwrap())
-        .max()
-        .unwrap_or_default()
 }
