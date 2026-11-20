@@ -4936,29 +4936,69 @@ mod tests {
         // library's tests run in parallel) inflates no measurement; the claim stays linear.
         // Five runs on the full sizes; one on Miri's small ones (it is slow, and times nothing).
         let runs = if sizes[0] >= 100_000 { 5 } else { 1 };
-        let times: Vec<std::time::Duration> = sizes
-            .iter()
-            .map(|&size| {
-                let digits = "7".repeat(size);
-                (0..runs)
-                    .map(|_| {
+        let measure = || -> Vec<std::time::Duration> {
+            sizes
+                .iter()
+                .map(|&size| {
+                    let digits = "7".repeat(size);
+                    (0..runs)
+                        .map(|_| {
+                            let started = std::time::Instant::now();
+                            assert_eq!(parse_failure(text_word(digits.clone())), too_long);
+                            assert_eq!(to_int(text_word(digits.clone())), NONE);
+                            started.elapsed()
+                        })
+                        .min()
+                        .unwrap_or_default()
+                })
+                .collect()
+        };
+        if cfg!(miri) {
+            measure();
+            return;
+        }
+        // The bound never widens. Beside each attempt a control thread sleeps 1 ms at a time;
+        // how late it wakes is the machine's share at that moment (a loaded machine held every
+        // run of the longer text back: nightly of 2026-11-20, #2178). A missed bound fails the
+        // test when the control never woke more than `MACHINE_SHARE` late, a quiet machine, and
+        // is measured again when it did, `ATTEMPTS` attempts in all, then fails as inconclusive.
+        const MACHINE_SHARE: std::time::Duration = std::time::Duration::from_millis(10);
+        const ATTEMPTS: usize = 3;
+        let mut lateness = Vec::new();
+        loop {
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let control = {
+                let done = Arc::clone(&done);
+                std::thread::spawn(move || {
+                    let tick = std::time::Duration::from_millis(1);
+                    let mut late = std::time::Duration::ZERO;
+                    while !done.load(AtomicOrdering::Acquire) {
                         let started = std::time::Instant::now();
-                        assert_eq!(parse_failure(text_word(digits.clone())), too_long);
-                        assert_eq!(to_int(text_word(digits.clone())), NONE);
-                        started.elapsed()
-                    })
-                    .min()
-                    .unwrap_or_default()
-            })
-            .collect();
-        if !cfg!(miri) {
+                        std::thread::sleep(tick);
+                        late = late.max(started.elapsed().saturating_sub(tick));
+                    }
+                    late
+                })
+            };
+            let times = measure();
+            done.store(true, AtomicOrdering::Release);
+            let late = control.join().unwrap();
+            if times[1].as_secs_f64() <= 30.0 * times[0].as_secs_f64() + 0.05 {
+                break;
+            }
             assert!(
-                times[1].as_secs_f64() <= 30.0 * times[0].as_secs_f64() + 0.05,
-                "{} digits took {:?}, {} took {:?}",
+                late > MACHINE_SHARE,
+                "{} digits took {:?}, {} took {:?}, the control {late:?} late",
                 sizes[1],
                 times[1],
                 sizes[0],
                 times[0]
+            );
+            lateness.push(late);
+            assert!(
+                lateness.len() < ATTEMPTS,
+                "inconclusive: the machine woke the controls too late in every attempt: \
+                 {lateness:?}"
             );
         }
     }

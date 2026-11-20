@@ -1803,58 +1803,90 @@ mod tests {
         let before = os_threads();
         let grant = una_http::grant::Grant::parse("http:http://stall.test:get").unwrap();
         let governor = Arc::new(una_http::limit::Governor::new(vec![grant]));
-        let (results, outcomes) = std::sync::mpsc::channel();
-        let tasks: Vec<Receiver<()>> = (0..4 * POOL)
-            .map(|part| {
-                let governor = Arc::clone(&governor);
-                let results = results.clone();
-                start(&sched, part, move || {
-                    let result = blocking(Pool::Io, move || {
-                        let request = una_http::client::Request {
-                            method: una_http::grant::Method::Get,
-                            url: "http://stall.test/",
-                            headers: &[],
-                            body: &[],
-                            bearer: None,
-                        };
-                        let settings = una_http::client::Settings {
-                            limits: una_http::parse::Limits::default(),
-                            timeout: std::time::Duration::from_millis(300),
-                        };
-                        let started = std::time::Instant::now();
-                        let sent = una_http::client::send_covered(
-                            &request,
-                            &governor,
-                            &settings,
-                            &una_http::client::Uninterrupted,
-                            &una_http::limit::Abandon::new(),
-                            una_http::client::Cover::default(),
-                        );
-                        (sent, started.elapsed())
-                    });
-                    let _ = results.send(result);
-                })
-            })
-            .collect();
-        // While the requests wait, the process's threads are sampled.
+        // The upper bound is on the deadline. The main thread, which samples the threads, is the
+        // control: it sleeps to the deadline, and how late it wakes is the machine's share at
+        // that moment (a loaded machine woke a request late: nightly of 2026-11-20, #2178); it is
+        // added to the bound, up to `MACHINE_SHARE` at most. A burst whose control woke later
+        // than that is sent again, `ATTEMPTS` attempts in all, and the test fails as
+        // inconclusive when none was quiet enough. A later burst's connections queue behind the
+        // hung ones on the same two threads: each request still ends at its own deadline.
+        const MACHINE_SHARE: std::time::Duration = std::time::Duration::from_millis(150);
+        const ATTEMPTS: usize = 3;
+        let deadline = std::time::Duration::from_millis(300);
         let mut most = before;
-        for _ in 0..6 {
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            most = match (most, os_threads()) {
-                (Some(most), Some(now)) => Some(most.max(now)),
-                (most, _) => most,
-            };
-        }
-        for task in tasks {
-            assert_eq!(task.recv(), Some(()));
-        }
-        drop(results);
-        let outcomes: Vec<_> = outcomes.iter().collect();
-        assert_eq!(outcomes.len(), 4 * POOL);
-        for (sent, took) in &outcomes {
-            assert_eq!(sent, &Err(una_http::client::Error::TimedOut));
+        let mut lateness = Vec::new();
+        let (outcomes, late) = loop {
+            let begun = std::time::Instant::now();
+            let (results, outcomes) = std::sync::mpsc::channel();
+            let tasks: Vec<Receiver<()>> = (0..4 * POOL)
+                .map(|part| {
+                    let governor = Arc::clone(&governor);
+                    let results = results.clone();
+                    start(&sched, part, move || {
+                        let result = blocking(Pool::Io, move || {
+                            let request = una_http::client::Request {
+                                method: una_http::grant::Method::Get,
+                                url: "http://stall.test/",
+                                headers: &[],
+                                body: &[],
+                                bearer: None,
+                            };
+                            let settings = una_http::client::Settings {
+                                limits: una_http::parse::Limits::default(),
+                                timeout: deadline,
+                            };
+                            let started = std::time::Instant::now();
+                            let sent = una_http::client::send_covered(
+                                &request,
+                                &governor,
+                                &settings,
+                                &una_http::client::Uninterrupted,
+                                &una_http::limit::Abandon::new(),
+                                una_http::client::Cover::default(),
+                            );
+                            (sent, started.elapsed())
+                        });
+                        let _ = results.send(result);
+                    })
+                })
+                .collect();
+            // While the requests wait, the process's threads are sampled.
+            for _ in 0..6 {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                most = match (most, os_threads()) {
+                    (Some(most), Some(now)) => Some(most.max(now)),
+                    (most, _) => most,
+                };
+            }
+            std::thread::sleep(deadline.saturating_sub(begun.elapsed()));
+            let late = begun.elapsed().saturating_sub(deadline);
+            for task in tasks {
+                assert_eq!(task.recv(), Some(()));
+            }
+            drop(results);
+            let outcomes: Vec<_> = outcomes.iter().collect();
+            // What load cannot change is checked on every attempt, the upper bound on the
+            // accepted one.
+            assert_eq!(outcomes.len(), 4 * POOL);
+            for (sent, _) in &outcomes {
+                assert_eq!(sent, &Err(una_http::client::Error::TimedOut));
+            }
+            lateness.push(late);
+            if late <= MACHINE_SHARE || lateness.len() == ATTEMPTS {
+                assert!(
+                    late <= MACHINE_SHARE,
+                    "inconclusive: the machine woke the control too late in every attempt: \
+                     {lateness:?}"
+                );
+                break (outcomes, late);
+            }
+        };
+        for (_, took) in &outcomes {
             // Each waited at most its deadline and a little: never behind another's hang.
-            assert!(*took < std::time::Duration::from_millis(500), "{took:?}");
+            assert!(
+                *took < std::time::Duration::from_millis(500) + late,
+                "{took:?}, the control {late:?} late"
+            );
         }
         let (lookups, connects) = una_http::resolve::threads();
         assert_eq!((lookups, connects), (POOL, POOL));
