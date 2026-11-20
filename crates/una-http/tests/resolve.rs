@@ -125,7 +125,7 @@ const ATTEMPTS: usize = 3;
 /// hung lookup of `hang.test` is the one a new request joins.
 fn measured<T>(wait: Duration, controls: usize, mut measure: impl FnMut() -> T) -> (T, Duration) {
     let mut lateness = Vec::new();
-    for _ in 0..ATTEMPTS {
+    loop {
         let started: Vec<_> = (0..controls).map(|_| control(wait)).collect();
         let result = measure();
         let late = started
@@ -133,12 +133,15 @@ fn measured<T>(wait: Duration, controls: usize, mut measure: impl FnMut() -> T) 
             .map(|control| control.join().unwrap())
             .max()
             .unwrap_or_default();
-        if late <= MACHINE_SHARE {
+        lateness.push(late);
+        if late <= MACHINE_SHARE || lateness.len() == ATTEMPTS {
+            assert!(
+                late <= MACHINE_SHARE,
+                "inconclusive: the machine woke the controls too late in every attempt: {lateness:?}"
+            );
             return (result, late);
         }
-        lateness.push(late);
     }
-    panic!("inconclusive: the machine woke the controls too late in every attempt: {lateness:?}")
 }
 
 /// A control thread: it sleeps `wait` and returns how much later than `wait` it woke, the
