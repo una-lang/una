@@ -6875,16 +6875,26 @@ fn ten_thousand_cancelled_started_tasks_release_what_they_hold_in_both_engines()
     let _ = std::fs::remove_dir_all(&interpreted_dir);
     let dir = within_package("cancelled", "cancelled", &cancelled_program(10_000));
     let _removed = RemovedAtEnd(dir.clone());
-    // One worker is the tight leak guard: it needs 12 MiB. Under load, several workers see an
-    // occasional spike of a few MiB in the charged memory, so they run under 24 MiB, which a
-    // per-round leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
+    // One worker is the tight leak guard, under `--virtual-time`: its turns are counted in
+    // check points, so the schedule, and with it the charge (9 MiB), is the same under any load.
+    // On the real clock a loaded machine deschedules the worker past a slice of 10 ms, the
+    // started task gets a turn before its cancellation, and the debug runtime's quarantine of
+    // freed slots grows that task's table too: up to about 18 MiB charged, past 16 (nightly of
+    // 2026-11-20, #2168). Several workers run on the real clock under 24 MiB, which a per-round
+    // leak, about 160 MiB over ten thousand rounds, still exceeds many times over.
     // A started task that keeps its worker, so the task that cancels it never runs, computes
     // for minutes: each run has a processor-time limit, so a hang fails here instead of
     // holding the test run (#1533, as #1188 for races, #1776).
-    for (workers, budget) in [("1", "16"), ("2", "24"), ("4", "24")] {
+    for (workers, budget, virtual_time) in
+        [("1", "16", true), ("2", "24", false), ("4", "24", false)]
+    {
+        let mut args = vec!["--max-memory", budget, "--workers", workers];
+        if virtual_time {
+            args.push("--virtual-time");
+        }
         let native = output_within(
             Command::new(dir.join("target/una/cancelled"))
-                .args(["--max-memory", budget, "--workers", workers])
+                .args(&args)
                 .current_dir(&dir),
             PROCESSOR_LIMIT_SECS,
         );
