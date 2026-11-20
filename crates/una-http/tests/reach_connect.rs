@@ -127,8 +127,8 @@ const ATTEMPTS: usize = 3;
 /// Runs `measure` beside `controls` control threads that each sleep `wait`, and returns its
 /// result with the greatest lateness of the controls: the first attempt whose controls woke at
 /// most `MACHINE_SHARE` late, out of `ATTEMPTS`. A later attempt makes connection attempts of its
-/// own, which queue behind the hung ones on the pool's 2 threads: the pool never grows, and each
-/// request still ends at its own deadline or at its abandon.
+/// own, which take the pool's other thread or queue behind the two hung ones: the pool never
+/// grows past 2 threads, and each request still ends at its own deadline or at its abandon.
 fn measured<T>(wait: Duration, controls: usize, mut measure: impl FnMut() -> T) -> (T, Duration) {
     let mut lateness = Vec::new();
     loop {
