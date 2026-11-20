@@ -70,25 +70,59 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     resolve::start(8).unwrap();
     assert_eq!(resolve::threads(), (2, 8));
     let deadline = Duration::from_millis(300);
+    // Each bound is on the resolver's own delay: beside the measured requests, control threads
+    // sleep the same wait, and their lateness, the machine's share (a loaded machine wakes a
+    // thread late, nightly of 2026-11-20, #2161), is added to the bound, never a wider margin.
+    let controls: Vec<_> = (0..4).map(|_| control(deadline)).collect();
     let requests: Vec<_> = (0..4)
         .map(|_| std::thread::spawn(move || get(deadline, None)))
         .collect();
+    let late = latest(controls);
     for request in requests {
         let (result, took) = request.join().unwrap();
         assert_eq!(result, Err(Error::TimedOut));
         assert!(
-            took >= deadline && took < deadline + Duration::from_millis(150),
-            "{took:?}"
+            took >= deadline && took < deadline + Duration::from_millis(150) + late,
+            "{took:?}, the controls {late:?} late"
         );
     }
     assert_eq!(resolve::threads(), (2, 8));
     // With the pool still full of hung lookups, a request whose task is cancelled stops waiting
     // at the abandon, long before its deadline, and the next one still meets its own deadline.
+    let controls = vec![control(Duration::from_millis(100))];
     let (result, took) = get(Duration::from_secs(30), Some(Duration::from_millis(100)));
+    let late = latest(controls);
     assert_eq!(result, Err(Error::Interrupted));
-    assert!(took < Duration::from_millis(400), "{took:?}");
+    assert!(
+        took < Duration::from_millis(400) + late,
+        "{took:?}, the control {late:?} late"
+    );
+    let controls = vec![control(deadline)];
     let (result, took) = get(deadline, None);
+    let late = latest(controls);
     assert_eq!(result, Err(Error::TimedOut));
-    assert!(took < deadline + Duration::from_millis(150), "{took:?}");
+    assert!(
+        took < deadline + Duration::from_millis(150) + late,
+        "{took:?}, the control {late:?} late"
+    );
     assert_eq!(resolve::threads(), (2, 8));
+}
+
+/// A control thread: it sleeps `wait` and returns how much later than `wait` it woke, the
+/// lateness the machine alone gives a thread at that moment.
+fn control(wait: Duration) -> std::thread::JoinHandle<Duration> {
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        std::thread::sleep(wait);
+        started.elapsed().saturating_sub(wait)
+    })
+}
+
+/// The greatest lateness of `controls`.
+fn latest(controls: Vec<std::thread::JoinHandle<Duration>>) -> Duration {
+    controls
+        .into_iter()
+        .map(|control| control.join().unwrap())
+        .max()
+        .unwrap_or_default()
 }
