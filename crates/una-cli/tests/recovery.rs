@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 #[path = "common/cpu.rs"]
 mod cpu;
@@ -221,28 +220,39 @@ fn many(n: usize) -> String {
     text
 }
 
-/// The time to check [`many`]`(n)`, which reports U0101.
-fn timed(n: usize) -> Duration {
+/// The measured step, in a child: the check of [`many`]`(n)`, which reports U0101.
+fn check_many(n: usize) {
     let path = scratch(&format!("many-{n}.una"));
-    let text = many(n);
-    let start = Instant::now();
-    let diagnostics = check(&path, &text);
-    let took = start.elapsed();
+    let diagnostics = check(&path, &many(n));
     assert!(diagnostics.iter().any(|d| d.code.as_str() == "U0101"));
-    took
 }
 
+/// The name of the test below, which its children run.
+const BROKEN: &str = "checking_past_broken_declarations_takes_linear_cpu_time";
+
 /// Rule 12: the check of a file with broken declarations stays linear; a doubling of the file
-/// takes less than 2.5 times as long, measured by the shared helper (#1180, #1197).
+/// takes less than 2.5 times as much processor time past the start of the test binary, by the
+/// shared helper (#1180, #1197). The check runs in a child, as in the two tests below: in this
+/// process its elapsed time grew with what ran beside it, 2.6 times for a doubling inside the
+/// parallel run of a release gate (#2166).
 #[test]
-fn checking_past_broken_declarations_scales_linearly() {
+fn checking_past_broken_declarations_takes_linear_cpu_time() {
+    // The child `idle` checks nothing: the start of the test binary, the fixed cost.
+    if let Some(argument) = cpu::child() {
+        if argument != "idle" {
+            check_many(argument.parse().unwrap());
+        }
+        cpu::ran();
+        return;
+    }
+    let idle = timing::best_of_three(|| cpu_time(BROKEN, "idle"));
     timing::assert_growth(
         "checking past broken declarations",
         &[500, 1_000, 2_000, 4_000],
-        0.0,
+        idle,
         timing::FLOOR,
         2.5,
-        |n| timed(n).as_secs_f64(),
+        |n| cpu_time(BROKEN, &n.to_string()),
     );
 }
 
@@ -273,13 +283,14 @@ fn check_renames(n: usize) {
     assert_eq!(renames, 2 * n, "{n}");
 }
 
-/// The processor seconds of `test`, one of the two tests below, run alone in a child of this
-/// test binary to make the measurement `argument` names: a size, or `idle` for a child that
-/// checks nothing (`common/cpu.rs`, #1662). The check runs in this process, so its elapsed time
-/// grows with what runs beside it: inside the parallel run of a release gate these two tests
-/// read 2.9 and 2.6 times for a doubling that takes about 2 alone (#2111). A child's user and
-/// system time stay what its check costs.
-fn renames_cpu_time(test: &str, argument: &str) -> f64 {
+/// The processor seconds of `test`, one of the three scaling tests of this file, run alone in
+/// a child of this test binary to make the measurement `argument` names: a size, or `idle` for a
+/// child that checks nothing (`common/cpu.rs`, #1662). A check run in this process has an
+/// elapsed time that grows with what runs beside it: inside the parallel run of a release gate
+/// the two renaming tests read 2.9 and 2.6 times for a doubling that takes about 2 alone
+/// (#2111), and the test of broken declarations 2.6 times (#2166). A child's user and system
+/// time stay what its check costs.
+fn cpu_time(test: &str, argument: &str) -> f64 {
     cpu::in_child(test, argument)
 }
 
@@ -300,14 +311,14 @@ fn renaming_underscored_names_takes_linear_cpu_time() {
         cpu::ran();
         return;
     }
-    let idle = timing::best_of_three(|| renames_cpu_time(RENAMING, "idle"));
+    let idle = timing::best_of_three(|| cpu_time(RENAMING, "idle"));
     timing::assert_growth(
         "renaming underscored names",
         &[500, 1_000, 2_000, 4_000],
         idle,
         timing::FLOOR,
         2.5,
-        |n| renames_cpu_time(RENAMING, &n.to_string()),
+        |n| cpu_time(RENAMING, &n.to_string()),
     );
 }
 
@@ -356,14 +367,14 @@ fn renaming_underscored_names_in_one_declaration_takes_linear_cpu_time() {
         cpu::ran();
         return;
     }
-    let idle = timing::best_of_three(|| renames_cpu_time(RENAMING_IN_ONE, "idle"));
+    let idle = timing::best_of_three(|| cpu_time(RENAMING_IN_ONE, "idle"));
     timing::assert_growth(
         "renaming underscored names in one declaration",
         &[500, 1_000, 2_000, 4_000],
         idle,
         timing::FLOOR,
         2.5,
-        |n| renames_cpu_time(RENAMING_IN_ONE, &n.to_string()),
+        |n| cpu_time(RENAMING_IN_ONE, &n.to_string()),
     );
 }
 
