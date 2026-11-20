@@ -94,25 +94,28 @@ fn a_link_grows_linearly_with_functions_and_with_relocations() {
         },
     )]);
     let fixed = timing::best_of_three(|| median_of_nine(&synthetic(1, 1), &runtime));
-    let programs: std::collections::BTreeMap<usize, Vec<u8>> = [1_000, 2_000, 4_000, 8_000]
+    // The sizes make the smallest link take about twenty times the fixed cost or more (#2144):
+    // that cost, under a millisecond, varies by half from one measurement to the next, and at
+    // 1,000 functions, a link of 2 ms, the ratio of two times past it measured that variation.
+    let programs: std::collections::BTreeMap<usize, Vec<u8>> = [8_000, 16_000, 32_000, 64_000]
         .iter()
         .map(|&n| (n, synthetic(n, 1)))
         .collect();
     timing::assert_growth(
         "functions",
-        &[1_000, 2_000, 4_000, 8_000],
+        &[8_000, 16_000, 32_000, 64_000],
         fixed,
         1e-4,
         2.3,
         |n| median_of_nine(&programs[&n], &runtime),
     );
-    let loads: std::collections::BTreeMap<usize, Vec<u8>> = [2, 4, 8, 16]
+    let loads: std::collections::BTreeMap<usize, Vec<u8>> = [16, 32, 64, 128]
         .iter()
         .map(|&k| (k, synthetic(1_000, k)))
         .collect();
     timing::assert_growth(
         "relocations per function",
-        &[2, 4, 8, 16],
+        &[16, 32, 64, 128],
         fixed,
         1e-4,
         2.3,

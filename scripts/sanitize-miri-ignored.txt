@@ -67,6 +67,7 @@ ffi::tests::i8_first_batch_failure_scenario
 ffi::tests::words_in_a_run_scenario
 host::tests::a_cut_fails_a_queued_operation_timed_out_and_a_failure_interrupts_it
 host::tests::a_grant_on_the_current_directory_reaches_its_files_2144
+host::tests::a_grant_on_the_current_directory_reaches_its_files_2144_scenario
 host::tests::an_absent_directory_fails_the_operation_without_a_path_1459
 reactor::tests::a_deadline_s_cut_leaves_a_parked_request_to_its_own_time_out
 reactor::tests::a_parked_task_is_woken_by_readiness_by_its_time_and_by_a_cancellation
