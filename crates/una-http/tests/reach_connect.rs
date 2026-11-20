@@ -71,25 +71,91 @@ fn an_abandon_during_a_hung_connect_returns_at_once_and_deadlines_still_hold() {
     resolve::use_test_connect(hangs);
     // 2 helpers: a connect pool of 2, and a lookup pool of 2.
     resolve::start(2).unwrap();
+    // Each bound is on the connect pool's own delay (150 ms; 400 ms for the abandon). Beside the
+    // measured requests, control threads sleep the same wait; how late they wake is the
+    // machine's share at that moment (a loaded machine wakes a thread late: nightly of
+    // 2026-11-20, #2164), and it is added to the bound, up to `MACHINE_SHARE` at most. A
+    // measurement whose controls woke later than that is taken again, `ATTEMPTS` attempts in
+    // all, and the test fails as inconclusive when none was quiet enough: the share never widens
+    // the bound by more than `MACHINE_SHARE`.
+    //
     // An abandon while the connection attempt hangs: the request returns at once, long before
     // its deadline of 30 seconds; before #1148 its helper connected itself, and could not be
     // woken until the attempt ended.
-    let (result, took) = get(Duration::from_secs(30), Some(Duration::from_millis(100)));
-    assert_eq!(result, Err(Error::Interrupted));
-    assert!(took < Duration::from_millis(400), "{took:?}");
+    let (took, late) = measured(Duration::from_millis(100), 1, || {
+        let (result, took) = get(Duration::from_secs(30), Some(Duration::from_millis(100)));
+        assert_eq!(result, Err(Error::Interrupted));
+        took
+    });
+    assert!(
+        took < Duration::from_millis(400) + late,
+        "{took:?}, the control {late:?} late"
+    );
     // Twice as many hung attempts as the pool has: each request fails with `TimedOut` at its
     // own deadline, the later ones queued behind the hung ones, and the pool never grows.
     let deadline = Duration::from_millis(300);
-    let requests: Vec<_> = (0..4)
-        .map(|_| std::thread::spawn(move || get(deadline, None)))
-        .collect();
-    for request in requests {
-        let (result, took) = request.join().unwrap();
-        assert_eq!(result, Err(Error::TimedOut));
+    let (taken, late) = measured(deadline, 4, || {
+        let requests: Vec<_> = (0..4)
+            .map(|_| std::thread::spawn(move || get(deadline, None)))
+            .collect();
+        let taken: Vec<_> = requests
+            .into_iter()
+            .map(|request| request.join().unwrap())
+            .collect();
+        // What load cannot change is checked on every attempt, the upper bound on the accepted one.
+        for (result, took) in &taken {
+            assert_eq!(*result, Err(Error::TimedOut));
+            assert!(*took >= deadline, "{took:?}");
+        }
+        taken
+    });
+    for (_, took) in taken {
         assert!(
-            took >= deadline && took < deadline + Duration::from_millis(150),
-            "{took:?}"
+            took < deadline + Duration::from_millis(150) + late,
+            "{took:?}, the controls {late:?} late"
         );
     }
     assert_eq!(resolve::threads(), (2, 2));
+}
+
+/// The most of the machine's lateness that a bound of this test takes in.
+const MACHINE_SHARE: Duration = Duration::from_millis(150);
+
+/// How many attempts a measurement has in all, when the controls of the earlier ones woke too late.
+const ATTEMPTS: usize = 3;
+
+/// Runs `measure` beside `controls` control threads that each sleep `wait`, and returns its
+/// result with the greatest lateness of the controls: the first attempt whose controls woke at
+/// most `MACHINE_SHARE` late, out of `ATTEMPTS`. A later attempt makes connection attempts of its
+/// own, which take the pool's other thread or queue behind the two hung ones: the pool never
+/// grows past 2 threads, and each request still ends at its own deadline or at its abandon.
+fn measured<T>(wait: Duration, controls: usize, mut measure: impl FnMut() -> T) -> (T, Duration) {
+    let mut lateness = Vec::new();
+    loop {
+        let started: Vec<_> = (0..controls).map(|_| control(wait)).collect();
+        let result = measure();
+        let late = started
+            .into_iter()
+            .map(|control| control.join().unwrap())
+            .max()
+            .unwrap_or_default();
+        lateness.push(late);
+        if late <= MACHINE_SHARE || lateness.len() == ATTEMPTS {
+            assert!(
+                late <= MACHINE_SHARE,
+                "inconclusive: the machine woke the controls too late in every attempt: {lateness:?}"
+            );
+            return (result, late);
+        }
+    }
+}
+
+/// A control thread: it sleeps `wait` and returns how much later than `wait` it woke, the
+/// lateness the machine alone gives a thread at that moment.
+fn control(wait: Duration) -> std::thread::JoinHandle<Duration> {
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        std::thread::sleep(wait);
+        started.elapsed().saturating_sub(wait)
+    })
 }
