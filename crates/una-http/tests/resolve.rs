@@ -74,40 +74,50 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
     // measured requests, control threads sleep the same wait; how late they wake is the
     // machine's share at that moment (a loaded machine wakes a thread late: nightly of
     // 2026-11-20, #2161), and it is added to the bound, up to `MACHINE_SHARE` at most. A
-    // measurement whose controls woke later than that is repeated, at most `ATTEMPTS` times,
-    // and the test fails as inconclusive when none was quiet enough: the share never widens
+    // measurement whose controls woke later than that is taken again, `ATTEMPTS` attempts in
+    // all, and the test fails as inconclusive when none was quiet enough: the share never widens
     // the bound by more than `MACHINE_SHARE`.
     let (taken, late) = measured(deadline, 4, || {
         let requests: Vec<_> = (0..4)
             .map(|_| std::thread::spawn(move || get(deadline, None)))
             .collect();
-        requests
+        let taken: Vec<_> = requests
             .into_iter()
             .map(|request| request.join().unwrap())
-            .collect::<Vec<_>>()
+            .collect();
+        // What load cannot change is checked on every attempt, the upper bound on the accepted one.
+        for (result, took) in &taken {
+            assert_eq!(*result, Err(Error::TimedOut));
+            assert!(*took >= deadline, "{took:?}");
+        }
+        taken
     });
-    for (result, took) in taken {
-        assert_eq!(result, Err(Error::TimedOut));
+    for (_, took) in taken {
         assert!(
-            took >= deadline && took < deadline + Duration::from_millis(150) + late,
+            took < deadline + Duration::from_millis(150) + late,
             "{took:?}, the controls {late:?} late"
         );
     }
     assert_eq!(resolve::threads(), (2, 8));
     // With the pool still full of hung lookups, a request whose task is cancelled stops waiting
     // at the abandon, long before its deadline, and the next one still meets its own deadline.
-    let ((result, took), late) = measured(Duration::from_millis(100), 1, || {
-        get(Duration::from_secs(30), Some(Duration::from_millis(100)))
+    let (took, late) = measured(Duration::from_millis(100), 1, || {
+        let (result, took) = get(Duration::from_secs(30), Some(Duration::from_millis(100)));
+        assert_eq!(result, Err(Error::Interrupted));
+        took
     });
-    assert_eq!(result, Err(Error::Interrupted));
     assert!(
         took < Duration::from_millis(400) + late,
         "{took:?}, the control {late:?} late"
     );
-    let ((result, took), late) = measured(deadline, 1, || get(deadline, None));
-    assert_eq!(result, Err(Error::TimedOut));
+    let (took, late) = measured(deadline, 1, || {
+        let (result, took) = get(deadline, None);
+        assert_eq!(result, Err(Error::TimedOut));
+        assert!(took >= deadline, "{took:?}");
+        took
+    });
     assert!(
-        took >= deadline && took < deadline + Duration::from_millis(150) + late,
+        took < deadline + Duration::from_millis(150) + late,
         "{took:?}, the control {late:?} late"
     );
     assert_eq!(resolve::threads(), (2, 8));
@@ -116,13 +126,15 @@ fn hung_lookups_never_delay_a_deadline_nor_take_more_threads_than_the_pool() {
 /// The most of the machine's lateness that a bound of this test takes in.
 const MACHINE_SHARE: Duration = Duration::from_millis(150);
 
-/// How many times a measurement whose controls woke too late is taken again.
+/// How many attempts a measurement has in all, when the controls of the earlier ones woke too late.
 const ATTEMPTS: usize = 3;
 
 /// Runs `measure` beside `controls` control threads that each sleep `wait`, and returns its
 /// result with the greatest lateness of the controls: the first attempt whose controls woke at
-/// most `MACHINE_SHARE` late, out of `ATTEMPTS`. Every attempt keeps the pool as it was: the
-/// hung lookup of `hang.test` is the one a new request joins.
+/// most `MACHINE_SHARE` late, out of `ATTEMPTS`. A later attempt starts a lookup of its own (a
+/// request joins only a lookup that still has waiting callers), which takes the pool's other
+/// thread or queues behind the two hung ones: the pool never grows past 2 threads, and each
+/// request still ends at its own deadline.
 fn measured<T>(wait: Duration, controls: usize, mut measure: impl FnMut() -> T) -> (T, Duration) {
     let mut lateness = Vec::new();
     loop {
