@@ -1804,13 +1804,16 @@ mod tests {
         let grant = una_http::grant::Grant::parse("http:http://stall.test:get").unwrap();
         let governor = Arc::new(una_http::limit::Governor::new(vec![grant]));
         // The upper bound is on the deadline. The main thread, which samples the threads, is the
-        // control: it sleeps to the deadline, and how late it wakes is the machine's share at
-        // that moment (a loaded machine woke a request late: nightly of 2026-11-20, #2178); it is
-        // added to the bound, up to `MACHINE_SHARE` at most. A burst whose control woke later
-        // than that is sent again, `ATTEMPTS` attempts in all, and the test fails as
-        // inconclusive when none was quiet enough. A later burst's connections queue behind the
-        // hung ones on the same two threads: each request still ends at its own deadline.
-        const MACHINE_SHARE: std::time::Duration = std::time::Duration::from_millis(150);
+        // control, so it adds no thread to the count: each of its sleeps is timed alone, and how
+        // much later than asked the latest one woke is the machine's share at that moment (a
+        // loaded machine woke a request late: nightly of 2026-11-20, #2178), the sampling itself
+        // left out. It is added to the bound, up to `MACHINE_SHARE` at most: under the 100 ms a
+        // request queued behind one other hang would add (600 ms), so such a request still fails.
+        // A burst whose control woke later than that is sent again, `ATTEMPTS` attempts in all,
+        // and the test fails as inconclusive when none was quiet enough. A later burst's
+        // connections queue behind the hung ones on the same two threads: each request still
+        // ends at its own deadline.
+        const MACHINE_SHARE: std::time::Duration = std::time::Duration::from_millis(90);
         const ATTEMPTS: usize = 3;
         let deadline = std::time::Duration::from_millis(300);
         let mut most = before;
@@ -1851,15 +1854,20 @@ mod tests {
                 })
                 .collect();
             // While the requests wait, the process's threads are sampled.
+            let mut late = std::time::Duration::ZERO;
+            let mut sleep = |asked: std::time::Duration| {
+                let slept = std::time::Instant::now();
+                std::thread::sleep(asked);
+                late = late.max(slept.elapsed().saturating_sub(asked));
+            };
             for _ in 0..6 {
-                std::thread::sleep(std::time::Duration::from_millis(40));
+                sleep(std::time::Duration::from_millis(40));
                 most = match (most, os_threads()) {
                     (Some(most), Some(now)) => Some(most.max(now)),
                     (most, _) => most,
                 };
             }
-            std::thread::sleep(deadline.saturating_sub(begun.elapsed()));
-            let late = begun.elapsed().saturating_sub(deadline);
+            sleep(deadline.saturating_sub(begun.elapsed()));
             for task in tasks {
                 assert_eq!(task.recv(), Some(()));
             }

@@ -4967,11 +4967,13 @@ mod tests {
         let mut lateness = Vec::new();
         loop {
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (ready, running) = std::sync::mpsc::channel();
             let control = {
                 let done = Arc::clone(&done);
                 std::thread::spawn(move || {
                     let tick = std::time::Duration::from_millis(1);
                     let mut late = std::time::Duration::ZERO;
+                    let _ = ready.send(());
                     while !done.load(AtomicOrdering::Acquire) {
                         let started = std::time::Instant::now();
                         std::thread::sleep(tick);
@@ -4980,6 +4982,8 @@ mod tests {
                     late
                 })
             };
+            // The control runs before the measurement starts, so it sees the whole of it.
+            let _ = running.recv();
             let times = measure();
             done.store(true, AtomicOrdering::Release);
             let late = control.join().unwrap();
