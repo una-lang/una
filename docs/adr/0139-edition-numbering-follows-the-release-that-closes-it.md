@@ -119,3 +119,26 @@ Each amendment below is appended, with the same text, to the record it amends. T
 **Cost.** Not applicable: no algorithm and no run-time or check-time work.
 
 **The documents.** `spec/13 §7`, the README, the guide page on `[package] edition` and `docs/plan/roadmap.md` say that `v0.4.0` ships edition `0.4` as a preview and cite this amendment as Proposed (#1897). Once it is accepted, they cite it as accepted; if it is refused, the project decides the version of release R0.4 again before any tag.
+
+## Amendment (2026-11-20): each increment publishes the version it is named for
+
+- Status: Accepted (2026-11-20), by the project's decision of 2026-11-20 on issue #2173. The accepted text of this record above this amendment, and the amendment of 2026-11-10, are unchanged; where they differ from this amendment, this amendment governs.
+- Issue: #2173.
+
+**Why.** Since 2026-11-18 the board splits each release R0.N into daily increments, and each increment is one published release (`ops/coordination/ROADMAP-INCREMENTS-2026-11-18.md`). Rule 1 numbered those releases as patches of the release before: the increments of R0.5 were planned as `v0.4.1`, `v0.4.2` and so on, and only the last one as `v0.5.0`. The board names them R0.5.1, R0.5.2 and so on. So a reader of the board, the changelog and the website saw a release planned as R0.5 published as `v0.4`, and release `v0.4.0`, published before the increments existed, holds 318 changelog entries where earlier releases hold 3 to 46. The project decided on 2026-11-20 that the number of a release is the number of its increment.
+
+**The change.**
+
+1. **Rule 1.** Release R0.N is published in increments R0.N.0, R0.N.1, R0.N.2 and so on, and increment R0.N.k publishes compiler version `v0.N.k`. The first increment of R0.N publishes `v0.N.0`. An increment that changes nothing in the shipped archive ships with the next one, and the next one keeps its own number; a number that no release carries is a gap, not an error.
+2. **Rule 2.** `v0.N.0` no longer closes edition `0.N`. Edition `0.N` is the current preview through the increments of R0.N, under the terms of ADR 0121 as its amendment of 2026-11-06 extends them. The release that makes edition `0.N` stable is named by a later amendment, with the stabilizing record and every check and gate of ADR 0121 rule 15, quiet period included, as item 3 of the amendment of 2026-11-10 already does for edition `0.4`. Until then the readings "`v0.N.0` is the minor release at which edition `0.N` stops being a preview" (rule 2) and "with `v0.N.0` in place of `v0.4.0` in rule 15" (Appendix A) do not bind any edition to a version.
+3. **Rule 6.** In the table, the Compiler column reads "`v0.N.0` to `v0.N.k`, one version per increment" for each release from R0.5 on. The contents of each release, and the edition each record lands in, are unchanged.
+4. **R0.4 and R0.5.** Release R0.4 was published as `v0.4.0` before the increments existed. It stays as published: it is not split after the fact, since every version is a tag on a commit that passed the release gates (`docs/release-gates.md`) and no earlier commit of R0.4 passed them. The first published increment of R0.5, the work the board planned as R0.5.1 and R0.5.2, is `v0.5.0`, and it ships editions `0.4` and `0.5` as previews. The board renames those two increments R0.5.0, and each later increment R0.5.k becomes R0.5.(k-2), so that each label is the version it publishes. No version `v0.4.1` is published.
+5. Rules 3, 4, 5, 7 and 8 are unchanged.
+
+**What does not change.** No rule of the language, no guarantee and no check. Which edition a package names, and what each edition admits, are unchanged; so are the preview terms of ADR 0121 and the benchmark baseline.
+
+**Security.** None of the properties of ADR 0121 rule 17 changes. Numbering a release is not a release gate: every published version still needs every gate PASS on its gated commit.
+
+**Cost.** Not applicable: no algorithm and no run-time or check-time work.
+
+**The documents.** The changelog section and the release notes of the work planned as `v0.4.1` are renamed `v0.5.0`. The plan of increments, the board and the website follow this amendment.
