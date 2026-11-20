@@ -1955,13 +1955,13 @@ mod tests {
     /// The turn of a task that shares one worker with another: on a fresh scheduler of one
     /// worker, after `earlier` ran a task on it and `offset` passed, a task loops on check
     /// points as compiled code makes them, and a second task is queued behind it after `alone`.
-    /// `None` when the turn never ended within 300 ms.
+    /// `None` when the turn never ended within [`WINDOW`].
     fn shared_turn(
         earlier: bool,
         offset: std::time::Duration,
         alone: std::time::Duration,
     ) -> Option<Turn> {
-        use std::time::{Duration, Instant};
+        use std::time::Instant;
         let sched = Scheduler::new(settings(1, 1, 1));
         if earlier {
             let (done, ended) = channel();
@@ -1979,7 +1979,7 @@ mod tests {
             let mut last = word.load();
             let looped = Instant::now();
             let mut turn = None;
-            while looped.elapsed() < Duration::from_millis(300) {
+            while looped.elapsed() < WINDOW {
                 std::hint::black_box(last);
                 if let Some(now) = word.changed_since(last) {
                     last = now;
@@ -2013,6 +2013,49 @@ mod tests {
         })
     }
 
+    /// How long the looping task of [`shared_turn`] waits for its turn to end.
+    const WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
+
+    /// The most of the machine's lateness that a missed [`WINDOW`] is put down to (#2163).
+    const MACHINE_SHARE: std::time::Duration = std::time::Duration::from_millis(150);
+
+    /// How many attempts [`ended_turn`] has in all.
+    const ATTEMPTS: usize = 3;
+
+    /// The turn of [`shared_turn`], which must end within [`WINDOW`]. Beside each attempt a
+    /// control thread sleeps [`WINDOW`]; how late it wakes is the machine's share at that moment.
+    /// A turn that ends is returned whatever the load, since [`Turn::check`] is exact. A turn
+    /// that did not end fails the test when the control woke at most [`MACHINE_SHARE`] late (a
+    /// quiet machine: the scheduler never ended the turn), and is taken again when the machine
+    /// held the threads back past that share (nightly of 2026-11-20, #2171), [`ATTEMPTS`]
+    /// attempts in all, then fails as inconclusive.
+    fn ended_turn(earlier: bool, offset: std::time::Duration, alone: std::time::Duration) -> Turn {
+        let mut lateness = Vec::new();
+        loop {
+            let control = std::thread::spawn(|| {
+                let started = std::time::Instant::now();
+                std::thread::sleep(WINDOW);
+                started.elapsed().saturating_sub(WINDOW)
+            });
+            let turn = shared_turn(earlier, offset, alone);
+            let late = control.join().unwrap();
+            if let Some(turn) = turn {
+                return turn;
+            }
+            assert!(
+                late > MACHINE_SHARE,
+                "a turn that shares its worker never ended within {WINDOW:?}, the control \
+                 {late:?} late"
+            );
+            lateness.push(late);
+            assert!(
+                lateness.len() < ATTEMPTS,
+                "inconclusive: the machine woke the controls too late in every attempt: \
+                 {lateness:?}"
+            );
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "times turns on the real clock, which Miri simulates")]
     fn a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before() {
@@ -2027,8 +2070,7 @@ mod tests {
         for earlier in [false, true] {
             for offset in [2, 4, 6] {
                 let offset = std::time::Duration::from_millis(offset);
-                shared_turn(earlier, offset, std::time::Duration::ZERO)
-                    .expect("a turn that shares its worker ends")
+                ended_turn(earlier, offset, std::time::Duration::ZERO)
                     .check(&format!("earlier start {earlier}, offset {offset:?}"));
             }
         }
@@ -2044,8 +2086,7 @@ mod tests {
         // task became ready. #1268: checked on the end the scheduler set, exact under any load.
         for alone in [0, 9, 25] {
             let alone = std::time::Duration::from_millis(alone);
-            shared_turn(false, std::time::Duration::ZERO, alone)
-                .expect("a turn that shares its worker ends")
+            ended_turn(false, std::time::Duration::ZERO, alone)
                 .check(&format!("alone for {alone:?}"));
         }
     }
