@@ -57,5 +57,17 @@ priority = 100
 slow-timeout = { period = "120s", terminate-after = 30 }
 
 [[profile.default.overrides]]
+# Five tests bound the wall clock with the capped machine-share pattern (#2163): a control measures how late the
+# machine wakes a thread, a missed bound is taken again only when it woke late, and the test fails as
+# inconclusive after three such attempts. Their names hold none of the words above. Beside the other tests of
+# the run the machine stays loaded through every attempt (nightly of 2026-11-20, #2183: the request scenario's
+# control 95 to 117 ms late against its 90 ms share, at a load average of about 60), so they run alone, first,
+# as the timing tests above do. No bound and no share changes.
+filter = '(package(una-rt) & test(/^(sched::tests::(requests_four_times_the_pool_never_take_more_threads_than_its_helpers|a_turn_lasts_its_slice_from_its_own_start_whatever_ran_before|a_lone_task_that_gains_a_waiting_task_keeps_a_full_turn)|values::tests::a_text_of_more_than_max_int_digits_is_refused_before_any_conversion)$/)) | (binary_id(una-http::reach_connect) & test(=an_abandon_during_a_hung_connect_returns_at_once_and_deadlines_still_hold))'
+threads-required = "num-cpus"
+priority = 100
+slow-timeout = { period = "120s", terminate-after = 30 }
+
+[[profile.default.overrides]]
 filter = '(package(una-rt) & test(=ffi::tests::every_entry_point_takes_any_word_in_a_run)) | (binary_id(una-cli::serve_runs) & test(=a_serve_section_takes_constant_cpu_time_per_request))'
 priority = 90
