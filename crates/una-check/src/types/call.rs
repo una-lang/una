@@ -984,7 +984,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.graph_call(via, span);
                 self.findings.policy_vias.insert((id, via));
             }
-            let result = self.call_policy(&def, &callee, receiver, args, span);
+            let result = self.call_policy(id, &def, &callee, receiver, args, span);
             if let Some(boundary) = crossing {
                 let granting = Granting {
                     release: (!trusted_policy).then_some(span),
@@ -1483,6 +1483,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// into the policy's `from` type.
     fn call_policy(
         &mut self,
+        id: usize,
         def: &FnDef<'a>,
         callee: &str,
         receiver: Option<(Span, Ty)>,
@@ -1540,6 +1541,13 @@ impl<'a> Checker<'_, 'a, '_> {
             && from.is_refined()
         {
             self.obligation(ObligationKind::Refinement, value, origin);
+        }
+        // `spec/27 §8` rule 5: the call runs the policy's `via`, whose code the label rules do
+        // not check, so the deep label of the `from` value decides its check points, as for
+        // any call of unchecked code (#2214).
+        if let (Some(value), Some(found)) = (value, &found) {
+            let checked = [(value, found.clone(), expected.clone(), "")];
+            self.switch_call(span, id, def, &checked);
         }
         if let (Some(value), Some(from), Some(found)) = (value, &from, found) {
             self.flow(

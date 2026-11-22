@@ -5795,7 +5795,9 @@ impl<'e, 'a> Fx<'e, 'a> {
             };
             let arg = values.into_iter().next().unwrap_or(Atom::Unit);
             let arg_span = arg_spans.first().copied().unwrap_or(span);
-            return self.push(
+            // A call of the policy's `via`, a check point as any call (`spec/27 §8` rule 2),
+            // elaborated as one (#2214).
+            return self.push_call(
                 lets,
                 span,
                 Rhs::Declassify {

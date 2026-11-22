@@ -1,0 +1,29 @@
+-- test: a policy call in a started task whose argument is `public` (#2214): its `via` passes a number of check points that only `public` data decide, so it is no site of spec/27 §8 rule 5 and the program is accepted, though each task holds a `secret` key; the prints follow the `public` index, whatever the key
+-- spec: spec/27 §8
+-- grant: console
+-- expect: run-output "0"
+-- expect: run-output "2"
+-- expect: run-output "4"
+-- expect: run-output "6"
+-- expect: run-output "1"
+-- expect: run-output "3"
+-- expect: run-output "5"
+-- expect: run-output "7"
+module leak
+
+import release (bucket)
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let hidden = key * 2
+  let r = bucket((k mod 2) * 3000)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

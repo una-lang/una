@@ -1,0 +1,16 @@
+--- A coarse release whose `via` works in proportion to its argument.
+trusted module release
+
+pub policy bucket
+  from secret Int
+  to Int
+  via coarse
+  purpose "probe the check points of a via"
+  owner tests
+
+coarse(n: secret Int) -> Int
+=
+  let edit acc: secret Int = 0
+  for i in 0..<n
+    acc = acc + 1
+  0
