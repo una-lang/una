@@ -1,6 +1,6 @@
 # ADR 0117 amendment draft: quiet tasks and the bound of `tasks` (S-40 remainder)
 
-Status: Withdrawn on the recommended default of #1545 (2026-11-22), with the Owner's decision on the proposed ADR 0117 amendment of 2026-11-22. The channel is closed instead by held tasks, ADR 0117 amendment of 2026-11-22 (`spec/27 §7` rule 4): a task that quiet code starts takes no slot of the bound, so rule 7 keeps its one bound and a statement never runs twice it. The text below is kept as the record of the option.
+Status: Withdrawn on the recommended default of #1545 (2026-11-22), which the Owner accepted with the ADR 0117 amendment of 2026-11-22. The channel is closed instead by held tasks, ADR 0117 amendment of 2026-11-22 (`spec/27 §7` rule 4): a task that quiet code starts takes no slot of the bound, so rule 7 keeps its one bound and a statement never runs twice it. The text below is kept as the record of the option.
 
 ## Amendment (proposed 2026-11-04): quiet tasks and the bound of `tasks` (S-40 remainder)
 
