@@ -1,0 +1,9 @@
+-- test: a [run] table that lists no grants leaves them to --grant, so una check reports no U3012 for the host uses of main (spec/13 §5, #826)
+-- spec: spec/13 §5
+-- expect: ok
+module app.main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hi")
