@@ -110,6 +110,12 @@ ignored_count=$(echo "$summary" | sed -n 's/.* \([0-9]*\) ignored.*/\1/p')
 # one mention each: the reactor's table registers, wakes and removes 10 to 1,000 waits rather
 # than 1,000 to 100,000, a chunked body is read in 256 to 4,096 chunks rather than 4,096 to
 # 65,536, and 1,000 and 10,000 waiters leave the sockets' gate rather than 10,000 and 100,000.
+# The first of the three does more than run smaller (#2124, #2130): its wall-clock bound does
+# not run under Miri, by that same mention, nor under AddressSanitizer below (`una_asan`), whose
+# allocators cost more than linearly on the large sizes. Its count of the accesses to the
+# table's vectors runs under both; the timing runs in the ordinary tests only. The timing wheel
+# the table arms is not counted in una-rt: the steps of its `arm` and `cancel` are counted in
+# the unit tests of una-http, which neither Miri nor AddressSanitizer runs (below).
 # And one constant: the
 # debug quarantine of freed slots is 64 rather than 65,536, so that the test of slot reuse runs
 # under Miri and Miri checks the reuse.
