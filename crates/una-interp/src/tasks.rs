@@ -14,6 +14,10 @@
 //!   coroutine too, so it takes turns with its tasks; [`drive`] resumes the task at the front of
 //!   the queue until the root has ended. A run without one runs as before, on its thread's own
 //!   stack, with no switch.
+//! - **Held quiet tasks** (#1545, `spec/27 §7` rule 4). A task started in quiet code joins no
+//!   queue: its statement holds it, and the task that runs the statement runs it on its own
+//!   turn, at the front of the queue, with a turn count of its own ([`Sched::hold_turn`]), so
+//!   that whether quiet code started tasks never moves the turns of public ones.
 //! - **`Http` off the thread.** In a run that serves live peers and has a `tasks` statement, a
 //!   task's `Http` request runs on a helper thread while the task parks ([`Offload`], #1730);
 //!   the driver puts the task back in the queue once its request has landed. Every other run
@@ -448,6 +452,13 @@ pub(crate) struct Sched<'w> {
     queue: VecDeque<usize>,
     current: usize,
     turn: u32,
+    /// Whether the front of the queue goes on with the turn in progress instead of beginning a
+    /// new one: a held task that its statement's task runs, and that task again once the held
+    /// task has ended (#1545). Set by [`Sched::push_front`], cleared by the next pop.
+    keep: bool,
+    /// How many turns have begun, which tells a task that ran held tasks whether its turn went
+    /// on all along.
+    turns: u64,
     /// The started tasks whose coroutine the driver has not made yet: their body, the bytes
     /// of their stack, and their `start`.
     pending: BTreeMap<usize, Pending<'w>>,
@@ -480,6 +491,47 @@ impl<'w> Sched<'w> {
     pub(crate) fn wake(&mut self, id: usize) {
         self.queue.push_back(id);
     }
+
+    /// Puts task `id` at the front of the queue, on the turn in progress (#1545): the next task
+    /// to run, with no new turn. O(1).
+    pub(crate) fn push_front(&mut self, id: usize) {
+        self.queue.push_front(id);
+        self.keep = true;
+    }
+
+    /// Starts a turn count of its own for held tasks that the task that runs is about to run
+    /// (#1545): the count of its turn and how many turns had begun, which [`Sched::resume_turn`]
+    /// takes back. O(1).
+    pub(crate) fn hold_turn(&mut self) -> (u32, u64) {
+        let mark = (self.turn, self.turns);
+        self.turn = 0;
+        mark
+    }
+
+    /// Gives the task that ran held tasks back the count its turn had before them, when its
+    /// turn went on all along, so that their check points move none of its switches; after a
+    /// switch, its turn is the one in progress. O(1).
+    pub(crate) fn resume_turn(&mut self, (turn, turns): (u32, u64)) {
+        if self.turns == turns {
+            self.turn = turn;
+        }
+    }
+
+    /// Takes the body of the held task `id` out of the scheduler, which never ran it: dropping
+    /// it ends the task for its statement. O(log n).
+    pub(crate) fn unhold(&mut self, id: usize) -> Option<Pending<'w>> {
+        self.pending.remove(&id)
+    }
+
+    /// Starts a task that runs `body` on a stack of `bytes` and that joins no queue: its
+    /// statement holds it until the task that runs the statement runs it (#1545). Its id, as
+    /// [`Sched::start`]'s. O(log n).
+    pub(crate) fn hold(&mut self, body: Box<dyn FnOnce() + 'w>, bytes: usize, span: Span) -> usize {
+        self.next += 1;
+        let id = self.next;
+        self.pending.insert(id, (body, bytes, span));
+        id
+    }
 }
 
 /// The scope of a `tasks` statement in progress (`spec/27 §7`): the prefix of its tasks' paths,
@@ -494,14 +546,31 @@ pub(crate) struct TasksScope {
     /// How many tasks public code started: a `start` in quiet code is not counted (S-40,
     /// #1512, `spec/27 §7` rule 5).
     pub(crate) started: Cell<crate::concurrency::BlockCounts>,
-    /// How many of its tasks still run, those of quiet code included: a quiet task holds a slot
-    /// of the one bound, so it can make a later public `start` wait, an open channel (#1545).
+    /// How many of its tasks have not ended, the held ones included.
     pub(crate) running: Cell<usize>,
+    /// The tasks that quiet code started and the statement holds, in the order of their
+    /// `start`s: they join no queue and count against no bound until the task that runs the
+    /// statement runs them (#1545, `spec/27 §7` rule 4).
+    pub(crate) held: RefCell<VecDeque<usize>>,
+    /// The held task that the statement's task runs now, which wakes it at the front of the
+    /// queue when it ends.
+    pub(crate) draining: Cell<Option<usize>>,
     pub(crate) cancelled: Cell<bool>,
     pub(crate) waiter: Cell<Option<usize>>,
 }
 
 impl TasksScope {
+    /// Whether every task of the statement that it does not hold has ended. O(1).
+    pub(crate) fn unheld_ended(&self) -> bool {
+        self.bounded() == 0
+    }
+
+    /// How many tasks of the statement run that count against its bound: those it does not
+    /// hold. O(1).
+    pub(crate) fn bounded(&self) -> usize {
+        self.running.get().saturating_sub(self.held.borrow().len())
+    }
+
     /// The scope of a statement whose tasks' paths start with `path`, with `bound`.
     pub(crate) fn new(path: Vec<String>, bound: usize) -> TasksScope {
         TasksScope {
@@ -509,6 +578,8 @@ impl TasksScope {
             bound: bound.max(1),
             started: Cell::new(crate::concurrency::BlockCounts::default()),
             running: Cell::new(0),
+            held: RefCell::new(VecDeque::new()),
+            draining: Cell::new(None),
             cancelled: Cell::new(false),
             waiter: Cell::new(None),
         }
@@ -535,8 +606,21 @@ impl Drop for Ending<'_, '_> {
             .running
             .set(self.scope.running.get().saturating_sub(1));
         self.run.live.set(self.run.live.get().saturating_sub(1));
-        if let Some(waiter) = self.scope.waiter.take() {
-            self.run.sched.borrow_mut().wake(waiter);
+        match self.scope.draining.get() {
+            // The held task that the statement's task runs: that task goes on, on this turn.
+            Some(task) if task == self.task => {
+                self.scope.draining.set(None);
+                if let Some(waiter) = self.scope.waiter.take() {
+                    self.run.sched.borrow_mut().push_front(waiter);
+                }
+            }
+            // The statement's task waits for its held task alone.
+            Some(_) => {}
+            None => {
+                if let Some(waiter) = self.scope.waiter.take() {
+                    self.run.sched.borrow_mut().wake(waiter);
+                }
+            }
         }
     }
 }
@@ -564,7 +648,10 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
             let next = sched.queue.pop_front();
             if let Some(id) = next {
                 sched.current = id;
-                sched.turn = 0;
+                if !std::mem::take(&mut sched.keep) {
+                    sched.turn = 0;
+                    sched.turns = sched.turns.wrapping_add(1);
+                }
             }
             next
         };
@@ -638,6 +725,7 @@ fn clear(run: &Run<'_, '_>) {
     let left = {
         let mut sched = run.sched.borrow_mut();
         sched.queue.clear();
+        sched.keep = false;
         std::mem::take(&mut sched.pending)
     };
     drop(left);

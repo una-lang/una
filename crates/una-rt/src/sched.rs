@@ -353,6 +353,7 @@ fn serve_in(
     while let Some((job, fresh)) = worker.next(held > 0) {
         if fresh {
             TURN.with(|turn| turn.set(0));
+            TURNS.with(|turns| turns.set(turns.get().wrapping_add(1)));
         }
         let id = match job {
             Job::Start(stack, body, finish) => {
@@ -640,6 +641,19 @@ impl Scheduler {
         self.spawn_at(index, stack, body, finish, false)
     }
 
+    /// Starts `body`, a held task of a `tasks` statement (#1545, `spec/27 §7` rule 4), at the
+    /// front of the calling task's worker's queue, on the turn in progress: the next task that
+    /// worker runs. Under virtual time only, where one worker runs every task. O(1) besides the
+    /// stack pool's O(log k).
+    pub(crate) fn spawn_held(
+        &self,
+        stack: usize,
+        body: impl FnOnce() + Send + 'static,
+        finish: impl FnOnce() + Send + 'static,
+    ) -> Result<(), NotStarted> {
+        self.spawn_at(current_worker(), stack, body, finish, true)
+    }
+
     /// Starts `body` on worker `index`, at the front of its queue when `front`, else as a new
     /// turn at its back ([`Worker::arrive`]). O(1) besides the stack pool's O(log k).
     fn spawn_at(
@@ -756,6 +770,9 @@ thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
     /// The check points of the turn in progress on this worker.
     static TURN: Cell<u32> = const { Cell::new(0) };
+    /// How many turns have begun on this worker, which tells a task that ran held tasks
+    /// whether its turn went on all along (#1545).
+    static TURNS: Cell<u64> = const { Cell::new(0) };
     /// Whether the task that runs is due to give its worker to the next task, at the slow path
     /// of its check point.
     static DUE: Cell<bool> = const { Cell::new(false) };
@@ -769,6 +786,23 @@ const TURN_CHECKS: u32 = 1024;
 /// time.
 pub(crate) fn counting() -> bool {
     COUNTING.with(Cell::get)
+}
+
+/// Starts a turn count of its own for a held task that the task that runs is about to run, on
+/// its turn (#1545, `spec/27 §7` rule 4): the count of its turn and how many turns had begun on
+/// its worker, which [`resume_turn`] takes back. O(1).
+pub(crate) fn hold_turn() -> (u32, u64) {
+    let mark = (TURN.with(Cell::get), TURNS.with(Cell::get));
+    TURN.with(|turn| turn.set(0));
+    mark
+}
+
+/// Gives the task that ran a held task back the count its turn had before, when its turn went
+/// on all along, so that the held task's check points move none of its switches. O(1).
+pub(crate) fn resume_turn((turn, turns): (u32, u64)) {
+    if TURNS.with(Cell::get) == turns {
+        TURN.with(|cell| cell.set(turn));
+    }
 }
 
 /// A check point that reached the attention path (ADR 0117 rule 2): counts it under virtual
@@ -920,6 +954,12 @@ impl Counter {
         }
     }
 
+    /// Counts one task more whatever the bound: a held task, which counts against none
+    /// (#1545). O(1).
+    pub(crate) fn count_one(&self) {
+        lock(&self.state).0 += 1;
+    }
+
     /// Counts one task less, and wakes the waiting task.
     pub(crate) fn release(&self) {
         let waiter = {
@@ -941,6 +981,41 @@ impl Counter {
                     return;
                 }
                 state.1 = Some(Waker::current_at(false));
+            }
+            park();
+        }
+    }
+}
+
+/// The end of one held task, which the task that runs it waits for (#1545): it parks until the
+/// held task has ended, and goes on at the front of its worker's queue, on that turn.
+#[derive(Default)]
+pub(crate) struct Ended {
+    state: Mutex<(bool, Option<Waker>)>,
+}
+
+impl Ended {
+    /// Marks the held task ended, and wakes the task waiting for it.
+    pub(crate) fn mark(&self) {
+        let waiter = {
+            let mut state = lock(&self.state);
+            state.0 = true;
+            state.1.take()
+        };
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
+    }
+
+    /// Parks until the held task has ended.
+    pub(crate) fn wait(&self) {
+        loop {
+            {
+                let mut state = lock(&self.state);
+                if state.0 {
+                    return;
+                }
+                state.1 = Some(Waker::current_at(true));
             }
             park();
         }
