@@ -1,0 +1,5 @@
+module shop.store
+
+pub capability Prices
+  op price(item: Text) -> Int
+  op set(item: Text, value: Int) -> Unit

@@ -1,0 +1,13 @@
+-- test: U3021's repairs name the caller's binding in the narrowed grant, and a handler within the ceiling when the callee needs an operation the ceiling withholds, as U3020 does (ADR 0093 rule 6, #1931)
+-- spec: spec/13 §3
+-- expect: error U3021 at src/shop/app.una:13:3
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+pub granted(item: Text) -> Int
+  uses @store: Prices[price, set]
+  uses @clock: Clock[now]
+=
+  quote(item) with @prices = @store, @clock = @clock
