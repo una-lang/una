@@ -6,7 +6,8 @@ summary from a fixed template: the commit, the run's date, OS and architecture, 
 the gate table without log digests, the archives with their SHA-256, the strip that removed
 the debug sections of each embedded runtime, with its version and its binary's digest (#1359),
 the dependency audit's tool and advisory database (#770) and the verdict. Nothing
-else of the record is copied: no subject, no notes, no log digest, no docs bundle.
+else of the record is copied: no subject, no notes, no log digest, no docs bundle, no Linux
+toolchain or musl lines (#1971).
 
 Every field is checked against its shape before it is written, and a field that does not match
 stops the summary: no free text of the record can reach it. The privacy pattern comes on the
@@ -68,6 +69,8 @@ STRIP_ROW = re.compile(
     r"|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D), sha256 [0-9a-f]{64}"
 )
 STRIP_NONE = "None: the release gate did not run or did not record the strip tool."
+# Every character but "\n" at which str.splitlines() ends a line.
+OTHER_BREAKS = re.compile("[\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
 VERDICT = re.compile(r"Verdict: (PASS \(every gate\)|FAIL \([a-z0-9, -]+\)|INCOMPLETE \(not run: [a-z0-9, -]+\))")
 
 
@@ -99,8 +102,15 @@ def main():
     version, record, out = sys.argv[1:]
     if not VERSION.fullmatch(version):
         fail(f"{version!r} is not a version")
-    with open(record, encoding="utf-8") as f:
-        lines = f.read().splitlines()
+    # Lines end at "\n" only (#1971): a record is read with no newline translation, and one that
+    # holds any other character that str.splitlines() would end a line at, a carriage return
+    # in a line copied from a log included, is refused, so that no copied line can pose as a
+    # heading or a field of its own.
+    with open(record, encoding="utf-8", newline="") as f:
+        text = f.read()
+    if OTHER_BREAKS.search(text):
+        fail("the record holds a line break other than \\n")
+    lines = text.split("\n")
 
     commit = one(COMMIT, lines, "commit").group(1)
     run = one(RUN, lines, "run")
