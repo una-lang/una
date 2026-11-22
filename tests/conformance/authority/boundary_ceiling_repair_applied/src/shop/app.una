@@ -1,0 +1,15 @@
+-- test: following U3021's repairs keeps the call within the ceiling: the narrowed grant of the caller's binding, and a handler whose own uses are none for an operation the ceiling withholds (ADR 0093 rules 5 and 6, #1931)
+-- spec: spec/05 §4
+-- expect: ok
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+handler fixed() for Clock
+  op now() = 5
+
+pub granted(item: Text) -> Int
+  uses @store: Prices[price, set]
+=
+  quote(item) with @prices = @store[price], @clock = fixed()

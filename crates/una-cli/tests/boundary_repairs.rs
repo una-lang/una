@@ -2,7 +2,7 @@
 //! grants the callee's requirement narrowed to what it declares, and only within the
 //! boundary's ceiling; `una fix` applies that grant and nothing beyond it, never writes the
 //! ceiling, and never applies an edit of U3021 or U3024 (ADR 0084). U3021's repair narrows to the
-//! ceiling or says that no grant keeps both. In edition 0.3, U3001 and U3002 rank a narrowed
+//! ceiling or says that no grant of a binding keeps both, and names a handler within the ceiling. In edition 0.3, U3001 and U3002 rank a narrowed
 //! rebinding first and a widening of a public header last, marked as an authority change.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -577,6 +577,39 @@ fn una_fix_applies_only_the_grant_that_names_one_binding() {
 }
 
 #[test]
+fn u3021_names_the_callers_binding_and_the_handler_that_u3020_offers() {
+    // #1931: the narrowed grant names the caller's binding, never a placeholder `@y` alone,
+    // and when the ceiling withholds an operation the callee declares, U3021 offers the
+    // handler that U3020 offers for the same requirement; following both checks
+    // (`authority/boundary_ceiling_repair_applied`).
+    let diagnostics = check_json("authority/boundary_ceiling_repair_binding");
+    let found = at(&diagnostics, "U3021", 13, 3);
+    let texts: Vec<Vec<Row>> = found.iter().map(rows).collect();
+    assert_eq!(
+        texts,
+        [
+            vec![row(
+                "",
+                "narrow the grant to what the callee declares, `Prices[price]`, which lies within the ceiling: `with @prices = @store[price]`, or a handler whose own `uses` lie within `Prices[price]`",
+                ""
+            )],
+            vec![row(
+                "",
+                "no grant of a binding keeps both: the callee declares `Clock[now]`, and the ceiling of `shop.quote` allows no operation of `Clock`; install a handler for `Clock` whose own `uses` lie within the ceiling: `with @clock = <handler>(...)`, where `handler <handler>(...) for Clock` is written outside the boundary, or the consumer decides between this module and its ceiling",
+                ""
+            )],
+        ]
+    );
+    for text in texts.iter().flatten() {
+        assert!(!text.1.contains("@y"), "{text:?}");
+    }
+    assert_eq!(
+        check_json("authority/boundary_ceiling_repair_applied"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
 fn u3021_narrows_to_the_ceiling_or_says_that_no_grant_keeps_both() {
     let ceiling = check_json("authority/boundary_ceiling");
     let found = at(&ceiling, "U3021", 12, 3);
@@ -584,7 +617,7 @@ fn u3021_narrows_to_the_ceiling_or_says_that_no_grant_keeps_both() {
         rows(&found[0]),
         [row(
             "",
-            "narrow the grant to what the callee declares, `media.store.Files[read]`, which lies within the ceiling: `with @files = @y[read]`, or a handler whose own `uses` lie within `media.store.Files[read]`",
+            "narrow the grant to what the callee declares, `media.store.Files[read]`, which lies within the ceiling: `with @files = @files[read]`, or a handler whose own `uses` lie within `media.store.Files[read]`",
             ""
         )]
     );
@@ -593,7 +626,9 @@ fn u3021_narrows_to_the_ceiling_or_says_that_no_grant_keeps_both() {
     let beyond_rows = rows(&found[0]);
     assert_eq!(beyond_rows.len(), 1, "{beyond_rows:?}");
     assert!(
-        beyond_rows[0].1.starts_with("no grant keeps both: "),
+        beyond_rows[0]
+            .1
+            .starts_with("no grant of a binding keeps both: "),
         "{beyond_rows:?}"
     );
     assert_eq!(beyond_rows[0].2, "");
