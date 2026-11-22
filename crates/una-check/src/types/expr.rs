@@ -2152,20 +2152,14 @@ impl<'a> Checker<'_, 'a, '_> {
         // the lambda is written, not to the lambda's own: a repair inside the body never
         // resolves against them (ADR 0093 rule 6).
         let statement = self.statement.take();
-        // A lambda's body starts at a `public` program counter (ADR 0031 rule 4). It is not
-        // one of the positions of `result`, `it` and `error`, even where the lambda is written
-        // in one: the body runs wherever the lambda is called, where none of them names a value
-        // (`spec/02 §8`; U2012, U2013).
+        // A lambda's body starts at a `public` program counter (ADR 0031 rule 4), with no
+        // `result`, `it` or `error` in scope.
         let ctx = Ctx {
             fails: fails.clone(),
             top: true,
             pc: Label::public(),
             pc_from: None,
-            result: None,
-            it: None,
-            op_condition: false,
-            error: None,
-            ..self.ctx.clone()
+            ..self.ctx.without_placeholders()
         };
         let body_ty = self.within(ctx, |checker| {
             let found = checker.expr(body, result.as_ref());

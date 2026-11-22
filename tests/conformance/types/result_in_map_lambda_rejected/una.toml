@@ -1,0 +1,4 @@
+[package]
+name = "result_in_map_lambda_rejected"
+version = "0.1.0"
+edition = "0.3"

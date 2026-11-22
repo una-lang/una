@@ -265,7 +265,7 @@ These rules are enforced after parsing and reported with the listed codes.
 | `given` handlers and `with` handler instances name a `handler` for the capability of the bound reference | U3010 |
 | An `else` arm is the last arm of a `when` | U2008 |
 
-A lambda's body is none of these positions, even when the lambda is written in one: its body runs wherever the lambda is called, where `result`, `it` and `error` name no value. `result` in a lambda's body is U2012, and `it` or `error` there is U2013; a value the body needs is passed as an argument, as in `expect (fn(x: Int) -> x + 1)(result) == 2` (#1989).
+A lambda's body is none of the positions of `result`, `it` and `error` above, even when the lambda is written in one: its body runs wherever the lambda is called, where they name no value. This holds for every lambda, a lambda given for an `of` parameter (`spec/05 §9`) included. `result` in a lambda's body is U2012, and `it` or `error` there is U2013; a value the body needs is passed as an argument, as in `expect (fn(x: Int) -> x + 1)(result) == 2` (#1989).
 
 ## 9. Limits
 

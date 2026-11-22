@@ -91,6 +91,20 @@ pub(crate) struct Ctx {
 }
 
 impl Ctx {
+    /// This context with no `result`, `it` or `error` in scope, for the body of a lambda: the
+    /// body runs wherever the lambda is called, where none of them names a value, even when
+    /// the lambda is written where they do (`spec/02 §8`; U2012, U2013). Both lambda paths,
+    /// the plain one and a lambda given for an `of` parameter, start from it.
+    pub(crate) fn without_placeholders(&self) -> Self {
+        Self {
+            result: None,
+            it: None,
+            op_condition: false,
+            error: None,
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn plain() -> Ctx {
         Ctx {
             result: None,

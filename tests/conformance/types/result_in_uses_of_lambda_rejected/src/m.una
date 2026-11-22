@@ -1,0 +1,15 @@
+-- test: a lambda given for a user function's `uses of` parameter is a lambda like any other, so `result` inside it in an `expect` line is U2012 at the use, not an internal error
+-- spec: spec/02 §8
+-- expect: error U2012 at src/m.una:15:37
+module m
+
+pub apply(n: Int, act: fn(Int) -> Int) -> Int
+  uses of act
+=
+  act(n)
+
+pub one() -> Int = 1
+
+test "the lambda of a uses of parameter cannot see the result"
+  do one()
+  expect apply(1, act: fn(x) -> x + result) == 2

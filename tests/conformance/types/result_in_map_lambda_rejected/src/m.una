@@ -1,0 +1,10 @@
+-- test: the lambda given to `map` is a lambda like any other, so `result` inside it in an `expect` line is U2012 at the use, not an internal error
+-- spec: spec/02 §8
+-- expect: error U2012 at src/m.una:10:40
+module m
+
+pub xs() -> List[Int] = [1, 2]
+
+test "the map lambda cannot see the result"
+  do xs()
+  expect result.map(each: fn(x) -> x + result.len) == [3, 4]

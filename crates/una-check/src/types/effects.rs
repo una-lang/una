@@ -771,7 +771,8 @@ impl<'a> Checker<'_, 'a, '_> {
             top: true,
             pc: self.ctx.pc.join(&argument.raise),
             pc_from,
-            ..self.ctx.clone()
+            // No `result`, `it` or `error` in the body, as for any lambda (`spec/02 §8`).
+            ..self.ctx.without_placeholders()
         };
         // A lambda's body is code of `Λ`, not of the parts around it (ADR 0116 P1, P3).
         let parts = std::mem::take(&mut self.parts);
