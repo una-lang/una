@@ -13,6 +13,7 @@ use una_core::{Bound, Decl, Expr, Rhs};
 use una_diag::{ObligationStatus, Position};
 use una_syntax::Span;
 use una_syntax::ast::{ClauseKind, DeclKind, TextPart};
+use una_verify::SourceLayout;
 
 use crate::contract::Modules;
 use crate::verification::{lock_of, problem_diagnostic, report_unverified, settings, tier_one};
@@ -647,6 +648,19 @@ fn build(
         profile: manifest.profile.name().to_owned(),
         max_memory: manifest.max_memory,
     };
+    // ADR 0092: the conditions written on the operations of each function's `uses`, from Core
+    // IR, by qualified name; shown as `una contract` shows the header's source text.
+    let layout = crate::verification::source_layout(package);
+    let function_conds: BTreeMap<String, &[una_core::Use]> = program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module.decls.iter().filter_map(|decl| match decl {
+                Decl::Fun(fun) => Some((format!("{}.{}", module.path, fun.name), &fun.uses[..])),
+                _ => None,
+            })
+        })
+        .collect();
     let public: BTreeMap<String, bool> = program
         .modules
         .iter()
@@ -711,6 +725,7 @@ fn build(
                     .map(|(op, label)| format!("{function}: @{}.{op} gives {label}", used.cap)),
             );
         }
+        let core = function_conds.get(&function).copied().unwrap_or_default();
         authority.push(AuthorityDoc {
             public: public.get(&function).copied().unwrap_or(false),
             function,
@@ -718,7 +733,7 @@ fn build(
             uses: header
                 .uses
                 .iter()
-                .map(|u| format!("@{}: {}[{}]", u.cap, u.capability, u.ops.join(", ")))
+                .map(|u| written_use(u, conds_of(core, &u.cap), layout))
                 .chain(header.uses_of.iter().map(|param| format!("of {param}")))
                 .collect(),
             inferred: header.uses_inferred,
@@ -747,6 +762,11 @@ fn build(
     }
     // ADR 0081 (#14): every handler with `uses`, whose host capabilities count for the TCB too.
     let public_handlers = public_handlers(&modules);
+    let handler_headers: BTreeMap<(&str, &str), &una_check::types::HandlerHeader> = analysis
+        .handler_headers
+        .iter()
+        .map(|h| ((h.module.as_str(), h.name.as_str()), h))
+        .collect();
     let mut handler_authority = Vec::new();
     for module in &program.modules {
         for decl in &module.decls {
@@ -765,14 +785,22 @@ fn build(
             // Its host capabilities were counted from `handler_headers`, which tell the host's
             // from a package capability of the same name.
             let handler = format!("{}.{name}", module.path);
+            // The labels as written, from the checker's header of the handler (ADR 0094 rule 1).
+            let written = handler_headers.get(&(module.path.as_str(), name.as_str()));
+            let uses = uses
+                .iter()
+                .map(|u| {
+                    let gives = written
+                        .and_then(|h| h.uses.iter().find(|w| w.cap == u.cap))
+                        .map_or(&[][..], |w| &w.gives[..]);
+                    render_use(&u.cap, &u.capability, &u.ops, gives, &u.conds, layout)
+                })
+                .collect();
             handler_authority.push(HandlerAuthorityDoc {
                 public: public_handlers.contains(&handler),
                 handler,
                 capability: capability_path.qualified(),
-                uses: uses
-                    .iter()
-                    .map(|u| format!("@{}: {}[{}]", u.cap, u.capability, u.ops.join(", ")))
-                    .collect(),
+                uses,
             });
         }
     }
@@ -1025,6 +1053,56 @@ fn build(
         out_of_model,
         warnings,
     }
+}
+
+/// The conditions that the Core `uses` entries `core` write on binding `cap`'s operations
+/// (ADR 0092), empty when none is written.
+fn conds_of<'a>(core: &'a [una_core::Use], cap: &str) -> &'a [(String, una_core::Clause)] {
+    core.iter()
+        .find(|u| u.cap == cap)
+        .map_or(&[][..], |u| &u.conds[..])
+}
+
+/// A function's `uses` entry as its header writes it, for `authority` (`spec/13 §6`).
+fn written_use(
+    u: &una_check::types::HeaderUse,
+    conds: &[(String, una_core::Clause)],
+    layout: SourceLayout,
+) -> String {
+    render_use(&u.cap, &u.capability, &u.ops, &u.gives, conds, layout)
+}
+
+/// `@cap: Capability[op, op gives l where C]`: a `uses` entry as a header writes it, each
+/// operation with its label (ADR 0094 rule 1) and its condition (ADR 0092), in the canonical
+/// form `una contract` shows (`spec/13 §6`). An operation with neither prints as its name, so
+/// the entries of edition `0.1` and `0.2` packages are unchanged. O(ops * (labels + conds)).
+fn render_use(
+    cap: &str,
+    capability: &str,
+    ops: &[String],
+    gives: &[(String, String)],
+    conds: &[(String, una_core::Clause)],
+    layout: SourceLayout,
+) -> String {
+    let ops: Vec<String> = ops
+        .iter()
+        .map(|op| {
+            let mut text = op.clone();
+            if let Some((_, label)) = gives.iter().find(|(o, _)| o == op) {
+                text.push_str(" gives ");
+                text.push_str(label);
+            }
+            if let Some((_, cond)) = conds.iter().find(|(o, _)| o == op) {
+                text.push_str(" where ");
+                match layout {
+                    SourceLayout::Joined => text.push_str(&cond.text),
+                    SourceLayout::Wrapped => text.push_str(&una_verify::unwrap_layout(&cond.text)),
+                }
+            }
+            text
+        })
+        .collect();
+    format!("@{cap}: {capability}[{}]", ops.join(", "))
 }
 
 /// The `serve:` grants of the manifest as the report lists them, and its warnings about them
