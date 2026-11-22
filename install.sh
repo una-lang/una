@@ -205,19 +205,50 @@ holds() {
     ls -A "$1" 2> /dev/null | awk '{ printf "%s%s", (NR > 1 ? ", " : ""), $0 } END { if (NR == 0) printf "nothing" }'
 }
 
-# `check_record`: every path of the record lies inside UNA_HOME, and, as root, every directory on
-# the way to it (and a recorded directory itself) is one only root can change, or `rm` and
-# `rmdir` could reach outside. Uninstall, and an installation over an earlier one, which removes
-# what the new one does not hold, check every path before anything is downloaded or removed.
+# `no_link_on REL RECORDED`: no directory on the way from UNA_HOME to REL is a symbolic link, as
+# far as it exists (ADR 0124 rule 32), for every user: `rm` and `rmdir` would follow it outside.
+no_link_on() {
+    rest=$1
+    on=$home
+    while :; do
+        case $rest in
+            */*) on=$on/${rest%%/*}; rest=${rest#*/} ;;
+            *) return 0 ;;
+        esac
+        [ ! -L "$on" ] \
+            || fail "the record $marker names '$2', which goes through the symbolic link $on; the installer follows no link in a recorded path"
+        [ -e "$on" ] || return 0
+    done
+}
+# `check_record`: every path of the record lies inside UNA_HOME, is spelled as the installer
+# writes it, and goes through no symbolic link; as root, every directory on the way to it (and a
+# recorded directory itself) is also one only root can change, or `rm` and `rmdir` could reach
+# outside. Uninstall, and an installation over an earlier one, which removes what the new one
+# does not hold, check every path before anything is downloaded or removed.
 check_record() {
     while read -r kind path; do
         case $kind in
             file | dir)
                 case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac
+                # One spelling per path, the one the installer writes: no `.` or empty component
+                # (`./bin/una`, `bin//una`, `bin/`), which the comparison with the new files would
+                # miss; the one exception is the record's own `dir .`.
+                case $kind:$path in
+                    dir:.) ;;
+                    *:. | *:./* | */. | */./* | *//* | */)
+                        fail "the record $marker names '$path', which has a '.' or empty component" ;;
+                esac
+                # As root, every directory on the way (and a recorded directory itself) is one
+                # only root can change, which also refuses a link.
                 if [ "$uid" = 0 ]; then
                     only_root_on "$path"
                     [ "$kind" = file ] || only_root_on "$path/"
                 fi
+                # Every user: no directory on the way is a link, nor a recorded directory itself.
+                # The last component of a `file` line may be a link (`bin/z3` is one): `rm -f`
+                # removes the link, never what it names.
+                no_link_on "$path" "$path"
+                [ "$kind" = file ] || no_link_on "$path/" "$path"
                 ;;
         esac
     done < "$marker"
