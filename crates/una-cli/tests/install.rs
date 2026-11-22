@@ -468,13 +468,21 @@ fn an_archive_without_lib_installs_no_runtime_and_an_earlier_one_still_installs_
         std::fs::read_to_string(home.join("lib/libuna_rt.a")).unwrap(),
         "runtime"
     );
-    // A later release over it: the earlier runtime, which the new `una` never reads, is left
-    // for the migration of step 5, and stays in the record, so that uninstall removes it.
+    // A later release over it: the earlier runtime, which the new `una` never reads, is removed
+    // with the `lib/` it was in (ADR 0124 rule 32, #1992), and neither stays in the record.
     release_holding(&dir, target, version, pass, None, &documents);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!home.join("lib").exists(), "{}", stdout(&output));
     let record = std::fs::read_to_string(home.join(".una-install")).unwrap();
-    assert!(record.contains("file lib/libuna_rt.a\n"), "{record}");
+    assert!(!record.contains("lib"), "{record}");
+    assert!(
+        stdout(&output).contains(&format!(
+            "removed what the earlier installation held and {version} does not: lib/libuna_rt.a\n"
+        )),
+        "{}",
+        stdout(&output)
+    );
     let output = install(&dir, version, &["--uninstall"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(!dir.join("home/.una").exists());
@@ -491,6 +499,184 @@ fn an_archive_without_lib_installs_no_runtime_and_an_earlier_one_still_installs_
         assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
         assert!(stderr(&output).contains("refuses"), "{}", stderr(&output));
         assert!(!home.exists());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An installation by the installer of v0.3.16, as it leaves `dir/home/.una` (the evidence of
+/// #1882): `bin/una`, `bin/z3` as a link to `../z3/bin/z3`, the `z3` it names, the runtime in
+/// `lib/`, the documents and its record.
+#[cfg(unix)]
+fn installed_by_v0_3_16(dir: &Path) -> PathBuf {
+    let home = dir.join("home/.una");
+    for (file, text) in [
+        ("bin/una", "una 0.3.16"),
+        ("z3/bin/z3", "z3 5.1.0"),
+        ("lib/libuna_rt.a", "runtime"),
+        ("README.md", "readme"),
+        ("LICENSE", "license"),
+        ("docs/guide/getting-started.md", "guide"),
+        (
+            "docs/guide/dropped.md",
+            "a guide the new release does not ship",
+        ),
+    ] {
+        std::fs::create_dir_all(home.join(file).parent().unwrap()).unwrap();
+        std::fs::write(home.join(file), text).unwrap();
+    }
+    std::os::unix::fs::symlink("../z3/bin/z3", home.join("bin/z3")).unwrap();
+    std::fs::write(
+        home.join(".una-install"),
+        "# Una 0.3.16, installed by install.sh; `sh install.sh --uninstall` removes what follows.\n\
+         version 0.3.16\ndir .\ndir bin\ndir docs\ndir docs/guide\ndir lib\ndir z3\ndir z3/bin\n\
+         file bin/una\nfile bin/z3\nfile lib/libuna_rt.a\nfile z3/bin/z3\nfile README.md\n\
+         file LICENSE\nfile docs/guide/getting-started.md\nfile docs/guide/dropped.md\n",
+    )
+    .unwrap();
+    home
+}
+
+#[cfg(unix)]
+#[test]
+fn an_upgrade_removes_what_the_new_release_does_not_hold_and_uninstall_then_leaves_nothing() {
+    // #1992, ADR 0124 rule 32: installed over v0.3.16, the installer removes the files of the
+    // earlier record that the new installation does not hold (`bin/z3`, a link, and the `z3` it
+    // names; the runtime in `lib/`; a guide the new release dropped), then the directories of
+    // that record left empty, and says so. Nothing is left that no record lists, so uninstall,
+    // after `una` made the proof cache's key, leaves nothing at all.
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-upgrade");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.3";
+    let pass = "PASS (every gate)";
+    let documents = [
+        ("README.md", "readme"),
+        ("LICENSE", "license"),
+        ("docs/guide/getting-started.md", "guide"),
+    ];
+    let home = installed_by_v0_3_16(&dir);
+    // The file `bin/z3` names, outside the installation's record by another name: kept.
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("z3"), "a z3 of the user's").unwrap();
+    release_holding(&dir, target, version, pass, None, &documents);
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let said = stdout(&output);
+    for gone in ["bin/z3", "z3", "lib", "docs/guide/dropped.md"] {
+        assert!(
+            std::fs::symlink_metadata(home.join(gone)).is_err(),
+            "{gone}: {said}"
+        );
+    }
+    for kept in [
+        "bin/una",
+        "README.md",
+        "LICENSE",
+        "docs/guide/getting-started.md",
+    ] {
+        assert!(home.join(kept).is_file(), "{kept}: {said}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.join("bin/una")).unwrap(),
+        "#!/bin/sh\necho una stub\n"
+    );
+    assert!(elsewhere.join("z3").exists());
+    assert!(
+        said.contains(&format!(
+            "removed what the earlier installation held and {version} does not: bin/z3 lib/libuna_rt.a z3/bin/z3 docs/guide/dropped.md\n"
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains("removed z3, which una no longer needs"),
+        "{said}"
+    );
+    let record = std::fs::read_to_string(home.join(".una-install")).unwrap();
+    assert_eq!(
+        record,
+        format!(
+            "# Una {version}, installed by install.sh; `sh install.sh --uninstall` removes what follows.\nversion {version}\ndir .\ndir bin\ndir docs\ndir docs/guide\nfile bin/una\nfile README.md\nfile LICENSE\nfile docs/guide/getting-started.md\n"
+        )
+    );
+    // The same release again: nothing more to remove, and nothing said of it.
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!stdout(&output).contains("removed"), "{}", stdout(&output));
+    assert_eq!(
+        std::fs::read_to_string(home.join(".una-install")).unwrap(),
+        record
+    );
+    // `una check` made the proof cache's key (ADR 0064): uninstall removes it, names its path,
+    // and leaves nothing of `~/.una`.
+    std::fs::write(home.join("proof-cache.key"), [7u8; 32]).unwrap();
+    let output = install(&dir, version, &["--uninstall"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let said = stdout(&output);
+    assert!(
+        std::fs::symlink_metadata(&home).is_err(),
+        "left after uninstall: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "removed the proof cache's key {}",
+            home.join("proof-cache.key").display()
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("removed {}\n", home.display())),
+        "{said}"
+    );
+
+    // A file of the user's in a directory of the earlier record: the directory stays, with the
+    // file, and stays recorded, so that uninstall removes it once it is empty.
+    let home = installed_by_v0_3_16(&dir);
+    std::fs::write(home.join("z3/notes.txt"), "mine").unwrap();
+    // A recorded file that is a directory now is not a file of the installation: kept.
+    std::fs::remove_file(home.join("lib/libuna_rt.a")).unwrap();
+    std::fs::create_dir_all(home.join("lib/libuna_rt.a")).unwrap();
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!home.join("z3/bin").exists() && home.join("z3/notes.txt").exists());
+    assert!(home.join("lib/libuna_rt.a").is_dir());
+    let record = std::fs::read_to_string(home.join(".una-install")).unwrap();
+    assert!(
+        record.contains("dir lib\n") && record.contains("dir z3\n") && !record.contains("z3/bin"),
+        "{record}"
+    );
+    assert!(
+        !record.contains("file lib") && !record.contains("file z3"),
+        "{record}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+
+    // An earlier record that names a path outside UNA_HOME: refused before anything is
+    // downloaded or removed.
+    let home = installed_by_v0_3_16(&dir);
+    std::fs::write(dir.join("home/escape"), "kept").unwrap();
+    let record = home.join(".una-install");
+    let text = std::fs::read_to_string(&record).unwrap();
+    for bad in ["file ../escape\n", "file /etc/hosts\n", "dir ../home\n"] {
+        std::fs::write(&record, format!("{text}{bad}")).unwrap();
+        let output = install(&dir, version, &[]);
+        assert_eq!(output.status.code(), Some(1), "{bad}: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains("which is not inside"),
+            "{bad}: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("bin/una")).unwrap(),
+            "una 0.3.16",
+            "{bad}"
+        );
+        assert!(
+            home.join("bin/z3").exists() && dir.join("home/escape").exists(),
+            "{bad}"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1894,6 +2080,25 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
             "{extra}: {}",
             stderr(&output)
         );
+        assert!(elsewhere.join("z3/bin/z3").exists() && home.join("bin/una").exists());
+    }
+    // Installing over it as root is refused the same way, before anything is downloaded or
+    // removed, since the installation removes what the earlier record names (#1992).
+    for extra in ["file z3/bin/z3\n", "dir z3\ndir z3/bin\nfile z3/bin/z3\n"] {
+        std::fs::write(&record, format!("{text}{extra}")).unwrap();
+        let (output, fetched) = install_on(&dir, version, &root);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{extra}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(link),
+            "{extra}: {}",
+            stderr(&output)
+        );
+        assert!(fetched.is_empty(), "{extra}: {fetched:?}");
         assert!(elsewhere.join("z3/bin/z3").exists() && home.join("bin/una").exists());
     }
     // Without the link, root uninstalls.

@@ -359,7 +359,7 @@ The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/
 
 - It installs only an archive whose digest the release's validation record lists, or that `docs/validation/repacked.md` pairs with that listed digest (an archive packed again after its release).
 - It changes nothing outside `~/.una`.
-- To update, run it again: it replaces the release in `~/.una` with the current one, and prints the new version when it is done.
+- To update, run it again: it replaces the release in `~/.una` with the current one, and prints the new version when it is done. It removes the files of the earlier installation that the new one does not hold, such as the `z3` and `lib/libuna_rt.a` of a release before 0.4.0, and names them.
 - To uninstall, run `curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh -s -- --uninstall`. It removes the files the installer recorded and the key of the proof cache that `una` makes at run time, `~/.una/proof-cache.key`, and then `~/.una` when nothing else is in it. It removes no other file: what is left is named in its message, and a key file that `UNA_PROOF_KEY` names is kept.
 - The README says more about the installer and the release archives.
 
