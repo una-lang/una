@@ -9668,6 +9668,118 @@ fn held_quiet_tasks_1545_a_held_task_longer_than_a_turn_is_let_go_alike_in_both_
     }
 }
 
+/// #1545, a held task run when nothing else is ready (review 2 of #2200, L2, the reviewer's
+/// `q_alone`): the root's turn ends inside its first loop with no other task ready, so it runs
+/// its held `spin` at that switch; at the end of the held task's own turn only the root waits
+/// for it, which counts as ready, so the held task is let go and the root goes on before it
+/// ends. An engine that does not count the root as ready runs `spin` to its end first.
+const HELD_ALONE: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n} starts")
+  let edit k = 0
+  for i in 0..<3000
+    k = k + i
+  @console.print("worker {n} ends")
+
+spin(n: internal Int) -> Unit
+=
+  let edit k: internal Int = 0
+  for i in 0..<n
+    k = k + i
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks at most 2 at once
+    @console.print("main starts")
+    if s > 0
+      start spin(s * 5000)
+    let edit k = 0
+    for i in 0..<1500
+      k = k + i
+    start worker(1)
+    @console.print("main")
+    for i in 0..<1500
+      k = k + i
+    @console.print("main ends")
+  @console.print("done")
+"#;
+
+#[test]
+fn held_quiet_tasks_1545_a_held_task_with_nothing_else_ready_is_let_go_alike_in_both_engines() {
+    // #1545, `spec/27 §7` rule 4: the task that ran a held task at one of its switches counts
+    // as ready, so the held task is let go at its own turn's end even when no other task is
+    // ready. The interpreter's output is pinned for each secret, and native code under
+    // `--virtual-time` gives the same output and whole trace (`spec/27 §8` rule 3). The native
+    // run is bounded by processor and wall-clock time, so an engine that kept the root waiting
+    // on a held task that never ends would fail here instead of blocking the suite. With
+    // native `sched::lets_go` returning `false`, secrets 1 and 2 give another order.
+    let queued = [
+        "main starts",
+        "worker 1 starts",
+        "main",
+        "main ends",
+        "worker 1 ends",
+        "done",
+    ];
+    let let_go = [
+        "main starts",
+        "main",
+        "worker 1 starts",
+        "main ends",
+        "worker 1 ends",
+        "done",
+    ];
+    for (secret, expected) in [(0, &queued), (1, &let_go), (2, &let_go)] {
+        let package = format!("held1545alone{secret}");
+        let program = HELD_ALONE.replace("SECRET", &secret.to_string());
+        let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
+        let run = una(&dir, &["--json", "run", "--virtual-time"]);
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{secret}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+        assert_eq!(document["output"], serde_json::json!(expected), "{secret}");
+        let built = una(&dir, &["build"]);
+        assert_eq!(
+            built.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let trace = dir.join("trace.json");
+        let mut command = Command::new(dir.join("target/una").join(&package));
+        command
+            .current_dir(&dir)
+            .arg("--virtual-time")
+            .arg("--trace")
+            .arg(&trace);
+        let native = output_within(&command, 60);
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "{secret}: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        let lines: Vec<Value> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(Value::from)
+            .collect();
+        assert_eq!(Value::from(lines), document["output"], "{secret}: native");
+        let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+        assert_eq!(native_trace, document["trace"], "{secret}: native trace");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// The module of the conformance case `tests/conformance/security/<case>` of #1684 (hunt #973,
 /// T1), whose module is `order`.
 fn task_switch_case(case: &str) -> String {
