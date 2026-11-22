@@ -1,0 +1,56 @@
+-- test: each `if error` handler binds `error` to its own failure, one statement after another and inside the default of an `if error use`, whose lambda takes `error` as an argument; both engines give the same values
+-- spec: spec/02 §8
+-- grant: console
+-- expect: run-output "first 10"
+-- expect: run-output "second 20"
+-- expect: run-output "ok 1"
+-- expect: run-output "wrapped b"
+module conformance.runtime.error_binders_run
+
+pub kind Problem = A | B
+
+pub kind Outer = | Wrapped(inner: Problem)
+
+risky(n: Int) -> Int
+  fails Problem
+=
+  if n == 1 then fail A else if n == 2 then fail B else 1
+
+code(p: Problem) -> Int
+=
+  when p
+    is A -> 1
+    is B -> 2
+
+name(p: Problem) -> Text
+=
+  when p
+    is A -> "a"
+    is B -> "b"
+
+relay(n: Int) -> Int
+  fails Outer
+=
+  let v = risky(n)
+    if error fail Wrapped(inner: error)
+  v
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let first = risky(1)
+    if error use (fn(k: Int) -> k * 10)(code(error))
+  @console.print("first {first}")
+  let second = risky(2)
+    if error use (fn(k: Int) -> k * 10)(code(error))
+  @console.print("second {second}")
+  let third = risky(3)
+    if error use code(error)
+  @console.print("ok {third}")
+  let outcome = attempt relay(2)
+  let shown = when outcome
+    is Ok(value) -> "ok {value}"
+    is Err(failure) ->
+      when failure
+        is Wrapped(inner) -> "wrapped {name(inner)}"
+  @console.print(shown)

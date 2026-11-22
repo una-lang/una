@@ -1,0 +1,9 @@
+-- test: a lambda's body is not a position of `it`, even in a `where` clause, so `it` inside it is U2013, beside the U2014 of the lambda in the clause
+-- spec: spec/02 §8
+-- expect: error U2014 at 7:28
+-- expect: error U2013 at 7:47
+module it_in_lambda_rejected
+
+pub kind Small = Int where (fn(k: Int) -> k < it)(0)
+
+pub one() -> Small = 1
