@@ -14,15 +14,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 use una_itaty::entry::owner_chain;
-use una_itaty::http::{ServerConfig, Service, Work, serve, serve_with};
+use una_itaty::http::{ServerConfig, Service, Work, serve, serve_from, serve_with};
 use una_itaty::namemap::prove_from_tiles;
 use una_itaty::registry::{Clock, Config, Registry, map_root_of};
 use una_itaty::sign::{Signer, note};
@@ -1085,7 +1085,7 @@ fn a_connection_that_sends_one_byte_loses_its_slot_soon_after_the_first_byte_tim
 
 /// Connections from this host, a terminator's, are not bounded per peer: past
 /// `max_connections_per_peer` they are served, up to `max_connections` (the bound of another
-/// address is a unit test of the slots, since a test has only loopback addresses).
+/// address is `a_peer_past_its_bound_is_refused_from_its_address`).
 #[test]
 fn connections_from_a_loopback_address_are_not_bounded_per_peer() {
     let (service, addr, dir) = served(
@@ -1115,6 +1115,238 @@ fn connections_from_a_loopback_address_are_not_bounded_per_peer() {
         "the slots were not given back",
         || service.connections_in_progress() == 0,
     );
+    assert!(get(addr, "root/1").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A request's head sent with no byte of the body it declares; the connection.
+fn head_alone(addr: SocketAddr, path: &str, length: usize, lines: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .write_all(
+            format!("POST /{path} HTTP/1.1\r\nContent-Length: {length}\r\n{lines}\r\n").as_bytes(),
+        )
+        .unwrap();
+    stream
+}
+
+/// A head that declares a body and sends none of it, or a byte of it, holds its slot for the
+/// first-byte timeout, not for the idle timeout: it is answered 408 and closed.
+#[test]
+fn a_body_that_does_not_come_loses_its_slot_at_the_first_byte_timeout() {
+    let first_byte_timeout = Duration::from_secs(2);
+    let config = ServerConfig {
+        first_byte_timeout,
+        ..ServerConfig::default()
+    };
+    // Far less than the idle timeout, which held the slots before.
+    let bound = Duration::from_secs(30);
+    assert!(bound < config.idle_timeout);
+    let (service, addr, dir) = served("bodyhold", config);
+    let started = Instant::now();
+    // The review's case, with no credential: the largest note declared, nothing sent; the
+    // same for a cosignature; and a note of which a part comes: 4 KiB, more than the head's
+    // own read takes, so some of it is read for the body whether or not it came with the head.
+    let mut silent = head_alone(addr, "submit", 65536, "");
+    let mut cosign = head_alone(addr, "cosign", 2048, "");
+    let mut part = head_alone(addr, "submit", 65536, "");
+    part.write_all(&[b'x'; 4096]).unwrap();
+    // Each read ends when the service closes the connection: no state is waited for that
+    // lasts only for a time.
+    for (stream, why) in [
+        (&mut silent, "the body did not start in time"),
+        (&mut cosign, "the body did not start in time"),
+        (&mut part, "slower than 64 KiB per second"),
+    ] {
+        let response = String::from_utf8_lossy(&read_all(stream)).to_string();
+        assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+        assert!(response.contains(why), "{response}");
+    }
+    let held = started.elapsed();
+    assert!(
+        held >= first_byte_timeout && held < bound,
+        "the connections were held for {held:?}"
+    );
+    wait_until(bound, "the connections kept their slots", || {
+        service.connections_in_progress() == 0
+    });
+    // A body that comes is read as before.
+    let (status, _) = post(addr, "submit", b"not a note");
+    assert_eq!(status, 400);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A registration whose head does not carry the operator's token is answered from its head,
+/// with no byte of its body read or waited for; with the token, its body is read.
+#[test]
+fn a_registration_without_the_token_is_answered_before_its_body() {
+    let first_byte_timeout = Duration::from_secs(2);
+    let (service, addr, dir) = served(
+        "early",
+        ServerConfig {
+            register_token: Some(TOKEN.to_owned()),
+            first_byte_timeout,
+            ..ServerConfig::default()
+        },
+    );
+    // No body is ever sent: an answer other than 408 was given without one.
+    for lines in [
+        "",
+        "Authorization: Bearer wrong\r\n",
+        "Authorization: operator-token-for-tests\r\n",
+        "Expect: 100-continue\r\n",
+    ] {
+        let mut stream = head_alone(addr, "register", 65536, lines);
+        let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "{lines:?}: {response}"
+        );
+    }
+    // More body with the head than it declares is refused for its framing, as before, and
+    // not for its credential.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .write_all(b"POST /register HTTP/1.1\r\nContent-Length: 3\r\n\r\n0123456789")
+        .unwrap();
+    let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    assert!(response.contains("longer than"), "{response}");
+    // A client that sent a small body whole reads the refusal, and the connection closes as
+    // soon as that body was discarded.
+    let (status, _) = request(addr, "POST", "register", &[], &[b'r'; 4096]);
+    assert_eq!(status, 401);
+    // With the token the body is waited for, under the body's rule.
+    let auth = format!("Authorization: Bearer {TOKEN}\r\n");
+    let mut stream = head_alone(addr, "register", 65536, &auth);
+    let response = String::from_utf8_lossy(&read_all(&mut stream)).to_string();
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    assert!(
+        response.contains("the body did not start in time"),
+        "{response}"
+    );
+    // And a registration with the token and its body is read and judged for its content.
+    let (status, _) = request(
+        addr,
+        "POST",
+        "register",
+        &[("Authorization", &format!("Bearer {TOKEN}"))],
+        b"not a registration",
+    );
+    assert_eq!(status, 400);
+    wait_until(Duration::from_secs(10), "a slot was kept", || {
+        service.connections_in_progress() == 0
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A peer that is not a loopback address holds at most `max_connections_per_peer` slots: its
+/// next connection is answered 503 "from this address" by the accept loop, while other peers
+/// are served. The test's connections are loopback ones, so the loop is given, through
+/// `serve_from`, the address each one is counted under; it is given them in non-blocking
+/// mode, which `serve_from` undoes.
+#[test]
+fn a_peer_past_its_bound_is_refused_from_its_address() {
+    let (store, registry, dir) = opened("peer");
+    let service = Arc::new(
+        Service::new(
+            store,
+            registry,
+            ServerConfig {
+                max_connections: 4,
+                max_connections_per_peer: 1,
+                // The idle connection below holds its slot until it is dropped.
+                first_byte_timeout: Duration::from_secs(25),
+                ..ServerConfig::default()
+            },
+        )
+        .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    // The address the next connection accepted is counted under.
+    let from: Arc<Mutex<IpAddr>> = Arc::new(Mutex::new("192.0.2.7".parse().unwrap()));
+    let spawned = Arc::new(AtomicUsize::new(0));
+    {
+        let service = Arc::clone(&service);
+        let from = Arc::clone(&from);
+        let spawned = Arc::clone(&spawned);
+        std::thread::spawn(move || {
+            serve_from(
+                || {
+                    let (stream, address) = listener.accept()?;
+                    assert!(address.ip().is_loopback());
+                    // A connection given in non-blocking mode is served as any other: left
+                    // so, its first read would fail at once and be answered 408.
+                    stream.set_nonblocking(true)?;
+                    Ok((
+                        stream,
+                        SocketAddr::new(*from.lock().unwrap(), address.port()),
+                    ))
+                },
+                &service,
+                move |work| {
+                    spawned.fetch_add(1, Ordering::SeqCst);
+                    spawn_thread(work)
+                },
+            )
+        });
+    }
+    let comes_from = |address: &str| *from.lock().unwrap() = address.parse().unwrap();
+    let refused = || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        String::from_utf8_lossy(&read_all(&mut stream)).to_string()
+    };
+    // The peer's one connection takes its slot and sends nothing.
+    let idle = TcpStream::connect(addr).unwrap();
+    wait_until(
+        Duration::from_secs(10),
+        "the connection took no slot",
+        || service.connections_in_progress() == 1,
+    );
+    // Its second is refused as the peer's, by one write, with no thread started; so is one
+    // from the same address written as an IPv4-mapped IPv6 address.
+    for same in ["192.0.2.7", "::ffff:192.0.2.7"] {
+        comes_from(same);
+        let response = refused();
+        assert!(response.starts_with("HTTP/1.1 503"), "{same}: {response}");
+        assert!(
+            response.contains("too many connections from this address"),
+            "{same}: {response}"
+        );
+    }
+    assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    assert_eq!(service.connections_in_progress(), 1);
+    // Another address, and an IPv6 one, are served meanwhile.
+    for other in ["192.0.2.8", "2001:db8::1"] {
+        comes_from(other);
+        assert!(get(addr, "root/1").is_some(), "{other}");
+    }
+    // An IPv6 peer is its /64: with one connection held, another address of the prefix is
+    // refused and the next prefix is served.
+    wait_until(Duration::from_secs(10), "a served slot was kept", || {
+        service.connections_in_progress() == 1
+    });
+    comes_from("2001:db8:0:1::1");
+    let idle_v6 = TcpStream::connect(addr).unwrap();
+    wait_until(
+        Duration::from_secs(10),
+        "the connection took no slot",
+        || service.connections_in_progress() == 2,
+    );
+    comes_from("2001:db8:0:1:ffff::2");
+    assert!(refused().contains("too many connections from this address"));
+    comes_from("2001:db8:0:2::1");
+    assert!(get(addr, "root/1").is_some());
+    // Once the peer's connection ends, the peer is served again.
+    drop(idle);
+    drop(idle_v6);
+    wait_until(
+        Duration::from_secs(10),
+        "the slots were not given back",
+        || service.connections_in_progress() == 0,
+    );
+    comes_from("192.0.2.7");
     assert!(get(addr, "root/1").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }

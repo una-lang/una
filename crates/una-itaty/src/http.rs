@@ -21,18 +21,42 @@
 //! and a second per KiB received. So a connection that sends nothing gives its slot back
 //! after 5 seconds, one that sends a byte and stops does a millisecond later, and holding a
 //! slot for the 21 seconds the largest head allows costs its 16 KiB; a head that an honest
-//! client sends whole, in one write, is not concerned. A body needs `Content-Length`, at most the endpoint's bound (64 KiB for a
-//! note, the archive's bound for a publication), and is read with no more than 60 seconds
-//! without progress and at least 64 KiB per second on average past its first minute (the
-//! idle timeout), counted on the bytes that arrived, within a total of the idle timeout and a
-//! second per 64 KiB declared. Chunked bodies, percent-encoding, queries, repeated
-//! `Content-Length` and folded headers are refused. A body's buffer grows with the bytes that
-//! arrive, doubling from 64 KiB, and takes its whole declared length at once only after its
-//! first MiB arrived, so a reallocation never holds more than the length and that MiB; the
-//! search for a head's end resumes where it stopped, so its work is linear in the head. A
-//! request refused before its body was read gets its answer, then the service stops writing
-//! and discards at most 64 KiB of the body for at most a second before it closes, so a client
-//! that sent a small body reads the refusal rather than a reset.
+//! client sends whole, in one write, is not concerned. A body needs `Content-Length`, at most
+//! the endpoint's bound (64 KiB for a note, the archive's bound for a publication), and is
+//! read under the head's rule, with a body's numbers: at every moment the bytes of the body
+//! read since the head have arrived within a first allowance and a second per 64 KiB of them,
+//! with no more than 60 seconds (the idle timeout) without progress, within a total of the
+//! idle timeout and a second per 64 KiB declared. The first allowance of a note, a
+//! registration or a cosignature is the first-byte timeout (or the idle timeout, when that is
+//! shorter): a head that declares such a body and sends none of it gives its slot back after
+//! 5 seconds, and the longest such a body holds a slot is the 6 seconds that cost a note's 64
+//! KiB. The first allowance of a publication is the idle timeout, 60 seconds, as it was: at
+//! most two publications are read at once, whatever the connections, so their bodies cannot
+//! take the connection slots, and a publisher on a slow line keeps its margin. A steady
+//! publisher is read when its body of `S` bytes arrives within 60 seconds and `S` / 64 KiB
+//! seconds: the largest publication (260 MiB) needs 63.1 KiB per second, an uplink of about
+//! 520 kbit per second for 70 minutes, and one of 400 kbit per second publishes up to 12 MiB.
+//! The rule counts the bytes as they arrive at the service, not as the client writes them.
+//! Chunked bodies, percent-encoding, queries,
+//! repeated `Content-Length` and folded headers are refused, so no byte of a body's framing
+//! is outside the rule; `Expect` is not answered, so a client that waits for `100 Continue`
+//! before it sends its body has the body's first allowance to give up waiting. A body's
+//! buffer grows with the bytes that arrive, doubling from 64 KiB, and takes its whole
+//! declared length at once only after its first MiB arrived, so a reallocation never holds
+//! more than the length and that MiB; the search for a head's end resumes where it stopped,
+//! so its work is linear in the head.
+//!
+//! **Refused before the body.** What the head alone decides is answered with no read for the
+//! body (only the bytes of it that came with the head's reads were taken): a head or a framing
+//! that is refused, a body past the endpoint's bound (413, by its `Content-Length`), a
+//! publication with no publishing slot (503), and a registration whose head does not carry the
+//! operator's token (403 when registration is closed, 401 for a credential that is absent,
+//! malformed or wrong). A request refused so gets its answer, then the service stops writing
+//! and discards what the body still declares, at most 64 KiB of it for at most a second,
+//! before it closes, so a client that sent a small body reads the refusal rather than a reset;
+//! the discarding ends with the body, so it waits for nothing once a small body is whole. The
+//! other endpoints carry their credential, a signature, in the body, which is therefore read
+//! first, under the rule above.
 //!
 //! **Writing a response.** Every response is written within the write timeout and the least
 //! rate, the mirror of a body's: no write waits more than the write timeout (60 seconds) for
@@ -120,8 +144,10 @@ pub const MAX_COSIGN_BODY: usize = 2 << 10;
 const MAX_SERVED: usize = MAX_ARCHIVE;
 /// How many publications are checked at once.
 const MAX_PUBLISHING: usize = 2;
-/// The least average rate of a body past its first idle timeout, in bytes per second.
-const MIN_BODY_RATE: u128 = 64 << 10;
+/// The least average rate of a request's body past its first allowance, in bytes per second:
+/// the rate the body's total time already assumed (a second per 64 KiB declared), and the
+/// mirror of [`MIN_SEND_RATE`]. A note of 64 KiB has one second more than its first byte.
+const MIN_BODY_RATE: u64 = 64 << 10;
 /// The most bytes of an unread body discarded after a refusal, before the connection closes.
 const DRAIN_MAX: usize = 64 << 10;
 /// The longest wait for those bytes.
@@ -175,11 +201,17 @@ pub struct ServerConfig {
     /// soon as it is connected, so the default, 5 seconds, covers a retransmission of a lost
     /// first segment (1 second, then 2) with a margin, while a connection that sends nothing
     /// holds its slot a sixth of the head's 30 seconds. It is also the default wait for a
-    /// request's first byte of the language's own servers (`spec/31`, `idle`).
+    /// request's first byte of the language's own servers (`spec/31`, `idle`). The body of a
+    /// note, a registration or a cosignature has the same wait for its first byte, counted
+    /// from the end of the head, and past it a second more for each 64 KiB of it that
+    /// arrived; when the idle timeout is shorter than this, that wait is the idle timeout. A
+    /// publication's body has the idle timeout instead.
     pub first_byte_timeout: Duration,
     /// The longest time to read a request's head, however fast it arrives.
     pub head_timeout: Duration,
-    /// The longest wait for progress on a body.
+    /// The longest wait for progress on a body, however much of it arrived; with a second
+    /// per 64 KiB declared, the longest time to read it; and the first allowance of a
+    /// publication's body, past which it keeps 64 KiB per second on average.
     pub idle_timeout: Duration,
     /// The longest wait for the peer to take bytes of a response, and the time past which it
     /// takes them at the least rate.
@@ -425,6 +457,22 @@ fn same_secret(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The response that refuses a registration by its `Authorization` header, `None` when the
+/// header carries the operator's token: 403 while registration is closed, 401 for a
+/// credential that is absent, malformed or wrong.
+fn registration_refused(config: &ServerConfig, authorization: Option<&str>) -> Option<Response> {
+    let Some(token) = &config.register_token else {
+        return Some(text(403, "registration is closed"));
+    };
+    let given = authorization
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !same_secret(given.as_bytes(), token.as_bytes()) {
+        return Some(text(401, "registration needs the operator's token"));
+    }
+    None
+}
+
 /// Which files a `GET` may read: the paths of rule 34.
 fn servable(path: &str) -> Option<bool> {
     if check_path(path).is_err() {
@@ -668,15 +716,12 @@ impl Service {
                 }
             }
             "register" => {
-                let Some(token) = &self.config.register_token else {
-                    return text(403, "registration is closed");
-                };
-                let given = request
-                    .header("authorization")
-                    .and_then(|v| v.strip_prefix("Bearer "))
-                    .unwrap_or_default();
-                if !same_secret(given.as_bytes(), token.as_bytes()) {
-                    return text(401, "registration needs the operator's token");
+                // A connection was refused by its head already; a request given whole to
+                // `route` is checked here.
+                if let Some(refusal) =
+                    registration_refused(&self.config, request.header("authorization"))
+                {
+                    return refusal;
                 }
                 let reviewed = request.header("ita-review") == Some("accepted");
                 let mut registry = match self.locked() {
@@ -736,7 +781,7 @@ impl Service {
             Served::Read(answer) => {
                 let _ = send(&mut stream, answer, &self.config);
             }
-            Served::Refused(response) => {
+            Served::Refused(response, unread) => {
                 // The body may still be on its way: answer, stop writing, and discard a
                 // bounded part of it within the connection's slot, so a client that sent a
                 // small body reads the refusal rather than a reset. A peer that timed out
@@ -745,7 +790,7 @@ impl Service {
                 let sent = send(&mut stream, Answer::Whole(response), &self.config);
                 if sent.is_ok() && status != 408 {
                     let _ = stream.shutdown(std::net::Shutdown::Write);
-                    drain(&mut stream);
+                    drain(&mut stream, unread);
                 }
             }
         }
@@ -773,14 +818,20 @@ impl Service {
     /// is checked and before its body is read, so at most two bodies of publications are held
     /// at once, however many connections declare one.
     fn serve_one(&self, stream: &mut TcpStream) -> Served {
+        // A head that was refused says nothing sure of a body: the most is discarded.
         let head = match read_head(stream, &self.config) {
             Ok(head) => head,
-            Err(response) => return Served::Refused(response),
+            Err(response) => return Served::Refused(response, DRAIN_MAX),
         };
+        // What the head alone refuses is answered with no byte of the body read.
+        let unread = head.unread();
+        if let Some(response) = head.refused(&self.config) {
+            return Served::Refused(response, unread);
+        }
         let slot = if head.publishes() {
             match self.publishing_slot() {
                 Ok(slot) => Some(slot),
-                Err(response) => return Served::Refused(response),
+                Err(response) => return Served::Refused(response, unread),
             }
         } else {
             None
@@ -788,7 +839,7 @@ impl Service {
         match head.read_body(stream, &self.config) {
             Ok(request) if slot.is_some() => Served::Read(Answer::Whole(self.write(request, slot))),
             Ok(request) => Served::Read(self.dispatch(request)),
-            Err(response) => Served::Refused(response),
+            Err(response) => Served::Refused(response, DRAIN_MAX),
         }
     }
 }
@@ -797,14 +848,16 @@ impl Service {
 enum Served {
     /// The request was read whole.
     Read(Answer),
-    /// The request was refused before its body was read whole.
-    Refused(Response),
+    /// The request was refused before its body was read whole; the most bytes of the body
+    /// that may still come, to discard.
+    Refused(Response, usize),
 }
 
-/// Discards at most `DRAIN_MAX` bytes of `stream` within `DRAIN_TIME`, until it closes.
-fn drain(stream: &mut impl Conn) {
+/// Discards at most `most` bytes of `stream`, and at most `DRAIN_MAX`, within `DRAIN_TIME`,
+/// until it closes: it waits for nothing once `most` bytes were discarded.
+fn drain(stream: &mut impl Conn, most: usize) {
     let started = stream.now();
-    let mut left = DRAIN_MAX;
+    let mut left = most.min(DRAIN_MAX);
     let mut chunk = [0u8; 4096];
     while left > 0 {
         let Some(wait) = DRAIN_TIME
@@ -881,9 +934,22 @@ struct Head {
 }
 
 /// Reads a request from `stream` within the limits of the module, or the response that
-/// refuses it.
+/// refuses it; a request its head alone refuses is refused with no byte of its body read.
 pub fn read_request(stream: &mut TcpStream, config: &ServerConfig) -> Result<Request, Response> {
-    read_head(stream, config)?.read_body(stream, config)
+    let head = read_head(stream, config)?;
+    match head.refused(config) {
+        Some(response) => Err(response),
+        None => head.read_body(stream, config),
+    }
+}
+
+/// The longest a part of a request may have taken when `received` bytes of it arrived: the
+/// time `first` for its first byte and a second per `rate` bytes received, at most `most`.
+/// It is the one rule of the head and of the body: nothing received has `first` alone, and a
+/// byte now and then buys its share of a second, never the whole of `most`.
+fn time_earned(first: Duration, received: usize, rate: u64, most: Duration) -> Duration {
+    let earned = (received as u64).saturating_mul(1_000_000_000) / rate.max(1);
+    first.saturating_add(Duration::from_nanos(earned)).min(most)
 }
 
 #[cfg(test)]
@@ -923,11 +989,12 @@ fn read_head(stream: &mut impl Conn, config: &ServerConfig) -> Result<Head, Resp
         // The head so far has the first-byte timeout and a second per `MIN_HEAD_RATE` bytes
         // of it, within the head's time: nothing received has the first-byte timeout alone,
         // and a byte now and then buys a millisecond each, not the head's whole time.
-        let earned = (head.len() as u64).saturating_mul(1_000_000_000) / MIN_HEAD_RATE;
-        let allowed = config
-            .first_byte_timeout
-            .saturating_add(Duration::from_nanos(earned))
-            .min(config.head_timeout);
+        let allowed = time_earned(
+            config.first_byte_timeout,
+            head.len(),
+            MIN_HEAD_RATE,
+            config.head_timeout,
+        );
         let late = if head.is_empty() {
             "the request did not start in time"
         } else {
@@ -979,6 +1046,11 @@ fn read_head(stream: &mut impl Conn, config: &ServerConfig) -> Result<Head, Resp
                 format!("the body is larger than the {limit} bytes this endpoint takes"),
             ));
         }
+        // With the other refusals of the framing, before anything else is decided by the
+        // head: more of a body came with the head than it declared.
+        (Some(_), Some(length)) if already.len() > length => {
+            return Err(text(400, "the body is longer than `Content-Length`"));
+        }
         (Some(_), Some(length)) => Some(length),
     };
     Ok(Head {
@@ -997,10 +1069,36 @@ impl Head {
         self.method == "POST" && self.path == "publish"
     }
 
+    /// The response that refuses the request by its head alone, before any byte of its body
+    /// is read: a registration whose head does not carry the operator's token. The other
+    /// endpoints carry their credential, a signature, in the body.
+    fn refused(&self, config: &ServerConfig) -> Option<Response> {
+        if self.method == "POST" && self.path == "register" {
+            let authorization = self
+                .headers
+                .iter()
+                .find(|(name, _)| name == "authorization")
+                .map(|(_, value)| value.as_str());
+            return registration_refused(config, authorization);
+        }
+        None
+    }
+
+    /// How many bytes of the body the head declared were not read with it.
+    fn unread(&self) -> usize {
+        self.length.unwrap_or(0).saturating_sub(self.already.len())
+    }
+
     /// Reads the body the head declared, and gives the request.
     fn read_body(self, stream: &mut impl Conn, config: &ServerConfig) -> Result<Request, Response> {
         let body = match self.length {
             None => Vec::new(),
+            // A publication keeps the first allowance it always had, the idle timeout:
+            // `MAX_PUBLISHING` bounds how many such bodies are read at once, so they cannot
+            // take the connection slots, and a publisher on a slow line keeps its margin.
+            Some(length) if self.publishes() => {
+                read_body_within(stream, self.already, length, config.idle_timeout, config)?
+            }
             Some(length) => read_body(stream, self.already, length, config)?,
         };
         Ok(Request {
@@ -1019,10 +1117,25 @@ fn is_timeout(e: &io::Error) -> bool {
     )
 }
 
+/// Reads a body that is not a publication's: its first allowance is the request's first-byte
+/// timeout, and never past the idle timeout, the longest wait for a body's progress.
 fn read_body(
     stream: &mut impl Conn,
     already: Vec<u8>,
     length: usize,
+    config: &ServerConfig,
+) -> Result<Vec<u8>, Response> {
+    let first = config.first_byte_timeout.min(config.idle_timeout);
+    read_body_within(stream, already, length, first, config)
+}
+
+/// Reads a body of `length` bytes, of which `already` came with the head, under the rule of
+/// the module with the first allowance `first`.
+fn read_body_within(
+    stream: &mut impl Conn,
+    already: Vec<u8>,
+    length: usize,
+    first: Duration,
     config: &ServerConfig,
 ) -> Result<Vec<u8>, Response> {
     if already.len() > length {
@@ -1037,28 +1150,31 @@ fn read_body(
     let before = already.len();
     let mut body = already;
     let mut chunk = vec![0u8; 64 << 10];
-    if stream.wait_at_most(config.idle_timeout).is_err() {
-        return Err(no_timeout());
-    }
     while body.len() < length {
         #[cfg(test)]
         BODY_RESERVED.with(|c| c.set(c.get().max(body.capacity())));
-        let elapsed = stream.now().saturating_duration_since(started);
-        if elapsed > deadline {
-            return Err(text(408, "the body took too long"));
-        }
-        // Past the first idle timeout the body keeps the least average rate on the bytes
-        // that arrived, so a peer that sends a byte now and then loses its slot, however
-        // large the length it declared.
-        if let Some(past) = elapsed.checked_sub(config.idle_timeout) {
-            let owed = past.as_nanos().saturating_mul(MIN_BODY_RATE) / 1_000_000_000;
-            let received = body.len().saturating_sub(before) as u128;
-            if received < owed {
-                return Err(text(
-                    408,
-                    "the body arrived slower than 64 KiB per second on average",
-                ));
-            }
+        // The head's rule, with the body's numbers: the bytes read since the head have the
+        // first allowance and a second per `MIN_BODY_RATE` of them, within the body's total
+        // time. So a body that does not come loses its slot at the first allowance, and one
+        // that sends a byte now and then a moment later, however large the length declared.
+        // The bytes the head's own reads took earn nothing: they cost the peer no time here.
+        let received = body.len().saturating_sub(before);
+        let allowed = time_earned(first, received, MIN_BODY_RATE, deadline);
+        let late = if received == 0 {
+            "the body did not start in time"
+        } else if allowed >= deadline {
+            "the body took too long"
+        } else {
+            "the body arrived slower than 64 KiB per second on average"
+        };
+        let left = allowed
+            .checked_sub(stream.now().saturating_duration_since(started))
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| text(408, late))?;
+        // No read waits past the idle timeout, however much time the bytes received earned.
+        let wait = left.min(config.idle_timeout);
+        if stream.wait_at_most(wait).is_err() {
+            return Err(no_timeout());
         }
         let want = (length - body.len()).min(chunk.len());
         match stream.read(chunk.get_mut(..want).unwrap_or_default()) {
@@ -1067,7 +1183,10 @@ fn read_body(
                 grow(&mut body, n, length)?;
                 body.extend_from_slice(chunk.get(..n).unwrap_or_default());
             }
-            Err(e) if is_timeout(&e) => return Err(text(408, "the body made no progress")),
+            Err(e) if is_timeout(&e) && wait < left => {
+                return Err(text(408, "the body made no progress"));
+            }
+            Err(e) if is_timeout(&e) => return Err(text(408, late)),
             Err(_) => return Err(text(400, "the body could not be read")),
         }
     }
@@ -1224,10 +1343,32 @@ pub fn serve_with(
     // An `accept` waits for a connection: on a non-blocking listener it would fail at once,
     // again and again. The loop pauses on that failure too, should the mode change under it.
     listener.set_nonblocking(false)?;
-    accept_loop(
-        || listener.accept(),
-        std::thread::sleep,
-        |stream, address| match Held::take(service, Peer::of(address.ip())) {
+    serve_from(|| listener.accept(), service, spawn)
+}
+
+/// Serves the connections `accept` gives as [`serve_with`] serves a listener's, under the same
+/// rules for a failed `accept`: for an operator whose connections do not come from one
+/// listener of the standard library, and for tests. A connection is counted under the peer
+/// address `accept` gives with it, the one `max_connections_per_peer` bounds: [`serve_with`]
+/// gives the address the listener reported, and a caller that gives another answers for it.
+/// `accept` waits for a connection; one that fails at once, again and again, is paused on as
+/// the module says. `accept` must not read the connection it gives (to learn its peer from a
+/// header, say): it runs in the accept loop, under none of the module's limits, so one slow
+/// peer would stop every acceptance. A connection given in non-blocking mode is put in
+/// blocking mode, since its reads are bounded by timeouts; one that cannot be is closed.
+pub fn serve_from(
+    accept: impl FnMut() -> io::Result<(TcpStream, SocketAddr)>,
+    service: &Arc<Service>,
+    spawn: impl Fn(Work) -> io::Result<()>,
+) -> io::Result<()> {
+    accept_loop(accept, std::thread::sleep, |stream, address| {
+        // A read that does not block fails at once with the error of a timeout, and
+        // would be answered 408: the connection blocks, or it is not served.
+        if stream.set_nonblocking(false).is_err() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        match Held::take(service, Peer::of(address.ip())) {
             Err(busy) => refuse_busy(stream, busy),
             Ok(held) => {
                 let _ = spawn(Box::new(move || {
@@ -1235,8 +1376,8 @@ pub fn serve_with(
                     drop(held);
                 }));
             }
-        },
-    )
+        }
+    })
 }
 
 /// The accept loop of [`serve_with`], over what accepts a connection, what pauses, and what
@@ -1838,13 +1979,349 @@ mod tests {
             read_body(&mut conn, Vec::new(), length, &config).unwrap(),
             data
         );
-        // A note sent a few bytes a second within its first minute is read.
-        let note = vec![b'n'; 1000];
-        let mut conn = paced(note.clone(), 20, Duration::from_secs(1));
+        // Exactly the least rate, 64 KiB a second from the first second on, is read too.
+        let mut conn = paced(data.clone(), 64 << 10, Duration::from_secs(1));
         assert_eq!(
-            read_body(&mut conn, Vec::new(), 1000, &config).unwrap(),
+            read_body(&mut conn, Vec::new(), length, &config).unwrap(),
+            data
+        );
+        // A small body sent slowly is read while it ends within the first-byte time and the
+        // time its bytes earned: the largest note at 11 KiB a second takes 6 seconds, and a
+        // cosignature of 2 KiB at 512 bytes a second takes 4.
+        let note = vec![b'n'; MAX_NOTE_BODY];
+        let mut conn = paced(note.clone(), 11 << 10, Duration::from_secs(1));
+        assert_eq!(
+            read_body(&mut conn, Vec::new(), MAX_NOTE_BODY, &config).unwrap(),
             note
         );
+        let line = vec![b'c'; MAX_COSIGN_BODY];
+        let mut conn = paced(line.clone(), 512, Duration::from_secs(1));
+        assert_eq!(
+            read_body(&mut conn, Vec::new(), MAX_COSIGN_BODY, &config).unwrap(),
+            line
+        );
+    }
+
+    #[test]
+    fn a_body_that_does_not_come_loses_its_slot_at_the_first_byte_timeout() {
+        let config = ServerConfig::default();
+        assert!(config.first_byte_timeout < config.idle_timeout);
+        let silent = |length: usize, config: &ServerConfig| {
+            let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+            let refused = read_body(&mut conn, Vec::new(), length, config)
+                .err()
+                .unwrap();
+            assert_eq!(refused.status, 408);
+            assert!(String::from_utf8_lossy(&refused.body).contains("did not start"));
+            conn.waits
+        };
+        // The review's case: a head that declares the largest note, then nothing. One wait,
+        // of the first-byte timeout, not of the idle timeout's 60 seconds; the same for the
+        // largest publication and for one byte declared.
+        for length in [1, MAX_COSIGN_BODY, MAX_NOTE_BODY, MAX_PUBLISH_BODY] {
+            assert_eq!(
+                silent(length, &config),
+                [config.first_byte_timeout],
+                "{length}"
+            );
+        }
+        // A first-byte timeout past the idle timeout is the idle timeout.
+        let long = ServerConfig {
+            first_byte_timeout: Duration::from_secs(3600),
+            ..ServerConfig::default()
+        };
+        assert_eq!(silent(MAX_NOTE_BODY, &long), [long.idle_timeout]);
+        // The bytes that came with the head earn no time: the wait is the same.
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, vec![b'y'; 1024], MAX_NOTE_BODY, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert_eq!(conn.waits, [config.first_byte_timeout]);
+    }
+
+    #[test]
+    fn a_body_sent_slowly_loses_its_slot_soon_after_the_first_byte_timeout() {
+        let config = ServerConfig::default();
+        let first = config.first_byte_timeout;
+        let refused_slow = |conn: &mut Paced, length: usize| {
+            let refused = read_body(conn, Vec::new(), length, &config).err().unwrap();
+            assert_eq!(refused.status, 408);
+            assert!(String::from_utf8_lossy(&refused.body).contains("slower"));
+        };
+        // One byte at once, then nothing: the second wait ends a moment past the first-byte
+        // timeout, not at the idle timeout.
+        let mut conn = paced(b"x".to_vec(), 1, Duration::from_millis(1));
+        refused_slow(&mut conn, MAX_NOTE_BODY);
+        assert_eq!(conn.waits.len(), 2);
+        assert!(conn.waits[1] <= first, "{:?}", conn.waits);
+        // A byte a second: refused at the first-byte timeout, however large the body.
+        for length in [MAX_NOTE_BODY, MAX_PUBLISH_BODY] {
+            let mut conn = paced(vec![b'x'; 4096], 1, Duration::from_secs(1));
+            refused_slow(&mut conn, length);
+            assert!(
+                held(&conn) <= first + Duration::from_secs(1),
+                "{:?}",
+                held(&conn)
+            );
+            assert!(conn.at <= 6, "{} bytes read", conn.at);
+        }
+        // Half the least rate: refused at twice the first-byte timeout, not after the two
+        // minutes the idle timeout gave it.
+        let mut conn = paced(vec![b'x'; 8 << 20], 32 << 10, Duration::from_secs(1));
+        refused_slow(&mut conn, 8 << 20);
+        assert!(
+            held(&conn) <= 2 * first + Duration::from_secs(1),
+            "{:?}",
+            held(&conn)
+        );
+        // The longest hold of a note's slot: all of the largest note but its last byte, sent
+        // in the first second, earns a second less its share: the wait that follows ends
+        // within 6 seconds of the body's start, so the hold costs 64 KiB.
+        let second = Duration::from_secs(1);
+        let mut conn = paced(vec![b'n'; MAX_NOTE_BODY - 1], MAX_NOTE_BODY, second);
+        refused_slow(&mut conn, MAX_NOTE_BODY);
+        assert_eq!(conn.waits.len(), 2);
+        let longest = second + conn.waits[1];
+        assert!(
+            longest > first + Duration::from_millis(999) && longest < first + second,
+            "{longest:?}"
+        );
+        // No wait is past the idle timeout, however much time the bytes received earned: a
+        // publication that sends 32 MiB at once and stalls is refused for its lack of
+        // progress after one wait of the idle timeout.
+        let mut conn = paced(vec![b'p'; 32 << 20], 32 << 20, Duration::from_millis(1));
+        let refused = read_body(&mut conn, Vec::new(), MAX_PUBLISH_BODY, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(String::from_utf8_lossy(&refused.body).contains("no progress"));
+        assert!(conn.waits.iter().all(|w| *w <= config.idle_timeout));
+        assert_eq!(conn.waits.last(), Some(&config.idle_timeout));
+    }
+
+    /// A publication's head that declares `length` bytes, then `body`, `step` bytes a second.
+    fn publishing(length: usize, body: usize, step: usize) -> Paced {
+        let mut data =
+            format!("POST /publish HTTP/1.1\r\nContent-Length: {length}\r\n\r\n").into_bytes();
+        data.resize(data.len() + body, b'p');
+        paced(data, step, Duration::from_secs(1))
+    }
+
+    #[test]
+    fn a_publication_keeps_the_idle_timeout_as_its_first_allowance() {
+        let config = ServerConfig::default();
+        let mib = 1 << 20;
+        let read = |mut conn: Paced, config: &ServerConfig| {
+            let head = read_head(&mut conn, config).unwrap();
+            assert!(head.publishes());
+            let before = conn.waits.len();
+            let answer = head
+                .read_body(&mut conn, config)
+                .map(|request| request.body.len())
+                .map_err(|refused| {
+                    assert_eq!(refused.status, 408);
+                    String::from_utf8_lossy(&refused.body).to_string()
+                });
+            (answer, conn.waits.split_off(before))
+        };
+        // A publication that does not come: one wait of the idle timeout, as before, not of
+        // the first-byte timeout, which bounds the bodies read without a publishing slot.
+        let (answer, waits) = read(publishing(MAX_PUBLISH_BODY, 0, 1024), &config);
+        assert!(answer.unwrap_err().contains("did not start"));
+        assert_eq!(waits, [config.idle_timeout]);
+        // Whatever the first-byte timeout is.
+        for first_byte_timeout in [Duration::from_secs(1), Duration::from_secs(3600)] {
+            let other = ServerConfig {
+                first_byte_timeout,
+                ..ServerConfig::default()
+            };
+            let (_, waits) = read(publishing(MAX_PUBLISH_BODY, 0, 1024), &other);
+            assert_eq!(waits, [other.idle_timeout]);
+        }
+        // The review's case: an uplink of 400 kbit a second, 50,000 bytes a second. It
+        // publishes 11 MiB, as it did (60 seconds and a second per 64 KiB: 236 seconds for
+        // the 231 it takes), and not 12.5 MiB (260 seconds for 262).
+        let (answer, _) = read(publishing(11 * mib, 11 * mib, 50_000), &config);
+        assert_eq!(answer, Ok(11 * mib));
+        let (answer, _) = read(publishing(25 * mib / 2, 25 * mib / 2, 50_000), &config);
+        assert!(answer.unwrap_err().contains("slower"));
+        // Under the first allowance of the other bodies, 5 seconds, the same 11 MiB at the
+        // same pace are refused within a minute: that allowance is not a publication's.
+        let mut conn = paced(vec![b'p'; 11 * mib], 50_000, Duration::from_secs(1));
+        let refused = read_body(&mut conn, Vec::new(), 11 * mib, &config)
+            .err()
+            .unwrap();
+        assert_eq!(refused.status, 408);
+        assert!(held(&conn) < Duration::from_secs(30), "{:?}", held(&conn));
+        // A note read through its head has the first-byte timeout.
+        let mut conn = paced(
+            b"POST /submit HTTP/1.1\r\nContent-Length: 65536\r\n\r\n".to_vec(),
+            1024,
+            Duration::from_secs(1),
+        );
+        let head = read_head(&mut conn, &config).unwrap();
+        assert!(head.read_body(&mut conn, &config).is_err());
+        assert_eq!(conn.waits.last(), Some(&config.first_byte_timeout));
+    }
+
+    #[test]
+    fn the_text_of_a_late_body_says_whether_any_of_it_came() {
+        let config = ServerConfig::default();
+        let why = |refused: Response| String::from_utf8_lossy(&refused.body).to_string();
+        // Bytes of the body that came with the head, then nothing: the body did not start
+        // in the time it had, whatever came before that time began.
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, vec![b'y'; 100], MAX_NOTE_BODY, &config);
+        assert!(why(refused.err().unwrap()).contains("did not start"));
+        // The same when the first allowance is the body's whole time.
+        let whole = ServerConfig {
+            first_byte_timeout: Duration::from_secs(3600),
+            ..ServerConfig::default()
+        };
+        let mut conn = paced(Vec::new(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, Vec::new(), 100, &whole);
+        assert!(why(refused.err().unwrap()).contains("did not start"));
+        // One byte read for the body, then nothing: it came too slowly.
+        let mut conn = paced(b"x".to_vec(), 1, Duration::from_secs(1));
+        let refused = read_body(&mut conn, vec![b'y'; 100], MAX_NOTE_BODY, &config);
+        assert!(why(refused.err().unwrap()).contains("slower"));
+    }
+
+    #[test]
+    fn more_body_than_declared_is_refused_before_the_credential() {
+        let open = ServerConfig {
+            register_token: Some("operator".to_owned()),
+            ..ServerConfig::default()
+        };
+        // The review's case: a registration with no token, `Content-Length: 3`, and ten
+        // bytes of body with the head. The framing is refused, 400, as before, and not the
+        // credential; so is it with the token, and on the other endpoints.
+        for (path, lines) in [
+            ("register", ""),
+            ("register", "Authorization: Bearer operator\r\n"),
+            ("submit", ""),
+            ("cosign", ""),
+            ("publish", ""),
+        ] {
+            let data =
+                format!("POST /{path} HTTP/1.1\r\nContent-Length: 3\r\n{lines}\r\n0123456789");
+            let refused = read_head(&mut trickle(data.as_bytes(), 1024), &open)
+                .err()
+                .unwrap();
+            assert_eq!(refused.status, 400, "{path} {lines:?}");
+            assert!(String::from_utf8_lossy(&refused.body).contains("longer than"));
+        }
+        // A body that is whole with its head is not concerned: the credential decides.
+        let data = b"POST /register HTTP/1.1\r\nContent-Length: 3\r\n\r\n012";
+        let head = read_head(&mut trickle(data, 1024), &open).unwrap();
+        assert_eq!(head.unread(), 0);
+        assert_eq!(head.refused(&open).map(|r| r.status), Some(401));
+    }
+
+    #[test]
+    fn the_head_and_the_body_earn_their_time_by_one_rule() {
+        let first = Duration::from_secs(5);
+        let most = Duration::from_secs(30);
+        // Nothing received has the first-byte time alone; each `rate` bytes add a second.
+        assert_eq!(time_earned(first, 0, 1024, most), first);
+        assert_eq!(time_earned(first, 1024, 1024, most), Duration::from_secs(6));
+        assert_eq!(
+            time_earned(first, 1, 1024, most),
+            first + Duration::from_nanos(976_562)
+        );
+        assert_eq!(
+            time_earned(first, 3 * (64 << 10), 64 << 10, most),
+            Duration::from_secs(8)
+        );
+        // Never past the most, whatever arrived, and no overflow at the largest counts.
+        assert_eq!(time_earned(first, 1 << 20, 1024, most), most);
+        assert_eq!(time_earned(first, usize::MAX, 1, most), most);
+        assert_eq!(time_earned(Duration::MAX, usize::MAX, 1, most), most);
+        assert_eq!(time_earned(most, 0, 1024, first), first);
+    }
+
+    fn register_head(lines: &str) -> Vec<u8> {
+        format!("POST /register HTTP/1.1\r\nContent-Length: 65536\r\n{lines}\r\n").into_bytes()
+    }
+
+    #[test]
+    fn a_registration_without_the_token_is_refused_by_its_head() {
+        let open = ServerConfig {
+            register_token: Some("operator".to_owned()),
+            ..ServerConfig::default()
+        };
+        let closed = ServerConfig::default();
+        let refusal = |lines: &str, config: &ServerConfig| {
+            let mut conn = trickle(&register_head(lines), 1024);
+            let head = read_head(&mut conn, config).unwrap();
+            assert_eq!(head.unread(), 65536);
+            head.refused(config).map(|response| response.status)
+        };
+        // No credential, a malformed one, a wrong one: 401 from the head alone.
+        for lines in [
+            "",
+            "Authorization: operator\r\n",
+            "Authorization: Basic operator\r\n",
+            "Authorization: bearer operator\r\n",
+            "Authorization: Bearer\r\n",
+            "Authorization: Bearer operator2\r\n",
+            "Authorization: Bearer operato\r\n",
+            "Authorization: Bearer  operator\r\n",
+            "Expect: 100-continue\r\n",
+        ] {
+            assert_eq!(refusal(lines, &open), Some(401), "{lines:?}");
+        }
+        // The first `Authorization` header is the one read, as when the request is routed.
+        let two = "Authorization: Bearer x\r\nAuthorization: Bearer operator\r\n";
+        assert_eq!(refusal(two, &open), Some(401));
+        // Registration that is closed is 403, whatever the head carries.
+        for lines in ["", "Authorization: Bearer operator\r\n"] {
+            assert_eq!(refusal(lines, &closed), Some(403), "{lines:?}");
+        }
+        // The operator's token is not refused, and its body is then read.
+        assert_eq!(refusal("Authorization: Bearer operator\r\n", &open), None);
+        assert_eq!(refusal("authorization:Bearer operator\r\n", &open), None);
+        // The endpoints whose credential is in the body are not refused by their heads.
+        for path in ["submit", "cosign", "publish"] {
+            let data = format!("POST /{path} HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc");
+            let head = read_head(&mut trickle(data.as_bytes(), 1024), &closed).unwrap();
+            assert_eq!((head.unread(), head.refused(&closed)), (7, None), "{path}");
+        }
+        let head = read_head(
+            &mut trickle(b"GET /register HTTP/1.1\r\n\r\n", 1024),
+            &closed,
+        )
+        .unwrap();
+        assert_eq!((head.unread(), head.refused(&closed)), (0, None));
+    }
+
+    #[test]
+    fn a_request_refused_by_its_head_reads_no_byte_of_its_body() {
+        let config = ServerConfig {
+            register_token: Some("operator".to_owned()),
+            ..ServerConfig::default()
+        };
+        // The whole request of a reader that holds no service: the head's reads and no more,
+        // though a body is declared and its first bytes are there to read.
+        let mut data = register_head("");
+        let head_length = data.len();
+        data.extend_from_slice(&[b'b'; 4096]);
+        let mut conn = paced(data, head_length, Duration::from_secs(1));
+        let head = read_head(&mut conn, &config).unwrap();
+        let unread = head.unread();
+        assert_eq!(head.refused(&config).map(|r| r.status), Some(401));
+        assert_eq!((conn.reads, conn.at, unread), (1, head_length, 65536));
+        // With the token, the body is read, under the body's rule.
+        let mut data = register_head("Authorization: Bearer operator\r\n");
+        let head_length = data.len();
+        data.extend_from_slice(&[b'b'; 65536]);
+        let mut conn = paced(data, 65536, Duration::from_millis(1));
+        let head = read_head(&mut conn, &config).unwrap();
+        assert_eq!(head.refused(&config), None);
+        let request = head.read_body(&mut conn, &config).unwrap();
+        assert_eq!(request.body.len(), 65536);
+        assert_eq!(conn.at, head_length + 65536);
     }
 
     #[test]
@@ -1920,17 +2397,28 @@ mod tests {
     fn a_refused_body_is_drained_within_its_bounds() {
         // At most `DRAIN_MAX` bytes, however much the peer sends.
         let mut conn = paced(vec![0u8; 1 << 20], 4096, Duration::from_millis(1));
-        drain(&mut conn);
+        drain(&mut conn, DRAIN_MAX);
         assert_eq!(conn.at, DRAIN_MAX);
         // At most `DRAIN_TIME`, however slowly it sends.
         let mut conn = paced(vec![0u8; 1 << 20], 1, Duration::from_millis(100));
-        drain(&mut conn);
+        drain(&mut conn, DRAIN_MAX);
         assert!(conn.at <= 10, "{} bytes drained", conn.at);
         // Not past a close.
         let mut conn = paced(vec![0u8; 100], 4096, Duration::from_millis(1));
         conn.closes = true;
-        drain(&mut conn);
+        drain(&mut conn, DRAIN_MAX);
         assert_eq!(conn.at, 100);
+        // Not past what the body still declared: once it is discarded, nothing is waited
+        // for, and with nothing declared nothing is read.
+        let mut conn = paced(vec![0u8; 100], 4096, Duration::from_millis(1));
+        drain(&mut conn, 100);
+        assert_eq!((conn.at, conn.reads), (100, 1));
+        let mut conn = paced(vec![0u8; 1 << 20], 4096, Duration::from_millis(1));
+        drain(&mut conn, 5000);
+        assert_eq!((conn.at, conn.reads), (5000, 2));
+        let mut conn = paced(vec![0u8; 100], 4096, Duration::from_millis(1));
+        drain(&mut conn, 0);
+        assert_eq!((conn.at, conn.reads, conn.waits.len()), (0, 0, 0));
     }
 
     /// A peer that takes at most `step` bytes per write, each write taking `tick` on a clock of
@@ -2496,7 +2984,7 @@ mod tests {
         let refused = read_body(&mut conn, Vec::new(), 10, &config).err().unwrap();
         assert_eq!((refused.status, conn.reads), (503, 0));
         let mut conn = refusing();
-        drain(&mut conn);
+        drain(&mut conn, DRAIN_MAX);
         assert_eq!(conn.reads, 0);
         // A response, whole or a file: no write without a timeout, and the file is not sent.
         let mut peer = taker(usize::MAX, usize::MAX, Duration::from_millis(1));
