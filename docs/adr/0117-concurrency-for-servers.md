@@ -812,7 +812,7 @@ The amendment of 2026-10-25, point 2, maps the pool's 64 stacks before `main` at
 
 ## Amendment (2026-11-22): quiet tasks are held by their statement (#1545)
 
-- Status: Accepted (2026-11-22) under process v5: the decision on #1545 was taken on the recommended default, keep the guarantee rather than declare the order across tasks out of model in the interpreter, for the project's review in batch. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs. The implementation applies it since #1545.
+- Status: Proposed (2026-11-22), for the Owner's decision. It records the recommended default of #1545: keep the guarantee rather than declare the order across tasks out of model in the interpreter. The accepted text of this record above this amendment is unchanged; once accepted, where the two differ, this amendment governs. The implementation of #1545 applies it, and the Owner decides on it before that change merges.
 
 Rule 7 makes a `start` park while its statement runs as many tasks as its bound, and rule 11 queues every started task at the back of the one first-in, first-out queue. A `start` in quiet code (`spec/26 §6` rule 4, ADR 0116 amendment of 2026-11-06), under a branch on `internal` data for one, therefore took a slot that could make a later public `start` wait, and quiet code that parked, at a quiet `start` at the bound or at the end of a quiet `tasks` statement, let the queued tasks run first. Either way the order of the public events of the other tasks followed data above `public`, deterministically, in the interpreter and under virtual time (S-40 remainder). Above `internal` such a `start` is U4002 since #1684 (`spec/27 §8` rule 5); at `internal` it was open.
 
