@@ -136,7 +136,6 @@ impl Checker<'_, '_, '_> {
             handler: self.handler,
             closed,
         };
-        self.findings.uncounted.insert(span);
         self.findings.switch_sites.push(site);
     }
 
@@ -346,6 +345,40 @@ pub(crate) fn decided_by_type(findings: &Findings, bound: &Label, closed: bool) 
         }
     }
     decided
+}
+
+/// The constructs that Core IR marks `uncounted` (`spec/27 §8` rule 5, ADR 0117 amendment of
+/// 2026-11-22, second, #1708), into `findings.uncounted`: each recorded site whose label is
+/// above `public`, but one that only a type parameter's label puts there in a function whose
+/// instances the checker follows; and each call of a generic function whose sites a type
+/// argument can decide, with arguments above `public`, whose callee then runs uncounted
+/// whole. So a generic function's check points count when its instance's data are `public`,
+/// and the turns of a run follow `public` data only. Every site counts, whether or not a run
+/// reaches it and whether or not the package starts tasks: the mark costs nothing where no
+/// task switches. O((sites + calls) log n).
+pub(crate) fn close_uncounted(findings: &mut Findings) {
+    let public = Label::public();
+    let decided = decided_by_type(findings, &public, true);
+    let mut marked: BTreeSet<Span> = BTreeSet::new();
+    for site in &findings.switch_sites {
+        if site.label.flows_to(&public) {
+            continue;
+        }
+        let symbolic = site.label.concrete().flows_to(&public);
+        let followed = site
+            .function
+            .is_some_and(|f| !findings.function_values.contains(&f));
+        if symbolic && followed {
+            continue;
+        }
+        marked.insert(site.span);
+    }
+    for call in &findings.switch_calls {
+        if decided.contains(&call.callee) && !call.label.concrete().flows_to(&public) {
+            marked.insert(call.span);
+        }
+    }
+    findings.uncounted = marked;
 }
 
 /// Where a check point is: the function whose body holds it, or the handler whose operation

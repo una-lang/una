@@ -982,6 +982,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // S-39: the calls and operations under a raised program counter whose running can append
     // events of its own are `quiet` too.
     flow::close_quiet(&env, &mut findings);
+    // `spec/27 §8` rule 5: the check points that data above `public` decide are uncounted
+    // (#1708).
+    switch::close_uncounted(&mut findings);
     let (program, gaps) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0103: the pending `refinement` obligations of the flows into refined positions,
     // decided by the rule tier 1 uses (#615).
@@ -1302,9 +1305,10 @@ pub(crate) struct Findings {
     /// The check points that data above `public` can decide, reported when the package's
     /// program can run started tasks (`spec/27 §8` rule 5, #1684).
     pub(crate) switch_sites: Vec<switch::SwitchSite>,
-    /// The spans of `switch_sites`: Core IR marks each such call, operation, loop or `start`
-    /// `uncounted`, so its check points, in its callees and in the tasks it starts included, do
-    /// not advance the count of the task's turn (`spec/27 §8` rule 5, #1708).
+    /// The sites of `switch_sites`, and the calls of `switch_calls` that instantiate a site
+    /// above `public`, that Core IR marks `uncounted`, so that their check points, in their
+    /// callees and in the tasks they start included, do not advance the count of the task's
+    /// turn ([`switch::close_uncounted`], `spec/27 §8` rule 5, #1708).
     pub(crate) uncounted: std::collections::BTreeSet<Span>,
     /// The calls of generic functions, with the labels their type arguments can carry, for
     /// the sites of `switch_sites` that only a type parameter decides (#1684).
