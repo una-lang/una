@@ -1129,6 +1129,80 @@ fn report_lists_handlers_with_uses_14() {
 }
 
 #[test]
+fn report_prints_uses_conditions_as_written_864() {
+    // #864 (`spec/13 §6`, ADR 0092): `authority` and `handler_authority` list each `uses` as
+    // written in the header, so an operation's condition `where C` is printed, with its label
+    // (ADR 0094 rule 1) before it, in the form `una contract` shows; an operation without
+    // either, and a header without conditions, print as before.
+    let root = scratch("report-conditions");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"cond\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/cond.una"),
+        "module cond\n\n--- A printer.\npub capability Printer\n  op print_label(sku: Text) -> Unit\n  op feed() -> Unit\n  op count() -> Int\n\n--- Prints a label unless the run is dry.\npub print_one(sku: Text, dry_run: Bool) -> Unit\n  uses @printer: Printer[print_label where not dry_run]\n=\n  if not dry_run\n    @printer.print_label(sku)\n\n--- Prints and feeds.\npub print_feed(sku: Text, dry_run: Bool, jam: Bool) -> Unit\n  uses @printer: Printer[print_label where not dry_run, feed, count gives internal where not jam]\n=\n  if not dry_run\n    @printer.print_label(sku)\n  @printer.feed()\n\n--- Feeds without a condition.\npub feed_once() -> Unit\n  uses @printer: Printer[feed]\n=\n  @printer.feed()\n\n--- A printer that forwards to another printer unless muted.\npub handler forward(muted: Bool) for Printer\n  uses @inner: Printer[print_label where not muted, feed, count gives internal]\n  op print_label(sku) =\n    if not muted\n      @inner.print_label(sku)\n  op feed() = @inner.feed()\n  op count() = 0\n\n--- A printer that forwards without conditions.\npub handler plain() for Printer\n  uses @inner: Printer[print_label, feed]\n  op print_label(sku) = @inner.print_label(sku)\n  op feed() = @inner.feed()\n  op count() = 0\n",
+    )
+    .unwrap();
+    let report = una_in(&root, &["report", "--json", "."]);
+    assert!(report.status.success(), "{}", stdout(&report));
+    let document: Value = serde_json::from_str(stdout(&report)).unwrap();
+    assert_eq!(
+        document["authority"],
+        serde_json::json!([
+            {"function": "cond.feed_once", "public": true, "uses": ["@printer: Printer[feed]"], "inferred": false},
+            {"function": "cond.print_feed", "public": true, "uses": ["@printer: Printer[print_label where not dry_run, feed, count gives internal where not jam]"], "inferred": false},
+            {"function": "cond.print_one", "public": true, "uses": ["@printer: Printer[print_label where not dry_run]"], "inferred": false}
+        ])
+    );
+    assert_eq!(
+        document["handler_authority"],
+        serde_json::json!([
+            {"handler": "cond.forward", "capability": "cond.Printer", "public": true, "uses": ["@inner: Printer[print_label where not muted, feed, count gives internal]"]},
+            {"handler": "cond.plain", "capability": "cond.Printer", "public": true, "uses": ["@inner: Printer[print_label, feed]"]}
+        ])
+    );
+    assert_eq!(document["schema"], "una.report/2");
+    let human = una_in(&root, &["report", "."]);
+    assert!(
+        stdout(&human).contains(
+            "authority:\n  cond.feed_once (pub): @printer: Printer[feed]\n  cond.print_feed (pub): @printer: Printer[print_label where not dry_run, feed, count gives internal where not jam]\n  cond.print_one (pub): @printer: Printer[print_label where not dry_run]\nhandler authority:\n  cond.forward for cond.Printer (pub): @inner: Printer[print_label where not muted, feed, count gives internal]\n  cond.plain for cond.Printer (pub): @inner: Printer[print_label, feed]\n"
+        ),
+        "{}",
+        stdout(&human)
+    );
+    // The same text as the `uses` line that `una contract` prints for each function.
+    for (function, entry) in [
+        (
+            "cond.print_one",
+            "@printer: Printer[print_label where not dry_run]",
+        ),
+        (
+            "cond.print_feed",
+            "@printer: Printer[print_label where not dry_run, feed, count gives internal where not jam]",
+        ),
+        ("cond.feed_once", "@printer: Printer[feed]"),
+    ] {
+        let contract = una_in(&root, &["contract", function]);
+        assert!(
+            stdout(&contract)
+                .lines()
+                .any(|line| line == format!("  uses {entry}")),
+            "{}",
+            stdout(&contract)
+        );
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn version_names_the_editions_and_the_pinned_z3() {
     // #305: `una --version`, with no commit hash, and its `una.version/1` document.
     let version = env!("CARGO_PKG_VERSION");
