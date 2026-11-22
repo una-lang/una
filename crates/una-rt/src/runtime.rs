@@ -4678,6 +4678,37 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run by `a_stop_that_finds_the_end_claimed_leaves_the_limit_in_place`, in a process of its own"]
+    fn a_stop_that_finds_the_end_claimed_scenario() {
+        // #2151: `abort_run` claims the end of the process before it lifts the allocator's
+        // limit. A stop that finds the end claimed by a sibling parks with the limit of the
+        // run still in place; a watcher waits for it to park, then reports the limit.
+        start(&strings(&["--max-memory", "64"]), SITE_META, || {
+            assert_ne!(crate::limit(), usize::MAX, "the run has no limit");
+            ENDING.store(true, Ordering::SeqCst);
+            std::thread::spawn(|| {
+                while PARKED.load(Ordering::SeqCst) == 0 {
+                    std::thread::yield_now();
+                }
+                let lifted = crate::limit() == usize::MAX;
+                eprintln!("{STEP} lifted {lifted}");
+                #[allow(clippy::exit)]
+                std::process::exit(0);
+            });
+            abort_at(0, Code::U6003, "a sibling stopped first".to_owned())
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_stop_that_finds_the_end_claimed_leaves_the_limit_in_place() {
+        let (code, stderr) = scenario("a_stop_that_finds_the_end_claimed_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert!(stderr.contains(&format!("{STEP} lifted false")), "{stderr}");
+        assert!(!stderr.contains("U6003"), "{stderr}");
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
     fn refused_steps_never_fail_the_steps_of_sibling_threads() {
         let (code, stderr) =

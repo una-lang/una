@@ -163,6 +163,12 @@ pub(crate) fn peak() -> usize {
     ALLOCATOR.peak()
 }
 
+/// The allocator's limit, in tests.
+#[cfg(test)]
+pub(crate) fn limit() -> usize {
+    LIMIT.read(|| cap().limit())
+}
+
 /// Sets the ceiling past which an allocation fails; `usize::MAX` lifts it. A ceiling below what
 /// is held already is refused, and the next check reports the run.
 pub(crate) fn ceiling(bytes: usize) {
@@ -215,17 +221,29 @@ mod tests {
         }
     }
 
+    /// Waits on its barrier when dropped, so that a thread stopped on that barrier is released
+    /// even when the test panics first, and the test fails instead of hanging.
+    struct Release<'a>(&'a Barrier);
+
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.wait();
+        }
+    }
+
     #[test]
     fn a_read_of_the_bytes_held_never_returns_a_count_torn_by_a_raise_of_the_limit() {
         // #2151, reproduced with no timing: the raise stops between its two writes until the
         // reads below are done. Read then, the allocator's own count is torn, close to
         // `usize::MAX`; read under the lock, it is retried until the raise is done, and exact.
+        // Everything is observed while the raise is stopped and asserted after it is released,
+        // so a broken lock fails the test rather than leaving the writer stopped.
         let (held, old, new) = (44 << 20, 4 << 30, usize::MAX);
         let pair = TwoWrites::new(old, held);
         let lock = LimitLock::new();
         let (inside, finish) = (Barrier::new(2), Barrier::new(2));
-        let read_done = AtomicBool::new(false);
-        std::thread::scope(|scope| {
+        let (refused, done) = (AtomicUsize::new(0), AtomicBool::new(false));
+        let (torn, try_read, refused_before, done_before, read) = std::thread::scope(|scope| {
             scope.spawn(|| {
                 lock.write(|| {
                     pair.raise(new, || {
@@ -235,22 +253,40 @@ mod tests {
                 });
             });
             inside.wait();
+            let release = Release(&finish);
             // The defect: between the two writes the count is the new limit less the old
             // headroom.
             let torn = pair.allocated();
-            assert_eq!(torn, new - (old - held));
-            assert!(torn > usize::MAX / 2);
-            // Under the lock no read completes while the raise is in progress.
-            assert_eq!(lock.try_read(|| pair.allocated()), None);
+            let try_read = lock.try_read(|| pair.allocated());
+            // A reader under the lock: it counts the attempts refused, and ends only with a
+            // value. While the raise is stopped it can only be refused, so one refusal or its
+            // end is waited for, and which came first is kept.
             let reader = scope.spawn(|| {
-                let value = lock.read(|| pair.allocated());
-                read_done.store(true, Ordering::SeqCst);
+                let value = loop {
+                    if let Some(value) = lock.try_read(|| pair.allocated()) {
+                        break value;
+                    }
+                    refused.fetch_add(1, Ordering::SeqCst);
+                    std::hint::spin_loop();
+                };
+                done.store(true, Ordering::SeqCst);
                 value
             });
-            assert!(!read_done.load(Ordering::SeqCst));
-            finish.wait();
-            assert_eq!(reader.join().unwrap(), held);
+            while refused.load(Ordering::SeqCst) == 0 && !done.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            let (refused_before, done_before) =
+                (refused.load(Ordering::SeqCst), done.load(Ordering::SeqCst));
+            drop(release);
+            let read = reader.join().unwrap();
+            (torn, try_read, refused_before, done_before, read)
         });
+        assert_eq!(torn, new - (old - held));
+        assert!(torn > usize::MAX / 2);
+        assert_eq!(try_read, None, "a read completed during the raise");
+        assert!(!done_before, "a reader ended during the raise");
+        assert!(refused_before >= 1);
+        assert_eq!(read, held);
         assert_eq!(lock.read(|| pair.allocated()), held);
     }
 
