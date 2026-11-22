@@ -168,6 +168,16 @@ fn notes(diagnostic: &Diagnostic) -> Vec<String> {
             None => notes.push(format!("counterexample: {}", bindings.join(", "))),
         }
     }
+    if let Some(limit) = &diagnostic.limit {
+        let seen = limit.seen.map_or_else(
+            || "a value that does not fit in 64 bits".to_owned(),
+            |seen| seen.to_string(),
+        );
+        notes.push(format!(
+            "limit {} is {}, and {seen} was seen",
+            limit.name, limit.bound
+        ));
+    }
     notes.push(format!(
         "run `{}` for an explanation",
         diagnostic.explain_command()

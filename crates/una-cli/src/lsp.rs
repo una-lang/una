@@ -88,16 +88,30 @@ impl Workspace for CliWorkspace {
 }
 
 /// Serves the language server on the process's stdin and on `stdout`, until the client
-/// sends `exit` or closes the input. A frame the server refuses is reported with one line on
-/// `stderr` (#2100); when the input can then be read no further, the error is returned, and
-/// the command exits with code 2.
+/// sends `exit` or closes the input. A frame the server refuses is a U7016 diagnostic on
+/// `stderr`, one line of text, or with `json` one `una.diagnostic/1` document a line, since
+/// stdout carries the protocol (#2100, #2156, `spec/13 §5`). A session that reported one,
+/// whether it dropped the frame and went on or read no further, exits with code 1, as for
+/// any diagnostic with a code (ADR 0036); an error of reading the input or of writing the
+/// output is returned, exit code 2.
 pub(crate) fn serve(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
+    json: bool,
     solving: verification::Solving,
 ) -> std::io::Result<ExitStatus> {
     let input = Box::new(BufReader::new(std::io::stdin()));
-    una_lsp::serve(input, stdout, stderr, CliWorkspace { solving }).map(|()| ExitStatus::Success)
+    let form = if json {
+        una_lsp::LogForm::Json
+    } else {
+        una_lsp::LogForm::Text
+    };
+    let ended = una_lsp::serve(input, stdout, stderr, form, CliWorkspace { solving })?;
+    Ok(if ended.reported() {
+        ExitStatus::Errors
+    } else {
+        ExitStatus::Success
+    })
 }
 
 /// What the editor asks about, from a check: definitions, hovers, the outline and the proof

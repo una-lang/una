@@ -154,3 +154,36 @@ fn color_is_opt_in() {
     assert!(!plain.contains('\u{1b}'));
     assert!(colored.contains('\u{1b}'));
 }
+
+#[test]
+fn a_limit_is_a_note_of_the_plain_text() {
+    // #2156: the bound a refused input passed, in the human output as in the JSON form.
+    let mut diagnostic = una_diag::Diagnostic::error(
+        una_diag::Code::U7016,
+        "una lsp dropped a message of the editor: a message nested deeper than 127 arrays and objects (MAX_DEPTH)",
+        location((1, 1), (1, 1)),
+    );
+    diagnostic.primary.file = String::new();
+    diagnostic.limit = Some(una_diag::Limit {
+        name: "MAX_DEPTH".to_owned(),
+        bound: 127,
+        seen: Some(128),
+    });
+    let rendered = render_human(std::slice::from_ref(&diagnostic), &BTreeMap::new(), false);
+    assert!(
+        rendered.contains("  note: limit MAX_DEPTH is 127, and 128 was seen\n"),
+        "{rendered}"
+    );
+    diagnostic.limit = Some(una_diag::Limit {
+        name: "MAX_CONTENT_LENGTH".to_owned(),
+        bound: 67_108_864,
+        seen: None,
+    });
+    let rendered = render_human(&[diagnostic], &BTreeMap::new(), false);
+    assert!(
+        rendered.contains(
+            "  note: limit MAX_CONTENT_LENGTH is 67108864, and a value that does not fit in 64 bits was seen\n"
+        ),
+        "{rendered}"
+    );
+}

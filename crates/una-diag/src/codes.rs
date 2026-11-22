@@ -315,13 +315,16 @@ pub enum Code {
     /// The executable cannot be laid out: a branch beyond its target's range, or a section
     /// larger than its format allows (ADR 0124).
     U7015,
+    /// A message of the editor that `una lsp` refuses: past a bound of its transport, not
+    /// framed or not JSON (#2156).
+    U7016,
     /// Internal compiler error (always a bug).
     U8001,
 }
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 121] = [
+    pub const ALL: [Code; 122] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -442,6 +445,7 @@ impl Code {
         Code::U7013,
         Code::U7014,
         Code::U7015,
+        Code::U7016,
         Code::U8001,
     ];
 
@@ -1061,6 +1065,11 @@ impl Code {
                 code: "U7015",
                 domain: Domain::Project,
                 meaning: "The executable cannot be laid out: a branch beyond its target's range, or a section larger than its format allows",
+            },
+            Code::U7016 => &Entry {
+                code: "U7016",
+                domain: Domain::Project,
+                meaning: "A message of the editor that `una lsp` refuses: past a bound of its transport, not framed or not JSON",
             },
             Code::U8001 => &Entry {
                 code: "U8001",

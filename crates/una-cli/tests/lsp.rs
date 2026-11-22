@@ -861,12 +861,14 @@ fn tier_0_hints_name_each_kind_of_effect_condition_site() {
     session.finish();
 }
 
-/// Runs `una lsp` on `input` to its end: its exit code, the messages it sent and its stderr.
-fn served(input: &[u8]) -> (Option<i32>, Vec<Value>, String) {
+/// Runs `una lsp` with `flags` on `input` to its end: its exit code, the messages it sent and
+/// its stderr.
+fn served(flags: &[&str], input: &[u8]) -> (Option<i32>, Vec<Value>, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env_remove("UNA_PROOF_KEY")
         .env_remove("UNA_SOLVER_STAND_IN")
+        .args(flags)
         .arg("lsp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -893,9 +895,11 @@ fn served(input: &[u8]) -> (Option<i32>, Vec<Value>, String) {
     )
 }
 
-/// A refused frame is never silent (#2100): one line on stderr and a `window/showMessage`
-/// name the limit. A frame past a bound of its JSON is dropped and the session goes on; a
-/// header past a bound ends it with exit code 2.
+/// A refused frame is never silent (#2100, #2156): a U7016 diagnostic on stderr, one line of
+/// text or with `--json` one `una.diagnostic/1` document, and a `window/showMessage` with the
+/// same code and text. A frame past a bound of its JSON is dropped and the session goes on;
+/// a header past a bound or a body that is not JSON ends it. Either way the session exits
+/// with code 1, and a session without a refusal with 0 (`spec/13 §5`).
 #[test]
 fn a_refused_frame_is_reported_on_stderr_and_to_the_editor() {
     let framed = |body: &str| format!("Content-Length: {}\r\n\r\n{body}", body.len());
@@ -903,28 +907,114 @@ fn a_refused_frame_is_reported_on_stderr_and_to_the_editor() {
         json!({
             "jsonrpc": "2.0",
             "method": "window/showMessage",
-            "params": { "type": 1, "message": text },
+            "params": { "type": 1, "message": format!("error[U7016]: {text}") },
         })
     };
+    let document = |message: &str, limit: Value| {
+        let mut document = json!({
+            "schema": "una.diagnostic/1",
+            "code": "U7016",
+            "severity": "error",
+            "domain": "project",
+            "message": message,
+            "primary": { "file": "", "start": { "line": 1, "col": 1 }, "end": { "line": 1, "col": 1 } },
+            "related": [],
+            "repairs": [],
+            "explain": "una explain U7016",
+        });
+        if !limit.is_null() {
+            document["limit"] = limit;
+        }
+        document
+    };
+    let documents = |stderr: &str| -> Vec<Value> {
+        stderr
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
     let too_many = framed(&format!("[{}0]", "0,".repeat(una_lsp::MAX_VALUES)));
+    let too_deep = framed(&"[".repeat(una_lsp::MAX_DEPTH + 1));
     let shutdown = framed(r#"{"jsonrpc":"2.0","id":7,"method":"shutdown"}"#);
-    let answered = json!({ "jsonrpc": "2.0", "id": 7, "result": null });
-    let dropped = "una lsp: dropped a message of the editor: a message with more than 131072 values (MAX_VALUES)";
-
-    // Dropped, then answered, then a clean exit.
     let exit = framed(r#"{"jsonrpc":"2.0","method":"exit"}"#);
-    let (code, sent, stderr) = served(format!("{too_many}{shutdown}{exit}").as_bytes());
-    assert_eq!(sent, vec![shown(dropped), answered.clone()]);
-    assert_eq!(stderr, format!("{dropped}\n"));
-    assert_eq!(code, Some(0));
+    let answered = json!({ "jsonrpc": "2.0", "id": 7, "result": null });
+    let values = "una lsp dropped a message of the editor: a message with more than 131072 values (MAX_VALUES)";
+    let values_limit = json!({ "name": "MAX_VALUES", "bound": 131_072, "seen": 131_073 });
+    let depth = "una lsp dropped a message of the editor: a message nested deeper than 127 arrays and objects (MAX_DEPTH)";
+    let depth_limit = json!({ "name": "MAX_DEPTH", "bound": 127, "seen": 128 });
 
-    // A header line past its bound: the input is read no further.
+    // Dropped, then answered, then `exit`: the session went on, and exits with 1.
+    for (frame, message, limit) in [
+        (&too_many, values, &values_limit),
+        (&too_deep, depth, &depth_limit),
+    ] {
+        let input = format!("{frame}{shutdown}{exit}");
+        let (code, sent, stderr) = served(&[], input.as_bytes());
+        assert_eq!(sent, vec![shown(message), answered.clone()]);
+        assert_eq!(stderr, format!("error[U7016]: {message}\n"));
+        assert_eq!(code, Some(1));
+        let (code, sent, stderr) = served(&["--json"], input.as_bytes());
+        assert_eq!(sent, vec![shown(message), answered.clone()]);
+        assert_eq!(documents(&stderr), vec![document(message, limit.clone())]);
+        assert_eq!(code, Some(1));
+    }
+
+    // No refusal: exit code 0 and nothing on stderr, in both forms.
+    for flags in [&[][..], &["--json"][..]] {
+        let (code, sent, stderr) = served(flags, format!("{shutdown}{exit}").as_bytes());
+        assert_eq!(sent, vec![answered.clone()]);
+        assert_eq!(stderr, "");
+        assert_eq!(code, Some(0));
+    }
+
+    // A header line past its bound, and a body that is not JSON: the input is read no
+    // further, and the request after it is not answered.
     let long_line = format!("X-Pad: {}\r\n", "a".repeat(una_lsp::MAX_HEADER_LINE));
-    let stopped =
-        "una lsp: stopped reading the editor's messages: a header line longer than 4096 bytes";
-    let (code, sent, stderr) =
-        served(format!("{too_many}{shutdown}{long_line}{shutdown}").as_bytes());
-    assert_eq!(sent, vec![shown(dropped), answered, shown(stopped)]);
-    assert_eq!(stderr, format!("{dropped}\n{stopped}\n"));
-    assert_eq!(code, Some(2));
+    let header = "una lsp stopped reading the editor's messages: a header line longer than 4096 bytes (MAX_HEADER_LINE)";
+    let header_limit = json!({ "name": "MAX_HEADER_LINE", "bound": 4096, "seen": 4097 });
+    let not_json = "una lsp stopped reading the editor's messages: a body that is not JSON: key must be a string at line 1 column 2";
+    for (refused, message, limit) in [
+        (long_line, header, header_limit),
+        (framed("{not json}"), not_json, Value::Null),
+    ] {
+        let input = format!("{too_many}{shutdown}{refused}{shutdown}");
+        let (code, sent, stderr) = served(&[], input.as_bytes());
+        assert_eq!(sent, vec![shown(values), answered.clone(), shown(message)]);
+        assert_eq!(
+            stderr,
+            format!("error[U7016]: {values}\nerror[U7016]: {message}\n")
+        );
+        assert_eq!(code, Some(1));
+        let (code, sent, stderr) = served(&["--json"], input.as_bytes());
+        assert_eq!(sent, vec![shown(values), answered.clone(), shown(message)]);
+        assert_eq!(
+            documents(&stderr),
+            vec![
+                document(values, values_limit.clone()),
+                document(message, limit)
+            ]
+        );
+        assert_eq!(code, Some(1));
+    }
+}
+
+/// `una explain U7016` prints its page, and its JSON form names the code's domain (#2156).
+#[test]
+fn the_refusal_code_is_explained() {
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "explain", "U7016"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let explained: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(explained["schema"], "una.explain/1");
+    assert_eq!(explained["code"], "U7016");
+    assert_eq!(explained["domain"], "project");
+    assert!(
+        explained["text"]
+            .as_str()
+            .unwrap()
+            .contains("`window/showMessage`"),
+        "{explained}"
+    );
 }

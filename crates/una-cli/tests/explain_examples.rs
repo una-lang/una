@@ -235,7 +235,8 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     // the host's random source causes (ADR 0119 rule 9), and U7013, which `una ita` reports
     // when it resolves (ADR 0122 rule 25) and a load reports only for a registry's signed
     // documents, which an example cannot carry (its amendment of 2026-11-03), and U7015, which
-    // only the linker of `una build` reports for an executable too large to lay out (ADR 0124).
+    // only the linker of `una build` reports for an executable too large to lay out (ADR 0124),
+    // and U7016, which only `una lsp` reports, for the bytes an editor sends (#2156).
     // U7014's
     // examples are audited against a stated registry state. U2039 and U3032 belong to the
     // `simd required` clause of ADR 0120 rule 58, which this release does not read yet: remove
@@ -249,6 +250,7 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
             || code == Code::U6009
             || code == Code::U7013
             || code == Code::U7015
+            || code == Code::U7016
         {
             assert!(
                 !una_explain::text(code).contains("Stub explanation."),

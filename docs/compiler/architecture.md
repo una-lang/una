@@ -120,14 +120,16 @@ The JSON text of a body has two more bounds (#2100), since the values a parser m
 
 The strings and the values share the 64 MiB of the body, so no frame reaches both of their rows at once. A document sent in `didOpen` or `didChange` is one long string: it costs its own size once parsed. The numbers were measured with `serde_json` 1.0.151 and its default features; a test fails if a `Value` grows past 32 bytes.
 
-A refused frame is never silent (#2100). Every refusal writes one line to stderr, `una lsp: ...`, which names the limit, and sends the same text to the editor as a `window/showMessage` notification of type error, which is valid in any state of the protocol and needs no request id (the id of a refused frame is not known, since the frame was not parsed). What follows depends on whether the input is still framed:
+A refused frame is never silent (#2100). Every refusal is a diagnostic, U7016 (#2156, `spec/13 §5`), at the empty `file` at 1:1. It goes to stderr, one line each: `error[U7016]: <message>`, or with `--json` one `una.diagnostic/1` document whose `limit` key holds the name of the bound passed, its value and the value seen (`spec/13 §1`). The server sends the same code and text to the editor as a `window/showMessage` notification of type error, which is valid in any state of the protocol and needs no request id (the id of a refused frame is not known, since the frame was not parsed). The value seen is the first count past the bound for a header line, the header lines, the values and the depth, since the transport reads no further, and the length stated for a `Content-Length` (`null` when it does not fit in 64 bits). What follows depends on whether the input is still framed:
 
 | Refused | The input | What the server does |
 |---|---|---|
-| A body past `MAX_DEPTH` or `MAX_VALUES` | Still framed: the body was read whole | Drops the frame and goes on with the next one. A request in a dropped frame gets no response |
-| A header line past `MAX_HEADER_LINE`, a header past `MAX_HEADER_LINES`, a header line that is not UTF-8, a `Content-Length` that is missing, not a number or past `MAX_CONTENT_LENGTH` | Not framed: the body was not read, so where the next frame starts is not known | Cancels the checks in flight, reads no further and exits with code 2 |
-| A body that is not JSON | Read whole, but the peer does not speak the protocol, and a wrong `Content-Length` is the usual cause | The same: exit code 2 |
-| A body cut short by the end of the input, or an error reading the input | Ended | The same: exit code 2; the notification is written whether or not the editor still reads it |
+| A body past `MAX_DEPTH` or `MAX_VALUES` | Still framed: the body was read whole | Drops the frame and goes on with the next one. A request in a dropped frame gets no response. The session exits with code 1 when it ends |
+| A header line past `MAX_HEADER_LINE`, a header past `MAX_HEADER_LINES`, a header line that is not UTF-8, a `Content-Length` that is missing, not a number or past `MAX_CONTENT_LENGTH` | Not framed: the body was not read, so where the next frame starts is not known | Cancels the checks in flight, reads no further and exits with code 1 |
+| A body that is not JSON | Read whole, but the peer does not speak the protocol, and a wrong `Content-Length` is the usual cause | The same: exit code 1 |
+| A body cut short by the end of the input | Ended | The same: exit code 1; the notification is written whether or not the editor still reads it |
+
+An error reading the input is no refusal of the editor's bytes: it is one line of text on stderr and in the notification, without a code, and the command exits with code 2, as for a failure to write the output. Exit code 1 follows ADR 0036: every diagnostic with a code exits with 1.
 
 The server never looks for the next header in bytes it refused, so it cannot read a body as headers. The end of the input between two frames is still the normal end of a session, with exit code 0 and no report.
 

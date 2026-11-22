@@ -11,6 +11,7 @@
 use std::io::{self, BufRead, Read, Write};
 
 use serde_json::Value;
+use una_diag::Limit;
 
 /// The longest header line, in bytes, its line ending (`\r\n` or `\n`) not counted. LSP
 /// defines two headers, `Content-Length` and `Content-Type`, whose lines are under 100
@@ -56,37 +57,93 @@ const VALUE_COST: usize = 512;
 /// objects made about 100 bytes of values for each byte read.
 pub const MAX_VALUES: usize = MAX_CONTENT_LENGTH / VALUE_COST;
 
+/// Why the transport refused a frame: what it says, and the bound passed when there is one
+/// (#2156).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    /// What was refused, naming the bound, for example `a frame with more than 16 header
+    /// lines`.
+    pub(crate) reason: String,
+    /// The bound passed, its value and the value seen; `None` for a refusal of the form of
+    /// the frame, which passes no bound.
+    pub(crate) limit: Option<Limit>,
+    /// The kind of the error that [`read_message`] makes of the refusal.
+    kind: io::ErrorKind,
+}
+
+impl Refusal {
+    /// A refusal of the form of a frame: no bound was passed.
+    fn form(reason: String) -> Refusal {
+        Refusal {
+            reason,
+            limit: None,
+            kind: io::ErrorKind::InvalidData,
+        }
+    }
+
+    /// A refusal of the bound `name`, whose value is `bound`, by an input that showed `seen`.
+    fn over(name: &str, bound: usize, seen: Option<u64>, reason: String) -> Refusal {
+        Refusal {
+            reason,
+            limit: Some(Limit {
+                name: name.to_owned(),
+                bound: u64::try_from(bound).unwrap_or(u64::MAX),
+                seen,
+            }),
+            kind: io::ErrorKind::InvalidData,
+        }
+    }
+
+    /// The error of [`read_message`] for this refusal.
+    fn into_error(self) -> io::Error {
+        io::Error::new(self.kind, self.reason)
+    }
+}
+
+/// The first count past `bound`, at which the transport stops reading: the value seen.
+fn past(bound: usize) -> Option<u64> {
+    u64::try_from(bound)
+        .ok()
+        .and_then(|bound| bound.checked_add(1))
+}
+
 /// Why [`read_frame`] returned no message.
 #[derive(Debug)]
 pub(crate) enum Refused {
     /// The frame is past [`MAX_DEPTH`] or [`MAX_VALUES`]. Its body was read whole, so the
     /// next frame starts where it should and the input can still be read.
-    Frame(String),
-    /// The header or the body could not be read, or the body is not JSON: where the next
-    /// frame starts is not known, and the input is read no further.
-    Stream(io::Error),
+    Frame(Refusal),
+    /// The header or the body is past a bound or malformed, the body is not JSON, or it is
+    /// cut short: where the next frame starts is not known, and the input is read no
+    /// further.
+    Stream(Refusal),
+    /// The input could not be read: an error of the input itself, not of what it holds.
+    Input(io::Error),
 }
 
 /// How much of a body is reserved before its bytes arrive: a frame that announces a large
 /// body but sends less makes the server hold only what it sent.
 const INITIAL_BODY_CAPACITY: usize = 64 * 1024;
 
-fn invalid(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
 /// Reads one header line without its line ending: `None` at the end of the input before any
 /// byte. A line longer than [`MAX_HEADER_LINE`] is refused once it passes the bound, so no
 /// more than `MAX_HEADER_LINE + 1` bytes of it are ever held.
-fn read_header_line(input: &mut dyn BufRead) -> io::Result<Option<String>> {
-    let too_long = || invalid(format!("a header line longer than {MAX_HEADER_LINE} bytes"));
+fn read_header_line(input: &mut dyn BufRead) -> Result<Option<String>, Refused> {
+    let too_long = || {
+        Refused::Stream(Refusal::over(
+            "MAX_HEADER_LINE",
+            MAX_HEADER_LINE,
+            past(MAX_HEADER_LINE),
+            format!("a header line longer than {MAX_HEADER_LINE} bytes (MAX_HEADER_LINE)"),
+        ))
+    };
     let mut line = Vec::new();
     let mut read_any = false;
     loop {
         let available = match input.fill_buf() {
             Ok(available) => available,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+            Err(error) => return Err(Refused::Input(error)),
         };
         if available.is_empty() {
             if !read_any {
@@ -129,22 +186,28 @@ fn read_header_line(input: &mut dyn BufRead) -> io::Result<Option<String>> {
     }
     String::from_utf8(line)
         .map(Some)
-        .map_err(|_| invalid("a header line that is not UTF-8".to_owned()))
+        .map_err(|_| Refused::Stream(Refusal::form("a header line that is not UTF-8".to_owned())))
 }
 
 /// The length a `Content-Length` value states, or why it is refused.
-fn content_length(value: &str) -> io::Result<usize> {
+fn content_length(value: &str) -> Result<usize, Refusal> {
     let value = value.trim();
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(invalid(format!(
+        return Err(Refusal::form(format!(
             "a Content-Length that is not a number: `{value}`"
         )));
     }
     match value.parse::<usize>() {
         Ok(length) if length <= MAX_CONTENT_LENGTH => Ok(length),
-        _ => Err(invalid(format!(
-            "a Content-Length of {value} bytes, above the limit of {MAX_CONTENT_LENGTH}"
-        ))),
+        // The value seen is the length stated, or none when it does not fit in 64 bits.
+        _ => Err(Refusal::over(
+            "MAX_CONTENT_LENGTH",
+            MAX_CONTENT_LENGTH,
+            value.parse::<u64>().ok(),
+            format!(
+                "a Content-Length of {value} bytes, above the limit of {MAX_CONTENT_LENGTH} (MAX_CONTENT_LENGTH)"
+            ),
+        )),
     }
 }
 
@@ -156,8 +219,16 @@ fn content_length(value: &str) -> io::Result<usize> {
 /// the values the parser makes before it stops: the parser makes an element or a member only
 /// after the `[` or `{` that opens its container or after a `,`, and both readers agree on
 /// where a string starts and ends up to the parser's first error.
-fn check_shape(body: &[u8], max_depth: usize, max_values: usize) -> Result<usize, String> {
-    let too_many = || format!("a message with more than {max_values} values (MAX_VALUES)");
+fn check_shape(body: &[u8], max_depth: usize, max_values: usize) -> Result<usize, Refusal> {
+    // The count stops at the first value past the bound, and the depth at the first level.
+    let too_many = || {
+        Refusal::over(
+            "MAX_VALUES",
+            max_values,
+            past(max_values),
+            format!("a message with more than {max_values} values (MAX_VALUES)"),
+        )
+    };
     let mut depth: usize = 0;
     let mut values: usize = 1;
     // Whether the last token opened a container: its first element is not counted yet.
@@ -193,8 +264,13 @@ fn check_shape(body: &[u8], max_depth: usize, max_values: usize) -> Result<usize
             b'[' | b'{' => {
                 depth += 1;
                 if depth > max_depth {
-                    return Err(format!(
-                        "a message nested deeper than {max_depth} arrays and objects (MAX_DEPTH)"
+                    return Err(Refusal::over(
+                        "MAX_DEPTH",
+                        max_depth,
+                        past(max_depth),
+                        format!(
+                            "a message nested deeper than {max_depth} arrays and objects (MAX_DEPTH)"
+                        ),
                     ));
                 }
                 opened = true;
@@ -216,24 +292,24 @@ fn check_shape(body: &[u8], max_depth: usize, max_values: usize) -> Result<usize
 /// value bound before the parser makes any value.
 pub fn read_message(input: &mut dyn BufRead) -> io::Result<Option<Value>> {
     read_frame(input).map_err(|refused| match refused {
-        Refused::Frame(message) => invalid(message),
-        Refused::Stream(error) => error,
+        Refused::Frame(refusal) | Refused::Stream(refusal) => refusal.into_error(),
+        Refused::Input(error) => error,
     })
 }
 
 /// [`read_message`], telling a refusal that leaves the input readable from one that does not.
 pub(crate) fn read_frame(input: &mut dyn BufRead) -> Result<Option<Value>, Refused> {
-    let Some(body) = read_body(input).map_err(Refused::Stream)? else {
+    let Some(body) = read_body(input)? else {
         return Ok(None);
     };
     check_shape(&body, MAX_DEPTH, MAX_VALUES).map_err(Refused::Frame)?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(|error| Refused::Stream(invalid(format!("a body that is not JSON: {error}"))))
+    serde_json::from_slice(&body).map(Some).map_err(|error| {
+        Refused::Stream(Refusal::form(format!("a body that is not JSON: {error}")))
+    })
 }
 
 /// Reads the header and the body of one frame: `None` at the end of the input.
-fn read_body(input: &mut dyn BufRead) -> io::Result<Option<Vec<u8>>> {
+fn read_body(input: &mut dyn BufRead) -> Result<Option<Vec<u8>>, Refused> {
     let mut length: Option<usize> = None;
     let mut lines = 0;
     loop {
@@ -245,29 +321,41 @@ fn read_body(input: &mut dyn BufRead) -> io::Result<Option<Vec<u8>>> {
         }
         lines += 1;
         if lines > MAX_HEADER_LINES {
-            return Err(invalid(format!(
-                "a frame with more than {MAX_HEADER_LINES} header lines"
+            return Err(Refused::Stream(Refusal::over(
+                "MAX_HEADER_LINES",
+                MAX_HEADER_LINES,
+                past(MAX_HEADER_LINES),
+                format!(
+                    "a frame with more than {MAX_HEADER_LINES} header lines (MAX_HEADER_LINES)"
+                ),
             )));
         }
         if let Some((name, value)) = line.split_once(':')
             && name.trim().eq_ignore_ascii_case("content-length")
         {
-            length = Some(content_length(value)?);
+            length = Some(content_length(value).map_err(Refused::Stream)?);
         }
     }
     let Some(length) = length else {
-        return Err(invalid(
+        return Err(Refused::Stream(Refusal::form(
             "a message without a Content-Length header".to_owned(),
-        ));
+        )));
     };
     let mut body = Vec::with_capacity(length.min(INITIAL_BODY_CAPACITY));
     let limit = u64::try_from(length).unwrap_or(u64::MAX);
-    input.take(limit).read_to_end(&mut body)?;
+    input
+        .take(limit)
+        .read_to_end(&mut body)
+        .map_err(Refused::Input)?;
     if body.len() < length {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the input ended inside a message's body",
-        ));
+        return Err(Refused::Stream(Refusal {
+            reason: format!(
+                "the input ended inside a message's body, after {} of its {length} bytes",
+                body.len()
+            ),
+            limit: None,
+            kind: io::ErrorKind::UnexpectedEof,
+        }));
     }
     Ok(Some(body))
 }
@@ -513,7 +601,9 @@ mod tests {
         assert!(body.len() <= MAX_CONTENT_LENGTH && body.len() + unit.len() > MAX_CONTENT_LENGTH);
         let mut input = Cursor::new(framed(&body));
         match read_frame(&mut input) {
-            Err(Refused::Frame(message)) => assert!(message.contains("MAX_VALUES"), "{message}"),
+            Err(Refused::Frame(refusal)) => {
+                assert!(refusal.reason.contains("MAX_VALUES"), "{refusal:?}");
+            }
             other => panic!("not refused as a frame: {:?}", other.map(|_| ())),
         }
         // The whole body was read: the input stands at the next frame.
@@ -569,6 +659,114 @@ mod tests {
         }
         let not_json = read_message(&mut Cursor::new(framed("{not json}")));
         assert!(refused(not_json).contains("a body that is not JSON"));
+    }
+
+    /// The refusal of `bytes`, and whether the input can still be read after it.
+    fn refusal_of(bytes: Vec<u8>) -> (Refusal, bool) {
+        match read_frame(&mut Cursor::new(bytes)) {
+            Err(Refused::Frame(refusal)) => (refusal, true),
+            Err(Refused::Stream(refusal)) => (refusal, false),
+            Err(Refused::Input(error)) => panic!("an error of the input: {error}"),
+            Ok(value) => panic!("accepted: {value:?}"),
+        }
+    }
+
+    fn bound(name: &str, bound: usize, seen: Option<u64>) -> Option<Limit> {
+        Some(Limit {
+            name: name.to_owned(),
+            bound: bound as u64,
+            seen,
+        })
+    }
+
+    #[test]
+    fn each_refusal_of_a_bound_names_it_with_the_value_seen() {
+        let pad = |len: usize| format!("X-Pad: {}", "a".repeat(len - "X-Pad: ".len()));
+        let lines = |count: usize| "X-Extra: 1\r\n".repeat(count);
+        let cases = [
+            (
+                frame(&format!("{}\r\n", pad(MAX_HEADER_LINE + 1)), "{}"),
+                bound("MAX_HEADER_LINE", MAX_HEADER_LINE, Some(4097)),
+                false,
+            ),
+            // A line far past the bound is seen at the first byte past it: no more is read.
+            (
+                frame(&format!("{}\r\n", pad(10 * MAX_HEADER_LINE)), "{}"),
+                bound("MAX_HEADER_LINE", MAX_HEADER_LINE, Some(4097)),
+                false,
+            ),
+            (
+                frame(&lines(MAX_HEADER_LINES + 1), "{}"),
+                bound("MAX_HEADER_LINES", MAX_HEADER_LINES, Some(17)),
+                false,
+            ),
+            (
+                frame(
+                    &format!("Content-Length: {}\r\n", MAX_CONTENT_LENGTH + 1),
+                    "{}",
+                ),
+                bound("MAX_CONTENT_LENGTH", MAX_CONTENT_LENGTH, Some(67_108_865)),
+                false,
+            ),
+            (
+                frame(&format!("Content-Length: {}\r\n", u64::MAX), "{}"),
+                bound("MAX_CONTENT_LENGTH", MAX_CONTENT_LENGTH, Some(u64::MAX)),
+                false,
+            ),
+            // A length that does not fit in 64 bits has no value seen.
+            (
+                frame("Content-Length: 18446744073709551616\r\n", "{}"),
+                bound("MAX_CONTENT_LENGTH", MAX_CONTENT_LENGTH, None),
+                false,
+            ),
+            (
+                framed(&format!("[{}0]", "0,".repeat(MAX_VALUES))),
+                bound("MAX_VALUES", MAX_VALUES, Some(131_073)),
+                true,
+            ),
+            // The count stops at the first value past the bound, however many follow.
+            (
+                framed(&format!("[{}0]", "0,".repeat(2 * MAX_VALUES))),
+                bound("MAX_VALUES", MAX_VALUES, Some(131_073)),
+                true,
+            ),
+            (
+                framed(&"[".repeat(MAX_DEPTH + 1)),
+                bound("MAX_DEPTH", MAX_DEPTH, Some(128)),
+                true,
+            ),
+            (
+                framed(&"{\"\":".repeat(3 * MAX_DEPTH)),
+                bound("MAX_DEPTH", MAX_DEPTH, Some(128)),
+                true,
+            ),
+        ];
+        for (bytes, limit, framed_still) in cases {
+            let (refusal, readable) = refusal_of(bytes);
+            assert_eq!(refusal.limit, limit, "{}", refusal.reason);
+            assert_eq!(readable, framed_still, "{}", refusal.reason);
+            let name = limit.map(|limit| limit.name).unwrap_or_default();
+            assert!(
+                refusal.reason.contains(&format!("({name})")),
+                "{}",
+                refusal.reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_of_the_form_of_a_frame_names_no_bound() {
+        for bytes in [
+            framed("{not json}"),
+            frame("Content-Type: x\r\n", "{}"),
+            frame("Content-Length: two\r\n", "{}"),
+            [b"X-Name: \xff\r\n".as_slice(), &framed("{}")].concat(),
+            frame("Content-Length: 9\r\n", "{}"),
+        ] {
+            let (refusal, readable) = refusal_of(bytes);
+            assert_eq!(refusal.limit, None, "{}", refusal.reason);
+            assert!(!readable, "{}", refusal.reason);
+        }
     }
 
     #[test]
