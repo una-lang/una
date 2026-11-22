@@ -3622,9 +3622,11 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
         end_serving(std::time::Duration::ZERO, true);
     }
     crate::serve::answer_all_left();
-    crate::ceiling(usize::MAX);
-    // One stop ends the process: a stop on another thread may have claimed it (ADR 0113).
+    // One stop ends the process: a stop on another thread may have claimed it (ADR 0113). The
+    // end is claimed before the allocator's limit is lifted, so that the stop that lifts it is
+    // the one that reports (#2151); a sibling that stops afterwards parks.
     end_once();
+    crate::ceiling(usize::MAX);
     let _ = io::stdout().flush();
     let diagnostic = Diagnostic::error(code, message, location);
     let written = write!(
@@ -4553,13 +4555,11 @@ mod tests {
         // seen by a sibling can fail a step here. No timing is assumed: every thread makes a
         // fixed number of steps, and the refused ones go on until the last fitting one is done.
         //
-        // The scenario runs in a process of its own. Every step reads `held()`, and beside
-        // the other tests of this binary that reading can be torn: a test that runs a program
-        // lifts the allocator's limit when its run ends, the allocator writes its limit before
-        // its count of the bytes left, and between the two writes `held()` reads close to
-        // `usize::MAX`, past any ceiling. A fitting step that read it then was refused, about
-        // four in 200,000, when `cargo test` ran the tests as threads of one process. Here no
-        // other run changes the limit.
+        // The scenario runs in a process of its own, where no other run changes the
+        // allocator's limit. Beside the other tests of this binary, `held()` was read torn
+        // while a run that ended lifted the limit, and a fitting step was refused, about four
+        // in 200,000: since #2151 that read is never torn
+        // (`a_step_that_fits_is_never_refused_while_the_limit_changes`).
         let ceiling = usize::MAX / 4;
         let rounds: usize = 50_000;
         let (refusing, fitting) = (2, 4);
@@ -4614,6 +4614,98 @@ mod tests {
             assert_eq!(accepted, 0, "a step past the ceiling was accepted");
         }
         eprintln!("{STEP}");
+    }
+
+    #[test]
+    #[ignore = "run by `a_step_that_fits_is_never_refused_while_the_limit_changes`, in a process of its own"]
+    fn a_step_that_fits_is_never_refused_while_the_limit_changes_scenario() {
+        // #2151 on the allocator of the process: one thread lowers and raises the allocator's
+        // limit in turn, as runs that start and end do, while threads of a run make steps that
+        // fit and read the bytes held. Each change of the limit used to leave `held()` close to
+        // 2^62 between the allocator's two writes, and a step that read it then was refused.
+        // The low limit is far above anything this process holds, so no allocation fails. It
+        // runs in a process of its own, since it changes the limit every other test has.
+        let low = usize::MAX - (1 << 62);
+        let (ceiling, rounds, threads) = (usize::MAX / 4, 100_000usize, 4);
+        let done = AtomicBool::new(false);
+        let begin = std::sync::Barrier::new(threads + 1);
+        let (failed, torn) = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|worker| {
+                    let (begin, done) = (&begin, &done);
+                    scope.spawn(move || {
+                        with_ceiling(ceiling, || {
+                            begin.wait();
+                            let (mut failed, mut torn, mut round) = (0usize, 0usize, 0usize);
+                            while round < rounds || !done.load(Ordering::SeqCst) {
+                                let step = try_reserve(64 + worker + round % 4096);
+                                failed += usize::from(step.is_none());
+                                drop(step);
+                                torn += usize::from(crate::held() > 1 << 61);
+                                round += 1;
+                            }
+                            (failed, torn)
+                        })
+                    })
+                })
+                .collect();
+            begin.wait();
+            for round in 0..200_000usize {
+                crate::ceiling(if round % 2 == 0 { low } else { usize::MAX });
+            }
+            done.store(true, Ordering::SeqCst);
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .fold((0, 0), |(f, t), (a, b)| (f + a, t + b))
+        });
+        crate::ceiling(usize::MAX);
+        assert_eq!(
+            torn, 0,
+            "reads of the bytes held torn by a change of the limit"
+        );
+        assert_eq!(failed, 0, "fitting steps refused while the limit changed");
+        eprintln!("{STEP}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_step_that_fits_is_never_refused_while_the_limit_changes() {
+        let (code, stderr) =
+            scenario("a_step_that_fits_is_never_refused_while_the_limit_changes_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert_eq!(steps(&stderr), 1, "{stderr}");
+    }
+
+    #[test]
+    #[ignore = "run by `a_stop_that_finds_the_end_claimed_leaves_the_limit_in_place`, in a process of its own"]
+    fn a_stop_that_finds_the_end_claimed_scenario() {
+        // #2151: `abort_run` claims the end of the process before it lifts the allocator's
+        // limit. A stop that finds the end claimed by a sibling parks with the limit of the
+        // run still in place; a watcher waits for it to park, then reports the limit.
+        start(&strings(&["--max-memory", "64"]), SITE_META, || {
+            assert_ne!(crate::limit(), usize::MAX, "the run has no limit");
+            ENDING.store(true, Ordering::SeqCst);
+            std::thread::spawn(|| {
+                while PARKED.load(Ordering::SeqCst) == 0 {
+                    std::thread::yield_now();
+                }
+                let lifted = crate::limit() == usize::MAX;
+                eprintln!("{STEP} lifted {lifted}");
+                #[allow(clippy::exit)]
+                std::process::exit(0);
+            });
+            abort_at(0, Code::U6003, "a sibling stopped first".to_owned())
+        });
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs a process of its own, which Miri cannot")]
+    fn a_stop_that_finds_the_end_claimed_leaves_the_limit_in_place() {
+        let (code, stderr) = scenario("a_stop_that_finds_the_end_claimed_scenario");
+        assert_eq!(code, Some(0), "{stderr}");
+        assert!(stderr.contains(&format!("{STEP} lifted false")), "{stderr}");
+        assert!(!stderr.contains("U6003"), "{stderr}");
     }
 
     #[test]
