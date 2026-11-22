@@ -1,0 +1,19 @@
+-- test: the lambda given to `map` in the default of an `if error use` is a lambda like any other, so `error` inside it is U2013 at the use, not an internal error
+-- spec: spec/02 §8
+-- expect: error U2013 at src/m.una:18:49
+module m
+
+pub kind Problem = A | B
+
+risky(n: Int) -> Int
+  fails Problem
+=
+  if n > 0 then fail B else 1
+
+code(p: Problem) -> Int = if p is A then 1 else 2
+
+pub f(n: Int, xs: List[Int]) -> Int
+=
+  let v = risky(n)
+    if error use xs.map(each: fn(x) -> x + code(error)).len
+  v

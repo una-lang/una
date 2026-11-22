@@ -255,11 +255,12 @@ impl<'a> Checker<'_, 'a, '_> {
             ExprKind::Result => match self.ctx.result.clone() {
                 Some(ty) => ty,
                 None => {
-                    self.report.error(
-                        Code::U2012,
-                        span,
-                        "`result` is allowed only in `ensures` clauses and `expect` lines",
-                    );
+                    let message = if self.lambda_depth > 0 {
+                        "`result` is allowed only in `ensures` clauses and `expect` lines, not inside a lambda"
+                    } else {
+                        "`result` is allowed only in `ensures` clauses and `expect` lines"
+                    };
+                    self.report.error(Code::U2012, span, message);
                     Ty::error()
                 }
             },
@@ -274,11 +275,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     Ty::error()
                 }
                 None => {
-                    self.report.error(
-                        Code::U2013,
-                        span,
-                        "`it` is allowed only in `where` clauses and the predicate of `checked`",
-                    );
+                    let message = if self.lambda_depth > 0 {
+                        "`it` is allowed only in `where` clauses and the predicate of `checked`, not inside a lambda"
+                    } else {
+                        "`it` is allowed only in `where` clauses and the predicate of `checked`"
+                    };
+                    self.report.error(Code::U2013, span, message);
                     Ty::error()
                 }
             },
@@ -287,11 +289,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 match self.ctx.error.clone() {
                     Some(ty) => ty,
                     None => {
-                        self.report.error(
-                            Code::U2013,
-                            span,
-                            "`error` is allowed only in the `fail` or `use` part of an `if error` clause",
-                        );
+                        let message = if self.lambda_depth > 0 {
+                            "`error` is allowed only in the `fail` or `use` part of an `if error` clause, not inside a lambda"
+                        } else {
+                            "`error` is allowed only in the `fail` or `use` part of an `if error` clause"
+                        };
+                        self.report.error(Code::U2013, span, message);
                         Ty::error()
                     }
                 }
@@ -2149,13 +2152,14 @@ impl<'a> Checker<'_, 'a, '_> {
         // the lambda is written, not to the lambda's own: a repair inside the body never
         // resolves against them (ADR 0093 rule 6).
         let statement = self.statement.take();
-        // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
+        // A lambda's body starts at a `public` program counter (ADR 0031 rule 4), with no
+        // `result`, `it` or `error` in scope.
         let ctx = Ctx {
             fails: fails.clone(),
             top: true,
             pc: Label::public(),
             pc_from: None,
-            ..self.ctx.clone()
+            ..self.ctx.without_placeholders()
         };
         let body_ty = self.within(ctx, |checker| {
             let found = checker.expr(body, result.as_ref());

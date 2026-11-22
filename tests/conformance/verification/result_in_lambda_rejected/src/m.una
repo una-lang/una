@@ -1,6 +1,6 @@
--- test: `result` inside a lambda of a test's `expect` line has no value in Core IR, so the test does not elaborate and the package is rejected: U8001
--- spec: spec/09 §3
--- expect: error U8001 at src/m.una:8:1
+-- test: a lambda's body is not a position of `result`, even in a test's `expect` line, so `result` inside it is U2012 at the checker, not an internal error
+-- spec: spec/02 §8
+-- expect: error U2012 at src/m.una:10:29
 module m
 
 pub zero() -> Int = 0

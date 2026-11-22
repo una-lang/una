@@ -663,8 +663,6 @@ const REJECTED_AS_INTERNAL: &[&str] = &[
     "verification/assign_nonlocal_root_rejected",
     "verification/cap_in_opaque_predicate_rejected",
     "verification/edit_marker_builtin_method_rejected",
-    "verification/error_in_lambda_rejected",
-    "verification/result_in_lambda_rejected",
 ];
 
 /// Whether `package` is one of [`REJECTED_AS_INTERNAL`].

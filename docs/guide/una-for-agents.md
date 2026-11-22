@@ -1305,3 +1305,20 @@ pub total(xs: List[Int]) -> Int
     sum = sum + x
   sum
 ```
+
+## 23. Changes between releases
+
+A release can reject a program that an earlier one accepted, where the earlier answer was not sound. Such changes are listed here, newest first.
+
+- **`result`, `it` and `error` inside a lambda** (#1989). A lambda's body runs wherever the lambda is called, so `result`, `it` and `error` name no value in it, even when the lambda is written in an `expect` line, a `where` clause, the predicate of `checked` or an `if error` handler (`spec/02 §8`). Before v0.4.0, a test whose `expect` line used `result` inside a lambda was accepted, and the lambda saw a placeholder in place of the result; v0.4.0 and v0.5.0 reject it with an internal error, U8001, and the release after v0.5.0 with U2012 at the `result` (U2013 for `it` and `error`). The same holds for a lambda given to `map`, `filter`, `fold`, `first_where` or `update`, or for a `uses of` or `fails of` parameter. The fix: pass the value into the lambda as an argument, `expect (fn(x: Int) -> x + 1)(result) == 2`, or write the check without a lambda.
+
+```una
+-- fails with U2012
+module demo
+
+pub one() -> Int = 1
+
+example "the lambda cannot see the result"
+  do one()
+  expect (fn(x: Int) -> x == result)(1)
+```

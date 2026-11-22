@@ -1,6 +1,6 @@
--- test: `error` inside a lambda of an `if error use` handler has no value in Core IR, so the function does not elaborate and the package is rejected: U8001
--- spec: spec/09 §3
--- expect: error U8001 at src/m.una:13:1
+-- test: a lambda's body is not a position of `error`, even in an `if error use` handler, so `error` inside it is U2013 at the checker, not an internal error
+-- spec: spec/02 §8
+-- expect: error U2013 at src/m.una:16:36
 module m
 
 pub kind Problem = A | B

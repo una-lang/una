@@ -1,0 +1,10 @@
+-- test: the lambda given to `fold` is a lambda like any other, so `result` inside it in an `expect` line is U2012 at the use, not an internal error
+-- spec: spec/02 §8
+-- expect: error U2012 at src/m.una:10:60
+module m
+
+pub xs() -> List[Int] = [1, 2]
+
+test "the fold lambda cannot see the result"
+  do xs()
+  expect result.fold(initial: 0, step: fn(acc, x) -> acc + result.len) == 4

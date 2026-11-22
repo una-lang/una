@@ -1,0 +1,36 @@
+-- test: `result` and `error` passed into a lambda as arguments are accepted, as is a lambda inside an `if error use` handler or an `expect` line that does not name them
+-- spec: spec/02 §8
+-- expect: ok
+module placeholders_beside_lambda_ok
+
+pub kind Problem = A | B
+
+risky(n: Int) -> Int
+  fails Problem
+=
+  if n > 0 then fail B else 1
+
+code(p: Problem) -> Int
+=
+  when p
+    is A -> 1
+    is B -> 2
+
+pub f(n: Int) -> Int
+=
+  let v = risky(n)
+    if error use (fn(k: Int) -> k * 10)(code(error))
+  v
+
+pub g(n: Int) -> Int
+=
+  let v = risky(n)
+    if error use (fn(k: Int) -> k + 1)(0)
+  v
+
+pub one() -> Int = 1
+
+example "the result passes into a lambda"
+  do one()
+  expect (fn(x: Int) -> x + 1)(result) == 2
+  expect (fn(x: Int) -> x == 1)(1)

@@ -1024,8 +1024,12 @@ impl<'e, 'a> Fx<'e, 'a> {
                     Some((self.name(op).to_owned(), self.clause(condition)))
                 })
                 .collect();
-            if let Some(entry) = uses.iter_mut().find(|u| u.cap == cap) {
-                entry.conds.extend(conds);
+            match uses.iter_mut().find(|u| u.cap == cap) {
+                Some(entry) => entry.conds.extend(conds),
+                // A written condition with no `uses` entry to carry it would be dropped, and
+                // the obligation it puts on the operation's calls with it: fail closed.
+                None if !conds.is_empty() => self.broken.set(true),
+                None => {}
             }
         }
         uses
@@ -1710,8 +1714,15 @@ impl<'e, 'a> Fx<'e, 'a> {
         Term::Bool(false)
     }
 
-    /// The arguments of the call at `span` as terms, in parameter order.
+    /// The arguments of the call at `span` as terms, in parameter order. Every parameter has
+    /// its argument, so a parameter with none, or a call whose list literal the checker spread
+    /// over several parameters (`spec/29 §17`, a call of a prelude function that no clause
+    /// holds, U2014), leaves the declaration not elaborated rather than shifting the arguments
+    /// after the hole.
     fn ordered_terms(&mut self, span: Span, receiver: Option<Term>, args: &[Arg]) -> Vec<Term> {
+        if self.records.spread.contains_key(&span) {
+            self.broken.set(true);
+        }
         let order = self.order(span);
         let mut written: Vec<Term> = receiver.into_iter().collect();
         for arg in args {
@@ -1727,6 +1738,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                 Some(slot) => *slot = Some(value),
                 None => self.broken.set(true),
             }
+        }
+        if slots.iter().any(Option::is_none) {
+            self.broken.set(true);
         }
         slots.into_iter().flatten().collect()
     }
@@ -2059,9 +2073,9 @@ impl<'e, 'a> Fx<'e, 'a> {
             let line = self.dbs.sources.location(expectation.span).start.line;
             expectations.push(match &expectation.kind {
                 ExpectationKind::Holds(expr) => {
-                    self.result = Some(result.clone());
+                    let outer = self.result.replace(result.clone());
                     let check = self.expr(expr);
-                    self.result = None;
+                    self.result = outer;
                     Expectation::Holds {
                         result: result.clone(),
                         check,
@@ -2454,9 +2468,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                 HandlingKind::ErrorPass => current,
                 HandlingKind::ErrorFail(variant) => {
                     let error = self.bind("error");
-                    self.error = Some(error.clone());
+                    let outer = self.error.replace(error.clone());
                     let handler = self.fail(variant);
-                    self.error = None;
+                    self.error = outer;
                     self.scope.pop();
                     CoreExpr::Handle {
                         body: Box::new(current),
@@ -2466,7 +2480,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 HandlingKind::ErrorUse(value) if !components.is_empty() => {
                     let error = self.bind("error");
-                    self.error = Some(error.clone());
+                    let outer = self.error.replace(error.clone());
                     let mut inner = Vec::new();
                     let default = self.atom(&mut inner, value);
                     let mut atoms = places.clone();
@@ -2485,7 +2499,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                             span: value.span,
                         },
                     );
-                    self.error = None;
+                    self.error = outer;
                     self.scope.pop();
                     CoreExpr::Handle {
                         body: Box::new(current),
@@ -2503,9 +2517,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
                 HandlingKind::ErrorUse(value) => {
                     let error = self.bind("error");
-                    self.error = Some(error.clone());
+                    let outer = self.error.replace(error.clone());
                     let handler = self.expr(value);
-                    self.error = None;
+                    self.error = outer;
                     self.scope.pop();
                     CoreExpr::Handle {
                         body: Box::new(current),
@@ -4166,7 +4180,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                     PatternKind::Variant { binds, .. } => {
                         let (kind, index) = match self.res(arm.pattern.span) {
                             Some(Res::Ctor { kind, variant }) => (kind, variant),
-                            _ => continue,
+                            // An arm left out would send its values to another arm.
+                            _ => {
+                                self.broken.set(true);
+                                continue;
+                            }
                         };
                         let ctor = self.ctor(kind, index);
                         let fields = self
@@ -4653,7 +4671,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         self.push(lets, span, lambda)
                     }
                     Some(Res::Constant(value)) => Atom::Int(value.to_string()),
-                    _ => Atom::Unit,
+                    _ => self.unelaborated(),
                 }
             }
             ExprKind::UpperName(ident) => match self.res(ident.span) {
@@ -4669,7 +4687,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
-                _ => Atom::Unit,
+                _ => self.unelaborated(),
             },
             ExprKind::List(items) => {
                 let items: Vec<Atom> = items.iter().map(|item| self.atom(lets, item)).collect();
@@ -4742,7 +4760,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                             };
                             self.push_expr(lets, span, test)
                         }
-                        _ => Atom::Unit,
+                        _ => self.unelaborated(),
                     },
                     IsTarget::Literal(literal) => {
                         let literal = self.pattern_literal_atom(lets, literal, span);
@@ -4805,7 +4823,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let formula = self.term(predicate);
                 let (kind, index) = match self.res(failure.span) {
                     Some(Res::Ctor { kind, variant }) => (kind, variant),
-                    _ => return Atom::Unit,
+                    _ => return self.unelaborated(),
                 };
                 let (args, arg_spans) = self.call_args(lets, failure.span, &failure.args);
                 let ctor = self.ctor(kind, index);
@@ -4887,7 +4905,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let receiver = (receiver, target.span);
                     self.call_function(lets, span, id, &type_args, Some(receiver), &[])
                 }
-                _ => Atom::Unit,
+                _ => self.unelaborated(),
             },
             ExprKind::MethodCall { target, args, .. } => match self.res(span) {
                 // ADR 0104 rule 5: `E(x.measured())` and `E(x.magnitude())` are `E(x)`, and
@@ -5057,7 +5075,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let receiver = (receiver, target.span);
                     self.call_function(lets, span, id, &type_args, Some(receiver), args)
                 }
-                _ => Atom::Unit,
+                _ => self.unelaborated(),
             },
             ExprKind::Call { callee, args } => match self.res(span) {
                 Some(Res::Function { id, type_args }) => {
@@ -5091,7 +5109,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
-                _ => Atom::Unit,
+                _ => self.unelaborated(),
             },
             ExprKind::CapOp { cap, op, args } => match self.res(span) {
                 Some(Res::Op { capability, .. }) => {
@@ -5140,7 +5158,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         },
                     )
                 }
-                _ => Atom::Unit,
+                _ => self.unelaborated(),
             },
             // A placeholder with no binder here, as inside a lambda, which takes the binders
             // away, has no value in Core IR: the declaration is not elaborated, so the final
@@ -5155,16 +5173,17 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// A form that resolved to something its syntax cannot elaborate to: the declaration is
+    /// broken, and `unit` only fills the hole (`spec/09 §3`).
+    fn unelaborated(&self) -> Atom {
+        self.broken.set(true);
+        Atom::Unit
+    }
+
     /// The binder of `result`, `it` or `error` where one is in scope. Without one the form has
     /// no value to elaborate to: the declaration is broken, and `unit` only fills the hole.
     fn binder(&self, binder: Option<Name>) -> Atom {
-        binder.map_or_else(
-            || {
-                self.broken.set(true);
-                Atom::Unit
-            },
-            Atom::Var,
-        )
+        binder.map_or_else(|| self.unelaborated(), Atom::Var)
     }
 
     fn literal_atom(&mut self, lets: &mut Vec<Let>, literal: &Literal, span: Span) -> Atom {
