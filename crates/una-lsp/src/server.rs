@@ -161,9 +161,11 @@ pub(crate) enum Event {
     /// The client closed its input.
     End,
     /// A frame past a bound of its JSON text, dropped: the input is still read (#2100).
-    Dropped(String),
+    Dropped(crate::transport::Refusal),
     /// The input can be read no further: a header past a bound, a body that is too large,
-    /// cut short or not JSON, or an error of the input itself (#2100).
+    /// cut short or not JSON (#2100).
+    Refused(crate::transport::Refusal),
+    /// The input can be read no further: an error of the input itself.
     Failed(std::io::Error),
     /// The check of the package at the root, started as the run numbered by the `u64`.
     Checked(PathBuf, u64, Checked),

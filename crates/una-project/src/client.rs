@@ -551,35 +551,10 @@ impl OpenError {
 /// The most characters of a message about a registry, which may quote what a registry served.
 pub const MAX_MESSAGE: usize = 400;
 
-/// Whether `c` is invisible or changes how text around it reads: a control character, a format
-/// character (Unicode category Cf: the direction marks and isolates, zero-width characters,
-/// U+FEFF, the tag characters and the rest), or a line or paragraph separator.
+/// Whether `c` is invisible or changes how text around it reads: the rule of
+/// [`una_diag::text::hidden`], shared with the language server.
 fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{00ad}'
-                | '\u{0600}'..='\u{0605}'
-                | '\u{061c}'
-                | '\u{06dd}'
-                | '\u{070f}'
-                | '\u{0890}'..='\u{0891}'
-                | '\u{08e2}'
-                | '\u{180e}'
-                | '\u{200b}'..='\u{200f}'
-                | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{206f}'
-                | '\u{feff}'
-                | '\u{fff9}'..='\u{fffb}'
-                | '\u{110bd}'
-                | '\u{110cd}'
-                | '\u{13430}'..='\u{1343f}'
-                | '\u{1bca0}'..='\u{1bca3}'
-                | '\u{1d173}'..='\u{1d17a}'
-                | '\u{e0001}'
-                | '\u{e0020}'..='\u{e007f}'
-        )
+    una_diag::text::hidden(c)
 }
 
 /// `text` with every [`hidden`] character written as `\u{…}`, and no cap: for what is not

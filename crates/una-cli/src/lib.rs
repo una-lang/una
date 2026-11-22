@@ -1453,7 +1453,7 @@ fn run_command(
                     false,
                     stderr,
                 );
-                lsp::serve(stdout, stderr, solving)
+                lsp::serve(stdout, stderr, json, solving)
             }
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use una_diag::{
-    Binding, Code, Counterexample, Diagnostic, DiagnosticList, Edit, Escape, Location,
+    Binding, Code, Counterexample, Diagnostic, DiagnosticList, Edit, Escape, Limit, Location,
     ObligationKind, ObligationRef, ObligationStatus, Position, Related, Repair, Widening,
     render_json,
 };
@@ -354,5 +354,41 @@ fn a_binding_label_is_written_only_when_not_public() {
             {"name": "pin", "value": -1, "label": "secret"},
             {"name": "result", "value": 0},
         ])
+    );
+}
+
+#[test]
+fn a_limit_follows_the_counterexample_and_writes_an_unknown_value_as_null() {
+    // #2156: the bound a refused input passed, its value and the value seen; an added key,
+    // omitted when absent, so the schema stays `una.diagnostic/1`.
+    let mut diagnostic = Diagnostic::error(
+        Code::U7016,
+        "una lsp dropped a message of the editor: a message with more than 131072 values (MAX_VALUES)",
+        location("", at(1, 1), at(1, 1)),
+    );
+    diagnostic.limit = Some(Limit {
+        name: "MAX_VALUES".to_owned(),
+        bound: 131_072,
+        seen: Some(131_073),
+    });
+    assert_eq!(
+        serde_json::to_string(&diagnostic).unwrap(),
+        concat!(
+            r#"{"schema":"una.diagnostic/1","code":"U7016","severity":"error","domain":"project","#,
+            r#""message":"una lsp dropped a message of the editor: a message with more than 131072 values (MAX_VALUES)","#,
+            r#""primary":{"file":"","start":{"line":1,"col":1},"end":{"line":1,"col":1}},"#,
+            r#""related":[],"limit":{"name":"MAX_VALUES","bound":131072,"seen":131073},"#,
+            r#""repairs":[],"explain":"una explain U7016"}"#,
+        )
+    );
+    diagnostic.limit = Some(Limit {
+        name: "MAX_CONTENT_LENGTH".to_owned(),
+        bound: 67_108_864,
+        seen: None,
+    });
+    let value = serde_json::to_value(&diagnostic).unwrap();
+    assert_eq!(
+        value["limit"],
+        json!({ "name": "MAX_CONTENT_LENGTH", "bound": 67_108_864, "seen": null })
     );
 }

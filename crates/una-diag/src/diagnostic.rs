@@ -191,6 +191,19 @@ pub struct Binding {
     pub label: Option<String>,
 }
 
+/// A bound of the toolchain that the reported input passed (`spec/13 §1`, #2156): its name,
+/// the bound and the value seen. An added key of `una.diagnostic/1`, omitted when absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Limit {
+    /// The name of the bound, as the toolchain documents it, for example `MAX_VALUES`.
+    pub name: String,
+    /// The largest value the bound admits.
+    pub bound: u64,
+    /// The value seen when the input was refused, above `bound`; `None` when it does not fit
+    /// in 64 bits, written as `null`.
+    pub seen: Option<u64>,
+}
+
 /// The escape hatch a repair takes (`spec/13 §3`, ADR 0095 rule 2). A repair that takes none
 /// keeps the guarantee the diagnostic enforces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -383,6 +396,8 @@ pub struct Diagnostic {
     pub obligation: Option<ObligationRef>,
     /// The counterexample, present only for U5001 and U5002.
     pub counterexample: Option<Counterexample>,
+    /// The bound the input passed, present only for a refusal of a bound (U7016, #2156).
+    pub limit: Option<Limit>,
     /// Repair candidates, in any order; output sorts them by escape cost, then whether they
     /// widen, then rank, and renumbers the ranks in that order.
     pub repairs: Vec<Repair>,
@@ -399,6 +414,7 @@ impl Diagnostic {
             related: Vec::new(),
             obligation: None,
             counterexample: None,
+            limit: None,
             repairs: Vec::new(),
         }
     }
@@ -441,6 +457,7 @@ impl Serialize for Diagnostic {
             related: &self.related,
             obligation: self.obligation.as_ref(),
             counterexample: self.counterexample.as_ref(),
+            limit: self.limit.as_ref(),
             repairs: self.repairs_in_order(),
             explain: self.explain_command(),
         }
@@ -462,6 +479,8 @@ struct Wire<'a> {
     obligation: Option<&'a ObligationRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     counterexample: Option<&'a Counterexample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<&'a Limit>,
     repairs: Vec<Ranked<'a>>,
     explain: String,
 }
