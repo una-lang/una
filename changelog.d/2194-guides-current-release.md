@@ -1,0 +1,1 @@
+- **The guides name v0.5.0 where they state the current release** (#2194): `SECURITY.md`, the known limits, the language guide and the pages on editions and on Itá say what holds in v0.5.0 (edition `0.4` still a preview, no registry served, no fuzz target for the HTTP parsers, the targets of the release archives). The facts are those of v0.4.0, unchanged.
