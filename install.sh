@@ -41,10 +41,14 @@
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
 # The installation is recorded in UNA_HOME/.una-install: the version, each file it installed and
-# each directory it created. `--uninstall` removes exactly those files, then those directories
-# when they are empty, and refuses a UNA_HOME without that record, so it never removes what
-# Una did not install. It also removes the one file `una` makes outside a package at run time, the
-# proof cache's key $HOME/.una/proof-cache.key (ADR 0064), and then $HOME/.una when it is empty.
+# each directory it created. Installed over an earlier installation, it removes the files of the
+# earlier record that the new installation does not hold, such as the `z3` of a release before
+# 0.4.0 and the `lib/libuna_rt.a` of one before ADR 0124 step 2, then the directories of that
+# record left empty (ADR 0124 rule 32, #1992), so that no file stays that no record lists.
+# `--uninstall` removes exactly the recorded files, then the recorded directories when they are
+# empty, and refuses a UNA_HOME without that record, so it never removes what Una did not
+# install. It also removes the one file `una` makes outside a package at run time, the proof
+# cache's key $HOME/.una/proof-cache.key (ADR 0064), and then $HOME/.una when it is empty.
 # A key file that UNA_PROOF_KEY names is the user's choice of file and is kept. The messages say
 # what was removed and name what is left.
 #
@@ -201,27 +205,79 @@ holds() {
     ls -A "$1" 2> /dev/null | awk '{ printf "%s%s", (NR > 1 ? ", " : ""), $0 } END { if (NR == 0) printf "nothing" }'
 }
 
+# `no_link_on REL RECORDED`: no directory on the way from UNA_HOME to REL is a symbolic link, as
+# far as it exists (ADR 0124 rule 32), for every user: `rm` and `rmdir` would follow it outside.
+no_link_on() {
+    rest=$1
+    on=$home
+    while :; do
+        case $rest in
+            */*) on=$on/${rest%%/*}; rest=${rest#*/} ;;
+            *) return 0 ;;
+        esac
+        [ ! -L "$on" ] \
+            || fail "the record $marker names '$2', which goes through the symbolic link $on; the installer follows no link in a recorded path"
+        [ -e "$on" ] || return 0
+    done
+}
+# `unlink_recorded KIND PATH`: removes a recorded file (`rm -f`) or an empty recorded directory
+# (`rmdir`), after checking again, just before, that no directory on the way is a symbolic link
+# (#2199 review 2). `check_record` ran before the download; this narrows the window in which a
+# directory swapped for a link would be followed from the length of a download to the few system
+# calls between the last check and the removal. A shell cannot close it: it has no `unlinkat` on
+# a directory it holds open. Only someone who can write UNA_HOME while the installer runs can use
+# that window, and as root every directory on the way was proven to be one only root can change.
+unlink_recorded() {
+    no_link_on "$2" "$2"
+    if [ "$1" = file ]; then
+        rm -f "${home:?}/$2"
+    else
+        no_link_on "$2/" "$2"
+        rmdir "${home:?}/$2" 2> /dev/null || true
+    fi
+}
+# `check_record`: every path of the record lies inside UNA_HOME, is spelled as the installer
+# writes it, and goes through no symbolic link; as root, every directory on the way to it (and a
+# recorded directory itself) is also one only root can change, or `rm` and `rmdir` could reach
+# outside. Uninstall, and an installation over an earlier one, which removes what the new one
+# does not hold, check every path before anything is downloaded or removed.
+check_record() {
+    while read -r kind path; do
+        case $kind in
+            file | dir)
+                case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac
+                # One spelling per path, the one the installer writes: no `.` or empty component
+                # (`./bin/una`, `bin//una`, `bin/`), which the comparison with the new files would
+                # miss; the one exception is the record's own `dir .`.
+                case $kind:$path in
+                    dir:.) ;;
+                    *:. | *:./* | */. | */./* | *//* | */)
+                        fail "the record $marker names '$path', which has a '.' or empty component" ;;
+                esac
+                # As root, every directory on the way (and a recorded directory itself) is one
+                # only root can change, which also refuses a link.
+                if [ "$uid" = 0 ]; then
+                    only_root_on "$path"
+                    [ "$kind" = file ] || only_root_on "$path/"
+                fi
+                # Every user: no directory on the way is a link, nor a recorded directory itself.
+                # The last component of a `file` line may be a link (`bin/z3` is one): `rm -f`
+                # removes the link, never what it names.
+                no_link_on "$path" "$path"
+                [ "$kind" = file ] || no_link_on "$path/" "$path"
+                ;;
+        esac
+    done < "$marker"
+}
+
 if [ "${1:-}" = --uninstall ]; then
     [ -f "$marker" ] \
         || fail "$home has no record of an installation by this script ($marker), so nothing is removed"
     # The files first, then the directories that the installation created, deepest first, when
     # they are empty. A path that leaves UNA_HOME is never followed.
-    # Every path is checked before anything is removed.
+    check_record
     while read -r kind path; do
-        case $kind in
-            file | dir)
-                case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac
-                # As root, every directory on the way to the path (and a recorded directory
-                # itself) must be one only root can change, or `rm` could reach outside.
-                if [ "$uid" = 0 ]; then
-                    only_root_on "$path"
-                    [ "$kind" = file ] || only_root_on "$path/"
-                fi
-                ;;
-        esac
-    done < "$marker"
-    while read -r kind path; do
-        [ "$kind" = file ] && rm -f "${home:?}/$path"
+        [ "$kind" != file ] || unlink_recorded file "$path"
     done < "$marker"
     # The proof cache's key (ADR 0064): `una` makes it on first use as $HOME/.una/proof-cache.key,
     # whatever UNA_HOME is, and it has no use without the installation. Only that one name is
@@ -259,14 +315,19 @@ if [ "${1:-}" = --uninstall ]; then
         fi
     fi
     dirs=$(sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
-    rm -f "$marker"
     printf '%s\n' "$dirs" | while read -r path; do
         case $path in
-            "") ;;
-            .) rmdir "$home" 2> /dev/null || true ;;
-            *) rmdir "$home/$path" 2> /dev/null || true ;;
+            "" | .) ;;
+            *) unlink_recorded dir "$path" ;;
         esac
     done
+    # The record goes only now, once every recorded path was removed or kept: a check refused
+    # above stops the uninstall with the record in place, so that it can be run again. Then
+    # UNA_HOME itself, when the installation created it and it is empty.
+    rm -f "$marker"
+    if printf '%s\n' "$dirs" | grep -qx '\.'; then
+        rmdir "$home" 2> /dev/null || true
+    fi
     # $HOME/.una, when the key was removed from it and nothing else is there.
     [ -z "$key_removed" ] || rmdir "$keydir" 2> /dev/null || true
     if [ -d "$home" ]; then
@@ -294,6 +355,8 @@ fi
     printf '%s\n' "usage: sh install.sh [--uninstall]" >&2
     exit 2
 }
+# An earlier record, whose files this installation may remove: checked before any download.
+[ ! -f "$marker" ] || check_record
 
 version=${UNA_VERSION:-$DEFAULT_VERSION}
 releases=${UNA_RELEASES:-https://github.com/una-lang/una/releases/download}
@@ -497,11 +560,6 @@ if [ -n "$runtime" ]; then
     mkdir -p "$home/lib"
     cp "$unpacked/$runtime" "$home/$runtime"
     files="$files $runtime"
-elif [ -f "$marker" ] && grep -qx 'file lib/libuna_rt.a' "$marker" && [ -f "$home/lib/libuna_rt.a" ]; then
-    # The runtime an earlier installation put there, which this `una` never reads: it stays in
-    # the record, so that uninstall still removes it. Removing it now is the migration of ADR
-    # 0124 step 5.
-    files="$files lib/libuna_rt.a"
 fi
 for doc in README.md LICENSE; do
     if [ -f "$unpacked/$doc" ]; then
@@ -527,16 +585,71 @@ if [ -d "$unpacked/docs/guide" ]; then
         files="$files docs/guide/$base"
     done
 fi
+# The migration of ADR 0124 rule 32 (#1992), now that the new files are in place: each file of
+# the earlier record that this installation does not hold (the `z3` and its link in `bin/` of a
+# release before 0.4.0, the `lib/libuna_rt.a` of one before ADR 0124 step 2, a guide a later
+# release dropped) is removed, by the paths checked above, so that no file stays that no record
+# lists and no stale program stays on PATH. `rm -f` removes a symbolic link, never what it names;
+# a path that is now a directory is not a file of the installation and is kept. Then the
+# directories of that record left empty, deepest first; the record keeps those that remain.
+# A recorded name that is the same file or directory as one this installation holds, though
+# spelled otherwise (`BIN/una` or `README.MD` on a file system that ignores case, a name in
+# another Unicode normalization), is never removed (#2199 review 2): `held_new PATH` compares
+# with `-ef` (the same device and inode), which dash, bash, busybox and macOS's sh all have. A
+# symbolic link is never a file this installation wrote, so a recorded link is removed as itself.
+held_new() {
+    [ ! -L "$home/$1" ] || return 1
+    for new in $files; do
+        [ "$home/$1" -ef "$home/$new" ] && return 0
+        up=$new
+        while :; do
+            case $up in
+                */*) up=${up%/*} ;;
+                *) break ;;
+            esac
+            [ "$home/$1" -ef "$home/$up" ] && return 0
+        done
+    done
+    return 1
+}
+removed=
+if [ -f "$marker" ]; then
+    while read -r kind path; do
+        [ "$kind" = file ] || continue
+        case " $files " in *" $path "*) continue ;; esac
+        ! held_new "$path" || continue
+        if [ -L "$home/$path" ] || [ -f "$home/$path" ]; then
+            unlink_recorded file "$path"
+            removed="$removed $path"
+        fi
+    done < "$marker"
+    sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2- \
+        | while read -r path; do
+            case $path in
+                "" | .) ;;
+                *) held_new "$path" || unlink_recorded dir "$path" ;;
+            esac
+        done
+fi
 {
     echo "# Una $version, installed by install.sh; \`sh install.sh --uninstall\` removes what follows."
     echo "version $version"
-    sort -u "$created" | sed 's/^/dir /'
+    sort -u "$created" | while read -r dir; do
+        [ ! -d "$home/$dir" ] || echo "dir $dir"
+    done
     for file in $files; do echo "file $file"; done
 } > "$marker"
 
 # The version is the one the validation summary vouched for. From 0.3.0 `una --version` also
 # names the editions it serves (#305); an older `una` has no such flag, and prints nothing here.
 say "installed una $version in $home"
+if [ -n "$removed" ]; then
+    say "removed what the earlier installation held and $version does not:$removed"
+    case " $removed " in
+        *" bin/z3 "* | *" z3/bin/z3 "*)
+            say "removed z3, which una no longer needs: the solver is built into una; a z3 installed elsewhere is not touched" ;;
+    esac
+fi
 # As root, the installed `una` is not run (#1938): `una --version` as an ordinary user shows it.
 if [ "$uid" = 0 ]; then
     say "as root, the installer does not run the installed una; run una --version as an ordinary user"
