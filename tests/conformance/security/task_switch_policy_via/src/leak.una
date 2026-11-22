@@ -1,0 +1,27 @@
+-- test: review H1 of PR #2212 (#2214): a policy call runs its `via`, whose code the label rules do not check, so the deep label of its argument decides how many check points it passes; here the `via` loops as many times as a `secret` bit of the key says, and the order of the started tasks' prints would spell the key, so the call is U4002 in a program that starts tasks (spec/27 §8 rule 5, #1684)
+-- spec: spec/27 §8
+-- expect: error U4002 at src/leak.una:18:11
+module leak
+
+import release (bucket)
+
+bit(k: Int, key: secret Int) -> secret Int
+=
+  let edit x: secret Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let r = bucket(bit(k, key: key) * 3000)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: secret Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

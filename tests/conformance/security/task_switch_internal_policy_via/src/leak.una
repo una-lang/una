@@ -1,0 +1,35 @@
+-- test: the residual of #1708 for a policy call (#2214), the twin of `task_switch_policy_via` with an `internal` key: the rule's bound is `internal` (spec/27 §8 rule 5), so it is accepted, the report lists the call as a `task switch` at `internal` (spec/13 §6), and the prints follow the key's bits, as the other `internal` twins' do
+-- spec: spec/27 §8
+-- grant: console
+-- expect: run-output "0"
+-- expect: run-output "2"
+-- expect: run-output "5"
+-- expect: run-output "7"
+-- expect: run-output "1"
+-- expect: run-output "3"
+-- expect: run-output "4"
+-- expect: run-output "6"
+module leak
+
+import release (bucket)
+
+bit(k: Int, key: internal Int) -> internal Int
+=
+  let edit x: internal Int = key
+  for i in 0..<k
+    x = x / 2
+  x mod 2
+
+worker(k: Int, key: internal Int) -> Unit
+  uses @console: Console[print]
+=
+  let r = bucket(bit(k, key: key) * 3000)
+  @console.print("{k}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let key: internal Int = 90
+  tasks
+    for k in 0..<8
+      start worker(k, key: key)

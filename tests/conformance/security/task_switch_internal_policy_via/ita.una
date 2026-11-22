@@ -1,0 +1,11 @@
+ita task_switch_internal_policy_via
+  version 0.1.0
+  edition 0.4
+
+trusted
+  release
+
+run
+  entry leak
+  grants
+    console

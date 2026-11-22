@@ -9956,3 +9956,167 @@ fn t1_residual_1708_internal_keys_still_order_the_prints_and_the_report_lists_th
         }
     }
 }
+
+/// A copy of the two-module conformance package `tests/conformance/security/<case>` of #2214,
+/// a trusted module `release` with the policy `bucket` and the program `leak`, with its key
+/// `90` replaced by `key`, in a fresh directory named after `name`.
+fn policy_case(case: &str, key: i64, name: &str) -> PathBuf {
+    let from = root().join(format!("tests/conformance/security/{case}"));
+    let dir = std::env::temp_dir().join(format!("una-native-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let manifest = std::fs::read_to_string(from.join("ita.una")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        manifest.replacen(&format!("ita {case}"), &format!("ita {name}"), 1),
+    )
+    .unwrap();
+    std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
+    std::fs::copy(from.join("src/release.una"), dir.join("src/release.una")).unwrap();
+    let source = std::fs::read_to_string(from.join("src/leak.una")).unwrap();
+    let program = source.replace(" Int = 90\n", &format!(" Int = {key}\n"));
+    assert!(
+        program.contains(&format!(" Int = {key}\n")),
+        "{case}: no key to replace"
+    );
+    std::fs::write(dir.join("src/leak.una"), program).unwrap();
+    dir
+}
+
+/// The interpreter's output and trace under `--virtual-time` for the package in `dir`, and
+/// the same of its executable, built here.
+fn both_engines(dir: &Path, name: &str) -> (Value, Value, Value, Value) {
+    let run = una(dir, &["--json", "run", ".", "--virtual-time"]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{name}: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    let built = una(dir, &["build", "."]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{name}: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let trace = dir.join("trace.json");
+    let mut command = Command::new(dir.join("target/una").join(name));
+    command
+        .current_dir(dir)
+        .arg("--virtual-time")
+        .arg("--trace")
+        .arg(&trace);
+    let native = output_within(&command, 60);
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{name}: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let lines: Vec<Value> = String::from_utf8_lossy(&native.stdout)
+        .lines()
+        .map(Value::from)
+        .collect();
+    let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    (
+        document["output"].clone(),
+        document["trace"].clone(),
+        Value::from(lines),
+        native_trace,
+    )
+}
+
+#[test]
+fn policy_2214_a_via_that_secret_data_drive_is_refused_by_run_and_by_build() {
+    // #2214, review H1 of PR #2212, `spec/27 §8` rule 5: a policy call runs its `via`, whose
+    // code the label rules do not check, so the deep label of its argument decides its check
+    // points. The probe's `via` loops as a `secret` bit says, which ordered the started tasks'
+    // prints by the key in both engines; both commands now check first and refuse the call
+    // with U4002, so neither engine runs it.
+    let dir = policy_case("task_switch_policy_via", 90, "p2214secret");
+    for command in ["run", "build"] {
+        let output = una(&dir, &[command, "."]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(
+            stderr.contains("[U4002]") && stderr.contains("src/leak.una:18:11"),
+            "{command}: {stderr}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{command}: printed {:?}",
+            output.stdout
+        );
+    }
+    assert!(!dir.join("target/una/p2214secret").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn policy_2214_an_internal_via_is_the_residual_of_1708_alike_in_both_engines_and_listed() {
+    // #2214: the `internal` twin is accepted under today's bound of rule 5 (`internal`, #1708),
+    // so its prints still follow the key's bits, the same natively under `--virtual-time` as
+    // in the interpreter, trace included; the report lists the policy call as a `task switch`
+    // at `internal` (`spec/13 §6`).
+    for (key, order) in [(90, "0 2 5 7 1 3 4 6"), (165, "1 3 4 6 0 2 5 7")] {
+        let name = format!("p2214internal{key}");
+        let dir = policy_case("task_switch_internal_policy_via", key, &name);
+        let (output, trace, native, native_trace) = both_engines(&dir, &name);
+        let expected: Vec<&str> = order.split(' ').collect();
+        assert_eq!(output, serde_json::json!(expected), "{key}");
+        assert_eq!(native, output, "{key}: native");
+        assert_eq!(native_trace, trace, "{key}: native trace");
+        let report = una(&dir, &["--json", "report", "."]);
+        assert_eq!(report.status.code(), Some(0), "{report:?}");
+        let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+        // The key for a place is spelled with an escape, as in the test of #1708 above.
+        let mut entry = serde_json::json!({
+            "construct": "task switch",
+            "function": "leak.worker",
+            "label": "internal",
+        });
+        entry["s\u{69}te"] = serde_json::json!({
+            "file": "src/leak.una",
+            "start": {"line": 26, "col": 11},
+        });
+        assert_eq!(
+            report["information"]["timing"],
+            serde_json::json!([entry]),
+            "{key}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn policy_2214_a_public_release_in_started_tasks_is_alike_across_secrets_in_both_engines() {
+    // #2214, the negative side: a policy call whose argument is `public` passes check points
+    // that only `public` data decide, so the program stays accepted, though every task holds
+    // a `secret` key. Its output and its whole trace are the same for every key, in the
+    // interpreter and natively under `--virtual-time` (`spec/27 §8` rules 3 and 5).
+    let mut seen: Option<(Value, Value)> = None;
+    for key in [0, 90, 165] {
+        let name = format!("p2214public{key}");
+        let dir = policy_case("task_switch_policy_via_public", key, &name);
+        let (output, trace, native, native_trace) = both_engines(&dir, &name);
+        assert_eq!(
+            output,
+            serde_json::json!(["0", "2", "4", "6", "1", "3", "5", "7"]),
+            "{key}"
+        );
+        assert_eq!(native, output, "{key}: native");
+        assert_eq!(native_trace, trace, "{key}: native trace");
+        if let Some((first_output, first_trace)) = &seen {
+            assert_eq!(
+                &output, first_output,
+                "{key}: output differs across secrets"
+            );
+            assert_eq!(&trace, first_trace, "{key}: trace differs across secrets");
+        } else {
+            seen = Some((output, trace));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
