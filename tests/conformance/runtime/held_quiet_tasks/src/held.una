@@ -1,0 +1,39 @@
+-- test: a `start` under an `internal` program counter is held by its statement (#1545): it takes no slot of the bound, so the public `start worker(2)` does not wait, and quiet code never parks the block, at a quiet `start` that finds the statement full or at the end of a quiet `tasks` statement; the public lines keep the order they have when no quiet code runs, `main 1`, `main 2` and `main 3` before the workers. Before the fix the interpreter printed `worker 1` first for this value of `s`. `held_quiet_tasks_1545_*` in crates/una-cli/tests/native.rs compare whole traces across values and engines (spec/27 §7 rule 4, ADR 0117 amendment of 2026-11-22)
+-- spec: spec/27 §7
+-- grant: console
+-- expect: run-output "main 1"
+-- expect: run-output "main 2"
+-- expect: run-output "main 3"
+-- expect: run-output "worker 1"
+-- expect: run-output "worker 2"
+-- expect: run-output "done"
+module held
+
+noop() -> Unit = unit
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = 2
+  tasks at most 2 at once
+    start worker(1)
+    if s > 0
+      start noop()
+    start worker(2)
+    @console.print("main 1")
+    if s > 1
+      tasks at most 1 at once
+        start noop()
+        start noop()
+    @console.print("main 2")
+    if s > 0
+      for i in 0..<s
+        start noop()
+    @console.print("main 3")
+  @console.print("done")

@@ -2980,8 +2980,19 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.scopes.pop();
         if !matches!(result, Ok(_) | Err(Stop::Exit(..))) {
             scope.cancelled.set(true);
+            // The held tasks of a block that fails or stops never run: dropped, each ends for
+            // the statement as a cancelled task that reached no check point, quiet, with no
+            // event (#1545, `spec/27 §7` rule 4).
+            self.drop_held(&scope);
         }
         self.flush();
+        // The tasks the statement does not hold first, as if quiet code had started none, then
+        // the held ones, on this task's turn (#1545).
+        self.wait_for(&scope, TasksScope::unheld_ended)?;
+        while !scope.held.borrow().is_empty() {
+            self.run_held(&scope)?;
+        }
+        self.run.ends_holding(&scope);
         self.wait_for(&scope, |scope| scope.running.get() == 0)?;
         // A task's abort that ends the run ends the statement with it.
         if let Some(abort) = self.run.aborted() {
@@ -2999,6 +3010,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         done: impl Fn(&TasksScope) -> bool,
     ) -> Result<(), Stop<'p>> {
         while !done(scope) {
+            // A park is one of the task's switches: the tasks it holds run first (#1545).
+            self.run.at_switch();
+            if done(scope) {
+                break;
+            }
             scope.waiter.set(Some(self.run.current()));
             if !self.run.park() {
                 scope.waiter.set(None);
@@ -3008,6 +3024,56 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
         }
         Ok(())
+    }
+
+    /// Runs the first task that `scope` holds to its end, on this task's turn (#1545, `spec/27
+    /// §7` rule 4): it goes to the front of the queue with a turn count of its own, and once it
+    /// has ended this task goes on, on the same turn, with the count its turn had before, unless
+    /// the held task's turn ended meanwhile. A held task that ends alone, too deep, ends here as
+    /// any started task does. O(1) besides the held task's own work.
+    fn run_held(&mut self, scope: &TasksScope) -> Result<(), Stop<'p>> {
+        let Some(id) = scope.held.borrow_mut().pop_front() else {
+            return Ok(());
+        };
+        self.flush();
+        let mark = {
+            let mut sched = self.run.sched.borrow_mut();
+            sched.push_front(id);
+            sched.hold_turn()
+        };
+        scope.draining.set(Some(id));
+        self.run.unholds();
+        self.run.runs_inline(id);
+        // The held task is part of this task's turn: it waits for it without a switch of its
+        // own, so it runs none of its other held tasks meanwhile.
+        let mut waited = Ok(());
+        while scope.draining.get() == Some(id) {
+            scope.waiter.set(Some(self.run.current()));
+            if !self.run.park_inline() {
+                scope.waiter.set(None);
+                waited = Err(fault(
+                    "a task waits for a task it holds outside the scheduler",
+                ));
+                break;
+            }
+        }
+        scope.draining.set(None);
+        self.run.sched.borrow_mut().resume_turn(mark);
+        waited?;
+        if let Some(abort) = self.run.aborted() {
+            return Err(Stop::Abort(abort));
+        }
+        Ok(())
+    }
+
+    /// Drops the tasks `scope` holds, unrun: each one's end counts it out of the statement.
+    fn drop_held(&mut self, scope: &TasksScope) {
+        let held: Vec<usize> = scope.held.borrow_mut().drain(..).collect();
+        for id in held {
+            self.run.unholds();
+            let body = self.run.sched.borrow_mut().unhold(id);
+            drop(body);
+        }
     }
 
     /// `start e` at `span` (`spec/27 §7`, ADR 0117 rule 7): once fewer tasks of the innermost
@@ -3057,10 +3123,18 @@ impl<'p, 'w> Machine<'p, 'w> {
             return Err(fault("a `start` outside its `tasks` statement"));
         };
         self.flush();
-        // Quiet and public tasks share the one bound (ADR 0117 rule 7): a quiet task's slot can
-        // make a later public `start` wait, which reorders public events here, an open channel
-        // (#1545, `spec/26 §6` rule 4).
-        self.wait_for(&scope, |scope| scope.running.get() < scope.bound)?;
+        // A `start` in quiet code never waits at the bound: its task is held, and the bound
+        // counts only the tasks the statement does not hold, so whether quiet code started
+        // tasks never makes a public `start` wait (#1545, `spec/27 §7` rule 4). A statement
+        // holds at most as many tasks as its bound: one more first runs the first one held.
+        let quiet = self.quiet > 0;
+        if quiet {
+            while scope.held.borrow().len() >= scope.bound {
+                self.run_held(&scope)?;
+            }
+        } else {
+            self.wait_for(&scope, |scope| scope.bounded() < scope.bound)?;
+        }
         if let Some(abort) = self.run.aborted() {
             return Err(Stop::Abort(abort));
         }
@@ -3075,7 +3149,6 @@ impl<'p, 'w> Machine<'p, 'w> {
         // A `start` in quiet code is not counted, and its task is `q`, with no number, so that
         // whether it ran, which may depend on data above `public`, moves neither the index of a
         // later public one nor the path of a later quiet one (S-40, #1512, `spec/27 §7` rule 5).
-        let quiet = self.quiet > 0;
         let mut counts = scope.started.get();
         let k = counts.next(quiet);
         scope.started.set(counts);
@@ -3085,6 +3158,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.run.live.set(self.run.live.get() + 1);
         // The started task's id, which its reply rights are recorded under (ADR 0123 rule 4).
         let id = self.run.sched.borrow().upcoming();
+        let held_scope = Rc::clone(&scope);
         let ending = Ending {
             scope,
             run: Rc::clone(&self.run),
@@ -3103,11 +3177,21 @@ impl<'p, 'w> Machine<'p, 'w> {
             });
         };
         moves(self, id as u64);
-        let started = self
-            .run
-            .sched
-            .borrow_mut()
-            .start(Box::new(task), bytes, span);
+        let started = if quiet {
+            let held = self
+                .run
+                .sched
+                .borrow_mut()
+                .hold(Box::new(task), bytes, span);
+            held_scope.held.borrow_mut().push_back(held);
+            self.run.holds(&held_scope);
+            held
+        } else {
+            self.run
+                .sched
+                .borrow_mut()
+                .start(Box::new(task), bytes, span)
+        };
         if started != id {
             return Err(fault("a started task took an id other than its own"));
         }
@@ -4020,6 +4104,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         // ring back (`settle`), so no later wake of the driver reaches it out of turn. No check
         // point runs between the helper's start and this look, so nothing else takes the ring.
         while !done.load(Ordering::SeqCst) {
+            // A park is one of the task's switches: the tasks it holds run first (#1545).
+            self.run.at_switch();
+            if done.load(Ordering::SeqCst) {
+                break;
+            }
             if !self.run.park() {
                 // INVARIANT: `offloads` is `Some` only while the driver serves the queue.
                 return Err(fault("an `Http` request off the thread with no scheduler"));

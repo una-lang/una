@@ -9278,42 +9278,505 @@ pub main() -> Unit
   @console.print("done")
 "#;
 
-#[test]
-fn s40_open_channel_1545_a_quiet_start_holds_a_slot_of_the_shared_bound() {
-    // OPEN CHANNEL, #1545 (`spec/26 §6` rule 4): this test documents a leak, it does not show
-    // a fix. Quiet and public tasks share the one bound of ADR 0117 rule 7, so the quiet `start`
-    // under `if s > 0` holds one of the two slots, `start worker(2)` waits for it, and the
-    // interpreter runs `worker(1)` before `main` prints: its output and trace depend on the
-    // secret, deterministically. Separate bounds would close it but let a statement run twice
-    // its bound (`docs/plan/0117-quiet-bounds-amendment-draft.md`). When #1545 is fixed, these
-    // expectations become one, the same for every secret. What is already closed is checked
-    // here too: the paths, and the executable's events task by task, equal the interpreter's.
-    let leaked = |secret: i64| {
-        if secret == 0 {
-            serde_json::json!(["main", "worker 1", "worker 2", "done"])
-        } else {
-            serde_json::json!(["worker 1", "main", "worker 2", "done"])
-        }
-    };
-    let mut paths: Option<std::collections::BTreeMap<String, Vec<Value>>> = None;
-    for secret in [0, 1, 2] {
-        let (output, run, native_output, native) =
-            secret_runs("s40bound", SECRET_START_BOUND, secret, &[]);
-        assert_eq!(output, leaked(secret), "{secret}");
-        assert_eq!(by_task(&native), by_task(&run), "{secret}");
-        let mut lines: Vec<String> = serde_json::from_value(native_output).unwrap();
-        lines.sort();
-        assert_eq!(lines, ["done", "main", "worker 1", "worker 2"], "{secret}");
-        let tasks = by_task(&run);
+/// One program of #1545 for one secret, built once: the interpreter's output and trace under
+/// the real clock and under `--virtual-time`, and the executable's under both.
+struct HeldRuns {
+    output: Value,
+    trace: Value,
+    virtual_output: Value,
+    virtual_trace: Value,
+    native_trace: Value,
+    native_virtual_output: Value,
+    native_virtual_trace: Value,
+}
+
+/// Runs `source`, with `SECRET` replaced by `secret`, in both engines, under the real clock and
+/// under `--virtual-time` (#1545).
+fn held_runs(name: &str, source: &str, secret: i64) -> HeldRuns {
+    let package = format!("{name}{secret}");
+    let program = source.replace("SECRET", &secret.to_string());
+    let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
+    let interpret = |args: &[&str]| -> (Value, Value) {
+        let mut run_args = vec!["--json", "run"];
+        run_args.extend_from_slice(args);
+        let run = una(&dir, &run_args);
         assert_eq!(
-            tasks.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["", "s1.1", "s1.2"],
-            "{secret}: {run}"
+            run.status.code(),
+            Some(0),
+            "{name} {secret}: {}",
+            String::from_utf8_lossy(&run.stderr)
         );
-        match &paths {
-            None => paths = Some(tasks),
-            Some(seen) => assert_eq!(&tasks, seen, "{secret}"),
+        let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+        (document["output"].clone(), document["trace"].clone())
+    };
+    let (output, trace) = interpret(&[]);
+    let (virtual_output, virtual_trace) = interpret(&["--virtual-time"]);
+    let built = una(&dir, &["build"]);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let execute = |args: &[&str]| -> (Value, Value) {
+        let file = dir.join("trace.json");
+        let native = Command::new(dir.join("target/una").join(&package))
+            .current_dir(&dir)
+            .args(args)
+            .arg("--trace")
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "{name} {secret}: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        let lines: Vec<Value> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(Value::from)
+            .collect();
+        let trace: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        (Value::from(lines), trace)
+    };
+    let (_, native_trace) = execute(&[]);
+    let (native_virtual_output, native_virtual_trace) = execute(&["--virtual-time"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    HeldRuns {
+        output,
+        trace,
+        virtual_output,
+        virtual_trace,
+        native_trace,
+        native_virtual_output,
+        native_virtual_trace,
+    }
+}
+
+/// Holds #1545's guarantee for `source` over `secrets`: the interpreter's output and whole
+/// trace, under the real clock and under `--virtual-time`, are `expected` and one trace for
+/// every secret; the executable under `--virtual-time` gives the same output and trace; and
+/// under the real clock, whose order across tasks is out of model (`spec/27 §8` rule 1), the
+/// executable's events task by task are the interpreter's.
+fn assert_held(name: &str, source: &str, secrets: &[i64], expected: &Value) {
+    let mut seen: Option<Value> = None;
+    for &secret in secrets {
+        let runs = held_runs(name, source, secret);
+        assert_eq!(&runs.output, expected, "{name} {secret}");
+        assert_eq!(&runs.virtual_output, expected, "{name} {secret}");
+        assert_eq!(runs.virtual_trace, runs.trace, "{name} {secret}");
+        assert_eq!(runs.native_virtual_output, runs.output, "{name} {secret}");
+        assert_eq!(
+            runs.native_virtual_trace, runs.trace,
+            "{name} {secret}: native under --virtual-time"
+        );
+        assert_eq!(
+            by_task(&runs.native_trace),
+            by_task(&runs.trace),
+            "{name} {secret}"
+        );
+        match &seen {
+            None => seen = Some(runs.trace),
+            Some(first) => assert_eq!(&runs.trace, first, "{name} {secret}: trace"),
         }
+    }
+}
+
+#[test]
+fn s40_remainder_1545_a_quiet_start_takes_no_slot_of_the_shared_bound() {
+    // #1545 (`spec/27 §7` rule 4, ADR 0117 amendment of 2026-11-22): the quiet `start` under
+    // `if s > 0` is held by its statement, so it takes none of the two slots, `start worker(2)`
+    // does not wait, and `main` prints first for every secret, in the interpreter and natively
+    // under `--virtual-time`. Before the fix, secret 0 printed `main` first and every other
+    // secret `worker 1` first.
+    assert_held(
+        "s40bound",
+        SECRET_START_BOUND,
+        &[0, 1, 2],
+        &serde_json::json!(["main", "worker 1", "worker 2", "done"]),
+    );
+}
+
+/// #1545, `park2.una` of the round-2 review of #1512: two quiet `start`s in a statement bounded
+/// at 1 whose one slot a public task holds; the second used to wait for that slot and park the
+/// block.
+const HELD_SLOT: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n}")
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks at most 1 at once
+    start worker(1)
+    if s > 0
+      start noop()
+      start noop()
+    @console.print("main")
+  @console.print("done")
+"#;
+
+/// #1545, `park3.una` of the round-2 review of #1512: a quiet nested `tasks` statement that waits
+/// for its task, which used to park the block.
+const HELD_NESTED: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n}")
+
+noop() -> Unit = unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks
+    start worker(1)
+    if s > 0
+      tasks
+        start noop()
+    @console.print("main")
+  @console.print("done")
+"#;
+
+/// #1545, variants: quiet tasks that start and bound their own tasks (`deep`, and `parker`,
+/// whose `start`s its own statement holds, so it runs them at a full `start` and never parks),
+/// a quiet statement bounded at 1 with as many `start`s as the secret, and quiet `start`s in a
+/// loop of a public statement bounded at 1, which hold more tasks than its bound, between
+/// public tasks.
+const HELD_VARIANTS: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n}")
+
+noop() -> Unit = unit
+
+spin(n: internal Int) -> Unit
+=
+  let edit k: internal Int = 0
+  for i in 0..<n
+    k = k + i
+
+deep(n: internal Int) -> Unit
+=
+  tasks
+    for i in 0..<n
+      start spin(i * 10)
+      tasks at most 1 at once
+        start noop()
+        start spin(i)
+
+parker() -> Unit
+=
+  tasks at most 1 at once
+    start noop()
+    start spin(50)
+    start noop()
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks
+    start worker(1)
+    if s > 0
+      tasks
+        start deep(s)
+    @console.print("main 1")
+    start worker(2)
+    if s > 1
+      start parker()
+    @console.print("main 2")
+    if s > 0
+      tasks at most 1 at once
+        for i in 0..<s
+          start spin(i)
+    start worker(3)
+    @console.print("main 3")
+  tasks at most 1 at once
+    start worker(4)
+    if s > 0
+      for i in 0..<s
+        start spin(i * 7)
+    @console.print("main 4")
+    start worker(5)
+    @console.print("main 5")
+  @console.print("done")
+"#;
+
+#[test]
+fn held_quiet_tasks_1545_a_quiet_start_at_a_full_bound_does_not_park_the_block() {
+    // `park2.una` (#1545): the quiet `start`s are held and run at the statement's end, after
+    // `worker(1)`, so `main` prints first for every secret, as for secret 0 before the fix.
+    assert_held(
+        "held1545slot",
+        HELD_SLOT,
+        &[0, 1, 2, 3],
+        &serde_json::json!(["main", "worker 1", "done"]),
+    );
+}
+
+#[test]
+fn held_quiet_tasks_1545_a_quiet_statement_that_waits_does_not_park_the_block() {
+    // `park3.una` (#1545): the quiet statement's task is held and run at its end on the block's
+    // turn, with a turn count of its own, so the block never parks and `main` prints first for
+    // every secret.
+    assert_held(
+        "held1545nested",
+        HELD_NESTED,
+        &[0, 1, 2, 3],
+        &serde_json::json!(["main", "worker 1", "done"]),
+    );
+}
+
+#[test]
+fn held_quiet_tasks_1545_nested_and_bounded_quiet_tasks_move_no_public_event() {
+    // #1545 variants: held tasks that start and bound tasks of their own, a quiet
+    // statement bounded at 1, and more quiet `start`s than a public statement's bound of 1,
+    // which run the earliest held task at the `start` that finds the statement full. Every
+    // public event keeps the order of secret 0 in both engines under `--virtual-time`.
+    assert_held(
+        "held1545variants",
+        HELD_VARIANTS,
+        &[0, 1, 2, 3, 5],
+        &serde_json::json!([
+            "main 1", "main 2", "main 3", "worker 1", "worker 2", "worker 3", "main 4", "worker 4",
+            "main 5", "worker 5", "done"
+        ]),
+    );
+}
+
+/// #1545, the residual: a held task longer than a turn, in a statement bounded at 2. The
+/// block's public loop ends its turn while `worker(1)` is ready and a place is free, so the
+/// block runs its held task at that switch; the held task passes 1024 check points while
+/// `worker(1)` is ready, so it is let go, takes the second place and turns of its own, and the
+/// public `start`s after it wait for a place as a count of check points that `internal` data
+/// decide makes them (#1708). A task queued at its `start`, as native code under the real
+/// clock does, gives another order for secret 1, so the test fails if native code under
+/// `--virtual-time` does not hold and let go as the interpreter does.
+const HELD_LONG: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n} starts")
+  let edit k = 0
+  for i in 0..<3000
+    k = k + i
+  @console.print("worker {n} ends")
+
+spin(n: internal Int) -> Unit
+=
+  let edit k: internal Int = 0
+  for i in 0..<n
+    k = k + i
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks at most 2 at once
+    @console.print("main starts")
+    start worker(1)
+    if s > 0
+      start spin(s * 5000)
+    let edit k = 0
+    for i in 0..<3000
+      k = k + i
+    @console.print("main")
+    start worker(2)
+    @console.print("main again")
+    start worker(3)
+    @console.print("main ends")
+  @console.print("done")
+"#;
+
+#[test]
+fn held_quiet_tasks_1545_a_held_task_longer_than_a_turn_is_let_go_alike_in_both_engines() {
+    // #1545, `spec/27 §7` rule 4: a held task that a switch of its statement's task runs, and
+    // that passes 1024 check points while another task is ready, goes to the back of the queue
+    // as any started task, and the statement's task goes on with a turn of its own. The
+    // interpreter's output is pinned for each secret, the residual of #1708 showing between
+    // secrets 1 and 2, and native code under `--virtual-time` gives the same output and whole
+    // trace. With native holding turned off (`let hold = false && quiet;` in `start` of
+    // `crates/una-rt/src/started.rs`), secret 1 gives another order and this test fails.
+    let early = [
+        "main starts",
+        "worker 1 starts",
+        "main",
+        "worker 1 ends",
+        "main again",
+        "worker 2 starts",
+        "main ends",
+        "worker 3 starts",
+        "worker 2 ends",
+        "worker 3 ends",
+        "done",
+    ];
+    let late = [
+        "main starts",
+        "worker 1 starts",
+        "main",
+        "worker 1 ends",
+        "main again",
+        "worker 2 starts",
+        "worker 2 ends",
+        "main ends",
+        "worker 3 starts",
+        "worker 3 ends",
+        "done",
+    ];
+    let none = [
+        "main starts",
+        "worker 1 starts",
+        "main",
+        "main again",
+        "worker 1 ends",
+        "worker 2 starts",
+        "main ends",
+        "worker 3 starts",
+        "worker 2 ends",
+        "worker 3 ends",
+        "done",
+    ];
+    for (secret, expected) in [(0, &none), (1, &early), (2, &late), (4, &late)] {
+        let runs = held_runs("held1545long", HELD_LONG, secret);
+        assert_eq!(runs.output, serde_json::json!(expected), "{secret}");
+        assert_eq!(runs.virtual_output, runs.output, "{secret}");
+        assert_eq!(runs.virtual_trace, runs.trace, "{secret}");
+        assert_eq!(runs.native_virtual_output, runs.output, "{secret}");
+        assert_eq!(runs.native_virtual_trace, runs.trace, "{secret}");
+        assert_eq!(
+            by_task(&runs.native_trace),
+            by_task(&runs.trace),
+            "{secret}"
+        );
+    }
+}
+
+/// #1545, a held task run when nothing else is ready (review 2 of #2200, L2, the reviewer's
+/// `q_alone`): the root's turn ends inside its first loop with no other task ready, so it runs
+/// its held `spin` at that switch; at the end of the held task's own turn only the root waits
+/// for it, which counts as ready, so the held task is let go and the root goes on before it
+/// ends. An engine that does not count the root as ready runs `spin` to its end first.
+const HELD_ALONE: &str = r#"module leak
+
+worker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("worker {n} starts")
+  let edit k = 0
+  for i in 0..<3000
+    k = k + i
+  @console.print("worker {n} ends")
+
+spin(n: internal Int) -> Unit
+=
+  let edit k: internal Int = 0
+  for i in 0..<n
+    k = k + i
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks at most 2 at once
+    @console.print("main starts")
+    if s > 0
+      start spin(s * 5000)
+    let edit k = 0
+    for i in 0..<1500
+      k = k + i
+    start worker(1)
+    @console.print("main")
+    for i in 0..<1500
+      k = k + i
+    @console.print("main ends")
+  @console.print("done")
+"#;
+
+#[test]
+fn held_quiet_tasks_1545_a_held_task_with_nothing_else_ready_is_let_go_alike_in_both_engines() {
+    // #1545, `spec/27 §7` rule 4: the task that ran a held task at one of its switches counts
+    // as ready, so the held task is let go at its own turn's end even when no other task is
+    // ready. The interpreter's output is pinned for each secret, and native code under
+    // `--virtual-time` gives the same output and whole trace (`spec/27 §8` rule 3). The native
+    // run is bounded by processor and wall-clock time, so an engine that kept the root waiting
+    // on a held task that never ends would fail here instead of blocking the suite. With
+    // native `sched::lets_go` returning `false`, secrets 1 and 2 give another order.
+    let queued = [
+        "main starts",
+        "worker 1 starts",
+        "main",
+        "main ends",
+        "worker 1 ends",
+        "done",
+    ];
+    let let_go = [
+        "main starts",
+        "main",
+        "worker 1 starts",
+        "main ends",
+        "worker 1 ends",
+        "done",
+    ];
+    for (secret, expected) in [(0, &queued), (1, &let_go), (2, &let_go)] {
+        let package = format!("held1545alone{secret}");
+        let program = HELD_ALONE.replace("SECRET", &secret.to_string());
+        let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
+        let run = una(&dir, &["--json", "run", "--virtual-time"]);
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{secret}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+        assert_eq!(document["output"], serde_json::json!(expected), "{secret}");
+        let built = una(&dir, &["build"]);
+        assert_eq!(
+            built.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let trace = dir.join("trace.json");
+        let mut command = Command::new(dir.join("target/una").join(&package));
+        command
+            .current_dir(&dir)
+            .arg("--virtual-time")
+            .arg("--trace")
+            .arg(&trace);
+        let native = output_within(&command, 60);
+        assert_eq!(
+            native.status.code(),
+            Some(0),
+            "{secret}: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+        let lines: Vec<Value> = String::from_utf8_lossy(&native.stdout)
+            .lines()
+            .map(Value::from)
+            .collect();
+        assert_eq!(Value::from(lines), document["output"], "{secret}: native");
+        let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+        assert_eq!(native_trace, document["trace"], "{secret}: native trace");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

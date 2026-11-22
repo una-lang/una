@@ -132,7 +132,12 @@ pub(crate) struct StartScope {
     /// moves the index, and so the placement, of a later public one (S-40, #1512, `spec/27 §7`
     /// rule 5).
     started: AtomicUsize,
-    running: sched::Counter,
+    /// Its own `Arc`, so that a held task's end, which the statement keeps, holds the count and
+    /// not the statement.
+    running: Arc<sched::Counter>,
+    /// The tasks that quiet code started under virtual time, which the statement holds, in the
+    /// order of their `start`s (#1545).
+    held: Mutex<std::collections::VecDeque<Held>>,
     pub(crate) cancel: Arc<AtomicUsize>,
 }
 
@@ -184,8 +189,19 @@ pub fn tasks_end(cancel: i64) {
     };
     if cancel != 0 {
         cancel_tasks(&scope, crate::deadline::cut());
+        // The held tasks of a block that fails or stops never run (#1545): dropped, each ends
+        // as a cancelled task that reached no check point, quiet, with no event.
+        let held = std::mem::take(&mut *lock(&scope.held));
+        drop(held);
     }
-    scope.running.wait_zero();
+    // The tasks the statement does not hold first, as if quiet code had started none, then the
+    // held ones, on this task's turn (#1545, `spec/27 §7` rule 4).
+    // While it waits, the statement is still the task's innermost one with tasks it holds.
+    scope.running.wait_zero(|| run_held_at_switch(Some(&scope)));
+    while !lock(&scope.held).is_empty() {
+        run_held(&scope);
+    }
+    scope.running.wait_zero(at_switch);
 }
 
 /// Cancels the tasks of `scope`, whose block failed or stops (ADR 0117 rule 7). `by_deadline`
@@ -236,7 +252,8 @@ impl StartScope {
             path,
             bound: bound.max(1),
             started: AtomicUsize::new(0),
-            running: sched::Counter::default(),
+            running: Arc::default(),
+            held: Mutex::new(std::collections::VecDeque::new()),
             cancel: Arc::new(AtomicUsize::new(ENTRY)),
         }
     }
@@ -280,12 +297,23 @@ pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 
         );
         return 2;
     };
-    // Quiet and public tasks share the one bound (ADR 0117 rule 7): a quiet task's slot can make
-    // a later public `start` wait, an open channel (#1545, `spec/26 §6` rule 4).
-    scope.running.acquire(scope.bound);
+    // Under virtual time, a `start` in quiet code never waits at the bound: its statement holds
+    // its task, which counts against no bound, and the task that runs the statement runs it on
+    // its own turn, as the interpreter does (#1545, `spec/27 §7` rule 4, §8 rule 3). A statement
+    // holds at most as many tasks as its bound: one more first runs the first one held. Under
+    // the real clock, quiet and public tasks share the one bound (ADR 0117 rule 7), and the
+    // order across tasks is real time, out of model (`spec/27 §8` rule 1).
+    let hold = quiet && runtime::clock().is_virtual();
+    if hold {
+        while lock(&scope.held).len() >= scope.bound {
+            run_held(&scope);
+        }
+    } else {
+        scope.running.acquire(scope.bound, at_switch);
+    }
     let shared = with_state(|state| Arc::clone(&state.shared));
     let Some(shared) = shared else {
-        scope.running.release();
+        unacquire(&scope, hold);
         return 2;
     };
     // On Linux, a run holds at most a quarter of `vm.max_map_count` started tasks at once
@@ -293,7 +321,7 @@ pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 
     if let Some(cap) = shared.cap
         && shared.live.load(Ordering::SeqCst) >= cap
     {
-        scope.running.release();
+        unacquire(&scope, hold);
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
         runtime::abort_from_task(
             Code::U6003,
@@ -309,19 +337,19 @@ pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 
     let form = match runtime::guarded(runtime::COPY, || values::export(closure)) {
         Ok(Ok(form)) => form,
         Ok(Err(values::Refused(message))) => {
-            scope.running.release();
+            unacquire(&scope, hold);
             runtime::refuse(site, message);
             return 2;
         }
         Err(message) => {
-            scope.running.release();
+            unacquire(&scope, hold);
             let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
             runtime::abort_from_task(Code::U8001, location, message);
             return 2;
         }
     };
     let Some(mut template) = with_state(|state| state.for_start(site)) else {
-        scope.running.release();
+        unacquire(&scope, hold);
         return 2;
     };
     // The started task's own holder of reply rights, and the rights its captures reach, moved
@@ -350,7 +378,7 @@ pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 
     shared.live.fetch_add(1, Ordering::SeqCst);
     let sched = Arc::clone(&template.sched);
     let stack = template.stack;
-    let ended = Arc::clone(&scope);
+    let ended = Arc::clone(&scope.running);
     let alive = Arc::clone(&shared);
     // The task's place in its statement places it: the `k`-th `start` of the statement, counted
     // from 1, is part `k`, which runs on worker `(w + k) mod N`, `w` being the starting task's
@@ -358,39 +386,73 @@ pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 
     // quiet `start` has no `k`: its static site places it, so its worker depends on the
     // program only (S-40).
     let part = if quiet { site.saturating_add(1) } else { k };
-    let spawned = sched.spawn_started(
-        part,
-        stack,
-        move || {
-            // A panic of the runtime is caught on the task's own stack, so nothing unwinds
-            // across a switch; it ends the run with U8001.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if runtime::FLOATS.load(Ordering::SeqCst) {
-                    crate::ffi::write_float_environment();
-                }
-                let _stack = runtime::StackCount::new(template.stack);
-                started(&template, path, entry, form, (site, invoke));
-            }));
-            if outcome.is_err() {
-                runtime::end_run_from_task(
-                    Code::U8001,
-                    template.location.clone(),
-                    "internal error: the runtime panicked in a started task".to_owned(),
-                );
+    let ran = Arc::new(sched::Ended::default());
+    let marked = Arc::clone(&ran);
+    let entered = Arc::clone(&ran);
+    let body = move || {
+        // A held task that a switch of its statement's task runs goes on with that task's turn
+        // until it ends or would switch itself (#1545).
+        entered.enter();
+        // A panic of the runtime is caught on the task's own stack, so nothing unwinds
+        // across a switch; it ends the run with U8001.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if runtime::FLOATS.load(Ordering::SeqCst) {
+                crate::ffi::write_float_environment();
             }
-        },
-        // Once the task's state and heap are gone, its statement counts it ended.
-        move || {
-            alive.live.fetch_sub(1, Ordering::SeqCst);
-            ended.running.release();
-        },
-    );
+            let _stack = runtime::StackCount::new(template.stack);
+            started(&template, path, entry, form, (site, invoke));
+        }));
+        if outcome.is_err() {
+            runtime::end_run_from_task(
+                Code::U8001,
+                template.location.clone(),
+                "internal error: the runtime panicked in a started task".to_owned(),
+            );
+        }
+        sched::Ended::leave();
+    };
+    // Once the task's state and heap are gone, its statement counts it ended, and the task that
+    // runs it when it is held goes on.
+    let finish = move || {
+        alive.live.fetch_sub(1, Ordering::SeqCst);
+        ended.release();
+        marked.mark();
+    };
+    if hold {
+        let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
+        let counter = Arc::clone(&scope.running);
+        let left = Arc::clone(&shared);
+        HOLDING.fetch_add(1, Ordering::SeqCst);
+        lock(&scope.held).push_back(Held {
+            launch: Some(Box::new(move || {
+                counter.count_one();
+                if sched.spawn_held(stack, body, finish).is_ok() {
+                    return true;
+                }
+                crate::serve::answer_left(holder);
+                left.live.fetch_sub(1, Ordering::SeqCst);
+                counter.release();
+                runtime::abort_from_task(
+                    Code::U6003,
+                    location,
+                    "this `start` could not run its task: no stack could be mapped for it"
+                        .to_owned(),
+                );
+                false
+            })),
+            ran,
+            holder,
+            shared: Arc::clone(&shared),
+        });
+        return 0;
+    }
+    let spawned = sched.spawn_started(part, stack, body, finish);
     if spawned.is_err() {
         // The task never starts: its statement counts it ended, and the host answers the rights
         // it was given, with no event (ADR 0123 rule 4.5).
         crate::serve::answer_left(holder);
         shared.live.fetch_sub(1, Ordering::SeqCst);
-        scope.running.release();
+        unacquire(&scope, hold);
         let location = with_state(|state| state.location(site)).unwrap_or_else(nowhere);
         runtime::abort_from_task(
             Code::U6003,
@@ -400,6 +462,113 @@ pub fn start(closure: i64, site: usize, captures: usize, invoke: Invoke) -> i64 
         return 2;
     }
     0
+}
+
+/// Gives back the slot that a `start` took of its statement's bound, unless its task is held,
+/// which took none.
+fn unacquire(scope: &StartScope, hold: bool) {
+    if !hold {
+        scope.running.release();
+    }
+}
+
+/// A task that quiet code started under virtual time and its statement holds (#1545, `spec/27
+/// §7` rule 4): how to start it at the front of the queue, its end, which the task that runs it
+/// waits for, and, should it never start, the reply rights it was given and the run's count of
+/// live tasks, which its drop settles.
+pub(crate) struct Held {
+    launch: Option<Box<dyn FnOnce() -> bool + Send>>,
+    ran: Arc<sched::Ended>,
+    holder: u64,
+    shared: Arc<RunShared>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // A held task that never started: the host answers the rights it was given, with no
+        // event (ADR 0123 rule 4.5), and the run counts it ended. Quiet, it has no `cancelled`
+        // event either.
+        if self.launch.take().is_some() {
+            HOLDING.fetch_sub(1, Ordering::SeqCst);
+            crate::serve::answer_left(self.holder);
+            self.shared.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Runs the first task that `scope` holds to its end, on the turn of the task that runs the
+/// statement (#1545, `spec/27 §7` rule 4): at the front of the worker's queue, with a turn count
+/// of its own, after which that task goes on with the count its turn had before, unless the
+/// held task's turn ended meanwhile. O(1) besides the held task's own work.
+fn run_held(scope: &StartScope) {
+    let Some(mut held) = lock(&scope.held).pop_front() else {
+        return;
+    };
+    let Some(launch) = held.launch.take() else {
+        return;
+    };
+    HOLDING.fetch_sub(1, Ordering::SeqCst);
+    held.ran.inline();
+    let mark = sched::hold_turn();
+    if launch() {
+        held.ran.wait();
+    }
+    sched::resume_turn(mark);
+}
+
+/// How many tasks the statements of the run hold, under virtual time (#1545).
+static HOLDING: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a statement of the run holds a task. O(1).
+pub(crate) fn holding() -> bool {
+    HOLDING.load(Ordering::SeqCst) > 0
+}
+
+/// A switch of the task that runs that is not the end of its turn: before it parks or waits in
+/// `next`, it runs the tasks it holds ([`run_held_at_switch`]). O(1) when the run holds none.
+pub(crate) fn at_switch() {
+    run_held_at_switch(None);
+}
+
+/// At a switch of the task that runs, under virtual time, the end of its turn, a park or a wait
+/// of `next` (#1545, `spec/27 §7` rule 4): runs the tasks it holds, earliest first, in the first
+/// of its statements, outermost first, that has one and a place free under its bound, each at
+/// the front of the queue with a turn count of its own, so that the task goes on with its own
+/// count once it has ended. A held task that would switch itself is let go: it goes on in its
+/// place under the bound as any started task, and this task, its turn over, goes on with a turn
+/// of its own, after which it runs no more of them at this switch. As the interpreter's
+/// `Run::run_held_at_switch`. `ending` is a statement whose end waits, which the task's
+/// statements in progress no longer list. O(s) per held task run, for the s statements in
+/// progress.
+pub(crate) fn run_held_at_switch(ending: Option<&Arc<StartScope>>) {
+    if !holding() || !runtime::clock().is_virtual() || !una_sys::coroutine::inside() {
+        return;
+    }
+    loop {
+        let scopes = with_state(|state| state.scopes.clone()).unwrap_or_default();
+        let next = scopes
+            .iter()
+            .chain(ending)
+            .find(|scope| !lock(&scope.held).is_empty() && scope.running.count() < scope.bound)
+            .cloned();
+        let Some(scope) = next else {
+            return;
+        };
+        let Some(mut held) = lock(&scope.held).pop_front() else {
+            return;
+        };
+        let Some(launch) = held.launch.take() else {
+            return;
+        };
+        HOLDING.fetch_sub(1, Ordering::SeqCst);
+        held.ran.attach();
+        let mark = sched::hold_turn();
+        let ended = launch() && held.ran.wait();
+        let went_on = sched::resume_turn(mark);
+        if !ended || !went_on || with_state(|state| state.stopped.is_some()).unwrap_or(true) {
+            return;
+        }
+    }
 }
 
 /// A location for an abort with no state to place it.
@@ -698,8 +867,8 @@ mod tests {
         // ADR 0117 rules 3 and 7: `acquire` parks at the bound until a task ends, and
         // `wait_zero` until every one has; outside a coroutine the waiting thread parks.
         let scope = Arc::new(StartScope::new("s1".to_owned(), 2));
-        scope.running.acquire(scope.bound);
-        scope.running.acquire(scope.bound);
+        scope.running.acquire(scope.bound, || {});
+        scope.running.acquire(scope.bound, || {});
         let ending = Arc::clone(&scope);
         let ended = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -709,8 +878,8 @@ mod tests {
             ending.running.release();
         });
         // The third waits for a release.
-        scope.running.acquire(scope.bound);
-        scope.running.wait_zero();
+        scope.running.acquire(scope.bound, || {});
+        scope.running.wait_zero(|| {});
         ended.join().unwrap();
         assert_eq!(scope.path, "s1");
     }

@@ -14,6 +14,10 @@
 //!   coroutine too, so it takes turns with its tasks; [`drive`] resumes the task at the front of
 //!   the queue until the root has ended. A run without one runs as before, on its thread's own
 //!   stack, with no switch.
+//! - **Held quiet tasks** (#1545, `spec/27 §7` rule 4). A task started in quiet code joins no
+//!   queue: its statement holds it, and the task that runs the statement runs it on its own
+//!   turn, at the front of the queue, with a turn count of its own ([`Sched::hold_turn`]), so
+//!   that whether quiet code started tasks never moves the turns of public ones.
 //! - **`Http` off the thread.** In a run that serves live peers and has a `tasks` statement, a
 //!   task's `Http` request runs on a helper thread while the task parks ([`Offload`], #1730);
 //!   the driver puts the task back in the queue once its request has landed. Every other run
@@ -111,6 +115,19 @@ pub(crate) struct Run<'p, 'w> {
     /// The reply rights `std.testing.test_exchange` gave so far (ADR 0123 rule 21), which
     /// numbers the next one.
     pub(crate) test_rights: Cell<u32>,
+    /// The statements that hold tasks, by the task that runs each (#1545, `spec/27 §7` rule 4),
+    /// and how many tasks they hold in all, read at each turn's end.
+    holders: RefCell<BTreeMap<usize, Vec<Rc<TasksScope>>>>,
+    holding: Cell<usize>,
+    /// The held tasks that a task runs at one of its switches, by id: the task that runs each
+    /// and the statement that held it. Such a task goes on with that task's turn until it ends
+    /// or would switch itself, when it is let go: it joins the queue as any started task, and
+    /// the task that ran it goes on with a turn of its own.
+    attached: RefCell<BTreeMap<usize, usize>>,
+    /// The held tasks that a task runs to their end, at the end of their statement or at a
+    /// full quiet `start`, by id: the task that runs each, which waits for it. A switch of
+    /// such a task is one of the task that waits for it, for [`Run::let_go`].
+    inline: RefCell<BTreeMap<usize, usize>>,
 }
 
 impl<'p, 'w> Run<'p, 'w> {
@@ -143,6 +160,10 @@ impl<'p, 'w> Run<'p, 'w> {
             serve: None,
             next_waiters: RefCell::new(BTreeMap::new()),
             test_rights: Cell::new(0),
+            holders: RefCell::new(BTreeMap::new()),
+            holding: Cell::new(0),
+            attached: RefCell::new(BTreeMap::new()),
+            inline: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -215,17 +236,32 @@ impl<'p, 'w> Run<'p, 'w> {
             return;
         }
         self.land();
-        let switch = {
+        let due = {
             let mut sched = self.sched.borrow_mut();
             sched.turn = sched.turn.saturating_add(1);
-            if sched.turn >= TURN && !sched.queue.is_empty() {
-                let current = sched.current;
-                sched.queue.push_back(current);
-                true
-            } else {
-                false
-            }
+            sched.turn >= TURN
         };
+        if !due {
+            return;
+        }
+        // The end of the turn is one of the task's switches: the tasks it holds run first, on
+        // this turn, with turn counts of their own (#1545).
+        if self.holding.get() > 0 {
+            self.run_held_at_switch();
+        }
+        // A held task attached to the task that ran it counts that task as ready: its turn
+        // ends whether or not another task is (#1545).
+        let (over, others) = {
+            let sched = self.sched.borrow();
+            (sched.turn >= TURN, !sched.queue.is_empty())
+        };
+        let switch = over && (others || self.lets_go());
+        if switch {
+            self.let_go();
+            let mut sched = self.sched.borrow_mut();
+            let current = sched.current;
+            sched.queue.push_back(current);
+        }
         if switch {
             una_sys::coroutine::suspend();
         }
@@ -249,6 +285,11 @@ impl<'p, 'w> Run<'p, 'w> {
         if !self.coroutines || !self.serving.get() {
             return false;
         }
+        // Before it hands the turn on, or blocks on the engine, the task runs the tasks it
+        // holds (#1545).
+        if self.holding.get() > 0 {
+            self.run_held_at_switch();
+        }
         self.land();
         let now = self.clock.now();
         // Once the run aborted, every waiter can end its `next`. In this one-thread interpreter
@@ -257,17 +298,17 @@ impl<'p, 'w> Run<'p, 'w> {
         let aborted = self.abort.borrow().is_some();
         let switch = {
             let waiters = self.next_waiters.borrow();
-            let mut sched = self.sched.borrow_mut();
+            let sched = self.sched.borrow();
             let progress =
                 |id: &usize| aborted || waiters.get(id).is_none_or(|waiter| waiter.ended(now));
-            if !sched.queue.iter().any(progress) {
-                false
-            } else {
-                let current = sched.current;
-                sched.queue.push_back(current);
-                true
-            }
-        };
+            sched.queue.iter().any(progress)
+        } || self.lets_go();
+        if switch {
+            self.let_go();
+            let mut sched = self.sched.borrow_mut();
+            let current = sched.current;
+            sched.queue.push_back(current);
+        }
         if switch {
             una_sys::coroutine::suspend();
         }
@@ -276,8 +317,167 @@ impl<'p, 'w> Run<'p, 'w> {
 
     /// Parks the task that runs until a task it waits for wakes it: its coroutine suspends.
     /// `false`, with no switch, unless [`drive`] serves the run, which only a defect reaches.
+    /// A held task that a switch of another task runs is let go first ([`Run::let_go`]).
     pub(crate) fn park(&self) -> bool {
+        if !self.serving.get() {
+            return false;
+        }
+        self.let_go();
+        una_sys::coroutine::suspend()
+    }
+
+    /// Parks the task that runs while a task it holds runs on its turn, at the front of the
+    /// queue: the held task is part of this task's turn, so nothing is let go (#1545).
+    pub(crate) fn park_inline(&self) -> bool {
         self.serving.get() && una_sys::coroutine::suspend()
+    }
+
+    /// Records that the task that runs holds a task in `scope` (#1545). O(s) for the s
+    /// statements it runs that hold tasks.
+    pub(crate) fn holds(&self, scope: &Rc<TasksScope>) {
+        let current = self.current();
+        let mut holders = self.holders.borrow_mut();
+        let scopes = holders.entry(current).or_default();
+        if !scopes.iter().any(|held| Rc::ptr_eq(held, scope)) {
+            scopes.push(Rc::clone(scope));
+        }
+        drop(holders);
+        self.holding.set(self.holding.get() + 1);
+    }
+
+    /// Records that `scope` holds one task less, which its task runs or drops. O(1).
+    pub(crate) fn unholds(&self) {
+        self.holding.set(self.holding.get().saturating_sub(1));
+    }
+
+    /// Forgets `scope`, which holds no task any more, at the end of its statement. O(s).
+    pub(crate) fn ends_holding(&self, scope: &Rc<TasksScope>) {
+        let current = self.current();
+        let mut holders = self.holders.borrow_mut();
+        if let Some(scopes) = holders.get_mut(&current) {
+            scopes.retain(|held| !Rc::ptr_eq(held, scope));
+            if scopes.is_empty() {
+                holders.remove(&current);
+            }
+        }
+    }
+
+    /// A switch of the task that runs that is not the end of its turn: before it parks or
+    /// waits in `next`, it runs the tasks it holds ([`Run::run_held_at_switch`]). O(1) when
+    /// the run holds none.
+    pub(crate) fn at_switch(&self) {
+        if self.holding.get() > 0 {
+            self.run_held_at_switch();
+        }
+    }
+
+    /// At a switch of the task that runs, the end of its turn, a park or a wait of `next`
+    /// (#1545, `spec/27 §7` rule 4): runs the tasks it holds, earliest first, in each
+    /// statement that has a place free under its bound, each at the front of the queue with a
+    /// turn count of its own, so that the task goes on with its own count once it has ended.
+    /// A held task that would switch itself is let go instead: it joins the queue in its place
+    /// under the bound, and this task, its turn over, goes on with a turn of its own, after
+    /// which it runs no more of them at this switch. O(s) per held task run, besides its work.
+    fn run_held_at_switch(&self) {
+        if !self.coroutines || !self.serving.get() {
+            return;
+        }
+        let runner = self.current();
+        loop {
+            let next = {
+                let holders = self.holders.borrow();
+                holders.get(&runner).and_then(|scopes| {
+                    scopes
+                        .iter()
+                        .find(|scope| {
+                            !scope.held.borrow().is_empty() && scope.bounded() < scope.bound
+                        })
+                        .cloned()
+                })
+            };
+            let Some(scope) = next else {
+                return;
+            };
+            let Some(id) = scope.held.borrow_mut().pop_front() else {
+                return;
+            };
+            self.unholds();
+            let mark = {
+                let mut sched = self.sched.borrow_mut();
+                sched.push_front(id);
+                sched.hold_turn()
+            };
+            self.attached.borrow_mut().insert(id, runner);
+            una_sys::coroutine::suspend();
+            let went_on = {
+                let mut sched = self.sched.borrow_mut();
+                let went_on = sched.turns == mark.1;
+                sched.resume_turn(mark);
+                went_on
+            };
+            if !went_on || self.abort.borrow().is_some() {
+                return;
+            }
+        }
+    }
+
+    /// Lets the task that runs go, when it is a held task that a switch of another task runs
+    /// and it is about to switch itself (#1545): that task joins the back of the queue, its
+    /// turn over, before this one does or parks. O(log a) for the a such tasks.
+    /// A held task that this task runs to its end switches with it, so the walk goes up the
+    /// tasks that wait so, to the first attached one. O(d log a) for a chain of d.
+    fn let_go(&self) {
+        let mut task = self.current();
+        loop {
+            let runner = self.attached.borrow_mut().remove(&task);
+            if let Some(runner) = runner {
+                self.sched.borrow_mut().wake(runner);
+                return;
+            }
+            let waiting = self.inline.borrow().get(&task).copied();
+            match waiting {
+                Some(waiting) => task = waiting,
+                None => return,
+            }
+        }
+    }
+
+    /// Whether [`Run::let_go`] would let a task go: the task that runs is attached, or a held
+    /// task run to its end by one that is, up the chain. O(d log a).
+    fn lets_go(&self) -> bool {
+        if self.attached.borrow().is_empty() {
+            return false;
+        }
+        let mut task = self.current();
+        loop {
+            if self.attached.borrow().contains_key(&task) {
+                return true;
+            }
+            let waiting = self.inline.borrow().get(&task).copied();
+            match waiting {
+                Some(waiting) => task = waiting,
+                None => return false,
+            }
+        }
+    }
+
+    /// Records that the task that runs waits for its held task `id`, which it runs to its end.
+    pub(crate) fn runs_inline(&self, id: usize) {
+        let current = self.current();
+        self.inline.borrow_mut().insert(id, current);
+    }
+
+    /// Ends the held task `id` for the task that runs it at one of its switches, if any: that
+    /// task goes on at the front of the queue, on the same turn. Whether it was such a task.
+    fn ended_attached(&self, id: usize) -> bool {
+        let runner = self.attached.borrow_mut().remove(&id);
+        match runner {
+            Some(runner) => {
+                self.sched.borrow_mut().push_front(runner);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The run's [`Offload`] when a task's `Http` request may run off the thread now: the run
@@ -448,6 +648,13 @@ pub(crate) struct Sched<'w> {
     queue: VecDeque<usize>,
     current: usize,
     turn: u32,
+    /// Whether the front of the queue goes on with the turn in progress instead of beginning a
+    /// new one: a held task that its statement's task runs, and that task again once the held
+    /// task has ended (#1545). Set by [`Sched::push_front`], cleared by the next pop.
+    keep: bool,
+    /// How many turns have begun, which tells a task that ran held tasks whether its turn went
+    /// on all along.
+    turns: u64,
     /// The started tasks whose coroutine the driver has not made yet: their body, the bytes
     /// of their stack, and their `start`.
     pending: BTreeMap<usize, Pending<'w>>,
@@ -480,6 +687,47 @@ impl<'w> Sched<'w> {
     pub(crate) fn wake(&mut self, id: usize) {
         self.queue.push_back(id);
     }
+
+    /// Puts task `id` at the front of the queue, on the turn in progress (#1545): the next task
+    /// to run, with no new turn. O(1).
+    pub(crate) fn push_front(&mut self, id: usize) {
+        self.queue.push_front(id);
+        self.keep = true;
+    }
+
+    /// Starts a turn count of its own for held tasks that the task that runs is about to run
+    /// (#1545): the count of its turn and how many turns had begun, which [`Sched::resume_turn`]
+    /// takes back. O(1).
+    pub(crate) fn hold_turn(&mut self) -> (u32, u64) {
+        let mark = (self.turn, self.turns);
+        self.turn = 0;
+        mark
+    }
+
+    /// Gives the task that ran held tasks back the count its turn had before them, when its
+    /// turn went on all along, so that their check points move none of its switches; after a
+    /// switch, its turn is the one in progress. O(1).
+    pub(crate) fn resume_turn(&mut self, (turn, turns): (u32, u64)) {
+        if self.turns == turns {
+            self.turn = turn;
+        }
+    }
+
+    /// Takes the body of the held task `id` out of the scheduler, which never ran it: dropping
+    /// it ends the task for its statement. O(log n).
+    pub(crate) fn unhold(&mut self, id: usize) -> Option<Pending<'w>> {
+        self.pending.remove(&id)
+    }
+
+    /// Starts a task that runs `body` on a stack of `bytes` and that joins no queue: its
+    /// statement holds it until the task that runs the statement runs it (#1545). Its id, as
+    /// [`Sched::start`]'s. O(log n).
+    pub(crate) fn hold(&mut self, body: Box<dyn FnOnce() + 'w>, bytes: usize, span: Span) -> usize {
+        self.next += 1;
+        let id = self.next;
+        self.pending.insert(id, (body, bytes, span));
+        id
+    }
 }
 
 /// The scope of a `tasks` statement in progress (`spec/27 §7`): the prefix of its tasks' paths,
@@ -494,14 +742,31 @@ pub(crate) struct TasksScope {
     /// How many tasks public code started: a `start` in quiet code is not counted (S-40,
     /// #1512, `spec/27 §7` rule 5).
     pub(crate) started: Cell<crate::concurrency::BlockCounts>,
-    /// How many of its tasks still run, those of quiet code included: a quiet task holds a slot
-    /// of the one bound, so it can make a later public `start` wait, an open channel (#1545).
+    /// How many of its tasks have not ended, the held ones included.
     pub(crate) running: Cell<usize>,
+    /// The tasks that quiet code started and the statement holds, in the order of their
+    /// `start`s: they join no queue and count against no bound until the task that runs the
+    /// statement runs them (#1545, `spec/27 §7` rule 4).
+    pub(crate) held: RefCell<VecDeque<usize>>,
+    /// The held task that the statement's task runs now, which wakes it at the front of the
+    /// queue when it ends.
+    pub(crate) draining: Cell<Option<usize>>,
     pub(crate) cancelled: Cell<bool>,
     pub(crate) waiter: Cell<Option<usize>>,
 }
 
 impl TasksScope {
+    /// Whether every task of the statement that it does not hold has ended. O(1).
+    pub(crate) fn unheld_ended(&self) -> bool {
+        self.bounded() == 0
+    }
+
+    /// How many tasks of the statement run that count against its bound: those it does not
+    /// hold. O(1).
+    pub(crate) fn bounded(&self) -> usize {
+        self.running.get().saturating_sub(self.held.borrow().len())
+    }
+
     /// The scope of a statement whose tasks' paths start with `path`, with `bound`.
     pub(crate) fn new(path: Vec<String>, bound: usize) -> TasksScope {
         TasksScope {
@@ -509,6 +774,8 @@ impl TasksScope {
             bound: bound.max(1),
             started: Cell::new(crate::concurrency::BlockCounts::default()),
             running: Cell::new(0),
+            held: RefCell::new(VecDeque::new()),
+            draining: Cell::new(None),
             cancelled: Cell::new(false),
             waiter: Cell::new(None),
         }
@@ -535,8 +802,25 @@ impl Drop for Ending<'_, '_> {
             .running
             .set(self.scope.running.get().saturating_sub(1));
         self.run.live.set(self.run.live.get().saturating_sub(1));
-        if let Some(waiter) = self.scope.waiter.take() {
-            self.run.sched.borrow_mut().wake(waiter);
+        self.run.inline.borrow_mut().remove(&self.task);
+        if self.run.ended_attached(self.task) {
+            return;
+        }
+        match self.scope.draining.get() {
+            // The held task that the statement's task runs: that task goes on, on this turn.
+            Some(task) if task == self.task => {
+                self.scope.draining.set(None);
+                if let Some(waiter) = self.scope.waiter.take() {
+                    self.run.sched.borrow_mut().push_front(waiter);
+                }
+            }
+            // The statement's task waits for its held task alone.
+            Some(_) => {}
+            None => {
+                if let Some(waiter) = self.scope.waiter.take() {
+                    self.run.sched.borrow_mut().wake(waiter);
+                }
+            }
         }
     }
 }
@@ -564,7 +848,10 @@ pub(crate) fn drive<'s, 'env, 'w: 'env>(
             let next = sched.queue.pop_front();
             if let Some(id) = next {
                 sched.current = id;
-                sched.turn = 0;
+                if !std::mem::take(&mut sched.keep) {
+                    sched.turn = 0;
+                    sched.turns = sched.turns.wrapping_add(1);
+                }
             }
             next
         };
@@ -638,6 +925,13 @@ fn clear(run: &Run<'_, '_>) {
     let left = {
         let mut sched = run.sched.borrow_mut();
         sched.queue.clear();
+        sched.keep = false;
+        drop(sched);
+        run.holders.borrow_mut().clear();
+        run.holding.set(0);
+        run.attached.borrow_mut().clear();
+        run.inline.borrow_mut().clear();
+        let mut sched = run.sched.borrow_mut();
         std::mem::take(&mut sched.pending)
     };
     drop(left);
@@ -854,6 +1148,73 @@ mod tests {
             ]
         );
         assert_eq!(run.live.get(), 0);
+    }
+
+    #[test]
+    fn a_held_task_runs_on_its_statement_s_turn_and_moves_none_of_its_switches() {
+        // #1545, `spec/27 §7` rule 4: a held task joins no queue; the task that runs its
+        // statement runs it at the front, with a turn count of its own, and goes on on the same
+        // turn with the count it had before, so the held task's check points do not bring its
+        // switch forward: the root still passes 1024 check points of its own before `a` runs.
+        let log: RefCell<Vec<&str>> = RefCell::new(Vec::new());
+        let mut world = crate::host::NoWorld;
+        let run = Rc::new(Run::new(&mut world, Clock::virtual_time(), true));
+        let scope = Rc::new(TasksScope::new(vec!["s1".to_owned()], 1));
+        rooted(&run, || {
+            let log = &log;
+            run.sched.borrow_mut().start(
+                Box::new(move || log.borrow_mut().push("a")),
+                64 * 1024,
+                span(),
+            );
+            let held = run.sched.borrow().upcoming();
+            let ending = Ending {
+                scope: Rc::clone(&scope),
+                run: Rc::clone(&run),
+                task: held,
+            };
+            let own = Rc::clone(&run);
+            scope.running.set(1);
+            let id = run.sched.borrow_mut().hold(
+                Box::new(move || {
+                    let _ending = ending;
+                    for _ in 0..500 {
+                        own.tick();
+                    }
+                    log.borrow_mut().push("held");
+                }),
+                64 * 1024,
+                span(),
+            );
+            assert_eq!(id, held);
+            scope.held.borrow_mut().push_back(id);
+            for _ in 0..1000 {
+                run.tick();
+            }
+            // As `Machine::run_held` does.
+            assert_eq!(scope.held.borrow_mut().pop_front(), Some(id));
+            let mark = {
+                let mut sched = run.sched.borrow_mut();
+                sched.push_front(id);
+                sched.hold_turn()
+            };
+            scope.draining.set(Some(id));
+            scope.waiter.set(Some(run.current()));
+            assert!(run.park());
+            assert_eq!(scope.draining.get(), None);
+            run.sched.borrow_mut().resume_turn(mark);
+            for _ in 0..23 {
+                run.tick();
+            }
+            log.borrow_mut().push("root at 1023");
+            run.tick();
+            log.borrow_mut().push("root again");
+        });
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["held", "root at 1023", "a", "root again"]
+        );
+        assert_eq!(scope.running.get(), 0);
     }
 
     /// A run that makes its `Http` requests off its thread, with `places` places (#1730).
