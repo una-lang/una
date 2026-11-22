@@ -409,7 +409,7 @@ record=$version.md
 say "reading the validation summary of $version"
 fetch "$records/v$version/docs/validation/$record" "$work/$record" \
     || fetch "$records/main/docs/validation/$record" "$work/$record" \
-    || fail "no validation summary for $version (docs/validation/$record), so this script does not install it; a release without one, such as 0.1.x, can be installed by hand from its release assets"
+    || fail "no validation summary for $version could be read (docs/validation/$record, at v$version or on main), so this script does not install it; check that $version is released and that the repository can be reached"
 grep -qx -e 'Verdict: PASS (every gate)' -e 'Verdict: ACCEPTED BY THE OWNER' "$work/$record" \
     || fail "the validation summary of $version is not a PASS of every gate, and is not accepted by the owner"
 archive=una-$version-$target.tar.gz
