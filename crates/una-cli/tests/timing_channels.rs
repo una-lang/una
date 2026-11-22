@@ -2350,12 +2350,14 @@ fn every_timing_oracle_program_checks() {
             ),
             Expected::Accepted,
         );
+        // Since #1708 the oracle builds the `secret` program, whose loop's iterations are
+        // uncounted check points (`spec/27 §8` rule 5).
         add(
-            format!("phase internal key {key}"),
+            format!("phase secret key {key}"),
             native_build::write_within_package(
                 &format!("checkphase{key}"),
                 "phase",
-                &phase_program("internal ", key),
+                &phase_program("secret ", key),
             ),
             Expected::Accepted,
         );
@@ -2365,15 +2367,6 @@ fn every_timing_oracle_program_checks() {
             Expected::Accepted,
         );
     }
-    add(
-        "phase secret key 1".to_owned(),
-        native_build::write_within_package(
-            "checkphasesecret",
-            "phase",
-            &phase_program("secret ", 1),
-        ),
-        Expected::Refused("U4002", "src/phase.una:10:3".to_owned()),
-    );
     let later_line = residue_program("secret ", 0, "", "")
         .lines()
         .position(|line| line.starts_with("  let later = attempt @http.get("))
