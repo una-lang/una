@@ -796,6 +796,33 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null |
         printf '%s\n' "$strips"
     fi
     echo
+    # The Linux toolchain that linked each Linux `una` (#1926, #1958, #1971), as
+    # scripts/check-toolchain.sh printed it in the release gate's log, after it checked each
+    # package and file against supply-chain/z3.lock: `toolchain: <target>: <package> <version>`
+    # and `toolchain: <target>: <file> sha256 <digest>`. Only the record holds them; the summary
+    # copies none (docs/release-gates.md §3).
+    echo "## Linux toolchain"
+    echo
+    toolchains=$(sed -n 's/^toolchain: \([a-z0-9_-]*\): \(.*\)$/- \1: \2/p' "$OUT/logs/release.log" 2>/dev/null | LC_ALL=C sort -u)
+    if [ -z "$toolchains" ]; then
+        echo "None: the release gate did not run or did not record a Linux toolchain."
+    else
+        printf '%s\n' "$toolchains"
+    fi
+    echo
+    # The musl inputs embedded into each Linux `una` (ADR 0124 rules 12 and 20, #1971), as
+    # scripts/release.sh printed them in the release gate's log, after it checked each digest
+    # against supply-chain/musl.lock: `musl: <target>: <file> sha256 <digest>`. Only the record
+    # holds them; the summary copies none (docs/release-gates.md §3).
+    echo "## musl inputs"
+    echo
+    musls=$(sed -n 's/^musl: \([a-z0-9_-]*\): \(.*\)$/- \1: \2/p' "$OUT/logs/release.log" 2>/dev/null | LC_ALL=C sort -u)
+    if [ -z "$musls" ]; then
+        echo "None: the release gate did not run or did not record the musl inputs."
+    else
+        printf '%s\n' "$musls"
+    fi
+    echo
     echo "## Dependency audit"
     echo
     tool=$(sed -n 's/^tool: \(cargo-deny [0-9.]*\), sha256 [0-9a-f]*$/\1/p' "$OUT/logs/deps.log" 2>/dev/null)

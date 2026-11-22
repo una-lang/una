@@ -6,7 +6,8 @@ summary from a fixed template: the commit, the run's date, OS and architecture, 
 the gate table without log digests, the archives with their SHA-256, the strip that removed
 the debug sections of each embedded runtime, with its version and its binary's digest (#1359),
 the dependency audit's tool and advisory database (#770) and the verdict. Nothing
-else of the record is copied: no subject, no notes, no log digest, no docs bundle.
+else of the record is copied: no subject, no notes, no log digest, no docs bundle, no Linux
+toolchain or musl lines (#1971).
 
 Every field is checked against its shape before it is written, and a field that does not match
 stops the summary: no free text of the record can reach it. The privacy pattern comes on the

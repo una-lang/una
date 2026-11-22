@@ -174,7 +174,8 @@ export UNA_EMBED_RUNTIME UNA_EMBED_RUNTIME_SHA256
 # self-contained directory of the musl target of this machine's architecture (the rust-std
 # component that rust-toolchain.toml's targets install), never from the building machine's own
 # C library. Each file's digest must be the one supply-chain/musl.lock pins for that musl target;
-# it is printed on a line `musl: <target>: <file> sha256 <digest>`, for the validation record,
+# it is printed on a line `musl: <target>: <file> sha256 <digest>`, which scripts/release-gates.sh
+# copies into the validation record's section "musl inputs" (#1971),
 # and passed with the directory to una-cli's build script, which checks each file against the
 # lock again and embeds it. Only this target's inputs are carried (rule 12). The internal linker
 # of Linux links them from slice 4c on; until then `una build` on Linux links through `cc` with
@@ -204,7 +205,8 @@ esac
 # The Linux toolchain that links `una` (#1926, #1958): scripts/check-toolchain.sh refuses
 # (exit 2) an image whose Debian packages or whose files that the linker puts into `una`
 # (libstdc++.a, libgcc.a, the start-up objects) differ from supply-chain/z3.lock, before `una`
-# is built, and prints a line `toolchain: <target>: ...` for each, for the validation record.
+# is built, and prints a line `toolchain: <target>: ...` for each, which scripts/release-gates.sh
+# copies into the validation record's section "Linux toolchain" (#1971).
 case $target in
     *-linux-*) scripts/check-toolchain.sh "$target" || exit 2 ;;
 esac
