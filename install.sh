@@ -220,6 +220,22 @@ no_link_on() {
         [ -e "$on" ] || return 0
     done
 }
+# `unlink_recorded KIND PATH`: removes a recorded file (`rm -f`) or an empty recorded directory
+# (`rmdir`), after checking again, just before, that no directory on the way is a symbolic link
+# (#2199 review 2). `check_record` ran before the download; this narrows the window in which a
+# directory swapped for a link would be followed from the length of a download to the few system
+# calls between the last check and the removal. A shell cannot close it: it has no `unlinkat` on
+# a directory it holds open. Only someone who can write UNA_HOME while the installer runs can use
+# that window, and as root every directory on the way was proven to be one only root can change.
+unlink_recorded() {
+    no_link_on "$2" "$2"
+    if [ "$1" = file ]; then
+        rm -f "${home:?}/$2"
+    else
+        no_link_on "$2/" "$2"
+        rmdir "${home:?}/$2" 2> /dev/null || true
+    fi
+}
 # `check_record`: every path of the record lies inside UNA_HOME, is spelled as the installer
 # writes it, and goes through no symbolic link; as root, every directory on the way to it (and a
 # recorded directory itself) is also one only root can change, or `rm` and `rmdir` could reach
@@ -261,7 +277,7 @@ if [ "${1:-}" = --uninstall ]; then
     # they are empty. A path that leaves UNA_HOME is never followed.
     check_record
     while read -r kind path; do
-        [ "$kind" = file ] && rm -f "${home:?}/$path"
+        [ "$kind" != file ] || unlink_recorded file "$path"
     done < "$marker"
     # The proof cache's key (ADR 0064): `una` makes it on first use as $HOME/.una/proof-cache.key,
     # whatever UNA_HOME is, and it has no use without the installation. Only that one name is
@@ -304,7 +320,7 @@ if [ "${1:-}" = --uninstall ]; then
         case $path in
             "") ;;
             .) rmdir "$home" 2> /dev/null || true ;;
-            *) rmdir "$home/$path" 2> /dev/null || true ;;
+            *) unlink_recorded dir "$path" ;;
         esac
     done
     # $HOME/.una, when the key was removed from it and nothing else is there.
@@ -571,13 +587,34 @@ fi
 # lists and no stale program stays on PATH. `rm -f` removes a symbolic link, never what it names;
 # a path that is now a directory is not a file of the installation and is kept. Then the
 # directories of that record left empty, deepest first; the record keeps those that remain.
+# A recorded name that is the same file or directory as one this installation holds, though
+# spelled otherwise (`BIN/una` or `README.MD` on a file system that ignores case, a name in
+# another Unicode normalization), is never removed (#2199 review 2): `held_new PATH` compares
+# with `-ef` (the same device and inode), which dash, bash, busybox and macOS's sh all have. A
+# symbolic link is never a file this installation wrote, so a recorded link is removed as itself.
+held_new() {
+    [ ! -L "$home/$1" ] || return 1
+    for new in $files; do
+        [ "$home/$1" -ef "$home/$new" ] && return 0
+        up=$new
+        while :; do
+            case $up in
+                */*) up=${up%/*} ;;
+                *) break ;;
+            esac
+            [ "$home/$1" -ef "$home/$up" ] && return 0
+        done
+    done
+    return 1
+}
 removed=
 if [ -f "$marker" ]; then
     while read -r kind path; do
         [ "$kind" = file ] || continue
         case " $files " in *" $path "*) continue ;; esac
+        ! held_new "$path" || continue
         if [ -L "$home/$path" ] || [ -f "$home/$path" ]; then
-            rm -f "${home:?}/$path"
+            unlink_recorded file "$path"
             removed="$removed $path"
         fi
     done < "$marker"
@@ -585,7 +622,7 @@ if [ -f "$marker" ]; then
         | while read -r path; do
             case $path in
                 "" | .) ;;
-                *) rmdir "$home/$path" 2> /dev/null || true ;;
+                *) held_new "$path" || unlink_recorded dir "$path" ;;
             esac
         done
 fi

@@ -243,7 +243,11 @@ fn run_installer(
         .env_clear()
         .env("PATH", path)
         .env("HOME", &home)
-        .envs(envs.iter().copied().filter(|(name, _)| *name != "UMASK"))
+        .envs(
+            envs.iter()
+                .copied()
+                .filter(|(name, _)| !matches!(*name, "UMASK" | "FETCH_HOOK")),
+        )
         .env("UNA_VERSION", version)
         .env(
             "UNA_RELEASES",
@@ -779,6 +783,119 @@ fn a_recorded_path_through_a_link_is_refused_for_every_user_before_anything_is_d
         );
     }
     assert!(!home.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_recorded_name_that_is_a_new_file_spelled_otherwise_is_never_removed() {
+    // #2199 review 2: on a file system that ignores case, as macOS's default does, `BIN/una` and
+    // `README.MD` name the new `bin/una` and `README.md`. A recorded name that is the same file
+    // or directory as one the new installation holds is not removed, however it is spelled.
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-case");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.1";
+    let home = dir.join("home/.una");
+    release_holding(
+        &dir,
+        target,
+        version,
+        "PASS (every gate)",
+        None,
+        &[
+            ("README.md", "readme"),
+            ("docs/guide/getting-started.md", "guide"),
+        ],
+    );
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let record = home.join(".una-install");
+    let text = std::fs::read_to_string(&record).unwrap();
+    let ignores_case = home.join("BIN/una").exists();
+    std::fs::write(
+        &record,
+        format!("{text}file BIN/una\nfile Bin/UNA\nfile README.MD\nfile DOCS/guide/Getting-Started.md\ndir BIN\ndir Docs/Guide\n"),
+    )
+    .unwrap();
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    for kept in ["bin/una", "README.md", "docs/guide/getting-started.md"] {
+        assert!(
+            home.join(kept).is_file(),
+            "{kept} (ignores case: {ignores_case})"
+        );
+    }
+    assert!(
+        !stdout(&output).contains("removed"),
+        "ignores case: {ignores_case}: {}",
+        stdout(&output)
+    );
+    // The new record lists the new files as the installer spells them, and no other file.
+    let record = std::fs::read_to_string(&record).unwrap();
+    let recorded: Vec<&str> = record.lines().filter(|l| l.starts_with("file ")).collect();
+    let expected: Vec<&str> = text.lines().filter(|l| l.starts_with("file ")).collect();
+    assert_eq!(recorded, expected, "ignores case: {ignores_case}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_swapped_for_a_link_during_the_download_is_not_followed() {
+    // #2199 review 2: the record is checked before the download, and checked again just before
+    // each removal, so a recorded directory replaced by a link while the archive downloads is
+    // refused then, and nothing outside UNA_HOME is removed.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-swap");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.9.0";
+    let home = dir.join("home/.una");
+    let elsewhere = dir.join("elsewhere");
+    release(
+        &dir,
+        "aarch64-unknown-linux-gnu",
+        version,
+        "PASS (every gate)",
+        None,
+    );
+    let (output, _) = install_on(&dir, version, &GLIBC_239);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    std::fs::create_dir_all(home.join("z3/bin")).unwrap();
+    std::fs::write(home.join("z3/bin/z3"), "the installed z3").unwrap();
+    std::fs::create_dir_all(elsewhere.join("z3/bin")).unwrap();
+    std::fs::write(elsewhere.join("z3/bin/z3"), "the user's z3").unwrap();
+    let record = home.join(".una-install");
+    let text = std::fs::read_to_string(&record).unwrap();
+    std::fs::write(
+        &record,
+        format!("{text}dir z3\ndir z3/bin\nfile z3/bin/z3\n"),
+    )
+    .unwrap();
+    let z3 = home.join("z3");
+    let hook = format!(
+        "[ -L '{z3}' ] || {{ mv '{z3}' '{z3}.real' && ln -s '{outside}' '{z3}'; }}",
+        z3 = z3.display(),
+        outside = elsewhere.join("z3").display()
+    );
+    let (output, fetched) = install_on_with(
+        &dir,
+        version,
+        &GLIBC_239,
+        &[],
+        &[("FETCH_HOOK", hook.as_str())],
+    );
+    assert!(!fetched.is_empty());
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("which goes through the symbolic link"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("z3/bin/z3")).unwrap(),
+        "the user's z3"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1360,6 +1477,12 @@ fn install_on_with(
             )
         },
     );
+    // `FETCH_HOOK` in `envs`, a shell command that each download runs first: a test changes
+    // UNA_HOME while the installer downloads, between its checks and its removals.
+    let hook = envs
+        .iter()
+        .find(|(name, _)| *name == "FETCH_HOOK")
+        .map_or("", |(_, hook)| hook);
     for fetcher in ["curl", "wget"] {
         let found = Command::new("sh")
             .arg("-c")
@@ -1372,7 +1495,7 @@ fn install_on_with(
             script(
                 &bin.join(fetcher),
                 &format!(
-                    "echo \"{fetcher} $*\" >> '{}'\nPATH={SYSTEM_PATH} exec {fetcher} \"$@\"",
+                    "echo \"{fetcher} $*\" >> '{}'\n{hook}\nPATH={SYSTEM_PATH} exec {fetcher} \"$@\"",
                     fetches.display()
                 ),
             );
