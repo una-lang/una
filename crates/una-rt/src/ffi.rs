@@ -52,11 +52,16 @@ impl Peak {
     /// Records an allocation of `size` bytes that the inner allocator made: the bytes held now,
     /// read after it, raise the peak, and the thread's own count grows. A deallocation on
     /// another thread between the two may hide a peak, so with several threads allocating the
-    /// mark is a lower bound; in a quiet phase (ADR 0113, I3) it is exact.
+    /// mark is a lower bound; in a quiet phase (ADR 0113, I3) it is exact. While another thread
+    /// changes the limit the bytes held are not read, since a read then can be torn (#2151),
+    /// and the allocator never waits: the mark stays a lower bound.
     fn note(&self, size: usize) {
-        // A monotone maximum: `Relaxed` suffices, since no other memory is published through it.
-        self.peak
-            .fetch_max(self.inner.allocated(), std::sync::atomic::Ordering::Relaxed);
+        if let Some(held) = crate::held_now() {
+            // A monotone maximum: `Relaxed` suffices, since no other memory is published
+            // through it.
+            self.peak
+                .fetch_max(held, std::sync::atomic::Ordering::Relaxed);
+        }
         THREAD_ALLOCATED.with(|bytes| bytes.set(bytes.get().saturating_add(size)));
     }
 }
