@@ -1148,6 +1148,73 @@ pub main() -> Unit
 }
 
 #[test]
+fn check_and_run_agree_on_the_listed_grants() {
+    // #826, #925, `spec/13 §5`: a listed `[run] grants` is the final set, an empty one included,
+    // so `una check` fails closed with U3012 wherever `una run` would stop with it. A package
+    // that lists no grants leaves them to `--grant`: `una check` accepts it, and `una run`
+    // without a flag reports U3012 before the program starts.
+    const MAIN: &str = "module hello
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"hi\")
+";
+    let u3012 = "`main` uses `print` of `Console`, which neither `[run] grants` nor a `--grant` flag grants";
+    for (name, run, check_rejects) in [
+        (
+            "grants-empty",
+            "\n[run]\nentry = \"hello\"\ngrants = []\n",
+            true,
+        ),
+        ("grants-absent", "\n[run]\nentry = \"hello\"\n", false),
+        (
+            "grants-lacking",
+            "\n[run]\nentry = \"hello\"\ngrants = [\"clock\"]\n",
+            true,
+        ),
+        (
+            "grants-granted",
+            "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+            false,
+        ),
+    ] {
+        let root = package(name, run, &[("src/hello.una", MAIN)]);
+        let check = una_in(&root, &["--json", "check"]);
+        let document = json(&check);
+        if check_rejects {
+            assert_eq!(check.status.code(), Some(1), "{name}: {document}");
+            assert_eq!(document["diagnostics"][0]["code"], "U3012", "{name}");
+            assert_eq!(
+                document["diagnostics"][0]["message"],
+                "`main` uses `print` of `Console`, which `[run] grants` does not grant",
+                "{name}"
+            );
+            assert_eq!(
+                document["diagnostics"][0]["primary"],
+                json!({"file": "src/hello.una", "start": {"line": 4, "col": 3}, "end": {"line": 4, "col": 32}}),
+                "{name}"
+            );
+        } else {
+            assert_eq!(check.status.code(), Some(0), "{name}: {document}");
+            assert_eq!(document["diagnostics"], json!([]), "{name}");
+        }
+        let output = una_in(&root, &["--json", "run"]);
+        if name == "grants-granted" {
+            assert_eq!(output.status.code(), Some(0), "{name}: {}", stderr(&output));
+            assert_eq!(json(&output)["output"], json!(["hi"]), "{name}");
+        } else {
+            // `una run` stops every package but the granted one, `grants-absent` included.
+            assert_eq!(output.status.code(), Some(1), "{name}");
+            let document = json(&output);
+            assert_eq!(document["status"], "rejected", "{name}");
+            assert_eq!(document["diagnostics"][0]["code"], "U3012", "{name}");
+            assert_eq!(document["diagnostics"][0]["message"], u3012, "{name}");
+        }
+    }
+}
+
+#[test]
 fn run_reports_bad_grants_entries_and_mains_as_usage_errors() {
     let output = una(&["run", "examples/hello", "--grant", "network"]);
     assert_eq!(output.status.code(), Some(2));
