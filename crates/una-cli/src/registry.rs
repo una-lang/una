@@ -290,7 +290,7 @@ pub(crate) fn open<'t>(
         root_version: root_version.as_ref().map(|stored| stored.version),
         root_digest: root_version
             .as_ref()
-            .and_then(|stored| stored.digest.as_deref()),
+            .and_then(|stored| stored.digest.as_ref()),
     };
     let mut registry = Registry::open_with(name, transport, pin, point, &floors)?;
     if matches!(point, Point::Latest { .. } | Point::Served) {
@@ -314,10 +314,6 @@ pub(crate) fn open<'t>(
         // chain that forked from the one another run stored meanwhile is refused here, before
         // its checkpoint can become a floor.
         let chain = registry.root_chain();
-        let chain: Vec<(u64, &str)> = chain
-            .iter()
-            .map(|(version, digest)| (*version, digest.as_str()))
-            .collect();
         let root_note = match itaoca.store_root_chain(&id, &chain) {
             Ok(()) => None,
             Err(FloorRefusal::Forked {
@@ -326,7 +322,9 @@ pub(crate) fn open<'t>(
                 offered,
             }) => {
                 return Err(OpenError::Refused(format!(
-                    "the registry `{name}` serves root version {version} with the digest {offered}, and another digest is held for the same root version, {held}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca"
+                    "the registry `{name}` serves root version {version} with the digest {offered} of {}, and another digest is held for the same root version, {}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca",
+                    held.covers(),
+                    held.value()
                 )));
             }
             Err(FloorRefusal::NotStored(why)) => Some(format!(
@@ -352,13 +350,11 @@ pub(crate) fn accepted_root_version(registry: &Registry<'_>) -> u64 {
     registry.root.version
 }
 
-/// The digest of the root metadata of [`accepted_root_version`], `sha256:` and hex, which
-/// [`open`] stores with it as the floor (ADR 0122, amendment of 2026-11-09, L3).
+/// The digest of the text of the root metadata of [`accepted_root_version`], `sha256:` and
+/// hex, which [`open`] stores with it as the floor (ADR 0122, amendments of 2026-11-09, L3, and
+/// of 2026-11-19).
 pub(crate) fn accepted_root_digest(registry: &Registry<'_>) -> String {
-    registry
-        .last_root()
-        .map(|(_, digest)| digest.to_owned())
-        .unwrap_or_default()
+    registry.root.text_digest.clone()
 }
 
 /// The lines of `ita.lock` for a registry's resolution point (rule 16), with the last root

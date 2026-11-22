@@ -521,7 +521,7 @@ impl From<Problem> for Failure {
 }
 
 /// A root chain walked, each version with its digest ([`Registry::root_chain`]).
-type RootChain = Vec<(u64, String)>;
+type RootChain = Vec<crate::itaoca::WalkedRoot>;
 
 /// The places behind a bundle's copy of a source: given the source's name, the transports of
 /// the other places that serve it, in their order, for the documents the copy omits.
@@ -743,7 +743,7 @@ pub fn unbundle(
             root_version: root_version.as_ref().map(|stored| stored.version),
             root_digest: root_version
                 .as_ref()
-                .and_then(|stored| stored.digest.as_deref()),
+                .and_then(|stored| stored.digest.as_ref()),
         };
         let (document, chain) = verify_source(&copy, behind, expected, &stored)
             .map_err(|(index, failure)| (Some(index), failure))?;
@@ -754,11 +754,7 @@ pub fn unbundle(
     // chain with the floor read with no lock, and the store compares it again with the floor as
     // it is under the lock.
     for (at, source, id, chain) in &roots {
-        let chain: Vec<(u64, &str)> = chain
-            .iter()
-            .map(|(version, digest)| (*version, digest.as_str()))
-            .collect();
-        match itaoca.store_root_chain(id, &chain) {
+        match itaoca.store_root_chain(id, chain) {
             Ok(()) => {}
             Err(FloorRefusal::Forked {
                 version,
@@ -768,7 +764,9 @@ pub fn unbundle(
                 return Err((
                     Some(*at),
                     Failure::Refused(format!(
-                        "the bundle's copy of `{source}` holds root version {version} with the digest {offered}, and another digest is held for the same root version, {held}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca"
+                        "the bundle's copy of `{source}` holds root version {version} with the digest {offered} of {}, and another digest is held for the same root version, {}, which a run at the same time accepted and stored as the floor `registry/{id}/root-version` in Itaoca",
+                        held.covers(),
+                        held.value()
                     )),
                 ));
             }

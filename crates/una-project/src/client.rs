@@ -57,6 +57,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::itaoca::{FloorDigest, WalkedRoot};
 use crate::resolve::{self, Identity, Index, Need, Offline, Release};
 use crate::tlog::map::{self, Head, Link};
 use crate::tlog::merkle::{self, Hash};
@@ -413,10 +414,12 @@ pub struct Floors<'f> {
     pub checkpoint: Option<&'f str>,
     /// The highest root version accepted.
     pub root_version: Option<u64>,
-    /// The digest of that root version's metadata, `sha256:` and hex, when the floor stores
-    /// it: a chain whose version `root_version` has another digest is a fork, refused. A floor
-    /// of the earlier form holds none and is compared by version only.
-    pub root_digest: Option<&'f str>,
+    /// The digest the floor holds for that root version, when it stores one: of the text of its
+    /// root metadata, or, for a floor of the earlier form, of its whole signed note
+    /// ([`FloorDigest`]). A chain whose version `root_version` has another digest of that kind
+    /// is a fork, refused. A floor of the earliest form holds none and is compared by version
+    /// only.
+    pub root_digest: Option<&'f FloorDigest>,
 }
 
 /// What the client found against a rule a registry MUST keep (`spec/30 §14`), every place of
@@ -965,12 +968,15 @@ impl<'t> Registry<'t> {
         }
         // The same version with other root metadata than the one accepted is a fork of the root
         // chain. The chain walked holds every version from the pinned one to its last, which is
-        // not below the floor; one it lacks (below the pinned version) is refused too.
+        // not below the floor; one it lacks (below the pinned version) is refused too. The
+        // floor holds the digest of the text, which no signature line changes; one of the
+        // earlier form is compared as it was stored, by the whole note.
         if let (Some(floor), Some(digest)) = (floors.root_version, floors.root_digest) {
             let held = chain.iter().find(|(root, _)| root.version == floor);
-            if held.is_none_or(|(_, held)| held != digest) {
+            if held.is_none_or(|(root, note)| !digest.holds(&root.text_digest, note)) {
                 return Err(refused(format!(
-                    "it serves root version {floor} with another digest than {digest}, already accepted, so its root chain forked"
+                    "it serves {}",
+                    digest.mismatch(floor, &crate::itaoca::registry_id(pin))
                 )));
             }
         }
@@ -1241,14 +1247,19 @@ impl<'t> Registry<'t> {
             .map(|(root, digest)| (root.version, digest.as_str()))
     }
 
-    /// The root chain walked, from the pinned version to the last, each version with its
-    /// digest, `sha256:` and hex: what [`crate::itaoca::Itaoca::store_root_chain`] compares with
-    /// the stored floor, under its lock, before it stores the last version. O(R).
-    pub fn root_chain(&self) -> Vec<(u64, String)> {
+    /// The root chain walked, from the pinned version to the last, each version with the digest
+    /// of its text and the digest of its whole signed note, `sha256:` and hex: what
+    /// [`crate::itaoca::Itaoca::store_root_chain`] compares with the stored floor, under its
+    /// lock, before it stores the last version. O(R).
+    pub fn root_chain(&self) -> Vec<WalkedRoot> {
         self.begin();
         self.chain
             .iter()
-            .map(|(root, digest)| (root.version, digest.clone()))
+            .map(|(root, note)| WalkedRoot {
+                version: root.version,
+                text: root.text_digest.clone(),
+                note: note.clone(),
+            })
             .collect()
     }
 

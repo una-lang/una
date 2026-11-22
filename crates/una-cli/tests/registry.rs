@@ -12,7 +12,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use support::{TestRegistry, key_text, keypair};
+use support::{EXPIRES, TestRegistry, key_text, keypair, root_text_with, signed};
 
 const DAY: u64 = 24 * 3600;
 
@@ -539,14 +539,16 @@ fn an_archive_that_does_not_check_is_not_fetched() {
     );
 }
 
-/// ADR 0122, amendment of 2026-11-09 (L3): the root-version floor is stored as the version and
-/// the digest of that root metadata. A floor whose version the chain holds with another digest
-/// is a fork of the root chain: refused (U7010) by the offline load (`una check`), by
-/// `una ita lock --check`, which walks the chain online, and by `una ita fetch`. A floor of the
-/// earlier form, the version alone, is compared by version, and takes the digest of its version
-/// from the next command that walks and verifies the chain at that version (#1970), after which
-/// the offline load compares by digest; a floor line of neither form is unreadable (U7013)
-/// offline.
+/// ADR 0122, amendments of 2026-11-09 (L3) and of 2026-11-19: the root-version floor is stored
+/// as the version and the digest of the text of that root metadata. A floor whose version the
+/// chain holds with another digest is a fork of the root chain: refused (U7010) by the offline
+/// load (`una check`), by `una ita lock --check`, which walks the chain online, and by
+/// `una ita fetch`. A floor of the form of 2026-11-09, the digest of the whole signed note, is
+/// compared as it was stored, and the next command that walks and verifies the chain with that
+/// note replaces it with the digest of the note's text. A floor of the earliest form, the
+/// version alone, is compared by version, and takes the digest of its version from the next
+/// command that walks and verifies the chain at that version (#1970), after which the offline
+/// load compares by digest; a floor line of no form is unreadable (U7013) offline.
 #[test]
 fn a_root_version_floor_with_another_digest_is_a_fork() {
     let (registry, _) = acme();
@@ -556,10 +558,11 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
     let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
     let floor = floor_dir(&itaoca, &registry).join("root-version");
-    let first = una_project::tlog::root::digest(&registry.roots[0]);
+    let first = una_project::tlog::root::text_digest(&registry.roots[0]).unwrap();
+    let whole = una_project::tlog::root::digest(&registry.roots[0]);
     assert_eq!(
         std::fs::read_to_string(&floor).unwrap(),
-        format!("1 {first}\n")
+        format!("1 text {first}\n")
     );
     let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
     assert_eq!(code, 0, "{err}");
@@ -569,32 +572,83 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
         std::fs::remove_file(&floor).unwrap();
         std::fs::write(&floor, text).unwrap();
     };
-    write(&format!("1 sha256:{}\n", "0".repeat(64)));
-    let found = codes(&dir, &itaoca);
-    assert!(
-        found.contains(&"U7010".to_owned()) && !found.contains(&"U7013".to_owned()),
-        "{found:?}"
-    );
-    let (_, _, err) = una_in(&["una", "check", arg(&dir)], &itaoca);
-    assert!(
-        err.contains("another digest") && err.contains("forked") && !err.contains("older than"),
-        "{err}"
-    );
-    for command in ["--check", "fetch"] {
-        let args: Vec<&str> = if command == "fetch" {
-            vec!["una", "ita", "fetch", arg(&dir)]
-        } else {
-            vec!["una", "ita", "lock", "--check", arg(&dir)]
-        };
-        let (code, _, err) = una_in(&args, &itaoca);
-        assert_eq!(code, 1, "{command}: {err}");
+    // Another digest, in either form, and a digest of one kind under the other form.
+    for line in [
+        format!("1 text sha256:{}\n", "0".repeat(64)),
+        format!("1 sha256:{}\n", "0".repeat(64)),
+        format!("1 text {whole}\n"),
+        format!("1 {first}\n"),
+    ] {
+        write(&line);
+        let found = codes(&dir, &itaoca);
         assert!(
-            err.contains("U7010") && err.contains("forked"),
-            "{command}: {err}"
+            found.contains(&"U7010".to_owned()) && !found.contains(&"U7013".to_owned()),
+            "{line:?}: {found:?}"
         );
+        // Against the digest of a text, a fork; against the digest of a whole note, another
+        // form or another text, never "forked". Every refusal names the floor's file.
+        let says = if line.starts_with("1 text ") {
+            "forked"
+        } else {
+            "another form or another text"
+        };
+        let file = format!(
+            "registry/{}/root-version",
+            una_project::itaoca::registry_id(&registry.pin())
+        );
+        let (_, _, err) = una_in(&["una", "check", arg(&dir)], &itaoca);
+        assert!(
+            err.contains("another digest")
+                && err.contains(says)
+                && err.contains(&file)
+                && (says == "forked" || !err.contains("forked"))
+                && !err.contains("older than"),
+            "{line:?}: {err}"
+        );
+        for command in ["--check", "fetch"] {
+            let args: Vec<&str> = if command == "fetch" {
+                vec!["una", "ita", "fetch", arg(&dir)]
+            } else {
+                vec!["una", "ita", "lock", "--check", arg(&dir)]
+            };
+            let (code, _, err) = una_in(&args, &itaoca);
+            assert_eq!(code, 1, "{line:?} {command}: {err}");
+            assert!(
+                err.contains("U7010")
+                    && err.contains(says)
+                    && err.contains(&file)
+                    && (says == "forked" || !err.contains("forked")),
+                "{line:?} {command}: {err}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&floor).unwrap(), line);
     }
 
-    // The earlier form, as builds before v0.4.0 write it: by version, accepted offline, and
+    // The form of 2026-11-09 with the digest of the note this registry serves: replaced with
+    // the digest of that note's text by a command that walks and verifies the chain, and by
+    // an offline load whose provenance holds that note.
+    write(&format!("1 {whole}\n"));
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 text {first}\n")
+    );
+    write(&format!("1 {whole}\n"));
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 text {first}\n")
+    );
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("not stored"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 text {first}\n")
+    );
+
+    // The earliest form, as builds before v0.4.0 write it: by version, accepted offline, and
     // given the digest of version 1 by a command that walks and verifies the chain at version 1.
     write("1\n");
     assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
@@ -604,11 +658,11 @@ fn a_root_version_floor_with_another_digest_is_a_fork() {
     assert!(!err.contains("not stored"), "{err}");
     assert_eq!(
         std::fs::read_to_string(&floor).unwrap(),
-        format!("1 {first}\n")
+        format!("1 text {first}\n")
     );
     assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
 
-    // Neither form: unreadable offline, never no floor.
+    // No form: unreadable offline, never no floor.
     write(&format!("1 {first}x\n"));
     let found = codes(&dir, &itaoca);
     assert!(
@@ -642,7 +696,7 @@ fn a_command_that_loses_the_root_floor_race_fails() {
     let floors = floor_dir(&itaoca, &registry);
     let floor = floors.join("root-version");
     let checkpoint = std::fs::read(floors.join("checkpoint")).unwrap();
-    let first = una_project::tlog::root::digest(&registry.roots[0]);
+    let first = una_project::tlog::root::text_digest(&registry.roots[0]).unwrap();
     let other = format!("sha256:{}", "0".repeat(64));
     let write = |text: &str| {
         std::fs::remove_file(&floor).unwrap();
@@ -669,7 +723,7 @@ fn a_command_that_loses_the_root_floor_race_fails() {
         &["una", "ita", "lock", "--check", arg(&dir)][..],
         &["una", "ita", "lock", arg(&dir)][..],
     ] {
-        let forked = format!("1 {other}\n");
+        let forked = format!("1 text {other}\n");
         let (code, out, err) = raced(args, &forked);
         assert_eq!(code, 1, "{args:?}: {out}{err}");
         assert!(
@@ -685,7 +739,7 @@ fn a_command_that_loses_the_root_floor_race_fails() {
             checkpoint
         );
         // Legitimate: the other run stored the digest this command walked.
-        let same = format!("1 {first}\n");
+        let same = format!("1 text {first}\n");
         let (code, out, err) = raced(args, &same);
         assert_eq!(code, 0, "{args:?}: {out}{err}");
         assert!(
@@ -694,6 +748,205 @@ fn a_command_that_loses_the_root_floor_race_fails() {
         );
         assert_eq!(std::fs::read_to_string(&floor).unwrap(), same);
     }
+}
+
+/// #2132, fixed by ADR 0122, amendment of 2026-11-19, end to end: a mirror that holds no key
+/// cannot poison the root-version floor. The lock is made under root 1; the registry then
+/// rotates to root 2 with the same witnesses. A mirror directory serves the honest root 2 with
+/// one junk signature line more and no latest checkpoint. `una ita fetch` succeeds from it, as
+/// before, and stores root version 2 with the digest of the text of its root metadata, which
+/// is the honest note's too. Every command that then reads the honest registry passes, and so
+/// does the offline load of the provenance fetched from the mirror, which holds the altered
+/// note. Before the fix the floor held the digest of the altered note, and those commands were
+/// refused as forked (U7010) until the user removed the floor file, and
+/// `una ita lock --check` after that too.
+#[test]
+fn a_mirror_with_no_key_cannot_poison_the_root_floor() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("floor-poison", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    let first = una_project::tlog::root::text_digest(&registry.roots[0]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!("1 text {first}\n")
+    );
+    // The rotation: root 2, the same witnesses, and a later checkpoint signed under it.
+    registry.rotate_witnesses(0, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    let honest = mirror.parent().unwrap().join("honest");
+    registry.write(&honest);
+    // The mirror: the honest files, but root 2 with a junk signature line, and no latest
+    // checkpoint. It needs no key.
+    let altered = format!(
+        "{}\u{2014} nobody {}\n",
+        registry.roots[1],
+        una_project::tlog::note::encode_base64(&[7u8; 68])
+    );
+    assert_ne!(
+        una_project::tlog::root::digest(&altered),
+        una_project::tlog::root::digest(&registry.roots[1])
+    );
+    let second = una_project::tlog::root::text_digest(&registry.roots[1]).unwrap();
+    assert_eq!(
+        una_project::tlog::root::text_digest(&altered).unwrap(),
+        second
+    );
+    registry.write(&mirror);
+    std::fs::remove_file(mirror.join("checkpoint/latest")).unwrap();
+    std::fs::write(mirror.join("root/2"), &altered).unwrap();
+
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "fetched acme/ledger 0.3.1\n"),
+        "{err}"
+    );
+    assert!(!err.contains("not stored"), "{err}");
+    let stored = format!("2 text {second}\n");
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), stored);
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+
+    // The honest registry, from then on: accepted, and the provenance fetched from the mirror,
+    // which holds the altered note, passes `--check` and the offline load.
+    list_mirrors(&itaoca, &[&honest]);
+    let honest_passes = |args: &[&str]| {
+        let (code, out, err) = una_in(args, &itaoca);
+        assert_eq!(code, 0, "{args:?}: {out}{err}");
+        assert!(
+            !err.contains("U7010") && !err.contains("not stored"),
+            "{args:?}: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&floor).unwrap(), stored);
+    };
+    honest_passes(&["una", "ita", "lock", "--check", arg(&dir)]);
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+
+    // What the floor is for still holds: another text of version 2 that the root keys signed
+    // (here it expires a second later), served at the same lock's point with no latest
+    // checkpoint, is refused as a fork, and the floor is kept.
+    let keys: Vec<&una_project::tlog::note::Key> =
+        registry.keys.roots.iter().map(|(_, key)| key).collect();
+    let other_text = root_text_with("acme", 2, EXPIRES + 1, &registry.keys, &keys, 2, &[]);
+    let forked = signed(
+        &other_text,
+        &[&registry.keys.roots[0], &registry.keys.roots[1]],
+    );
+    std::fs::write(mirror.join("root/2"), &forked).unwrap();
+    list_mirrors(&itaoca, &[&mirror]);
+    let (code, out, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(
+        err.contains("U7010") && err.contains("forked") && err.contains(&second),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), stored);
+    // A machine with no floor accepts that mirror at the lock's point: only the floor refuses
+    // it there.
+    let fresh = empty_itaoca(&dir, "itaoca-with-no-floor", &mirror);
+    let (code, out, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &fresh);
+    assert_eq!(code, 0, "{out}{err}");
+
+    // The honest registry again, at the lock's point and for a new resolution.
+    list_mirrors(&itaoca, &[&honest]);
+    honest_passes(&["una", "ita", "lock", "--check", arg(&dir)]);
+    honest_passes(&["una", "ita", "lock", arg(&dir)]);
+}
+
+/// ADR 0122, amendment of 2026-11-19, item 6: a floor of the earlier form that an altered copy
+/// poisoned, before the floor held the digest of the text, is repaired from the provenance
+/// stored with it. The machine's state is the one a release before this form left after the
+/// scenario of #2132: the floor `2 sha256:<digest of the altered note>`, and in Itaoca the
+/// provenance fetched from the mirror, which holds that altered note. The honest registry is
+/// refused, as it was, by a message that names the floor's file, says that the floor is of the
+/// earlier form and that what is served is another form or another text, and does not say
+/// "forked". An offline load of the package verifies its provenance against the floor (it
+/// holds exactly the floor's note) and replaces the floor with the digest of that note's text;
+/// the honest registry then reads again. The load never raises the floor's version, and a
+/// floor whose note the provenance does not hold is left as it is.
+#[test]
+fn a_poisoned_floor_of_the_earlier_form_is_repaired_from_the_stored_provenance() {
+    let (mut registry, _) = acme();
+    let (dir, mirror, itaoca) = project("floor-repair", &registry);
+    let (code, _, err) = una_in(&["una", "ita", "lock", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let floor = floor_dir(&itaoca, &registry).join("root-version");
+    registry.rotate_witnesses(0, false);
+    registry.append("other", "after the rotation");
+    registry.checkpoint(now() - 30);
+    let honest = mirror.parent().unwrap().join("honest");
+    registry.write(&honest);
+    let altered = format!(
+        "{}\u{2014} nobody {}\n",
+        registry.roots[1],
+        una_project::tlog::note::encode_base64(&[7u8; 68])
+    );
+    registry.write(&mirror);
+    std::fs::remove_file(mirror.join("checkpoint/latest")).unwrap();
+    std::fs::write(mirror.join("root/2"), &altered).unwrap();
+    let (code, _, err) = una_in(&["una", "ita", "fetch", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    let write = |text: &str| {
+        std::fs::remove_file(&floor).unwrap();
+        std::fs::write(&floor, text).unwrap();
+    };
+    let poisoned = format!("2 {}\n", una_project::tlog::root::digest(&altered));
+    let repaired = format!(
+        "2 text {}\n",
+        una_project::tlog::root::text_digest(&registry.roots[1]).unwrap()
+    );
+    let file = format!(
+        "registry/{}/root-version",
+        una_project::itaoca::registry_id(&registry.pin())
+    );
+    list_mirrors(&itaoca, &[&honest]);
+
+    // The floor as the earlier release left it: the honest registry is refused, as before.
+    write(&poisoned);
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("U7010")
+            && err.contains(&file)
+            && err.contains("a floor of the earlier form")
+            && err.contains("another form or another text of root version 2")
+            && !err.contains("forked"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), poisoned);
+    // The offline load of the package fetched from the mirror repairs it.
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), repaired);
+    let (code, _, err) = una_in(&["una", "ita", "lock", "--check", arg(&dir)], &itaoca);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), repaired);
+
+    // A floor of the earlier form at version 1, below the provenance's last version: it takes
+    // the digest of the text of root 1, and the load does not raise it to version 2.
+    write(&format!(
+        "1 {}\n",
+        una_project::tlog::root::digest(&registry.roots[0])
+    ));
+    assert_eq!(codes(&dir, &itaoca), Vec::<String>::new());
+    assert_eq!(
+        std::fs::read_to_string(&floor).unwrap(),
+        format!(
+            "1 text {}\n",
+            una_project::tlog::root::text_digest(&registry.roots[0]).unwrap()
+        )
+    );
+    // A floor of the earlier form whose note the provenance does not hold (here the honest
+    // note of root 2, while the provenance holds the altered one): the load is refused, and
+    // nothing is written.
+    let other = format!(
+        "2 {}\n",
+        una_project::tlog::root::digest(&registry.roots[1])
+    );
+    write(&other);
+    assert!(codes(&dir, &itaoca).contains(&"U7010".to_owned()));
+    assert_eq!(std::fs::read_to_string(&floor).unwrap(), other);
 }
 
 /// Floors are stored as soon as a checkpoint is accepted, even when nothing is written; and a
