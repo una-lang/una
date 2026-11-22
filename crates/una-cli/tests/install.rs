@@ -361,13 +361,15 @@ fn the_installer_installs_nothing_that_the_validation_summary_does_not_vouch_for
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(home.join("bin/una").exists());
     std::fs::remove_dir_all(&home).unwrap();
-    // No summary anywhere, as for 0.1.x: refused on every platform, with a message that says
-    // why and what to do instead.
+    // No summary anywhere, as for a version not released: refused on every platform, with a
+    // message that says why and what to check.
     std::fs::remove_dir_all(&main).unwrap();
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).contains("no validation summary for 9.9.9"),
+        stderr(&output).contains("no validation summary for 9.9.9 could be read")
+            && stderr(&output).contains("check that 9.9.9 is released")
+            && !stderr(&output).contains("0.1.x"),
         "{}",
         stderr(&output)
     );

@@ -279,6 +279,62 @@ fn run_help_marks_the_serve_script_flags_as_test_builds_only() {
     assert!(grant.contains("serve:"), "{grant}");
 }
 
+/// The entry of `flag` in the help that `args` prints, its whitespace folded, up to `next`.
+fn help_entry(args: &[&str], flag: &str, next: &str) -> String {
+    let output = una(args);
+    assert_eq!(output.status.code(), Some(0), "{args:?}");
+    let text = stdout(&output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let at = text.find(flag);
+    assert!(at.is_some(), "{flag} in {text}");
+    let at = at.unwrap_or_default();
+    let entry = &text[at..];
+    entry[..entry[flag.len()..]
+        .find(next)
+        .map_or(entry.len(), |end| end + flag.len())]
+        .to_owned()
+}
+
+/// The interpreter runs its tasks on one thread (ADR 0117 rule 11), so the thread flags of
+/// `una run` and `una test` take effect in an executable of `una build` and are only checked
+/// there (#2070, items 15, 20 and 39 of the 0.4.0 documentation review).
+#[test]
+fn help_says_where_the_thread_flags_and_the_default_source_take_effect() {
+    for command in ["run", "test"] {
+        let args = [command, "--help"];
+        let workers = help_entry(&args, "--workers <N>", " --task-depth");
+        assert!(
+            workers.contains("an executable of `una build`"),
+            "{workers}"
+        );
+        assert!(workers.contains("one thread"), "{workers}");
+        assert!(workers.contains("only checked"), "{workers}");
+        let files = help_entry(&args, "--file-threads <N>", " --");
+        assert!(files.contains("an executable of `una build`"), "{files}");
+        assert!(files.contains("only checked"), "{files}");
+    }
+    let io = help_entry(&["test", "--help"], "--io-threads <N>", " --file-threads");
+    assert!(io.contains("only checked"), "{io}");
+    // `una run` does start the helper threads of `Http`, before `main`.
+    let io = help_entry(&["run", "--help"], "--io-threads <N>", " --file-threads");
+    assert!(io.contains("starts 2 x N + max(2, N / 4) threads"), "{io}");
+    assert!(!io.contains("only checked"), "{io}");
+    let from = help_entry(&["ita", "add", "--help"], "--from <SOURCE>", " --now");
+    assert!(from.contains("does not serve"), "{from}");
+    let from = help_entry(
+        &["ita", "watch", "--help"],
+        "--from <SOURCE>",
+        " -h, --help",
+    );
+    assert!(from.contains("does not serve"), "{from}");
+    let top = help_entry(&["--help"], "ita ", " migrate");
+    assert!(top.contains("editions 0.4 and later"), "{top}");
+    let run = help_entry(&["--help"], "run ", " build");
+    assert!(run.contains("`drive` or `serve`"), "{run}");
+}
+
 #[test]
 fn check_reports_a_missing_path_as_a_usage_error() {
     for args in [

@@ -155,12 +155,13 @@ pub(crate) enum Command {
         #[arg(long)]
         check: bool,
     },
-    /// The package manager of edition 0.4: dependencies, `ita.una` and `ita.lock`
+    /// The package manager of editions 0.4 and later: dependencies, `ita.una` and `ita.lock`
     Ita {
         #[command(subcommand)]
         command: ItaCommand,
     },
-    /// Move a package from una.toml to ita.una and ita.lock, edition 0.4
+    /// Move a package from una.toml to ita.una and ita.lock, of edition 0.4 or of the later
+    /// edition una.toml names
     Migrate {
         /// The package directory
         #[arg(default_value = ".")]
@@ -174,7 +175,8 @@ pub(crate) enum Command {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
     },
-    /// Run `main` of the `[run] entry` module
+    /// Run `main` of the `[run] entry` module, or the module that the `drive` or `serve`
+    /// section of ita.una names
     Run {
         /// The package directory, or a single file
         #[arg(default_value = ".")]
@@ -201,7 +203,9 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 30, value_parser = http_timeout)]
         http_timeout: u64,
 
-        /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
+        /// The threads that run tasks in an executable of `una build`, from 1 to 1024; by
+        /// default one per core (ADR 0117). The interpreter runs its tasks on one thread, so here
+        /// the value is only checked
         #[arg(long, value_name = "N", value_parser = task_number)]
         workers: Option<usize>,
 
@@ -209,11 +213,13 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
+        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides an executable's --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
-        /// The helper threads of `Files` and `Console`, from 1 to 256; by default 4 (ADR 0117)
+        /// The helper threads of `Files` and `Console` in an executable of `una build`, from 1
+        /// to 256; by default 4 (ADR 0117). The interpreter starts none, so here the value is
+        /// only checked, and counted in the file descriptors a run that serves reserves
         #[arg(long, value_name = "N", value_parser = task_number)]
         file_threads: Option<usize>,
 
@@ -305,7 +311,9 @@ pub(crate) enum Command {
         #[arg(long, value_name = "MIB", value_parser = memory_budget)]
         max_memory: Option<usize>,
 
-        /// The threads that run tasks, from 1 to 1024; by default one per core (ADR 0117)
+        /// The threads that run tasks in an executable of `una build`, from 1 to 1024; by
+        /// default one per core (ADR 0117). The interpreter runs its tasks on one thread, so here
+        /// the value is only checked
         #[arg(long, value_name = "N", value_parser = task_number)]
         workers: Option<usize>,
 
@@ -313,11 +321,14 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", value_parser = task_number)]
         task_depth: Option<usize>,
 
-        /// The helper threads of `Http`, from 1 to 4096; by default 64 (ADR 0117). A run granted `Http` starts 2 x N + max(2, N / 4) threads for its requests before `main`, besides --workers and --file-threads, so a large N can pass the system's limit on a process's threads, and the run then stops with U6003
+        /// The helper threads of `Http` in an executable of `una build`, from 1 to 4096; by
+        /// default 64 (ADR 0117). A test is granted no `Http`, so here the value is only checked
         #[arg(long, value_name = "N", value_parser = task_number)]
         io_threads: Option<usize>,
 
-        /// The helper threads of `Files` and `Console`, from 1 to 256; by default 4 (ADR 0117)
+        /// The helper threads of `Files` and `Console` in an executable of `una build`, from 1
+        /// to 256; by default 4 (ADR 0117). The interpreter starts none, so here the value is
+        /// only checked
         #[arg(long, value_name = "N", value_parser = task_number)]
         file_threads: Option<usize>,
 
@@ -442,7 +453,8 @@ pub(crate) enum ItaCommand {
         #[arg(long = "as", value_name = "LOCAL")]
         local: Option<String>,
 
-        /// The source: `itaty` by default, or a source of ita.una's `sources`
+        /// The source: `itaty` by default, which this release does not serve, or a source of
+        /// ita.una's `sources`
         #[arg(long, value_name = "SOURCE")]
         from: Option<String>,
 
@@ -501,7 +513,8 @@ pub(crate) enum ItaCommand {
         /// More package names to follow besides those the registry lists for the owner
         names: Vec<String>,
 
-        /// The source the owner belongs to
+        /// The source the owner belongs to: `itaty` by default, which this release does not
+        /// serve
         #[arg(long, value_name = "SOURCE", default_value = "itaty")]
         from: String,
     },
