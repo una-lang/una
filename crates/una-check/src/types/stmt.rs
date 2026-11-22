@@ -55,6 +55,21 @@ impl<'a> Checker<'_, 'a, '_> {
         role: Role<'_>,
         tail: bool,
     ) -> Ty {
+        // #837: a block's statements are statements, whatever holds the block.
+        let conditional = self.conditional.take();
+        let ty = self.block_statements(block, expected, role, tail);
+        self.conditional = conditional;
+        ty
+    }
+
+    /// [`Self::block`] itself.
+    fn block_statements(
+        &mut self,
+        block: &Block,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+        tail: bool,
+    ) -> Ty {
         let mark = self.locals.len();
         let rl = self.ctx.rl;
         let last = block.stmts.len().saturating_sub(1);
@@ -993,7 +1008,11 @@ impl<'a> Checker<'_, 'a, '_> {
             {
                 self.statement_calls.push(handled.expr.span);
             }
+            let conditional = self
+                .conditional
+                .replace(super::check::Conditional::Together);
             self.let_stmt(branch);
+            self.conditional = conditional;
             // The branch's binding waits for the join, so its siblings do not see it.
             bound.extend(self.locals.drain_from(mark));
         }
@@ -1485,7 +1504,9 @@ impl<'a> Checker<'_, 'a, '_> {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
                     };
-                    let conditional = self.conditional.replace(super::check::Conditional::Clause);
+                    let conditional = self
+                        .conditional
+                        .replace(super::check::Conditional::ErrorClause);
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).
@@ -1528,7 +1549,9 @@ impl<'a> Checker<'_, 'a, '_> {
                     let saved = self.raise_pc(&option, handled.expr.span);
                     // The default's flow is the binder's (ADR 0103).
                     self.flow_hints.insert(value.span);
-                    let conditional = self.conditional.replace(super::check::Conditional::Clause);
+                    let conditional = self
+                        .conditional
+                        .replace(super::check::Conditional::NoneClause);
                     let used = self.expr_as(value, Some(&expected), Role::Plain);
                     self.conditional = conditional;
                     self.restore_pc(saved);
@@ -1970,7 +1993,14 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                 }
             }
+            // #837: a one-line arm runs only on its match.
+            let conditional = if matches!(arm.body, Body::Line(_)) {
+                self.conditional.replace(super::check::Conditional::Arm)
+            } else {
+                self.conditional
+            };
             let ty = self.body(&arm.body, joined.as_ref(), role, tail);
+            self.conditional = conditional;
             if self.resolve(&ty) != Ty::Never {
                 if joined.is_none() {
                     joined = Some(ty.clone());

@@ -2157,6 +2157,8 @@ impl<'a> Checker<'_, 'a, '_> {
         // the lambda is written, not to the lambda's own: a repair inside the body never
         // resolves against them (ADR 0093 rule 6).
         let statement = self.statement.take();
+        // #837: what holds the lambda decides nothing inside its body.
+        let conditional = self.conditional.take();
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4), with no
         // `result`, `it` or `error` in scope.
         let ctx = Ctx {
@@ -2175,6 +2177,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.conditional = conditional;
         self.parts = parts;
         self.statement = statement;
         self.frames_depth = frames_depth;

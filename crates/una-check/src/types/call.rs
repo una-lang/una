@@ -837,16 +837,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 .is_some_and(|(marker, _)| marker.is_some());
         let statement = self.statement_calls.contains(&span);
         if marked && !statement && self.pass == super::authority::Pass::Check {
-            // #837: a `do` line binds nothing (`spec/17 §3` rule 5), and `attempt` is not a
-            // statement's whole expression for a marked call, even as the whole `let`; elsewhere
-            // the advice of the place where the call stands.
-            let advice = if self.ctx.in_do {
-                "a `do` line binds nothing, so call a function that takes a plain argument and edits a local copy of it, as `let edit copy = n` in its body".to_owned()
-            } else if site.handled && self.lambda_depth == 0 && self.conditional.is_none() {
-                "`attempt` cannot wrap it, so make the call itself the whole expression of a statement or `let`, and handle a failure with `if error`".to_owned()
-            } else {
-                self.nested_advice(false)
-            };
+            // #837: the advice of the place where the call stands, a `do` line included.
+            let advice = self.nested_advice(site.handled, true);
+            self.marked_nested = Some(span);
             self.report.error(
                 Code::U3013,
                 span,
