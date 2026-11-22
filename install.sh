@@ -315,14 +315,19 @@ if [ "${1:-}" = --uninstall ]; then
         fi
     fi
     dirs=$(sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
-    rm -f "$marker"
     printf '%s\n' "$dirs" | while read -r path; do
         case $path in
-            "") ;;
-            .) rmdir "$home" 2> /dev/null || true ;;
+            "" | .) ;;
             *) unlink_recorded dir "$path" ;;
         esac
     done
+    # The record goes only now, once every recorded path was removed or kept: a check refused
+    # above stops the uninstall with the record in place, so that it can be run again. Then
+    # UNA_HOME itself, when the installation created it and it is empty.
+    rm -f "$marker"
+    if printf '%s\n' "$dirs" | grep -qx '\.'; then
+        rmdir "$home" 2> /dev/null || true
+    fi
     # $HOME/.una, when the key was removed from it and nothing else is there.
     [ -z "$key_removed" ] || rmdir "$keydir" 2> /dev/null || true
     if [ -d "$home" ]; then

@@ -243,11 +243,9 @@ fn run_installer(
         .env_clear()
         .env("PATH", path)
         .env("HOME", &home)
-        .envs(
-            envs.iter()
-                .copied()
-                .filter(|(name, _)| !matches!(*name, "UMASK" | "FETCH_HOOK")),
-        )
+        .envs(envs.iter().copied().filter(|(name, _)| {
+            !matches!(*name, "UMASK" | "FETCH_HOOK") && !name.starts_with("HOOK_")
+        }))
         .env("UNA_VERSION", version)
         .env(
             "UNA_RELEASES",
@@ -896,6 +894,118 @@ fn a_directory_swapped_for_a_link_during_the_download_is_not_followed() {
         std::fs::read_to_string(elsewhere.join("z3/bin/z3")).unwrap(),
         "the user's z3"
     );
+
+    // Uninstall checks again before each `rm` and each `rmdir` too, and a refusal keeps the
+    // record, so that uninstall can be run again. `z3` is swapped for the link when `rm` first
+    // runs (for `bin/una`, before `z3/bin/z3`), and, in the second leg, when `sort` orders the
+    // directories, after every file is gone.
+    let reinstall = |extra: &str| {
+        let _ = std::fs::remove_file(&z3);
+        let _ = std::fs::remove_dir_all(home.join("z3.real"));
+        let _ = std::fs::remove_dir_all(&home);
+        let (output, _) = install_on(&dir, version, &GLIBC_239);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        std::fs::create_dir_all(home.join("z3/bin")).unwrap();
+        let text = std::fs::read_to_string(&record).unwrap();
+        std::fs::write(&record, format!("{text}{extra}")).unwrap();
+    };
+    for (tool, extra, outside) in [
+        (
+            "HOOK_rm",
+            "dir z3\ndir z3/bin\nfile z3/bin/z3\n",
+            "z3/bin/z3",
+        ),
+        ("HOOK_sort", "dir z3\ndir z3/bin\n", "z3/bin"),
+    ] {
+        reinstall(extra);
+        if extra.contains("file z3/bin/z3") {
+            std::fs::write(home.join("z3/bin/z3"), "the installed z3").unwrap();
+        }
+        let _ = std::fs::remove_dir_all(elsewhere.join("z3"));
+        std::fs::create_dir_all(elsewhere.join("z3/bin")).unwrap();
+        if outside.ends_with("/z3") {
+            std::fs::write(elsewhere.join(outside), "the user's z3").unwrap();
+        }
+        let (output, _) = install_on_with(
+            &dir,
+            version,
+            &GLIBC_239,
+            &["--uninstall"],
+            &[(tool, hook.as_str())],
+        );
+        assert_eq!(output.status.code(), Some(1), "{tool}: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains("which goes through the symbolic link"),
+            "{tool}: {}",
+            stderr(&output)
+        );
+        assert!(
+            elsewhere.join(outside).exists(),
+            "{tool}: followed the link"
+        );
+        assert!(record.exists(), "{tool}: the record is gone");
+        // With the link gone, uninstall runs again and finishes.
+        std::fs::remove_file(&z3).unwrap();
+        std::fs::rename(home.join("z3.real"), &z3).unwrap();
+        let (output, _) = install_on_with(&dir, version, &GLIBC_239, &["--uninstall"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{tool}: {}", stderr(&output));
+        assert!(!home.exists(), "{tool}");
+        assert!(elsewhere.join(outside).exists(), "{tool}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_recorded_link_to_a_new_file_is_removed_and_the_new_file_kept() {
+    // A recorded link is never a file this installation wrote, even when it names one: it is
+    // removed as itself (`held_new` compares names that are not links), and the new file stays.
+    let Some(target) = target() else {
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-link-to-new");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.8.7";
+    let home = dir.join("home/.una");
+    release_holding(
+        &dir,
+        target,
+        version,
+        "PASS (every gate)",
+        None,
+        &[("README.md", "readme")],
+    );
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    std::os::unix::fs::symlink("una", home.join("bin/z3")).unwrap();
+    std::os::unix::fs::symlink("README.md", home.join("README.old")).unwrap();
+    let record = home.join(".una-install");
+    let text = std::fs::read_to_string(&record).unwrap();
+    std::fs::write(&record, format!("{text}file bin/z3\nfile README.old\n")).unwrap();
+    let output = install(&dir, version, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    for link in ["bin/z3", "README.old"] {
+        assert!(
+            std::fs::symlink_metadata(home.join(link)).is_err(),
+            "{link}: {}",
+            stdout(&output)
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.join("bin/una")).unwrap(),
+        "#!/bin/sh\necho una stub\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("README.md")).unwrap(),
+        "readme"
+    );
+    assert!(
+        stdout(&output).contains(&format!(
+            "removed what the earlier installation held and {version} does not: bin/z3 README.old\n"
+        )),
+        "{}",
+        stdout(&output)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1483,6 +1593,17 @@ fn install_on_with(
         .iter()
         .find(|(name, _)| *name == "FETCH_HOOK")
         .map_or("", |(_, hook)| hook);
+    // `HOOK_<tool>` in `envs`, a shell command that each run of `<tool>` (such as `rm` or
+    // `sort`) runs first: a test changes UNA_HOME at a known step of uninstall, which downloads
+    // nothing.
+    for (name, hook) in envs {
+        if let Some(tool) = name.strip_prefix("HOOK_") {
+            script(
+                &bin.join(tool),
+                &format!("{hook}\nPATH={SYSTEM_PATH} exec {tool} \"$@\""),
+            );
+        }
+    }
     for fetcher in ["curl", "wget"] {
         let found = Command::new("sh")
             .arg("-c")
