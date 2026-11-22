@@ -9,7 +9,10 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+# `compress`: the public name of the SHA-256 compression function, for the HMAC of `Keys.hmac`,
+# which keeps and wipes its own hash state (#2120). The feature adds no code and no dependency.
+# Cargo compiles one `sha2` for a build, so every crate built with `una-interp` sees the name.
+sha2 = { workspace = true, features = ["compress"] }
 toml.workspace = true
 una-core.workspace = true
 una-diag.workspace = true

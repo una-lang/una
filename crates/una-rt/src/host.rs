@@ -393,10 +393,16 @@ pub fn files_write(path: i64, content: i64) -> i64 {
 ///
 /// The operation itself copies no key out of the run's table (#1481): it takes a reference to
 /// the table, a count, and hands the HMAC routine the key where the run holds it. The key's name
-/// and the data are read in place in the heap too. What still copies key material, and does not
-/// wipe it: the HMAC routine, [`una_interp::hmac_sha256`], which makes the padded key and its
-/// two pads on the heap for each call, and the bearer key of an `Http` request, which the
-/// operations of `Http` clone out of the table. Time O(length of the data).
+/// and the data are read in place in the heap too. The HMAC routine,
+/// [`una_interp::hmac_sha256`], holds the padded key, its two pads and its hash state in fixed
+/// arrays on its stack and overwrites them with zeros before it returns (#2120), without a
+/// volatile write: its documentation says what that rests on and what it does not reach (what
+/// the SHA-256 compression function keeps in its own frame, which includes a copy of the
+/// key-equivalent hash state, and copies the compiler makes in registers). What still holds key
+/// material, unwiped: the run's table for the whole run, the key file's text and its decoding
+/// at start-up, and the bearer key of an `Http` request, which the operations of `Http` clone
+/// out of the table, since the request crosses to a helper thread, and write into the request
+/// they send. Time O(length of the key + length of the data).
 pub fn keys_hmac(key_name: i64, data: i64) -> i64 {
     let Some(keys) = with_state(|state| Arc::clone(&state.keys)) else {
         return failed(UNKNOWN_KEY);
@@ -1176,6 +1182,55 @@ mod tests {
             assert_eq!(held(), Some(1));
             let key = with_state(|state| state.keys.get("phone").cloned()).flatten();
             assert_eq!(key.as_deref(), Some(&b"Jefe"[..]));
+            // The other test cases of RFC 4231 whose data is a text (#2120; cases 3 and 4 have
+            // data that is not UTF-8, and are tested on the routine in `una-interp`): 1, 5,
+            // whose expected value is the first 128 bits, 6 and 7, with a key longer than the
+            // block of the hash.
+            let cases: [(&str, Vec<u8>, &str, &str); 4] = [
+                (
+                    "one",
+                    vec![0x0b; 20],
+                    "Hi There",
+                    "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+                ),
+                (
+                    "five",
+                    vec![0x0c; 20],
+                    "Test With Truncation",
+                    "a3b6167473100ee06e0c796c2955552b",
+                ),
+                (
+                    "six",
+                    vec![0xaa; 131],
+                    "Test Using Larger Than Block-Size Key - Hash Key First",
+                    "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+                ),
+                (
+                    "seven",
+                    vec![0xaa; 131],
+                    "This is a test using a larger than block-size key and a larger than \
+                     block-size data. The key needs to be hashed before being used by the HMAC \
+                     algorithm.",
+                    "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+                ),
+            ];
+            let keys: BTreeMap<String, Vec<u8>> = cases
+                .iter()
+                .map(|(name, key, _, _)| ((*name).to_owned(), key.clone()))
+                .collect();
+            with_state(|state| state.keys = Arc::new(keys.clone()));
+            for (name, _, data, expected) in &cases {
+                let mac = super::keys_hmac(
+                    values::text_word((*name).to_owned()),
+                    values::text_word((*data).to_owned()),
+                );
+                let mac = una_interp::hex(&values::bytes(mac));
+                assert_eq!(mac.len(), 64);
+                assert_eq!(&mac[..expected.len()], *expected, "test case {name}");
+            }
+            // The keys in the table are the ones the run loaded, bit for bit.
+            assert_eq!(held(), Some(1));
+            assert_eq!(with_state(|state| (*state.keys).clone()), Some(keys));
             drop(crate::runtime::leave_task());
         })
         .join()
