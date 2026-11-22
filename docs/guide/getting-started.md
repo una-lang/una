@@ -377,7 +377,8 @@ As root, the installer installs only into a `UNA_HOME` that only root can change
 
 - `UNA_HOME`, the directories it writes in and the files there are not symbolic links, and they are owned by root and writable by no one else.
 - So is every directory above them, except that a directory above an existing, root-owned one may be writable by others when it is sticky, as `/tmp` is. So `UNA_HOME=/tmp/una` is refused unless `/tmp/una` already exists and is root's.
-- The same holds for `TMPDIR` (default `/tmp`), where the archive is checked and unpacked, which may itself be sticky.
+- The same holds for `TMPDIR` (default `/tmp`), where the archive is checked and unpacked, which may itself be sticky. Uninstall makes no work directory and does not check it.
+- Each file is written as a new one: an existing name is removed first, so the installer never writes into a file that is a hard link to another one.
 - Otherwise it refuses before any download, and as root it never runs the installed `una`.
 - Only owners and mode bits are read: write access granted by an ACL (on macOS, a `+` after the mode in `ls -l`) is not seen.
 
