@@ -734,6 +734,24 @@ if [ $NEEDS_DOCKER = 1 ] && command -v docker > /dev/null 2>&1; then
         > /dev/null 2>&1 || true
 fi
 
+# The lines of the release gate's log that start with `PREFIX: <target>: `, for the record
+# (#1359, #1971): each one whose value has the exact shape of the extended regular expression
+# SHAPE, rewritten as `- <target>: <value>`, sorted, once; then, when any line with the prefix
+# has another shape (a control character such as a carriage return included, which could pose
+# as a heading of the record to a reader that splits lines on it), a line that says how many
+# were not copied, which the summary's shape check of the runtime strip refuses. Read under
+# LC_ALL=C, so that an invalid byte elsewhere in the log does not stop sed or grep. Prints
+# nothing when no line has the prefix. O(lines of the log).
+release_log_lines() {
+    local prefix=$1 shape=$2 log=$OUT/logs/release.log all copied
+    all=$(LC_ALL=C grep -a -c "^$prefix: " "$log" 2>/dev/null) || all=0
+    copied=$(LC_ALL=C grep -a -c -E "^$prefix: [a-z0-9_-]+: ($shape)\$" "$log" 2>/dev/null) || copied=0
+    LC_ALL=C sed -n -E "s/^$prefix: ([a-z0-9_-]+): ($shape)\$/- \1: \2/p" "$log" 2>/dev/null | LC_ALL=C sort -u
+    if [ "$all" != "$copied" ]; then
+        echo "- Not copied: $((all - copied)) of the $all lines of logs/release.log that start with \`$prefix: \` are out of shape"
+    fi
+}
+
 # The record.
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
 {
@@ -789,7 +807,7 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null |
     # scripts/release.sh printed it in the release gate's log: its version and its binary's digest.
     echo "## Runtime strip"
     echo
-    strips=$(sed -n 's/^strip: \([a-z0-9_-]*\): \(.*\)$/- \1: \2/p' "$OUT/logs/release.log" 2>/dev/null | LC_ALL=C sort -u)
+    strips=$(release_log_lines strip '(xcrun strip -S \((Xcode [0-9.]+ build [0-9A-Za-z]+|Command Line Tools [0-9.]+)\)|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D), sha256 [0-9a-f]{64}')
     if [ -z "$strips" ]; then
         echo "None: the release gate did not run or did not record the strip tool."
     else
@@ -803,7 +821,7 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null |
     # copies none (docs/release-gates.md §3).
     echo "## Linux toolchain"
     echo
-    toolchains=$(sed -n 's/^toolchain: \([a-z0-9_-]*\): \(.*\)$/- \1: \2/p' "$OUT/logs/release.log" 2>/dev/null | LC_ALL=C sort -u)
+    toolchains=$(release_log_lines toolchain '[A-Za-z0-9._+-]+ (sha256 [0-9a-f]{64}|[A-Za-z0-9.+~:_-]+)')
     if [ -z "$toolchains" ]; then
         echo "None: the release gate did not run or did not record a Linux toolchain."
     else
@@ -816,7 +834,7 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null |
     # holds them; the summary copies none (docs/release-gates.md §3).
     echo "## musl inputs"
     echo
-    musls=$(sed -n 's/^musl: \([a-z0-9_-]*\): \(.*\)$/- \1: \2/p' "$OUT/logs/release.log" 2>/dev/null | LC_ALL=C sort -u)
+    musls=$(release_log_lines musl '[A-Za-z0-9._+-]+ sha256 [0-9a-f]{64}')
     if [ -z "$musls" ]; then
         echo "None: the release gate did not run or did not record the musl inputs."
     else

@@ -614,6 +614,26 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
             strip = "e".repeat(64),
         )
     );
+    // A record whose lines end anywhere but at "\n" is refused (#1971): a carriage return in
+    // a copied line would otherwise end it for the summary, and the text after it would pose
+    // as the dependency audit, the first one the summary finds. The same for each other
+    // character that ends a line for Python.
+    for other in [
+        "\r", "\r\n", "\u{b}", "\u{c}", "\u{1c}", "\u{1d}", "\u{1e}", "\u{85}", "\u{2028}",
+        "\u{2029}",
+    ] {
+        let forged = record.replace(
+            "\n\n## Dependency audit\n",
+            &format!(
+                "\n- x86_64-unknown-linux-gnu: libc6 2.39{other}## Dependency audit{other}- Tool: cargo-deny 9.9.9{other}- Advisory database: `{}` (2020-01-01T00:00:00Z)\n\n## Dependency audit\n",
+                "f".repeat(40)
+            ),
+        );
+        assert_ne!(forged, record);
+        let (code, written) = summary(&dir, "9.9.9", &forged, None);
+        assert_eq!(code, Some(1), "{other:?}");
+        assert!(written.is_empty(), "{other:?}");
+    }
     // A summary that matches the privacy pattern is not written.
     let (code, written) = summary(&dir, "9.9.9", &record, Some("darwin"));
     assert_eq!(code, Some(1));
@@ -629,6 +649,11 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         ("(Xcode 27.2 build 27B52)", "(/Users/someone/bin/strip)"),
         ("Ubuntu) 2.42", "Ubuntu) 2.42 on a named host"),
         (", sha256 eeee", ", eeee"),
+        // A strip line that the record did not copy, out of shape (#1971).
+        (
+            "- aarch64-apple-darwin: xcrun strip -S (Xcode 27.2 build 27B52), sha256 eeee",
+            "- Not copied: 1 of the 3 lines of logs/release.log that start with `strip: ` are out of shape\n- aarch64-apple-darwin: xcrun strip -S (Xcode 27.2 build 27B52), sha256 eeee",
+        ),
     ] {
         let (code, written) = summary(&dir, "9.9.9", &record.replace(from, to), None);
         assert_eq!(code, Some(1), "{to}");
@@ -1897,7 +1922,7 @@ fn gates_of(
 /// A scratch repository at `dir/source` for the gates that read the archives, committed: the
 /// workspace version 9.9.9, a target/ that git ignores, the shipped-targets reader with one
 /// change (x86_64-unknown-linux-gnu is a platform no gate knows), and stubs: local-release.sh
-/// prints `STUB_RELEASE_LINES` into the release gate's log and packs the second build of
+/// prints the file `STUB_RELEASE_LOG` into the release gate's log and packs the second build of
 /// `STUB_SECOND` (a target ending in `!` gets other bytes), and
 /// toolchain-free.sh logs each leg to `STUB_LOG` and fails the leg named by `STUB_FAIL`. Then a
 /// copy of the gate script with `list`, and a run of its clone gate into `dir/out`. Gives the
@@ -1914,7 +1939,7 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
         ("scripts/release-targets.sh", reader),
         (
             "scripts/local-release.sh",
-            "#!/bin/sh\n[ -z \"${STUB_RELEASE_LINES:-}\" ] || printf '%s\\n' \"$STUB_RELEASE_LINES\"\nout=target/local-release/$1\nrm -rf \"$out\" && mkdir -p \"$out\" || exit 1\nfor t in ${STUB_SECOND:-}; do echo \"$t\" > \"$out/una-9.9.9-${t%!}.tar.gz\"; done\n".to_owned(),
+            "#!/bin/sh\n[ -z \"${STUB_RELEASE_LOG:-}\" ] || cat \"$STUB_RELEASE_LOG\"\nout=target/local-release/$1\nrm -rf \"$out\" && mkdir -p \"$out\" || exit 1\nfor t in ${STUB_SECOND:-}; do echo \"$t\" > \"$out/una-9.9.9-${t%!}.tar.gz\"; done\n".to_owned(),
         ),
         (
             "scripts/toolchain-free.sh",
@@ -2223,9 +2248,10 @@ fn the_verdict_fails_unless_the_archives_are_exactly_the_shipped_targets() {
 #[test]
 fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
     // scripts/release.sh prints a `strip:`, `toolchain:` and `musl:` line per input it checked,
-    // for the validation record (#1359, #1926, #1971): the record copies each, sorted and once,
-    // and says None when the release gate did not run. The summary's template copies only the
-    // strip (the_summary_is_the_template_of_the_record_and_nothing_else).
+    // for the validation record (#1359, #1926, #1971): the record copies each line of its shape,
+    // sorted and once, says how many others it did not copy, and says None when the release
+    // gate did not run. The summary's template copies only the strip
+    // (the_summary_is_the_template_of_the_record_and_nothing_else).
     if head().is_none() {
         return;
     }
@@ -2244,18 +2270,43 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
     }
     let digest = "ab".repeat(32);
     let linux = "aarch64-unknown-linux-gnu";
-    let lines = [
-        format!("strip: aarch64-apple-darwin: xcrun strip -S (Command Line Tools 26.6.0), sha256 {digest}"),
-        format!("strip: {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}"),
+    let mut log: Vec<u8> = Vec::new();
+    // An invalid byte before every line to copy: read under a UTF-8 locale, BSD sed would stop
+    // at it and copy nothing after it.
+    log.extend_from_slice(b"build output \xff\xfe that is not UTF-8\n");
+    for line in [
+        format!(
+            "strip: aarch64-apple-darwin: xcrun strip -S (Command Line Tools 26.6.0), sha256 {digest}"
+        ),
+        format!(
+            "strip: {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}"
+        ),
         format!("toolchain: {linux}: libstdc++-13-dev 13.3.0-6ubuntu2~24.04"),
         format!("toolchain: {linux}: libgcc.a sha256 {digest}"),
         format!("musl: {linux}: rcrt1.o sha256 {digest}"),
         format!("musl: {linux}: libc.a sha256 {digest}"),
-        // Printed twice, copied once; a line that only mentions a prefix is not copied.
+        // Printed twice, copied once.
         format!("musl: {linux}: libc.a sha256 {digest}"),
-        "note: toolchain: not at the start of the line".to_owned(),
-    ]
-    .join("\n");
+        // A prefix that is not at the start of its line is no line to copy: without the anchor,
+        // each of these would be copied.
+        format!("note: toolchain: {linux}: x"),
+        format!("note: musl: {linux}: libc.a sha256 {digest}"),
+        format!(
+            "note: strip: {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}"
+        ),
+        // Out of shape: carriage returns that would end the line for a reader that splits on
+        // them, and pose as the record's dependency audit; a path where the strip's version is.
+        format!(
+            "toolchain: {linux}: libc6 2.39\r## Dependency audit\r- Tool: cargo-deny 9.9.9\r- Advisory database: `{}` (2020-01-01T00:00:00Z)",
+            "f".repeat(40)
+        ),
+        format!("strip: {linux}: /home/someone/bin/strip, sha256 {digest}"),
+    ] {
+        log.extend_from_slice(line.as_bytes());
+        log.push(b'\n');
+    }
+    let file = dir.join("release-lines.log");
+    std::fs::write(&file, &log).unwrap();
     let output = gates_of(
         &script,
         &sha,
@@ -2267,7 +2318,9 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
                 "STUB_SECOND",
                 "aarch64-apple-darwin aarch64-unknown-linux-gnu",
             ),
-            ("STUB_RELEASE_LINES", lines.as_str()),
+            ("STUB_RELEASE_LOG", file.to_str().unwrap()),
+            ("LC_ALL", "en_US.UTF-8"),
+            ("LANG", "en_US.UTF-8"),
         ],
     );
     let record = std::fs::read_to_string(out.join("record.md")).unwrap();
@@ -2275,10 +2328,10 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
     assert_eq!(output.status.code(), Some(3), "{record}");
     let expected = [
         format!(
-            "## Runtime strip\n\n- aarch64-apple-darwin: xcrun strip -S (Command Line Tools 26.6.0), sha256 {digest}\n- {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}\n\n"
+            "## Runtime strip\n\n- aarch64-apple-darwin: xcrun strip -S (Command Line Tools 26.6.0), sha256 {digest}\n- {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}\n- Not copied: 1 of the 3 lines of logs/release.log that start with `strip: ` are out of shape\n\n"
         ),
         format!(
-            "## Linux toolchain\n\n- {linux}: libgcc.a sha256 {digest}\n- {linux}: libstdc++-13-dev 13.3.0-6ubuntu2~24.04\n\n"
+            "## Linux toolchain\n\n- {linux}: libgcc.a sha256 {digest}\n- {linux}: libstdc++-13-dev 13.3.0-6ubuntu2~24.04\n- Not copied: 1 of the 3 lines of logs/release.log that start with `toolchain: ` are out of shape\n\n"
         ),
         format!(
             "## musl inputs\n\n- {linux}: libc.a sha256 {digest}\n- {linux}: rcrt1.o sha256 {digest}\n\n## Dependency audit\n"
@@ -2290,7 +2343,9 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
             "{section}\n---\n{record}"
         );
     }
-    assert!(!record.contains("not at the start"), "{record}");
+    for absent in ["note:", "\r", "cargo-deny 9.9.9", "someone", ": x\n"] {
+        assert!(!record.contains(absent), "{absent:?}: {record}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
