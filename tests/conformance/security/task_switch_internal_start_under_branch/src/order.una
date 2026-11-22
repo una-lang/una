@@ -1,4 +1,4 @@
--- test: the residual of #1708, the twin of `task_switch_start_under_branch` with `internal` data: a `start` under a branch on a `internal` bit: the started call is a check point of the task that runs the `tasks` statement. The rule's bound is `internal` (spec/27 §8 rule 5), so it is accepted, and the report lists the check point as a `task switch` at `internal` (spec/13 §6)
+-- test: the twin of `task_switch_start_under_branch` with `internal` data: a `start` under a branch on an `internal` bit, whose task is held (spec/27 §7 rule 4) and whose started call is `uncounted` (§8 rule 5, #1708), so the prints keep their order; accepted, and the report lists the started call as a `task switch` at `internal` (spec/13 §6), since a held task can still be let go at a park of its own
 -- spec: spec/27 §8
 -- grant: console
 -- expect: run-output "0"

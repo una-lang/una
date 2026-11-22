@@ -1726,7 +1726,7 @@ pub(crate) fn decided_functions(findings: &Findings) -> BTreeSet<usize> {
         level: una_syntax::ast::Level::Internal,
         ..Label::public()
     };
-    let by_type = super::switch::decided_by_type(findings, &internal);
+    let by_type = super::switch::decided_by_type(findings, &internal, true);
     let mut out: BTreeSet<usize> = BTreeSet::new();
     for site in &findings.switch_sites {
         if !site.label.concrete().flows_to(&internal)

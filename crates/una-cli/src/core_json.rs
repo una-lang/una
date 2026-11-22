@@ -870,6 +870,10 @@ impl Writer<'_> {
                 "timing" => J::Bool(*timing),
                 "span" => self.span(*span),
             ),
+            Expr::Uncounted { body, span } => node!(Uncounted,
+                "body" => self.expr(body),
+                "span" => self.span(*span),
+            ),
             Expr::TogetherFor {
                 source,
                 var,

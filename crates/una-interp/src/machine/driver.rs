@@ -92,7 +92,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 self.stop_event();
                 break Ok(());
             }
-            self.run.tick();
+            self.run.tick_at(self.uncounted == 0);
             if let Err(stop) = self.within_budget(span) {
                 break Err(stop);
             }

@@ -1302,6 +1302,10 @@ pub(crate) struct Findings {
     /// The check points that data above `public` can decide, reported when the package's
     /// program can run started tasks (`spec/27 §8` rule 5, #1684).
     pub(crate) switch_sites: Vec<switch::SwitchSite>,
+    /// The spans of `switch_sites`: Core IR marks each such call, operation, loop or `start`
+    /// `uncounted`, so its check points, in its callees and in the tasks it starts included, do
+    /// not advance the count of the task's turn (`spec/27 §8` rule 5, #1708).
+    pub(crate) uncounted: std::collections::BTreeSet<Span>,
     /// The calls of generic functions, with the labels their type arguments can carry, for
     /// the sites of `switch_sites` that only a type parameter decides (#1684).
     pub(crate) switch_calls: Vec<switch::GenericCall>,

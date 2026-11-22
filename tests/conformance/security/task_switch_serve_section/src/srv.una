@@ -1,16 +1,18 @@
--- test: the driver of a `serve` section runs each request's `handle` as a started task, which takes turns every 1024 check points (spec/31 §7 rule 4), so a package with a `serve` section is under the rule of check points as one with a `tasks` statement: a loop whose bound a `secret` key decides in `handle` would order the replies by the key, and is U4002 (spec/27 §8 rule 5, #1684)
+-- test: the driver of a `serve` section runs each request's `handle` as a started task, which takes turns every 1024 check points (spec/31 §7 rule 4), so a package with a `serve` section is under the rule of check points as one with a `tasks` statement: a call that a `secret` key decides in `handle` can decide the depth of the request's task, and is U4002 (spec/27 §8 rule 5, #1684, #1708)
 -- spec: spec/27 §8
--- expect: error U4002 at src/srv.una:12:3
+-- expect: error U4002 at src/srv.una:15:5
 module srv
 
 import std.host (Reply, Request)
 
 key() -> secret Int = 1
 
+noop() -> Unit = unit
+
 spin(n: secret Int) -> Unit
 =
-  for i in 0..<n
-    unit
+  if n > 0
+    noop()
 
 pub handle(request: internal Request) -> internal Reply
 =

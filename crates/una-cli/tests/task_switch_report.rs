@@ -128,8 +128,9 @@ fn the_internal_twin_of_each_refused_case_lists_its_sites_and_the_public_one_non
         twin(&case, &public, "");
         assert_eq!(listed(&public, &name), Sites::new(), "{name}: public twin");
     }
-    // The 12 refused cases of #1684 and the 4 shapes of #1708.
-    assert!(cases >= 16, "{cases} refused cases");
+    // The refused cases of #1684 and the shapes of #1708, less `task_switch_secret_loop` and
+    // `task_switch_list_loop`, whose loops' iterations are uncounted and accepted since #1708.
+    assert!(cases >= 15, "{cases} refused cases");
     let _ = std::fs::remove_dir_all(&base);
 }
 

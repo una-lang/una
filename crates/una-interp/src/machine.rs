@@ -1003,6 +1003,10 @@ pub(crate) struct Machine<'p, 'w> {
     /// How many of those are not quiet by a timing floor alone, counted the same way: while
     /// one is, an operation appends no event (S-42, #1515, `spec/26 §6` rule 4).
     hushed: u32,
+    /// How many `uncounted` expressions the task is in, those of the task that started it at
+    /// its `start` included: while one is, its check points do not advance the count of its
+    /// turn (`spec/27 §8` rule 5, #1708).
+    uncounted: u32,
     /// The thread's attention word, and its value at the last check point (rule 18).
     word: una_sys::attention::Word,
     seen: Cell<u64>,
@@ -1133,6 +1137,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             in_ever: false,
             quiet: 0,
             hushed: 0,
+            uncounted: 0,
             word,
             seen: Cell::new(seen),
             max_memory: limits.max_memory,
@@ -1194,6 +1199,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             // A task started under a raised program counter runs under it (`spec/27 §7` rule 3).
             quiet: self.quiet,
             hushed: self.hushed,
+            // A task started in code whose running data above `public` decide passes no
+            // counted check point either (`spec/27 §8` rule 5, #1708).
+            uncounted: self.uncounted,
             word: self.word,
             seen: Cell::new(self.seen.get()),
             max_memory: self.max_memory,
@@ -1425,7 +1433,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn enter(&mut self, span: Span) -> Result<(), Stop<'p>> {
         // A call is a check point of the task's turn: after 1024 of them, the next ready task
         // runs (ADR 0117 rules 11 and 12), as native code counts its calls.
-        self.run.tick();
+        self.run.tick_at(self.uncounted == 0);
         // The tick may have let another task run: when its abort ended the whole run, this
         // call ends with the run (`spec/27 §7`), before the depth check, so a call past the
         // limit does not end its task alone after the run's end.
@@ -2368,6 +2376,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                     self.quiet = self.quiet.saturating_sub(1);
                     return result;
                 }
+                // `uncounted e` (`spec/27 §8` rule 5, #1708): `e`, its check points left out of
+                // the turn's count, then the count as before, on every way out of it.
+                Expr::Uncounted { body, .. } => {
+                    self.uncounted = self.uncounted.saturating_add(1);
+                    let result = self.eval(env, &caps, body);
+                    self.uncounted = self.uncounted.saturating_sub(1);
+                    return result;
+                }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
                 Expr::LetTuple {
                     names, value, body, ..
@@ -2683,7 +2699,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         self.stop_event();
                         break Ok(());
                     }
-                    self.run.tick();
+                    self.run.tick_at(self.uncounted == 0);
                     if let Err(stop) = self.within_budget(span) {
                         break Err(stop);
                     }
@@ -2707,7 +2723,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             // `until(c)`: `c` with the state bound, before each iteration (`spec/26 §4`).
             LoopSource::Until { cond, .. } => loop {
-                self.run.tick();
+                self.run.tick_at(self.uncounted == 0);
                 self.within_budget(span)?;
                 let mark = env.len();
                 for ((name, _), value) in state.iter().zip(&current) {
@@ -2732,7 +2748,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     return Err(fault("a loop over a value that is not a list"));
                 };
                 for item in items.iter() {
-                    self.run.tick();
+                    self.run.tick_at(self.uncounted == 0);
                     self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
@@ -2763,7 +2779,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                         break;
                     }
                     let item = Value::Int(index.clone());
-                    self.run.tick();
+                    self.run.tick_at(self.uncounted == 0);
                     self.within_budget(span)?;
                     let stopped;
                     (current, stopped) =
@@ -3637,7 +3653,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             ..
         } = *request;
         // An operation is a check point of the task's turn (ADR 0117 rule 12).
-        self.run.tick();
+        self.run.tick_at(self.uncounted == 0);
         // The tick may have let another task run: when its abort ended the whole run, this
         // operation does not start, as at every check point (`spec/27 §7`), so no `reply` or
         // other effect follows an abort of the run (ADR 0123 rule 4.7).

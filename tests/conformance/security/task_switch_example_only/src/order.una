@@ -1,15 +1,17 @@
--- test: a private function whose loop a `secret` value bounds, which only a `test` declaration calls, is code that no run of the program reaches: `una test` runs it, a run never does, so its check points move no schedule of started tasks and the package is accepted; its twin `task_switch_reached` calls the same function from a task and is refused (spec/27 §8 rule 5, #1707)
+-- test: a private function whose call a `secret` value decides, which only a `test` declaration calls, is code that no run of the program reaches: `una test` runs it, a run never does, so its check points move no schedule of started tasks and the package is accepted; its twin `task_switch_reached` calls the same function from a task and is refused (spec/27 §8 rule 5, #1707)
 -- spec: spec/27 §8
 -- grant: console
 -- expect: run-output "0"
 -- expect: run-output "1"
 module order
 
+step(acc: secret Int) -> secret Int = acc + 1
+
 spin(n: secret Int) -> secret Int
 =
   let edit acc: secret Int = 0
-  for i in 0..<n
-    acc = acc + 1
+  if n > 2
+    acc = step(acc)
   acc
 
 twice(n: secret Int) -> secret Int = spin(n) + spin(n)
@@ -26,6 +28,6 @@ pub main() -> Unit
     for k in 0..<2
       start worker(k)
 
-test "spin counts its bound twice"
+test "spin steps once past two, twice"
   do twice(3)
-  expect result == 6
+  expect result == 2

@@ -606,6 +606,7 @@ fn binders<'p>(
             }
             Expr::Tasks { body, .. }
             | Expr::Quiet { body, .. }
+            | Expr::Uncounted { body, .. }
             | Expr::Attempt { body, .. }
             | Expr::Within { body, .. }
             | Expr::With { body, .. } => stack.push(body),
@@ -648,6 +649,7 @@ fn visit<'p>(e: &'p Expr, f: &mut impl FnMut(&'p Rhs)) {
             Expr::LetTuple { body, .. }
             | Expr::Tasks { body, .. }
             | Expr::Quiet { body, .. }
+            | Expr::Uncounted { body, .. }
             | Expr::Attempt { body, .. }
             | Expr::Within { body, .. }
             | Expr::With { body, .. } => stack.push(body),
@@ -1347,7 +1349,7 @@ impl<'a, 'p> Graph<'a, 'p> {
                     }
                     e = body;
                 }
-                Expr::Quiet { body, .. } => e = body,
+                Expr::Quiet { body, .. } | Expr::Uncounted { body, .. } => e = body,
                 other => break self.compound(other, from),
             }
         };
@@ -1631,9 +1633,11 @@ impl<'a, 'p> Graph<'a, 'p> {
                 let node = self.construct(end, pc.join(&read), whole.clone(), reaches, true);
                 (Some(node), value.join(&whole))
             }
-            Expr::Let { .. } | Expr::LetTuple { .. } | Expr::With { .. } | Expr::Quiet { .. } => {
-                self.expr(e, from)
-            }
+            Expr::Let { .. }
+            | Expr::LetTuple { .. }
+            | Expr::With { .. }
+            | Expr::Quiet { .. }
+            | Expr::Uncounted { .. } => self.expr(e, from),
         }
     }
 

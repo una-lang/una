@@ -62,7 +62,9 @@ pub fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             }
             vars(body, out);
         }
-        Expr::Start { task, .. } | Expr::Quiet { body: task, .. } => vars(task, out),
+        Expr::Start { task, .. }
+        | Expr::Quiet { body: task, .. }
+        | Expr::Uncounted { body: task, .. } => vars(task, out),
         Expr::LetTuple { value, body, .. } => {
             atoms(std::slice::from_ref(value), out);
             vars(body, out);
@@ -245,7 +247,9 @@ pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
         Expr::Attempt { body, .. } | Expr::Within { body, .. } | Expr::Tasks { body, .. } => {
             binders(body, out);
         }
-        Expr::Start { task, .. } | Expr::Quiet { body: task, .. } => binders(task, out),
+        Expr::Start { task, .. }
+        | Expr::Quiet { body: task, .. }
+        | Expr::Uncounted { body: task, .. } => binders(task, out),
         Expr::With { cap, body, .. } => {
             out.insert(cap.as_str());
             binders(body, out);
@@ -295,7 +299,8 @@ pub fn has_tasks(program: &crate::Program) -> bool {
             | Expr::With { body, .. } => pending.push(body),
             Expr::Start { task, .. }
             | Expr::TogetherFor { task, .. }
-            | Expr::Quiet { body: task, .. } => pending.push(task),
+            | Expr::Quiet { body: task, .. }
+            | Expr::Uncounted { body: task, .. } => pending.push(task),
             Expr::Loop {
                 source,
                 body,

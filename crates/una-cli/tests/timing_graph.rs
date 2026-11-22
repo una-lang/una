@@ -238,7 +238,9 @@ impl Walk<'_> {
                 self.part(*span, body);
             }
             Expr::Start { task, .. } => self.expr(task),
-            Expr::Quiet { body, .. } | Expr::Attempt { body, .. } => self.expr(body),
+            Expr::Quiet { body, .. }
+            | Expr::Uncounted { body, .. }
+            | Expr::Attempt { body, .. } => self.expr(body),
             Expr::Within { body, span, .. } => {
                 self.site("within", *span);
                 self.expr(body);

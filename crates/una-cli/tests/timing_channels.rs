@@ -541,10 +541,10 @@ fn a_secret_start_before_a_public_race_never_changes_its_outcome_under_real_time
 /// with no park, then starts a long task and, in the same block, runs a short computation under
 /// a 6 ms deadline, and prints `done`.
 ///
-/// Since #1684 a `for` loop whose bound is above `internal`, in a program that starts tasks, is
-/// U4002 (`spec/27 §8` rule 5), so the `secret` program is refused, and the oracle runs its
-/// `internal` twin (#1947), as the serve oracles do. Labels do not reach the executable: the
-/// twin computes, starts and yields as the `secret` program would.
+/// From #1684 to #1708 a `for` loop whose bound is above `internal`, in a program that starts
+/// tasks, was U4002, and the oracle ran the program's `internal` twin (#1947). Since #1708 the
+/// loop's iterations are uncounted check points (`spec/27 §8` rule 5) and the `secret` program
+/// is accepted, so the oracle runs it. Labels do not reach the executable either way.
 ///
 /// The short computation is `crunch(10000)` (#1947): measured on the release machine (Apple M1
 /// Max) at about 95 ns an iteration of this loop, it takes about 1 ms, well inside both its
@@ -584,41 +584,14 @@ fn time_the_root_spent_alone_never_changes_a_later_deadline_under_real_time() {
     // every run's trace had a `timeout`. The checker labels this deadline `⊤` today; the
     // schedule must still not depend on the key, for the precise `τ_conc` of ADR 0116.
     //
-    // Since #1684 the checker refuses the `secret` program, with U4002 at `crunch`'s loop, line
-    // 10, so the executables are those of its `internal` twin (#1947); the refusal is checked
-    // first, so that the twin stands for a program the checker no longer accepts.
-    let refused =
-        std::env::temp_dir().join(format!("una-timing-phasesecret-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&refused);
-    std::fs::create_dir_all(refused.join("src")).unwrap();
-    std::fs::write(
-        refused.join("ita.una"),
-        "ita phasesecret\n  version 0.1.0\n  edition 0.4\n\nrun\n  entry phase\n  grants\n    console\n",
-    )
-    .unwrap();
-    std::fs::copy(
-        root().join("tests/conformance/runtime/within_runs/ita.lock"),
-        refused.join("ita.lock"),
-    )
-    .unwrap();
-    std::fs::write(refused.join("src/phase.una"), phase_program("secret ", 1)).unwrap();
-    let checked = una(&refused, &["check", "."]);
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&checked.stdout),
-        String::from_utf8_lossy(&checked.stderr)
-    );
-    assert_ne!(checked.status.code(), Some(0), "{said}");
-    assert!(
-        said.contains("[U4002]") && said.contains("src/phase.una:10:3"),
-        "{said}"
-    );
-    let _ = std::fs::remove_dir_all(&refused);
+    // From #1684 to #1708 the checker refused the `secret` program, with U4002 at `crunch`'s
+    // loop, and the executables were those of its `internal` twin (#1947); since #1708 the
+    // loop's iterations are uncounted and the `secret` program itself is built.
     const RUNS: usize = 20;
     let mut timeouts = Vec::new();
     for key in [0u8, 1] {
         let name = format!("phaseleak{key}");
-        let dir = within_package(&name, "phase", &phase_program("internal ", key));
+        let dir = within_package(&name, "phase", &phase_program("secret ", key));
         let exe = dir.join(format!("target/una/{name}"));
         let trace = dir.join("trace.json");
         let mut timed_out = 0usize;
@@ -958,8 +931,9 @@ fn a_cancelled_task_s_request_never_changes_a_later_deadline_s_outcome() {
 /// `L_srv = ⊤`, and the set-up's `secret` raises it in any case, so `una check` refuses a reply
 /// that carries a deadline's outcome. The oracle measures the probe's time from its request to
 /// its reply instead, which is finer than the outcome of a deadline over the same work. The key
-/// is `internal`, which raises `L_srv` too: since #1684 a loop whose bound is above `internal`
-/// is U4002 in a program that starts tasks (`spec/27 §8` rule 5), and the slicer reads no label.
+/// is `internal`, which raises `L_srv` too; the slicer reads no label. (Since #1708 a `for` loop
+/// whose bound is above `internal` is accepted in a program that starts tasks, its iterations
+/// uncounted, `spec/27 §8` rule 5; the key stays `internal`, as every request is.)
 fn prefix_program(key: u8, work: u64, setup: u64) -> String {
     format!(
         r#"module srv

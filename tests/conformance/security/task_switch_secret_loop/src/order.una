@@ -1,6 +1,14 @@
--- test: the hunt's probe (#973 T1): a started task whose pure loop runs as many iterations as a `secret` bit decides, then prints; the interpreter switches tasks after 1024 check points, so the order of the prints spelled the key, one bit per task. Each iteration is a check point, and the loop's bound is `secret`, so the loop is U4002 in a program that starts tasks; `una run` and `una build` refuse it at check time (spec/27 §8 rule 5, #1684)
+-- test: the hunt's probe (#973 T1): a started task whose pure loop runs as many iterations as a `secret` bit decides, then prints; the interpreter switches tasks after 1024 check points, so the order of the prints spelled the key, one bit per task, and #1684 refused the loop. Its iterations are now `uncounted` (spec/27 §8 rule 5, ADR 0117 amendment of 2026-11-22, second, #1708): such a loop ends and pushes no frame, so the program is accepted and the prints are `0` to `7` in order, for every key, as `una run` and native code under `--virtual-time` show alike (`crates/una-cli/tests/native.rs`)
 -- spec: spec/27 §8
--- expect: error U4002 at src/order.una:9:3
+-- grant: console
+-- expect: run-output "0"
+-- expect: run-output "1"
+-- expect: run-output "2"
+-- expect: run-output "3"
+-- expect: run-output "4"
+-- expect: run-output "5"
+-- expect: run-output "6"
+-- expect: run-output "7"
 module order
 
 spin(n: secret Int) -> secret Int

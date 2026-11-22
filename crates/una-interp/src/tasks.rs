@@ -226,7 +226,17 @@ impl<'p, 'w> Run<'p, 'w> {
     /// A check point of the task that runs (ADR 0117 rule 12): counts it in the turn, and
     /// after [`TURN`] of them, while another task is ready, the task goes to the back of the
     /// queue and the next one runs. Nothing of the run is borrowed at the switch.
+    #[cfg(test)]
     pub(crate) fn tick(&self) {
+        self.tick_at(true);
+    }
+
+    /// As [`Run::tick`], for a check point that advances the count of the turn only when
+    /// `counted`: one that a task passes outside every `uncounted` expression, whose occurrence
+    /// `public` data decide (`spec/27 §8` rule 5, ADR 0117 amendment of 2026-11-22, second,
+    /// #1708). An uncounted check point reads the cost clock and lands requests as any other
+    /// does, and never ends the turn. O(1) more than a counted one: one test.
+    pub(crate) fn tick_at(&self, counted: bool) {
         // The cost clock (`spec/27 §8` rule 6): one tick, a millisecond of virtual time, per
         // check point, before the check point reads any deadline. O(1).
         if self.cost {
@@ -236,6 +246,9 @@ impl<'p, 'w> Run<'p, 'w> {
             return;
         }
         self.land();
+        if !counted {
+            return;
+        }
         let due = {
             let mut sched = self.sched.borrow_mut();
             sched.turn = sched.turn.saturating_add(1);

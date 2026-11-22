@@ -223,6 +223,10 @@ fn reaches_tables<'p>(index: &Index<'p>, roots: &[&'p Expr]) -> bool {
                 body: task,
                 timing: _,
                 span: _,
+            }
+            | Expr::Uncounted {
+                body: task,
+                span: _,
             } => {
                 pending.push(task);
             }

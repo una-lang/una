@@ -1,14 +1,14 @@
--- test: the residual of #1708, the twin of `task_switch_record_field` with `internal` data: a `internal` key read from a field of a record decides a branch around a call, in a started task. The rule's bound is `internal` (spec/27 §8 rule 5), so it is accepted, and the report lists the check point as a `task switch` at `internal` (spec/13 §6)
+-- test: the twin of `task_switch_record_field` with `internal` data: an `internal` key read from a field of a record decides a branch around a call, in a started task. The call is `uncounted` (spec/27 §8 rule 5, #1708), so the prints keep their order; accepted, and the report lists the call as a `task switch` at `internal` (spec/13 §6), for the depth of the task (#1677)
 -- spec: spec/27 §8
 -- grant: console
 -- expect: run-output "0"
--- expect: run-output "2"
--- expect: run-output "5"
--- expect: run-output "7"
 -- expect: run-output "1"
+-- expect: run-output "2"
 -- expect: run-output "3"
 -- expect: run-output "4"
+-- expect: run-output "5"
 -- expect: run-output "6"
+-- expect: run-output "7"
 module order
 
 noop() -> Unit = unit

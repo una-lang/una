@@ -552,7 +552,9 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Tasks { bound, body, .. } => {
             bound.as_ref().is_some_and(|(b, _)| atom(b)) || mentions(body, name)
         }
-        Expr::Start { task, .. } | Expr::Quiet { body: task, .. } => mentions(task, name),
+        Expr::Start { task, .. }
+        | Expr::Quiet { body: task, .. }
+        | Expr::Uncounted { body: task, .. } => mentions(task, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,

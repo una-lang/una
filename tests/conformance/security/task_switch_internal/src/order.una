@@ -1,14 +1,14 @@
--- test: the rule's bound is `internal`, as for the depth of a started task (#1674): the program of `task_switch_secret_loop` with an `internal` key, as every request of `HttpServer` is, is accepted. Its prints are ordered by that key: a known residual (#1708), which the report lists as a `task switch` at `internal` at the loop (spec/13 §6), until the amendment of ADR 0117 that stops counting the check points under a raised program counter (spec/27 §8 rule 5, #1684)
+-- test: the hunt's probe of #973 with an `internal` key, as every request of `HttpServer` is: the twin of `task_switch_secret_loop`. The loop whose bound the key decides is a check point that data above `public` decide, so Core IR marks it `uncounted` and its iterations move no switch (spec/27 §8 rule 5, ADR 0117 amendment of 2026-11-22, second, #1708): the prints are `0` to `7` in order, for every key, as `una run` and native code under `--virtual-time` show alike (`crates/una-cli/tests/native.rs`); the iterations of a `for` loop are no `task switch` of the report either
 -- spec: spec/27 §8
 -- grant: console
 -- expect: run-output "0"
--- expect: run-output "2"
--- expect: run-output "5"
--- expect: run-output "7"
 -- expect: run-output "1"
+-- expect: run-output "2"
 -- expect: run-output "3"
 -- expect: run-output "4"
+-- expect: run-output "5"
 -- expect: run-output "6"
+-- expect: run-output "7"
 module order
 
 spin(n: internal Int) -> internal Int
