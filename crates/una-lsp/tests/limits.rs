@@ -231,7 +231,35 @@ fn input_that_is_no_longer_framed_is_reported_and_ends_the_session() {
     let huge = "Content-Length: 99999999999999999999999999999999\r\n\r\n{}";
     let mut not_utf8 = b"X-Name: \xff\r\n".to_vec();
     not_utf8.extend_from_slice(&framed("{}"));
-    let cases: [(Vec<u8>, &str, Option<Value>, bool); 10] = [
+    let hostile = "\u{1b}]0;pwned\u{7}\u{1b}[2J1\rerror[U0000]: forged\0\u{202e}txt";
+    let hostile_header = format!("Content-Length: {hostile}\r\n\r\n{{}}");
+    let overlong = format!("Content-Length: {}\r\n\r\n{{}}", "x".repeat(4000));
+    let overlong_reason = format!(
+        "a Content-Length that is not a number: `{}...`",
+        "x".repeat(64)
+    );
+    let cases: Vec<(Vec<u8>, &str, Option<Value>, bool)> = vec![
+        // The editor's text is escaped and cut, so it cannot forge the line (review 1, M1).
+        (
+            hostile_header.into_bytes(),
+            "a Content-Length that is not a number: `\\u{1b}]0;pwned\\u{7}\\u{1b}[2J1\\u{d}error[U0000]: forged\\u{0}\\u{202e}txt`",
+            None,
+            true,
+        ),
+        (overlong.into_bytes(), &overlong_reason, None, true),
+        // The end of the input inside a header is no normal end (review 1, M2).
+        (
+            b"Content-Len".to_vec(),
+            "the input ended inside a message's header",
+            None,
+            false,
+        ),
+        (
+            b"Content-Length: 2\r\n".to_vec(),
+            "the input ended inside a message's header",
+            None,
+            false,
+        ),
         (
             long_line.into_bytes(),
             "a header line longer than 4096 bytes (MAX_HEADER_LINE)",
@@ -289,6 +317,7 @@ fn input_that_is_no_longer_framed_is_reported_and_ends_the_session() {
         ),
     ];
     for (refused, reason, limit, followed) in cases {
+        let reason = reason.to_owned();
         // A request before the bad input is answered; nothing after it is read. The body
         // that is cut short is the end of its input.
         let mut input = framed(SHUTDOWN);
@@ -310,6 +339,16 @@ fn input_that_is_no_longer_framed_is_reported_and_ends_the_session() {
                 }
                 other => panic!("{reason}: ended as {other:?}"),
             }
+            // No control or format character of the editor reaches the log raw.
+            assert!(
+                !served
+                    .log
+                    .trim_end_matches('\n')
+                    .chars()
+                    .any(una_diag::text::hidden),
+                "{:?}",
+                served.log
+            );
             assert_eq!(
                 served.sent,
                 vec![
@@ -419,4 +458,40 @@ fn the_end_of_the_input_between_frames_ends_the_session_without_a_report() {
         );
         assert_eq!(served.log, "");
     }
+}
+
+/// An output that takes no byte: a reader of the server's messages that went away.
+struct Closed;
+
+impl std::io::Write for Closed {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_failed_write_of_the_notification_of_a_refusal_is_returned() {
+    // `spec/13 §5`: a failure to write the output exits with code 2, so it is not hidden
+    // behind the refusal (review 1, L2). The log line is still written.
+    let mut log = Vec::new();
+    let result = una_lsp::serve(
+        Box::new(Cursor::new(framed("{not json}"))),
+        &mut Closed,
+        &mut log,
+        LogForm::Text,
+        Empty,
+    );
+    assert_eq!(
+        result.err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::BrokenPipe)
+    );
+    assert!(
+        String::from_utf8(log)
+            .unwrap()
+            .starts_with("error[U7016]: ")
+    );
 }

@@ -133,14 +133,16 @@ fn report(diagnostic: &Diagnostic, log: &mut dyn Write, form: LogForm) -> serde_
 ///   framed: the frame is dropped, the session goes on, and [`Ended`] counts it.
 /// - A header line past [`MAX_HEADER_LINE`], a header past [`MAX_HEADER_LINES`], a header
 ///   line that is not UTF-8, a `Content-Length` that is missing, not a number or past
-///   [`MAX_CONTENT_LENGTH`], and a body that is cut short or not JSON leave no known start
-///   for the next frame: the checks in flight are cancelled, and `serve` returns
-///   [`Ended::Refused`] with the diagnostic. The notification is then sent without regard to
-///   whether the client still reads it.
+///   [`MAX_CONTENT_LENGTH`], a header or a body cut short by the end of the input, and a
+///   body that is not JSON leave no known start for the next frame: the checks in flight
+///   are cancelled, and `serve` returns [`Ended::Refused`] with the diagnostic, or the error
+///   of writing its notification.
 ///
 /// An error of the input itself, a read that fails, is not a refusal: it is written to `log`
 /// and shown as text, without a code, and `serve` returns it, as it returns an error of
-/// `output`. A line that `log` does not take is lost; it changes nothing else.
+/// `output`. A line that `log` does not take is lost; it changes nothing else. Text of the
+/// editor that a refusal quotes, such as a `Content-Length` value, has its control and format
+/// characters escaped and is cut at 64 characters (`una_diag::text::quoted`).
 pub fn serve<W: Workspace>(
     input: Box<dyn BufRead + Send>,
     output: &mut dyn Write,
@@ -198,7 +200,9 @@ pub fn serve<W: Workspace>(
                 Event::Refused(refusal) => {
                     server.cancel_all();
                     let diagnostic = refusal_diagnostic(refusal, false);
-                    let _ = write_message(output, &report(&diagnostic, log, form));
+                    // A failed write of the notification is a failure to write the output,
+                    // which `spec/13 §5` gives exit code 2, like every other write.
+                    write_message(output, &report(&diagnostic, log, form))?;
                     return Ok(Ended::Refused {
                         dropped,
                         diagnostic: Box::new(diagnostic),

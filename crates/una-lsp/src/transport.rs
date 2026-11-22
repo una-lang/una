@@ -100,6 +100,20 @@ impl Refusal {
     }
 }
 
+/// The refusal of an input that ends inside a frame's header (#2156): after some of its
+/// bytes and before the empty line that ends it.
+fn cut_header() -> Refused {
+    Refused::Stream(Refusal {
+        reason: "the input ended inside a message's header".to_owned(),
+        limit: None,
+        kind: io::ErrorKind::UnexpectedEof,
+    })
+}
+
+/// The most characters of a value of the editor that a refusal quotes: enough to tell a
+/// typo, too few to flood the line (#2156).
+const MAX_QUOTED: usize = 64;
+
 /// The first count past `bound`, at which the transport stops reading: the value seen.
 fn past(bound: usize) -> Option<u64> {
     u64::try_from(bound)
@@ -149,7 +163,8 @@ fn read_header_line(input: &mut dyn BufRead) -> Result<Option<String>, Refused> 
             if !read_any {
                 return Ok(None);
             }
-            break;
+            // A line that the end of the input cuts is no header line: the frame is cut.
+            return Err(cut_header());
         }
         read_any = true;
         // Room for the bound and a `\r` that may precede the `\n`.
@@ -194,7 +209,8 @@ fn content_length(value: &str) -> Result<usize, Refusal> {
     let value = value.trim();
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Refusal::form(format!(
-            "a Content-Length that is not a number: `{value}`"
+            "a Content-Length that is not a number: `{}`",
+            una_diag::text::quoted(value, MAX_QUOTED)
         )));
     }
     match value.parse::<usize>() {
@@ -304,6 +320,8 @@ pub(crate) fn read_frame(input: &mut dyn BufRead) -> Result<Option<Value>, Refus
     };
     check_shape(&body, MAX_DEPTH, MAX_VALUES).map_err(Refused::Frame)?;
     serde_json::from_slice(&body).map(Some).map_err(|error| {
+        // The parser's message quotes no byte of the body today; it is escaped all the same.
+        let error = una_diag::text::quoted(&error.to_string(), 4 * MAX_QUOTED);
         Refused::Stream(Refusal::form(format!("a body that is not JSON: {error}")))
     })
 }
@@ -314,6 +332,10 @@ fn read_body(input: &mut dyn BufRead) -> Result<Option<Vec<u8>>, Refused> {
     let mut lines = 0;
     loop {
         let Some(line) = read_header_line(input)? else {
+            // The end of the input is the normal end only between two frames.
+            if lines > 0 {
+                return Err(cut_header());
+            }
             return Ok(None);
         };
         if line.is_empty() {
@@ -762,11 +784,62 @@ mod tests {
             frame("Content-Length: two\r\n", "{}"),
             [b"X-Name: \xff\r\n".as_slice(), &framed("{}")].concat(),
             frame("Content-Length: 9\r\n", "{}"),
+            b"Content-Len".to_vec(),
+            b"Content-Length: 2\r\n".to_vec(),
+            b"Content-Length: 2\r\nX-Extra: 1".to_vec(),
         ] {
             let (refusal, readable) = refusal_of(bytes);
             assert_eq!(refusal.limit, None, "{}", refusal.reason);
             assert!(!readable, "{}", refusal.reason);
         }
+    }
+
+    #[test]
+    fn an_input_cut_inside_a_header_is_refused_and_one_cut_between_frames_is_not() {
+        for bytes in [
+            &b"C"[..],
+            b"Content-Len",
+            b"Content-Length: 2\r\n",
+            b"Content-Length: 2\r",
+        ] {
+            let error = read_message(&mut Cursor::new(bytes.to_vec())).err();
+            assert_eq!(
+                error.as_ref().map(io::Error::kind),
+                Some(io::ErrorKind::UnexpectedEof),
+                "{bytes:?}"
+            );
+            assert_eq!(
+                error.map(|error| error.to_string()),
+                Some("the input ended inside a message's header".to_owned())
+            );
+        }
+        let mut input = Cursor::new(framed("{}"));
+        assert!(read_message(&mut input).ok().flatten().is_some());
+        assert!(matches!(read_message(&mut input), Ok(None)));
+        assert!(matches!(
+            read_message(&mut Cursor::new(Vec::new())),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn a_quoted_value_is_escaped_and_cut() {
+        let (refusal, _) = refusal_of(frame("Content-Length: 1\u{1b}[31m\0\u{202e}\r\n", "{}"));
+        assert_eq!(
+            refusal.reason,
+            "a Content-Length that is not a number: `1\\u{1b}[31m\\u{0}\\u{202e}`"
+        );
+        let (refusal, _) = refusal_of(frame(
+            &format!("Content-Length: {}\r\n", "y".repeat(MAX_HEADER_LINE - 20)),
+            "{}",
+        ));
+        assert_eq!(
+            refusal.reason,
+            format!(
+                "a Content-Length that is not a number: `{}...`",
+                "y".repeat(MAX_QUOTED)
+            )
+        );
     }
 
     #[test]

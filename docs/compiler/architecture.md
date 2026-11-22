@@ -127,9 +127,9 @@ A refused frame is never silent (#2100). Every refusal is a diagnostic, U7016 (#
 | A body past `MAX_DEPTH` or `MAX_VALUES` | Still framed: the body was read whole | Drops the frame and goes on with the next one. A request in a dropped frame gets no response. The session exits with code 1 when it ends |
 | A header line past `MAX_HEADER_LINE`, a header past `MAX_HEADER_LINES`, a header line that is not UTF-8, a `Content-Length` that is missing, not a number or past `MAX_CONTENT_LENGTH` | Not framed: the body was not read, so where the next frame starts is not known | Cancels the checks in flight, reads no further and exits with code 1 |
 | A body that is not JSON | Read whole, but the peer does not speak the protocol, and a wrong `Content-Length` is the usual cause | The same: exit code 1 |
-| A body cut short by the end of the input | Ended | The same: exit code 1; the notification is written whether or not the editor still reads it |
+| A header or a body cut short by the end of the input: after a header line, inside one, or inside the body | Ended | The same: exit code 1 |
 
-An error reading the input is no refusal of the editor's bytes: it is one line of text on stderr and in the notification, without a code, and the command exits with code 2, as for a failure to write the output. Exit code 1 follows ADR 0036: every diagnostic with a code exits with 1.
+An error reading the input is no refusal of the editor's bytes: it is one line of text on stderr and in the notification, without a code, and the command exits with code 2, as for a failure to write the output, the notification of a refusal included. A `Content-Length` value that a refusal quotes is cut at 64 characters and its control and format characters are written as `\u{...}` (`una_diag::text::quoted`, the rule `una-project` applies to what a registry serves), so the editor's bytes cannot forge the line on a terminal or reorder the text in the editor. Exit code 1 follows ADR 0036: every diagnostic with a code exits with 1.
 
 The server never looks for the next header in bytes it refused, so it cannot read a body as headers. The end of the input between two frames is still the normal end of a session, with exit code 0 and no report.
 

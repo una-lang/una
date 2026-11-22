@@ -10,6 +10,7 @@ mod diagnostic;
 mod human;
 mod json;
 pub mod safe_write;
+pub mod text;
 
 pub use codes::{Code, Domain, UnknownCode};
 pub use diagnostic::{

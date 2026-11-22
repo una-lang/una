@@ -998,6 +998,38 @@ fn a_refused_frame_is_reported_on_stderr_and_to_the_editor() {
     }
 }
 
+/// The end of the input inside a header is a refusal, not a normal end, and a quoted value of
+/// the editor reaches stderr escaped, in both forms (#2156, review 1).
+#[test]
+fn a_cut_header_and_a_hostile_value_are_refused_safely() {
+    let cut =
+        "una lsp stopped reading the editor's messages: the input ended inside a message's header";
+    for input in [&b"Content-Len"[..], b"Content-Length: 2\r\n"] {
+        let (code, sent, stderr) = served(&[], input);
+        assert_eq!(stderr, format!("error[U7016]: {cut}\n"));
+        assert_eq!(sent.len(), 1);
+        assert_eq!(code, Some(1));
+        let (code, _, stderr) = served(&["--json"], input);
+        let document: Value = serde_json::from_str(stderr.trim_end()).unwrap();
+        assert_eq!(document["code"], "U7016");
+        assert_eq!(document["message"], cut);
+        assert_eq!(code, Some(1));
+    }
+    let hostile = "Content-Length: \u{1b}[2J1\rerror[U0000]: forged\0\u{7}\u{202e}x\r\n\r\n{}";
+    let escaped = "una lsp stopped reading the editor's messages: a Content-Length that is not a number: `\\u{1b}[2J1\\u{d}error[U0000]: forged\\u{0}\\u{7}\\u{202e}x`";
+    let (code, sent, stderr) = served(&[], hostile.as_bytes());
+    assert_eq!(stderr, format!("error[U7016]: {escaped}\n"));
+    assert_eq!(
+        sent[0]["params"]["message"],
+        format!("error[U7016]: {escaped}")
+    );
+    assert_eq!(code, Some(1));
+    let (code, _, stderr) = served(&["--json"], hostile.as_bytes());
+    let document: Value = serde_json::from_str(stderr.trim_end()).unwrap();
+    assert_eq!(document["message"], escaped);
+    assert_eq!(code, Some(1));
+}
+
 /// `una explain U7016` prints its page, and its JSON form names the code's domain (#2156).
 #[test]
 fn the_refusal_code_is_explained() {
