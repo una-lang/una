@@ -1,0 +1,119 @@
+-- test: following each advice of U3013 resolves it, and the program checks (#837)
+-- spec: spec/04 §4
+-- expect: ok
+module advice
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+
+capability Log
+  op flush() -> Unit
+
+show(r: Result[Option[Int], StoreError]) -> Int = 1
+
+count(r: Result[Int, StoreError]) -> Int = 1
+
+logged(k: Int) -> Int
+  uses @log: Log
+=
+  @log.flush()
+  k
+
+each(f: fn(Int) -> Int uses @log: Log) -> Int
+  uses @log: Log
+=
+  0
+
+bump(edit n: Int) -> Int
+=
+  n = n + 1
+  n
+
+parse(a: Int) -> Int
+  fails StoreError
+=
+  if a == 1 then 1 else fail Timeout
+
+add_logged(x: Int) -> Int
+  uses @log: Log
+=
+  let logged_x = logged(x)
+  x + logged_x
+
+second() -> Option[Int]
+  uses @store: Store
+=
+  let v = @store.find(2)
+    if error use None
+  v
+
+pub attempted(k: Int) -> Int
+  uses @store: Store
+=
+  let outcome = attempt @store.find(k)
+  show(outcome)
+
+pub plain(k: Int) -> Int
+  uses @log: Log
+=
+  let logged_k = logged(k)
+  1 + logged_k
+
+pub in_lambda() -> Int
+  uses @log: Log
+=
+  each(f: add_logged)
+
+pub in_clause() -> Option[Int]
+  uses @store: Store
+=
+  let first = attempt @store.find(1)
+  when first
+    is Ok(v) -> v
+    is Err(e) -> second()
+
+pub in_branch(k: Int) -> Int
+  uses @log: Log
+=
+  if k > 0
+    let logged_k = logged(k)
+    logged_k
+  else
+    0
+
+pub right_operand(k: Int) -> Bool
+  uses @log: Log
+=
+  if k > 0
+    let logged_k = logged(k)
+    logged_k > 0
+  else
+    false
+
+pub argument_of_attempted(k: Int) -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  let key = logged(k)
+  let outcome = attempt @store.find(key)
+  show(outcome)
+
+pub edit_nested() -> Int
+=
+  let edit n = 1
+  let r = bump(edit n)
+  1 + r
+
+pub edit_attempted() -> Int
+=
+  let edit n = 1
+  let bumped_n = bump(edit n)
+  count(Ok(bumped_n))
+
+predicate opaque same(a: Int) -> Bool =
+  let left = attempt parse(a)
+  let right = attempt parse(a)
+  left == right

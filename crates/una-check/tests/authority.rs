@@ -433,7 +433,8 @@ fn effects_and_failures_stand_alone_on_their_line() {
             "U3013 t.una:22:19 `@store.find` has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first",
             "U3013 t.una:24:15 `size` has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first",
             "U3013 t.una:25:13 `size` has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first",
-            "U3013 t.una:38:24 `@log.write` has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first",
+            // #837: the call runs only when the condition selects its branch.
+            "U3013 t.una:38:24 `@log.write` has effects or can fail, so it must be the whole expression of a statement or `let`; a branch of `if ... then ... else` runs only when the condition selects it, so binding the call with `let` before the `if` would run it every time: write the `if` on several lines, with the call as a statement or `let` of its branch",
         ]
     );
 }

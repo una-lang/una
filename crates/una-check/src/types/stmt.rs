@@ -1485,6 +1485,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
                     };
+                    let conditional = self.conditional.replace(super::check::Conditional::Clause);
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).
@@ -1492,6 +1493,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             checker.expr_as(value, Some(&expected), Role::Plain)
                         }
                     });
+                    self.conditional = conditional;
                     if let Some(saved) = saved {
                         self.restore_pc(saved);
                     }
@@ -1526,7 +1528,9 @@ impl<'a> Checker<'_, 'a, '_> {
                     let saved = self.raise_pc(&option, handled.expr.span);
                     // The default's flow is the binder's (ADR 0103).
                     self.flow_hints.insert(value.span);
+                    let conditional = self.conditional.replace(super::check::Conditional::Clause);
                     let used = self.expr_as(value, Some(&expected), Role::Plain);
+                    self.conditional = conditional;
                     self.restore_pc(saved);
                     let joined = self.vars.join(&current, &used);
                     self.join_flows(

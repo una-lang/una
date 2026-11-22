@@ -312,3 +312,73 @@ fn assigning_a_loop_variable_suggests_a_separate_let_edit_binding() {
         "`y` is not editable; declare it `let edit y`, or the parameter `edit y`"
     );
 }
+
+#[test]
+fn u3013_advises_the_form_that_resolves_it_where_the_call_stands() {
+    // #837: "bind its result with `let` first" resolves U3013 only where a `let` before the
+    // statement runs the call as the statement would. Under a nested `attempt` the whole
+    // `attempt` is bound; a lambda body holds no `let`; code that runs only when something else
+    // decides would run the call every time; a call with `edit` cannot be wrapped in `attempt`;
+    // a `do` line binds nothing. `authority/u3013_advice_followed` follows each advice and
+    // checks.
+    const BIND: &str = "bind its result with `let` first";
+    const ATTEMPT: &str = "bind the whole `attempt` with `let` first, as `let outcome = attempt ...`, and use `outcome` in its place; binding the call alone would leave its failure unhandled";
+    const LAMBDA: &str = "the body of a lambda is one line and cannot hold a `let`, so make the call the whole body of the lambda, or move the work into a named function that binds the result with `let` first";
+    const CLAUSE: &str = "the value of a handling clause runs only when the clause applies, so binding the call with `let` before the statement would run it every time: give the clause a value without effects that cannot fail, or bind `attempt` of the first call with `let` and branch on its outcome with `when`";
+    const BRANCH: &str = "a branch of `if ... then ... else` runs only when the condition selects it, so binding the call with `let` before the `if` would run it every time: write the `if` on several lines, with the call as a statement or `let` of its branch";
+    const SHORT: &str = "the right operand of `and`, `or` and `implies` runs only when the left one does not decide, so binding the call with `let` before it would run it every time: test the left operand with an `if` on several lines, with the call as a statement or `let` of the branch that needs it";
+    const MARKED: &str = "`attempt` cannot wrap it, so make the call itself the whole expression of a statement or `let`, and handle a failure with `if error`";
+    const DO: &str = "a `do` line binds nothing, so call a function that takes a plain argument and edits a local copy of it, as `let edit copy = n` in its body";
+    let conformance =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/authority");
+    let found: Vec<(u64, u64, String)> = diagnostics(&conformance.join("u3013_advice"))
+        .iter()
+        .filter(|d| d["code"] == "U3013")
+        .map(|d| {
+            let message = d["message"].as_str().unwrap();
+            let (_, advice) = message.split_once("statement or `let`; ").unwrap();
+            (
+                d["primary"]["start"]["line"].as_u64().unwrap(),
+                d["primary"]["start"]["col"].as_u64().unwrap(),
+                advice.to_owned(),
+            )
+        })
+        .collect();
+    let expected: Vec<(u64, u64, String)> = [
+        (56, 16, ATTEMPT),
+        (61, 7, BIND),
+        (66, 24, LAMBDA),
+        (72, 18, CLAUSE),
+        (78, 17, BRANCH),
+        (83, 6, BIND),
+        (88, 13, SHORT),
+        (93, 3, BIND),
+        (99, 16, ATTEMPT),
+        (99, 28, BIND),
+        (104, 15, BIND),
+        (110, 25, MARKED),
+        (113, 50, ATTEMPT),
+        (113, 72, ATTEMPT),
+    ]
+    .into_iter()
+    .map(|(line, col, advice)| (line, col, advice.to_owned()))
+    .collect();
+    assert_eq!(found, expected);
+    assert_eq!(
+        diagnostics(&conformance.join("u3013_advice_followed")),
+        Vec::<Value>::new()
+    );
+    // A `do` line binds nothing (`spec/17 §3` rule 5), in the case that covers it.
+    let memdo = diagnostics(&conformance.join("../types/memory_example_do"));
+    let on_do: Vec<&str> = memdo
+        .iter()
+        .filter(|d| d["code"] == "U3013")
+        .map(|d| d["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        on_do,
+        [format!(
+            "`bump` is called with `edit` or `take`, so the call must be the whole expression of a statement or `let`; {DO}"
+        )]
+    );
+}

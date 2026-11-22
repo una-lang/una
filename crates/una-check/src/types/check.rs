@@ -130,6 +130,18 @@ impl Ctx {
     }
 }
 
+/// Code that runs only when something else decides, where a `let` before the statement would
+/// run a call every time (#837, U3013's advice).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Conditional {
+    /// The value of an `if error use` or `if none use` clause.
+    Clause,
+    /// A branch of `if ... then ... else`.
+    Branch,
+    /// The right operand of `and`, `or` or `implies`.
+    ShortCircuit,
+}
+
 /// Where an expression stands, as far as calls care: the whole expression of its statement,
 /// with its failure handled, or directly a call argument. Each flag applies to one expression.
 #[derive(Clone, Copy, Debug, Default)]
@@ -247,6 +259,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) loops: Vec<LoopFrame>,
     /// Inside an `on stop` block, whose statements must not fail (U3029, `spec/26 §5`).
     pub(crate) in_on_stop: bool,
+    /// The innermost code around the expression checked that runs only when something else
+    /// decides, so U3013 there cannot advise a `let` before the statement (#837).
+    pub(crate) conditional: Option<Conditional>,
     /// Inside the expression of a `start`, which must not fail after its handling clauses
     /// (U3029, `spec/27 §7`).
     pub(crate) in_start: bool,
@@ -574,6 +589,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             loops: Vec::new(),
             misplaced_exits: Vec::new(),
             in_on_stop: false,
+            conditional: None,
             in_start: false,
             server_branch: None,
             start_captures: Vec::new(),

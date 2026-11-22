@@ -11,7 +11,7 @@ use una_project::Manifest;
 use una_syntax::Span;
 use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
-use super::check::Checker;
+use super::check::{Checker, Conditional};
 use super::env::{Entity, Env, FnAst};
 use super::ty::{CapId, Declared, FnUse, Ty, given};
 use super::{Findings, Report};
@@ -1495,6 +1495,40 @@ impl<'a> Checker<'_, 'a, '_> {
             && self.pass == Pass::Collect
     }
 
+    /// The advice of a U3013 at a call that is not the whole expression of its statement, the
+    /// form that resolves it where the call stands (#837); `handled` tells whether `attempt`
+    /// handles the call's failure, which then makes the `attempt` the nested expression:
+    ///
+    /// - in the body of a lambda, which is one line and holds no `let`: the call as the whole
+    ///   body, or a named function;
+    /// - in code that runs only when something else decides ([`Conditional`]), where a `let`
+    ///   before the statement would run the call every time: in the value of an `if error use`
+    ///   or `if none use` clause, a value without effects that cannot fail, or the outcome of
+    ///   `attempt` branched on with `when`; in a branch of `if ... then ... else` or the right
+    ///   operand of `and`, `or` and `implies`, an `if` on several lines whose branch holds it;
+    /// - under a nested `attempt`: the whole `attempt` bound with `let`, since binding the call
+    ///   alone leaves its failure unhandled (U3007);
+    /// - elsewhere: the result bound with `let`.
+    ///
+    /// The binding form is `let` in every edition this checker serves; ADR 0137 rule 10 names
+    /// `const` in edition 0.5 once it reads `const` and `var` (#1628).
+    pub(crate) fn nested_advice(&self, handled: bool) -> String {
+        if self.lambda_depth > 0 {
+            "the body of a lambda is one line and cannot hold a `let`, so make the call the whole body of the lambda, or move the work into a named function that binds the result with `let` first".to_owned()
+        } else if let Some(conditional) = self.conditional {
+            match conditional {
+                Conditional::Clause => "the value of a handling clause runs only when the clause applies, so binding the call with `let` before the statement would run it every time: give the clause a value without effects that cannot fail, or bind `attempt` of the first call with `let` and branch on its outcome with `when`",
+                Conditional::Branch => "a branch of `if ... then ... else` runs only when the condition selects it, so binding the call with `let` before the `if` would run it every time: write the `if` on several lines, with the call as a statement or `let` of its branch",
+                Conditional::ShortCircuit => "the right operand of `and`, `or` and `implies` runs only when the left one does not decide, so binding the call with `let` before it would run it every time: test the left operand with an `if` on several lines, with the call as a statement or `let` of the branch that needs it",
+            }
+            .to_owned()
+        } else if handled {
+            "bind the whole `attempt` with `let` first, as `let outcome = attempt ...`, and use `outcome` in its place; binding the call alone would leave its failure unhandled".to_owned()
+        } else {
+            "bind its result with `let` first".to_owned()
+        }
+    }
+
     /// U3007 and U3013 at a call or operation with `effects` or failure `fails` (`spec/04 §4`,
     /// `spec/06 §3`). `top` tells whether it is the whole expression of its
     /// statement, and `handled` whether `attempt` or `if error` handles its failure.
@@ -1525,7 +1559,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     Code::U3013,
                     span,
                     format!(
-                        "{what} can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first"
+                        "{what} can fail, so it must be the whole expression of a statement or `let`; {}",
+                        self.nested_advice(handled)
                     ),
                 );
             }
@@ -1536,7 +1571,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U3013,
                 span,
                 format!(
-                    "{what} has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first"
+                    "{what} has effects or can fail, so it must be the whole expression of a statement or `let`; {}",
+                    self.nested_advice(handled)
                 ),
             );
             return;

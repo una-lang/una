@@ -1089,7 +1089,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 let decided = self.deep(&found);
                 self.operands.push(found);
                 let saved = self.raise_pc(&decided, left.span);
+                let conditional = self
+                    .conditional
+                    .replace(super::check::Conditional::ShortCircuit);
                 let found = self.expr_as(right, Some(&Ty::Bool), Role::Condition(&operand));
+                self.conditional = conditional;
                 self.restore_pc(saved);
                 self.operands.push(found);
                 Ty::Bool
@@ -1790,10 +1794,9 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
-    /// fails joins any other.
-    /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
-    /// fails joins any other. The value joins the labels of every branch.
+    /// The branches of `if ... then ... else`: one type, or that of the expected type; a branch
+    /// that fails joins any other. The value joins the labels of every branch. Each runs only
+    /// when the condition selects it ([`super::check::Conditional::Branch`], #837).
     pub(crate) fn branches(
         &mut self,
         branches: &[&Expr],
@@ -1804,6 +1807,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut joined = expected.cloned();
         let mut value: Option<Ty> = None;
         let mut found = Vec::new();
+        let conditional = self.conditional.replace(super::check::Conditional::Branch);
         for branch in branches {
             let ty = if tail {
                 self.tail_expr(branch, joined.as_ref(), role)
@@ -1821,6 +1825,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
             }
         }
+        self.conditional = conditional;
         if let Some(value) = &value {
             self.join_flows(value, found);
         }
