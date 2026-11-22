@@ -832,7 +832,8 @@ pub(crate) fn turn_due() -> bool {
                 })
             })
     };
-    let due = over && others();
+    // A held task attached to the task that ran it counts that task as ready (#1545).
+    let due = over && (others() || lets_go());
     DUE.with(|cell| cell.set(due));
     // The end of a turn under virtual time is a switch of the task, where the tasks it holds
     // run first, whether or not another task is ready, as in the interpreter (#1545).
@@ -861,7 +862,7 @@ pub(crate) fn yield_due() -> bool {
         crate::started::run_held_at_switch(None);
         // The held tasks ran on this turn, and the turn's count is back where it was, unless
         // one of them was let go, which began a new turn of this task's.
-        due = TURN.with(Cell::get) >= TURN_CHECKS && others();
+        due = TURN.with(Cell::get) >= TURN_CHECKS && (others() || lets_go());
     }
     if !due {
         return false;
@@ -935,16 +936,15 @@ pub(crate) fn yield_to_progress(progress: impl Fn(Option<TaskKey>) -> bool) -> b
     };
     let switch = {
         let queue = lock(&worker.queue);
-        let any = queue.jobs.iter().any(|(job, _)| match job {
+        queue.jobs.iter().any(|(job, _)| match job {
             Job::Start(..) => progress(None),
             Job::Resume(queued) => progress(Some(TaskKey {
                 worker: worker.index,
                 slot: queued.slot,
                 generation: queued.generation,
             })),
-        });
-        any
-    };
+        })
+    } || lets_go();
     if switch {
         let_go();
         let mut queue = lock(&worker.queue);
@@ -1138,6 +1138,27 @@ impl Ended {
 /// Lets the task that runs go, when it is a held task attached to the task that ran it at one
 /// of its switches and it is about to switch itself (#1545): that task joins the back of the
 /// queue, before this one does or parks. O(log a) for the a attached tasks; O(1) with none.
+/// Whether [`let_go`] would let a task go: the task that runs is attached, or a held task run to
+/// its end by one that is, up the chain; as the interpreter's `Run::lets_go`. O(d log a).
+fn lets_go() -> bool {
+    if !LINKED.load(Ordering::SeqCst) {
+        return false;
+    }
+    let Some(mut key) = current_key() else {
+        return false;
+    };
+    loop {
+        if lock(&ATTACHED).contains_key(&key) {
+            return true;
+        }
+        let waiting = lock(&INLINE).get(&key).copied();
+        match waiting {
+            Some(waiting) => key = waiting,
+            None => return false,
+        }
+    }
+}
+
 /// A held task that a task runs to its end switches with it, so the walk goes up the tasks that
 /// wait so, to the first attached one, as the interpreter's `Run::let_go`. O(d log a) for a
 /// chain of d.

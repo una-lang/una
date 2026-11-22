@@ -249,10 +249,13 @@ impl<'p, 'w> Run<'p, 'w> {
         if self.holding.get() > 0 {
             self.run_held_at_switch();
         }
-        let switch = {
+        // A held task attached to the task that ran it counts that task as ready: its turn
+        // ends whether or not another task is (#1545).
+        let (over, others) = {
             let sched = self.sched.borrow();
-            sched.turn >= TURN && !sched.queue.is_empty()
+            (sched.turn >= TURN, !sched.queue.is_empty())
         };
+        let switch = over && (others || self.lets_go());
         if switch {
             self.let_go();
             let mut sched = self.sched.borrow_mut();
@@ -299,7 +302,7 @@ impl<'p, 'w> Run<'p, 'w> {
             let progress =
                 |id: &usize| aborted || waiters.get(id).is_none_or(|waiter| waiter.ended(now));
             sched.queue.iter().any(progress)
-        };
+        } || self.lets_go();
         if switch {
             self.let_go();
             let mut sched = self.sched.borrow_mut();
@@ -435,6 +438,25 @@ impl<'p, 'w> Run<'p, 'w> {
             match waiting {
                 Some(waiting) => task = waiting,
                 None => return,
+            }
+        }
+    }
+
+    /// Whether [`Run::let_go`] would let a task go: the task that runs is attached, or a held
+    /// task run to its end by one that is, up the chain. O(d log a).
+    fn lets_go(&self) -> bool {
+        if self.attached.borrow().is_empty() {
+            return false;
+        }
+        let mut task = self.current();
+        loop {
+            if self.attached.borrow().contains_key(&task) {
+                return true;
+            }
+            let waiting = self.inline.borrow().get(&task).copied();
+            match waiting {
+                Some(waiting) => task = waiting,
+                None => return false,
             }
         }
     }
