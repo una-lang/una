@@ -1,6 +1,6 @@
 # ADR 0117 amendment draft: quiet tasks and the bound of `tasks` (S-40 remainder)
 
-Status: Proposed (draft for the project's decision; it is appended to docs/adr/0117-concurrency-for-servers.md only once accepted, with the date of its acceptance). Nothing here is implemented: rule 7 is in force as written, and the channel below is open (#1545, `spec/26 §6` rule 4).
+Status: Withdrawn (2026-11-22, #1545). The channel is closed instead by held tasks, ADR 0117 amendment of 2026-11-22 (`spec/27 §7` rule 4): a task that quiet code starts takes no slot of the bound, so rule 7 keeps its one bound and a statement never runs twice it. The text below is kept as the record of the option.
 
 ## Amendment (proposed 2026-11-04): quiet tasks and the bound of `tasks` (S-40 remainder)
 

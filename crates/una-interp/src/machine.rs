@@ -2992,6 +2992,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         while !scope.held.borrow().is_empty() {
             self.run_held(&scope)?;
         }
+        self.run.ends_holding(&scope);
         self.wait_for(&scope, |scope| scope.running.get() == 0)?;
         // A task's abort that ends the run ends the statement with it.
         if let Some(abort) = self.run.aborted() {
@@ -3009,6 +3010,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         done: impl Fn(&TasksScope) -> bool,
     ) -> Result<(), Stop<'p>> {
         while !done(scope) {
+            // A park is one of the task's switches: the tasks it holds run first (#1545).
+            self.run.at_switch();
+            if done(scope) {
+                break;
+            }
             scope.waiter.set(Some(self.run.current()));
             if !self.run.park() {
                 scope.waiter.set(None);
@@ -3036,7 +3042,21 @@ impl<'p, 'w> Machine<'p, 'w> {
             sched.hold_turn()
         };
         scope.draining.set(Some(id));
-        let waited = self.wait_for(scope, |scope| scope.draining.get() != Some(id));
+        self.run.unholds();
+        self.run.runs_inline(id);
+        // The held task is part of this task's turn: it waits for it without a switch of its
+        // own, so it runs none of its other held tasks meanwhile.
+        let mut waited = Ok(());
+        while scope.draining.get() == Some(id) {
+            scope.waiter.set(Some(self.run.current()));
+            if !self.run.park_inline() {
+                scope.waiter.set(None);
+                waited = Err(fault(
+                    "a task waits for a task it holds outside the scheduler",
+                ));
+                break;
+            }
+        }
         scope.draining.set(None);
         self.run.sched.borrow_mut().resume_turn(mark);
         waited?;
@@ -3050,6 +3070,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn drop_held(&mut self, scope: &TasksScope) {
         let held: Vec<usize> = scope.held.borrow_mut().drain(..).collect();
         for id in held {
+            self.run.unholds();
             let body = self.run.sched.borrow_mut().unhold(id);
             drop(body);
         }
@@ -3163,6 +3184,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .borrow_mut()
                 .hold(Box::new(task), bytes, span);
             held_scope.held.borrow_mut().push_back(held);
+            self.run.holds(&held_scope);
             held
         } else {
             self.run
@@ -4082,6 +4104,11 @@ impl<'p, 'w> Machine<'p, 'w> {
         // ring back (`settle`), so no later wake of the driver reaches it out of turn. No check
         // point runs between the helper's start and this look, so nothing else takes the ring.
         while !done.load(Ordering::SeqCst) {
+            // A park is one of the task's switches: the tasks it holds run first (#1545).
+            self.run.at_switch();
+            if done.load(Ordering::SeqCst) {
+                break;
+            }
             if !self.run.park() {
                 // INVARIANT: `offloads` is `Some` only while the driver serves the queue.
                 return Err(fault("an `Http` request off the thread with no scheduler"));

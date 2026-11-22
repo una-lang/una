@@ -776,6 +776,9 @@ thread_local! {
     /// Whether the task that runs is due to give its worker to the next task, at the slow path
     /// of its check point.
     static DUE: Cell<bool> = const { Cell::new(false) };
+    /// Whether the turn of the task that runs is over under virtual time while the run holds
+    /// tasks (#1545): the slow path of its check point runs them first ([`yield_due`]).
+    static HELD_DUE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The check points of a turn under virtual time (ADR 0117 rules 11 and 12), as in the
@@ -799,10 +802,13 @@ pub(crate) fn hold_turn() -> (u32, u64) {
 
 /// Gives the task that ran a held task back the count its turn had before, when its turn went
 /// on all along, so that the held task's check points move none of its switches. O(1).
-pub(crate) fn resume_turn((turn, turns): (u32, u64)) {
-    if TURNS.with(Cell::get) == turns {
+/// Whether the turn went on all along.
+pub(crate) fn resume_turn((turn, turns): (u32, u64)) -> bool {
+    let went_on = TURNS.with(Cell::get) == turns;
+    if went_on {
         TURN.with(|cell| cell.set(turn));
     }
+    went_on
 }
 
 /// A check point that reached the attention path (ADR 0117 rule 2): counts it under virtual
@@ -826,23 +832,38 @@ pub(crate) fn turn_due() -> bool {
                 })
             })
     };
-    let due = over
-        && una_sys::coroutine::inside()
+    let due = over && others();
+    DUE.with(|cell| cell.set(due));
+    // The end of a turn under virtual time is a switch of the task, where the tasks it holds
+    // run first, whether or not another task is ready, as in the interpreter (#1545).
+    let held = over && counting() && crate::started::holding();
+    HELD_DUE.with(|cell| cell.set(held));
+    due || held
+}
+
+/// Whether another job waits in the queue of the worker of the task that runs.
+fn others() -> bool {
+    una_sys::coroutine::inside()
         && RUNNING.with(|running| {
             running
                 .borrow()
                 .as_ref()
                 .is_some_and(|(worker, _, _)| worker.others())
-        });
-    DUE.with(|cell| cell.set(due));
-    due
+        })
 }
 
 /// At the slow path of a check point: gives the worker to the next task when the turn is
 /// over, going to the back of the queue, and returns once resumed; whether it yielded. Nothing
 /// of the run's state is borrowed here, and the worker swaps the task's slots out.
 pub(crate) fn yield_due() -> bool {
-    if !DUE.with(|cell| cell.replace(false)) {
+    let mut due = DUE.with(|cell| cell.replace(false));
+    if HELD_DUE.with(|cell| cell.replace(false)) {
+        crate::started::run_held_at_switch(None);
+        // The held tasks ran on this turn, and the turn's count is back where it was, unless
+        // one of them was let go, which began a new turn of this task's.
+        due = TURN.with(Cell::get) >= TURN_CHECKS && others();
+    }
+    if !due {
         return false;
     }
     let running = RUNNING.with(|running| {
@@ -854,6 +875,7 @@ pub(crate) fn yield_due() -> bool {
     let Some((worker, id)) = running else {
         return false;
     };
+    let_go();
     worker.push_at(Job::Resume(id), false);
     let suspended = una_sys::coroutine::suspend();
     // Under virtual time the tasks that ran meanwhile may have moved the clock past a deadline
@@ -899,6 +921,9 @@ pub(crate) fn yield_to_progress(progress: impl Fn(Option<TaskKey>) -> bool) -> b
     if !una_sys::coroutine::inside() {
         return false;
     }
+    // Before it hands the turn on, or blocks on the engine, the task runs the tasks it holds
+    // (#1545).
+    crate::started::at_switch();
     let running = RUNNING.with(|running| {
         running
             .borrow()
@@ -909,7 +934,7 @@ pub(crate) fn yield_to_progress(progress: impl Fn(Option<TaskKey>) -> bool) -> b
         return false;
     };
     let switch = {
-        let mut queue = lock(&worker.queue);
+        let queue = lock(&worker.queue);
         let any = queue.jobs.iter().any(|(job, _)| match job {
             Job::Start(..) => progress(None),
             Job::Resume(queued) => progress(Some(TaskKey {
@@ -918,11 +943,13 @@ pub(crate) fn yield_to_progress(progress: impl Fn(Option<TaskKey>) -> bool) -> b
                 generation: queued.generation,
             })),
         });
-        if any {
-            worker.arrive(&mut queue, Job::Resume(id));
-        }
         any
     };
+    if switch {
+        let_go();
+        let mut queue = lock(&worker.queue);
+        worker.arrive(&mut queue, Job::Resume(id));
+    }
     if !switch {
         return false;
     }
@@ -939,9 +966,13 @@ pub(crate) struct Counter {
 }
 
 impl Counter {
-    /// Counts one task more once fewer than `bound` run, parking until then.
-    pub(crate) fn acquire(&self, bound: usize) {
+    /// Counts one task more once fewer than `bound` run, parking until then. Before each park,
+    /// a switch of the task, `at_switch` runs the tasks it holds (#1545).
+    pub(crate) fn acquire(&self, bound: usize, at_switch: impl Fn()) {
         loop {
+            if crate::started::holding() && lock(&self.state).0 >= bound {
+                at_switch();
+            }
             {
                 let mut state = lock(&self.state);
                 if state.0 < bound {
@@ -950,8 +981,14 @@ impl Counter {
                 }
                 state.1 = Some(Waker::current_at(false));
             }
+            let_go();
             park();
         }
+    }
+
+    /// How many tasks are counted. O(1).
+    pub(crate) fn count(&self) -> usize {
+        lock(&self.state).0
     }
 
     /// Counts one task more whatever the bound: a held task, which counts against none
@@ -972,9 +1009,13 @@ impl Counter {
         }
     }
 
-    /// Parks until no task is counted.
-    pub(crate) fn wait_zero(&self) {
+    /// Parks until no task is counted. Before each park, a switch of the task, `at_switch`
+    /// runs the tasks it holds (#1545).
+    pub(crate) fn wait_zero(&self, at_switch: impl Fn()) {
         loop {
+            if crate::started::holding() && lock(&self.state).0 > 0 {
+                at_switch();
+            }
             {
                 let mut state = lock(&self.state);
                 if state.0 == 0 {
@@ -982,6 +1023,7 @@ impl Counter {
                 }
                 state.1 = Some(Waker::current_at(false));
             }
+            let_go();
             park();
         }
     }
@@ -989,35 +1031,140 @@ impl Counter {
 
 /// The end of one held task, which the task that runs it waits for (#1545): it parks until the
 /// held task has ended, and goes on at the front of its worker's queue, on that turn.
+///
+/// A held task that a switch of the waiting task runs is attached to it ([`Ended::attach`]): it
+/// goes on with that task's turn until it ends, or until it would switch itself, when it is let
+/// go ([`let_go`]): the waiting task then joins the back of the queue, its turn over, and the
+/// held task goes on as any started task.
 #[derive(Default)]
 pub(crate) struct Ended {
-    state: Mutex<(bool, Option<Waker>)>,
+    /// Whether the task ended, whether it was let go, and the task waiting for it.
+    state: Mutex<(bool, bool, Option<Waker>)>,
+    attached: std::sync::atomic::AtomicBool,
+    /// The task that runs the held task to its end and waits for it, if it does: a switch of
+    /// the held task is then one of that task's, for [`let_go`].
+    waiting: Mutex<Option<TaskKey>>,
 }
 
+/// The held tasks run to their end by the task that waits for them, by key: that task's key.
+static INLINE: Mutex<BTreeMap<TaskKey, TaskKey>> = Mutex::new(BTreeMap::new());
+
+/// Whether a held task ever ran in this process, so [`let_go`] has entries to look at: set once,
+/// under virtual time only.
+static LINKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The held tasks attached to the task that runs them at one of its switches, by key (#1545).
+static ATTACHED: Mutex<BTreeMap<TaskKey, Arc<Ended>>> = Mutex::new(BTreeMap::new());
+
 impl Ended {
-    /// Marks the held task ended, and wakes the task waiting for it.
+    /// Marks the held task ended, and wakes the task waiting for it, at the front of the
+    /// queue, on the turn in progress.
     pub(crate) fn mark(&self) {
         let waiter = {
             let mut state = lock(&self.state);
             state.0 = true;
-            state.1.take()
+            state.2.take()
         };
         if let Some(waiter) = waiter {
             waiter.wake();
         }
     }
 
-    /// Parks until the held task has ended.
-    pub(crate) fn wait(&self) {
+    /// Lets the held task go: the task waiting for it joins the back of the queue.
+    fn release(&self) {
+        let waiter = {
+            let mut state = lock(&self.state);
+            state.1 = true;
+            state.2.take()
+        };
+        match waiter {
+            Some(Waker::Task(worker, id, _)) => worker.push_at(Job::Resume(id), false),
+            Some(Waker::Thread(thread)) => thread.unpark(),
+            None => {}
+        }
+    }
+
+    /// Marks the held task as run at a switch of the task that waits for it, before it starts.
+    pub(crate) fn attach(&self) {
+        self.attached.store(true, Ordering::SeqCst);
+    }
+
+    /// Marks the held task as run to its end by the task that runs, before it starts.
+    pub(crate) fn inline(&self) {
+        *lock(&self.waiting) = current_key();
+    }
+
+    /// At the start of the held task, on its own coroutine: records it as attached, when it
+    /// is. O(log a).
+    pub(crate) fn enter(self: &Arc<Self>) {
+        let Some(key) = current_key() else {
+            return;
+        };
+        LINKED.store(true, Ordering::SeqCst);
+        if self.attached.load(Ordering::SeqCst) {
+            lock(&ATTACHED).insert(key, Arc::clone(self));
+        }
+        if let Some(waiting) = *lock(&self.waiting) {
+            lock(&INLINE).insert(key, waiting);
+        }
+    }
+
+    /// At the end of the held task, on its own coroutine. O(log a).
+    pub(crate) fn leave() {
+        if let Some(key) = current_key() {
+            lock(&ATTACHED).remove(&key);
+            lock(&INLINE).remove(&key);
+        }
+    }
+
+    /// Parks until the held task has ended, `true`, or was let go, `false`.
+    pub(crate) fn wait(&self) -> bool {
         loop {
             {
                 let mut state = lock(&self.state);
                 if state.0 {
-                    return;
+                    return true;
                 }
-                state.1 = Some(Waker::current_at(true));
+                if state.1 {
+                    return false;
+                }
+                state.2 = Some(Waker::current_at(true));
             }
             park();
+        }
+    }
+}
+
+/// Lets the task that runs go, when it is a held task attached to the task that ran it at one
+/// of its switches and it is about to switch itself (#1545): that task joins the back of the
+/// queue, before this one does or parks. O(log a) for the a attached tasks; O(1) with none.
+/// A held task that a task runs to its end switches with it, so the walk goes up the tasks that
+/// wait so, to the first attached one, as the interpreter's `Run::let_go`. O(d log a) for a
+/// chain of d.
+fn let_go() {
+    // Tasks are held under virtual time only, so the real clock pays one load here.
+    if !LINKED.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(mut key) = current_key() else {
+        return;
+    };
+    loop {
+        let ended = {
+            let mut attached = lock(&ATTACHED);
+            if attached.is_empty() {
+                return;
+            }
+            attached.remove(&key)
+        };
+        if let Some(ended) = ended {
+            ended.release();
+            return;
+        }
+        let waiting = lock(&INLINE).get(&key).copied();
+        match waiting {
+            Some(waiting) => key = waiting,
+            None => return,
         }
     }
 }

@@ -1,0 +1,37 @@
+module srv
+
+import std.host (Exchange, HttpServer, Reply)
+
+--- Answers one request with the first segment of its path.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let first = when exchange.request.segments.at(index: 0)
+    is Some(segment) -> segment
+    is None -> ""
+  @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "hello {first}"))
+    if error use unit
+
+--- The language form of `spec/31 §1` rule 6, with each task started under a decision on the
+--- request, which is `internal`: the `start`s are quiet, so their statement holds the tasks, and
+--- the loop runs them at its next switch, before it waits in `next`, so every reply goes out
+--- when its request comes, as in `language_form` (#1545, `spec/27 §7` rule 4).
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @console: Console[print]
+  diverges
+=
+  tasks at most 1000 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          when exchange.request.segments.at(index: 0)
+            is Some(segment) ->
+              start answer(exchange)
+            is None ->
+              start answer(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+  @console.print("stopped")
