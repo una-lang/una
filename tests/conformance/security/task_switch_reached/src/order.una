@@ -1,13 +1,15 @@
--- test: the twin of `task_switch_example_only`: the same private functions, called by a started task as well as by the `test`, are code a run reaches, so the loop that a `secret` value bounds is U4002 in a program that starts tasks (spec/27 §8 rule 5, #1707)
+-- test: the twin of `task_switch_example_only`: the same private functions, called by a started task as well as by the `test`, are code a run reaches, so the call that a `secret` value decides is U4002 in a program that starts tasks (spec/27 §8 rule 5, #1707)
 -- spec: spec/27 §8
--- expect: error U4002 at src/order.una:9:3
+-- expect: error U4002 at src/order.una:12:11
 module order
+
+step(acc: secret Int) -> secret Int = acc + 1
 
 spin(n: secret Int) -> secret Int
 =
   let edit acc: secret Int = 0
-  for i in 0..<n
-    acc = acc + 1
+  if n > 2
+    acc = step(acc)
   acc
 
 twice(n: secret Int) -> secret Int = spin(n) + spin(n)
@@ -26,6 +28,6 @@ pub main() -> Unit
     for k in 0..<2
       start worker(k, key: key)
 
-test "spin counts its bound twice"
+test "spin steps once past two, twice"
   do twice(3)
-  expect result == 6
+  expect result == 2

@@ -1183,6 +1183,10 @@ pub(crate) struct State {
     /// How many of those are not quiet by a timing floor alone: while one is, an operation
     /// appends no event (S-42, #1515, `spec/26 §6` rule 4).
     pub(crate) hushed: u32,
+    /// How many `uncounted` expressions the task is in, those of the task that started it at
+    /// its `start` included: while one is, its check points do not advance the count of its
+    /// turn under virtual time (`spec/27 §8` rule 5, #1708).
+    pub(crate) uncounted: u32,
     /// The settings of the run's tasks (ADR 0117 rules 2 and 3).
     concurrency: una_interp::Concurrency,
     /// The run's scheduler, made at its first block: none in a run without tasks.
@@ -1258,6 +1262,8 @@ pub(crate) struct TaskTemplate {
     quiet: u32,
     /// Its `hushed` count (S-42).
     pub(crate) hushed: u32,
+    /// Its `uncounted` count (#1708).
+    uncounted: u32,
     /// The holder number of the task's reply rights: the block's task's, and a fresh one for a
     /// started task, set by `start` ([`crate::serve`]).
     pub(crate) serve_task: u64,
@@ -1347,6 +1353,7 @@ impl State {
             streaming: false,
             quiet: self.quiet,
             hushed: self.hushed,
+            uncounted: self.uncounted,
             serve_task: self.serve_task,
         }
     }
@@ -2268,6 +2275,29 @@ pub fn quiet_leave(hush: bool) {
     });
 }
 
+/// Enters an `uncounted` expression: a call, an operation, a loop or a `start` whose running
+/// data above `public` can decide (`spec/27 §8` rule 5, #1708). Under virtual time its check
+/// points, in its callees and in the tasks it starts included, do not advance the count of the
+/// task's turn. O(1).
+pub fn uncounted_enter() {
+    with_state(|state| state.uncounted = state.uncounted.saturating_add(1));
+}
+
+/// Leaves an `uncounted` expression, on every way out of it. O(1).
+pub fn uncounted_leave() {
+    with_state(|state| state.uncounted = state.uncounted.saturating_sub(1));
+}
+
+/// Whether the task that runs is in an `uncounted` expression: its check points then leave
+/// the count of its turn as it is (#1708). One shared borrow, O(1).
+pub(crate) fn uncounted() -> bool {
+    STATE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .is_some_and(|state| state.uncounted > 0)
+    })
+}
+
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
 /// grants, calls `entry`, the compiled `main`, on a thread with the stack that `--max-depth`
 /// needs, and writes the trace. Returns the exit code.
@@ -2588,6 +2618,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         in_ever: false,
         quiet: 0,
         hushed: 0,
+        uncounted: 0,
         concurrency: options.concurrency,
         sched: None,
         serve_task: 0,
@@ -3415,6 +3446,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, entry: Cancel) {
         in_ever: false,
         quiet: template.quiet,
         hushed: template.hushed,
+        uncounted: template.uncounted,
         concurrency: template.concurrency,
         sched: Some(Arc::clone(&template.sched)),
         serve_task: template.serve_task,
@@ -3522,6 +3554,7 @@ pub(crate) fn install_test_state_as(path: String, tracing: bool, file: String) {
         in_ever: false,
         quiet: 0,
         hushed: 0,
+        uncounted: 0,
         concurrency: options.concurrency,
         sched: None,
         serve_task: 0,

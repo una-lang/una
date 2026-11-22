@@ -15,10 +15,15 @@
 //! While a body is checked, [`Checker::switch_site`] records each check point whose program
 //! counter, joined with the effect floor and the label of what decides it, is above `public`,
 //! and [`Checker::switch_call`] each call of a generic function with the labels of its
-//! arguments. Once the package is checked, [`switch_points`] reports those above `internal`,
-//! U4002, when its program can run started tasks, and returns those above `public` but at most
-//! `internal`, the open residual of #1708, for the report's `information.timing` list as
-//! `task switch`. A site above the bound only through a type parameter's label `ℓ_T` is
+//! arguments. Core IR marks each recorded site `uncounted` (ADR 0117 amendment of 2026-11-22,
+//! second, #1708): its check points, in its callees and started tasks included, do not advance
+//! the count of the turn, so the switch follows `public` data only, for every label. Once the
+//! package is checked, [`switch_points`] reports those above `internal`, U4002, when its
+//! program can run started tasks, but for the iterations of `for` and `for until` loops
+//! ([`SwitchSite::closed`]): the other sites can also decide a task's depth, whether a held
+//! task is let go, whether a `for ever` loop runs or how many tasks run at once, which no count
+//! of check points shows. It returns those above `public` but at most `internal`, the residual
+//! of those channels, for the report's `information.timing` list as `task switch`. A site above the bound only through a type parameter's label `ℓ_T` is
 //! reported at the calls that instantiate its function with data above the bound instead,
 //! through the generic calls that pass `ℓ_T` on, and at the site itself when its function is
 //! used as a value, whose instances the checker does not follow.
@@ -53,6 +58,12 @@ pub(crate) struct SwitchSite {
     pub(crate) function: Option<usize>,
     /// The handler whose operation body holds it, outside every function.
     pub(crate) handler: Option<usize>,
+    /// Whether uncounted check points close all that data decide here (#1708): the
+    /// iterations of a `for` or `for until` loop, which end and push no frame of their own.
+    /// Every other site can also decide a task's depth, whether a task starts, or whether a
+    /// `for ever` runs, which the count of a turn does not show, so rule 5 keeps refusing it
+    /// above `internal`.
+    pub(crate) closed: bool,
 }
 
 /// A call of a generic function, for the sites that its type arguments decide (#1684).
@@ -90,6 +101,23 @@ impl Checker<'_, '_, '_> {
     /// of check points; under the real clock the order is out of model (`spec/27 §8` rule 4).
     /// O(1).
     pub(crate) fn switch_site(&mut self, span: Span, raise: &Label, what: impl FnOnce() -> String) {
+        self.record_switch(span, raise, what, false);
+    }
+
+    /// As [`Self::switch_site`], for the iterations of a `for` or `for until` loop, which the
+    /// uncounted check points of `spec/27 §8` rule 5 close alone (#1708). O(1).
+    pub(crate) fn switch_loop(&mut self, span: Span, what: impl FnOnce() -> String) {
+        self.record_switch(span, &Label::public(), what, true);
+    }
+
+    /// Records a site of [`Self::switch_site`], `closed` as [`SwitchSite::closed`] says. O(1).
+    fn record_switch(
+        &mut self,
+        span: Span,
+        raise: &Label,
+        what: impl FnOnce() -> String,
+        closed: bool,
+    ) {
         if !self.labels() {
             return;
         }
@@ -106,6 +134,7 @@ impl Checker<'_, '_, '_> {
             what: what(),
             function: self.current,
             handler: self.handler,
+            closed,
         };
         self.findings.switch_sites.push(site);
     }
@@ -284,13 +313,15 @@ fn run_reach(env: &Env<'_>, findings: &Findings) -> Vec<bool> {
 
 /// The functions whose check points a type argument above `bound` can decide: those with a
 /// site above `bound` only through a symbolic label, and, through a worklist over the generic
-/// calls, each generic function that passes a symbolic label to one of them.
-/// O((sites + calls) log n).
-pub(crate) fn decided_by_type(findings: &Findings, bound: &Label) -> BTreeSet<usize> {
+/// calls, each generic function that passes a symbolic label to one of them. With `closed`,
+/// the sites that uncounted check points close count too ([`SwitchSite::closed`]), as the
+/// depth rule of `spec/31 §1` reads them (#1682). O((sites + calls) log n).
+pub(crate) fn decided_by_type(findings: &Findings, bound: &Label, closed: bool) -> BTreeSet<usize> {
     let mut decided: BTreeSet<usize> = BTreeSet::new();
     let mut work: Vec<usize> = Vec::new();
     for site in &findings.switch_sites {
-        if !site.label.flows_to(bound)
+        if (closed || !site.closed)
+            && !site.label.flows_to(bound)
             && site.label.concrete().flows_to(bound)
             && let Some(function) = site.function
             && decided.insert(function)
@@ -316,6 +347,40 @@ pub(crate) fn decided_by_type(findings: &Findings, bound: &Label) -> BTreeSet<us
     decided
 }
 
+/// The constructs that Core IR marks `uncounted` (`spec/27 §8` rule 5, ADR 0117 amendment of
+/// 2026-11-22, second, #1708), into `findings.uncounted`: each recorded site whose label is
+/// above `public`, but one that only a type parameter's label puts there in a function whose
+/// instances the checker follows; and each call of a generic function whose sites a type
+/// argument can decide, with arguments above `public`, whose callee then runs uncounted
+/// whole. So a generic function's check points count when its instance's data are `public`,
+/// and the turns of a run follow `public` data only. Every site counts, whether or not a run
+/// reaches it and whether or not the package starts tasks: the mark costs nothing where no
+/// task switches. O((sites + calls) log n).
+pub(crate) fn close_uncounted(findings: &mut Findings) {
+    let public = Label::public();
+    let decided = decided_by_type(findings, &public, true);
+    let mut marked: BTreeSet<Span> = BTreeSet::new();
+    for site in &findings.switch_sites {
+        if site.label.flows_to(&public) {
+            continue;
+        }
+        let symbolic = site.label.concrete().flows_to(&public);
+        let followed = site
+            .function
+            .is_some_and(|f| !findings.function_values.contains(&f));
+        if symbolic && followed {
+            continue;
+        }
+        marked.insert(site.span);
+    }
+    for call in &findings.switch_calls {
+        if decided.contains(&call.callee) && !call.label.concrete().flows_to(&public) {
+            marked.insert(call.span);
+        }
+    }
+    findings.uncounted = marked;
+}
+
 /// Where a check point is: the function whose body holds it, or the handler whose operation
 /// body holds it.
 type Holder = (Option<usize>, Option<usize>);
@@ -327,7 +392,7 @@ type Found = BTreeMap<Span, (String, Label, Holder)>;
 /// it, and the calls of generic functions that instantiate a site above it only through a
 /// type parameter. O((sites + calls) log n).
 fn above(env: &Env<'_>, findings: &Findings, bound: &Label) -> Found {
-    let decided = decided_by_type(findings, bound);
+    let decided = decided_by_type(findings, bound, false);
     // Code that no run of the program reaches, as a private function only a test calls, passes
     // no check point of a run (#1707): neither refused nor reported.
     let ran = run_reach(env, findings);
@@ -335,7 +400,10 @@ fn above(env: &Env<'_>, findings: &Findings, bound: &Label) -> Found {
         |function: Option<usize>| function.is_none_or(|f| ran.get(f).copied().unwrap_or(true));
     let mut found = Found::new();
     for site in &findings.switch_sites {
-        if site.label.flows_to(bound) || !runs(site.function) {
+        // The iterations of a `for` or `for until` loop are uncounted check points, which
+        // move no switch, and neither end the task nor push a frame: nothing left to refuse
+        // or report (#1708).
+        if site.closed || site.label.flows_to(bound) || !runs(site.function) {
             continue;
         }
         let concrete = site.label.concrete();
@@ -397,11 +465,11 @@ pub(crate) fn switch_points(
             Code::U4002,
             *span,
             format!(
-                "{what} depends on `{label}` data, in a program that starts tasks; the schedule switches tasks after a count of calls, operations and loop iterations, so the order of the tasks' later effects would reveal that data"
+                "{what} depends on `{label}` data, in a program that starts tasks; that data could decide how deep a started task goes, whether a task it starts is let go, whether a `for ever` loop runs or how many tasks run at once, which the order and the occurrence of the tasks' later effects would reveal"
             ),
         );
         diagnostic.repairs.push(Report::advice(
-            "compute on data above `internal` without calls, operations or loops that it decides: a loop over a `public` range whose body only assigns, a branch that only picks a value; or do that work in a program without `tasks`",
+            "compute on data above `internal` without calls or operations that it decides: a loop whose body only assigns, a branch that only picks a value; or do that work in a program without `tasks`",
         ));
         report.push(diagnostic);
     }

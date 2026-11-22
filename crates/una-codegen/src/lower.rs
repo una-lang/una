@@ -615,6 +615,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Expr::Quiet { body, timing, .. } => {
                     return self.quiet(body, *timing, env, scope, catch);
                 }
+                Expr::Uncounted { body, .. } => {
+                    let marks = ("una_rt_uncounted_enter", "una_rt_uncounted_leave");
+                    return self.region(body, marks, &[], env, scope, catch);
+                }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     // A binding the scope owns moves out as the result; another word is
@@ -859,7 +863,23 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Option<Value>, CodegenError> {
         // A `quiet` that a timing floor alone marked keeps its operations' events (S-42).
         let hush = self.builder.ins().iconst(types::I64, i64::from(!timing));
-        self.runtime("una_rt_quiet_enter", &[hush]);
+        let marks = ("una_rt_quiet_enter", "una_rt_quiet_leave");
+        self.region(body, marks, &[hush], env, scope, catch)
+    }
+
+    /// `e` between the runtime's `enter` and its `leave` with `args`, on every way out of `e`,
+    /// as [`Self::quiet`] says: `quiet e`, and `uncounted e` (`spec/27 §8` rule 5, #1708),
+    /// whose check points do not advance the count of the task's turn under virtual time.
+    fn region(
+        &mut self,
+        body: &'p Expr,
+        (enter, leave): (&'static str, &'static str),
+        args: &[Value],
+        env: &mut Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        self.runtime(enter, args);
         let leaving = self.join();
         let crossing = catch.exit.as_ref().map(|outer| {
             let next = self.builder.create_block();
@@ -885,7 +905,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let done = self.join();
         let reached = match self.expr(body, env, scope, &inner)? {
             Some(value) => {
-                self.runtime("una_rt_quiet_leave", &[hush]);
+                self.runtime(leave, args);
                 self.builder.ins().jump(done, &[value.into()]);
                 true
             }
@@ -893,13 +913,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
         };
         self.builder.switch_to_block(leaving);
         let failure = self.param(leaving)?;
-        self.runtime("una_rt_quiet_leave", &[hush]);
+        self.runtime(leave, args);
         self.fail(failure, &Scope::new(), catch);
         if let Some((outer, next, stop)) = crossing {
             for (block, target) in [(next, outer.next), (stop, outer.stop)] {
                 self.builder.switch_to_block(block);
                 let state: Vec<Value> = self.builder.block_params(block).to_vec();
-                self.runtime("una_rt_quiet_leave", &[hush]);
+                self.runtime(leave, args);
                 let args: Vec<cranelift_codegen::ir::BlockArg> =
                     state.iter().map(|&value| value.into()).collect();
                 self.builder.ins().jump(target, &args);
@@ -4594,7 +4614,8 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::With { body, .. }
         | Expr::Within { body, .. }
         | Expr::Tasks { body, .. }
-        | Expr::Quiet { body, .. } => {
+        | Expr::Quiet { body, .. }
+        | Expr::Uncounted { body, .. } => {
             borrowed_from(body, out);
         }
         Expr::Together { .. }

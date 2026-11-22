@@ -250,7 +250,9 @@ impl<'e> Facts<'e> {
             | Expr::Tasks { body, .. } => {
                 self.expr(body, owned);
             }
-            Expr::Start { task, .. } | Expr::Quiet { body: task, .. } => self.expr(task, owned),
+            Expr::Start { task, .. }
+            | Expr::Quiet { body: task, .. }
+            | Expr::Uncounted { body: task, .. } => self.expr(task, owned),
         }
     }
 }

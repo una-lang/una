@@ -760,6 +760,10 @@ impl Printer {
                 self.line(indent, if *timing { "quiet timing" } else { "quiet" });
                 self.expr(indent + 1, body);
             }
+            Expr::Uncounted { body, .. } => {
+                self.line(indent, "uncounted");
+                self.expr(indent + 1, body);
+            }
             Expr::TogetherFor {
                 source, var, task, ..
             } => {

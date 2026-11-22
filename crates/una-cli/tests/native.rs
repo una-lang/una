@@ -9606,40 +9606,16 @@ pub main() -> Unit
 "#;
 
 #[test]
-fn held_quiet_tasks_1545_a_held_task_longer_than_a_turn_is_let_go_alike_in_both_engines() {
-    // #1545, `spec/27 §7` rule 4: a held task that a switch of its statement's task runs, and
-    // that passes 1024 check points while another task is ready, goes to the back of the queue
-    // as any started task, and the statement's task goes on with a turn of its own. The
-    // interpreter's output is pinned for each secret, the residual of #1708 showing between
-    // secrets 1 and 2, and native code under `--virtual-time` gives the same output and whole
-    // trace. With native holding turned off (`let hold = false && quiet;` in `start` of
-    // `crates/una-rt/src/started.rs`), secret 1 gives another order and this test fails.
-    let early = [
-        "main starts",
-        "worker 1 starts",
-        "main",
-        "worker 1 ends",
-        "main again",
-        "worker 2 starts",
-        "main ends",
-        "worker 3 starts",
-        "worker 2 ends",
-        "worker 3 ends",
-        "done",
-    ];
-    let late = [
-        "main starts",
-        "worker 1 starts",
-        "main",
-        "worker 1 ends",
-        "main again",
-        "worker 2 starts",
-        "worker 2 ends",
-        "main ends",
-        "worker 3 starts",
-        "worker 3 ends",
-        "done",
-    ];
+fn uncounted_1708_a_held_task_longer_than_a_turn_moves_no_public_event() {
+    // #1708 (`spec/27 §8` rule 5, ADR 0117 amendment of 2026-11-22, second), on #1545's
+    // residual: the held `spin`, started under `if s > 0`, passes thousands of check points,
+    // but each is uncounted, so its turn never ends by a count and it is never let go: the
+    // block runs it to its end at its switch, on its own turn, and the public events keep the
+    // order of the run without the quiet code, secret 0's, for every secret, with one whole
+    // trace, in the interpreter and natively under `--virtual-time`. Before #1708, secret 1
+    // gave another order and secrets 2 and 4 a third (the held task was let go at the end of
+    // its own turn and took the second place), so this test fails if either engine counts the
+    // held task's check points.
     let none = [
         "main starts",
         "worker 1 starts",
@@ -9653,19 +9629,12 @@ fn held_quiet_tasks_1545_a_held_task_longer_than_a_turn_is_let_go_alike_in_both_
         "worker 3 ends",
         "done",
     ];
-    for (secret, expected) in [(0, &none), (1, &early), (2, &late), (4, &late)] {
-        let runs = held_runs("held1545long", HELD_LONG, secret);
-        assert_eq!(runs.output, serde_json::json!(expected), "{secret}");
-        assert_eq!(runs.virtual_output, runs.output, "{secret}");
-        assert_eq!(runs.virtual_trace, runs.trace, "{secret}");
-        assert_eq!(runs.native_virtual_output, runs.output, "{secret}");
-        assert_eq!(runs.native_virtual_trace, runs.trace, "{secret}");
-        assert_eq!(
-            by_task(&runs.native_trace),
-            by_task(&runs.trace),
-            "{secret}"
-        );
-    }
+    assert_held(
+        "held1708long",
+        HELD_LONG,
+        &[0, 1, 2, 4],
+        &serde_json::json!(none),
+    );
 }
 
 /// #1545, a held task run when nothing else is ready (review 2 of #2200, L2, the reviewer's
@@ -9711,14 +9680,13 @@ pub main() -> Unit
 "#;
 
 #[test]
-fn held_quiet_tasks_1545_a_held_task_with_nothing_else_ready_is_let_go_alike_in_both_engines() {
-    // #1545, `spec/27 §7` rule 4: the task that ran a held task at one of its switches counts
-    // as ready, so the held task is let go at its own turn's end even when no other task is
-    // ready. The interpreter's output is pinned for each secret, and native code under
-    // `--virtual-time` gives the same output and whole trace (`spec/27 §8` rule 3). The native
-    // run is bounded by processor and wall-clock time, so an engine that kept the root waiting
-    // on a held task that never ends would fail here instead of blocking the suite. With
-    // native `sched::lets_go` returning `false`, secrets 1 and 2 give another order.
+fn uncounted_1708_a_held_task_with_nothing_else_ready_moves_no_public_event() {
+    // #1708 on #1545's residual (review 2 of #2200, L2): the root's turn ends inside its first
+    // loop with no other task ready, so it runs its held `spin` at that switch. Before #1708
+    // the held task was let go at the end of its own turn, the root counting as ready, so
+    // `main` printed before `worker 1 starts` for secrets 1 and 2. Its check points are now
+    // uncounted, so it runs to its end on the root's turn and every secret gives secret 0's
+    // order and one whole trace, in both engines (`spec/27 §8` rules 3 and 5).
     let queued = [
         "main starts",
         "worker 1 starts",
@@ -9727,57 +9695,132 @@ fn held_quiet_tasks_1545_a_held_task_with_nothing_else_ready_is_let_go_alike_in_
         "worker 1 ends",
         "done",
     ];
-    let let_go = [
-        "main starts",
-        "main",
-        "worker 1 starts",
-        "main ends",
-        "worker 1 ends",
-        "done",
-    ];
-    for (secret, expected) in [(0, &queued), (1, &let_go), (2, &let_go)] {
-        let package = format!("held1545alone{secret}");
-        let program = HELD_ALONE.replace("SECRET", &secret.to_string());
-        let dir = ita_package(&package, &ever_run("leak"), &[("src/leak.una", &program)]);
-        let run = una(&dir, &["--json", "run", "--virtual-time"]);
-        assert_eq!(
-            run.status.code(),
-            Some(0),
-            "{secret}: {}",
-            String::from_utf8_lossy(&run.stderr)
-        );
-        let document: Value = serde_json::from_slice(&run.stdout).unwrap();
-        assert_eq!(document["output"], serde_json::json!(expected), "{secret}");
-        let built = una(&dir, &["build"]);
-        assert_eq!(
-            built.status.code(),
-            Some(0),
-            "{}",
-            String::from_utf8_lossy(&built.stderr)
-        );
-        let trace = dir.join("trace.json");
-        let mut command = Command::new(dir.join("target/una").join(&package));
-        command
-            .current_dir(&dir)
-            .arg("--virtual-time")
-            .arg("--trace")
-            .arg(&trace);
-        let native = output_within(&command, 60);
-        assert_eq!(
-            native.status.code(),
-            Some(0),
-            "{secret}: {}",
-            String::from_utf8_lossy(&native.stderr)
-        );
-        let lines: Vec<Value> = String::from_utf8_lossy(&native.stdout)
-            .lines()
-            .map(Value::from)
-            .collect();
-        assert_eq!(Value::from(lines), document["output"], "{secret}: native");
-        let native_trace: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
-        assert_eq!(native_trace, document["trace"], "{secret}: native trace");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    assert_held(
+        "held1708alone",
+        HELD_ALONE,
+        &[0, 1, 2],
+        &serde_json::json!(queued),
+    );
+}
+
+/// #1708, a server's task that branches on its request: each `handle` is started per request,
+/// as the driver of a `serve` section does, and calls `work`, whose loop the request decides,
+/// only when its `internal` request asks for it. The calls and their loops are uncounted, so
+/// the public prints of the four tasks interleave by their public work only.
+const SERVER_BRANCH: &str = r#"module leak
+
+work(n: internal Int) -> internal Int
+=
+  let edit acc: internal Int = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+handle(id: Int, request: internal Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("handle {id} starts")
+  let edit extra: internal Int = 0
+  if request > 0
+    extra = work(request * 2000)
+  let edit k = 0
+  for i in 0..<1500
+    k = k + i
+  @console.print("handle {id} ends")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks at most 2 at once
+    for id in 0..<4
+      start handle(id, request: (s + id) mod 3)
+    @console.print("main")
+  @console.print("done")
+"#;
+
+#[test]
+fn uncounted_1708_a_server_task_that_branches_on_its_request_moves_no_public_event() {
+    // #1708 (`spec/27 §8` rule 5): before the amendment, the requests' `internal` values
+    // decided how many check points each task passed, and so which task printed first; now
+    // every secret gives one output and one whole trace, in the interpreter and natively under
+    // `--virtual-time`, and native code under the real clock gives the same events task by
+    // task.
+    let runs = held_runs("srv1708probe", SERVER_BRANCH, 0);
+    assert_held("srv1708", SERVER_BRANCH, &[0, 1, 2, 5], &runs.output);
+    // The public work alone interleaves the tasks: the schedule still switches.
+    let lines: Vec<&str> = runs
+        .output
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap())
+        .collect();
+    let first_end = lines
+        .iter()
+        .position(|line| line.ends_with("ends"))
+        .unwrap();
+    assert!(
+        lines
+            .iter()
+            .take(first_end)
+            .filter(|line| line.ends_with("starts"))
+            .count()
+            >= 2,
+        "{lines:?}"
+    );
+}
+
+/// #1708, long quiet work in the root: the root branches on an `internal` value round after
+/// round and calls `work` under the branch, while two started tasks print between stretches of
+/// public work.
+const LONG_QUIET: &str = r#"module leak
+
+work(n: internal Int) -> internal Int
+=
+  let edit acc: internal Int = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+ticker(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  for j in 0..<3
+    @console.print("ticker {n} at {j}")
+    let edit k = 0
+    for i in 0..<700
+      k = k + i
+
+pub main() -> Unit
+  uses @console: Console[print]
+  diverges
+=
+  let s: internal Int = SECRET
+  tasks
+    start ticker(1)
+    start ticker(2)
+    let edit acc: internal Int = 0
+    for round in 0..<4
+      if s > round
+        acc = acc + work(s * 4000)
+    @console.print("main after the quiet work")
+    let edit k = 0
+    for i in 0..<2500
+      k = k + i
+    @console.print("main ends")
+  @console.print("done")
+"#;
+
+#[test]
+fn uncounted_1708_long_quiet_work_moves_no_public_event() {
+    // #1708 (`spec/27 §8` rule 5): up to four calls of `work`, each up to 28000 iterations,
+    // run under a branch on `s`; before the amendment their count decided how many turns the
+    // tickers took before `main after the quiet work`. Every secret now gives one output and
+    // one whole trace, in both engines under `--virtual-time`.
+    let runs = held_runs("quiet1708probe", LONG_QUIET, 0);
+    assert_held("quiet1708", LONG_QUIET, &[0, 1, 3, 7], &runs.output);
 }
 
 /// The module of the conformance case `tests/conformance/security/<case>` of #1684 (hunt #973,
@@ -9787,36 +9830,32 @@ fn task_switch_case(case: &str) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
+/// The program of the conformance case `case` as a package `leak` whose key is `SECRET`, for
+/// [`assert_held`]: its `let key: <label> Int = 90` becomes `SECRET`.
+fn task_switch_secret(case: &str, label: &str) -> String {
+    let source = task_switch_case(case);
+    let key = format!("let key: {label} Int = 90");
+    assert!(source.contains(&key), "{case}");
+    source
+        .replace("module order", "module leak")
+        .replace(&key, &format!("let key: {label} Int = SECRET"))
+}
+
 #[test]
-fn t1_the_task_switch_probe_is_refused_by_run_and_by_build() {
-    // #1684, `spec/27 §8` rule 5: the hunt's probe, whose started tasks ran pure loops as long
-    // as the bits of a `secret` key decided and printed their index after, so that the order
-    // of the prints spelled the key under `una run` and native `--virtual-time`. Both commands
-    // check first and refuse it with U4002 at the loop, so neither engine runs it.
-    let dir = ita_package(
+fn t1_the_task_switch_probe_prints_alike_for_every_secret_key_in_both_engines() {
+    // #1708 (`spec/27 §8` rule 5, ADR 0117 amendment of 2026-11-22, second): the hunt's probe
+    // of #973, whose started tasks run pure loops as long as the bits of a `secret` key decide
+    // and print their index after. #1684 refused it, since under `una run` and native
+    // `--virtual-time` the order of the prints spelled the key. Its loops' iterations are now
+    // uncounted, so it is accepted and every key gives one output and one whole trace, in the
+    // interpreter and natively under `--virtual-time`.
+    let probe = task_switch_secret("task_switch_secret_loop", "secret");
+    assert_held(
         "t1probe",
-        &ever_run("order"),
-        &[(
-            "src/order.una",
-            &task_switch_case("task_switch_secret_loop"),
-        )],
+        &probe,
+        &[90, 165, 0, 255],
+        &serde_json::json!(["0", "1", "2", "3", "4", "5", "6", "7"]),
     );
-    for command in ["run", "build"] {
-        let output = una(&dir, &[command, "."]);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
-        assert!(
-            stderr.contains("[U4002]") && stderr.contains("src/order.una:9:3"),
-            "{command}: {stderr}"
-        );
-        assert!(
-            output.stdout.is_empty(),
-            "{command}: printed {:?}",
-            output.stdout
-        );
-    }
-    assert!(!dir.join("target/una/t1probe").exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -9888,71 +9927,59 @@ fn t1_the_public_twin_orders_its_prints_by_its_key_in_both_engines() {
 }
 
 #[test]
-fn t1_residual_1708_internal_keys_still_order_the_prints_and_the_report_lists_them() {
-    // #1708, `spec/27 §8` rule 5: the rule's bound is `internal`, so the probe with an
-    // `internal` key and the branch around a call on an `internal` bit are accepted, and their
-    // prints follow the key's bits in both engines under `--virtual-time`, as the public twins'
-    // do. The residual is not closed here (it waits for the amendment of ADR 0117 or a rule at
-    // `public`); the report lists each such check point in `information.timing` as a
-    // `task switch` at `internal` (`spec/13 §6`), so a reader of the report sees where it is.
+fn t1_1708_internal_keys_no_longer_order_the_prints() {
+    // #1708, `spec/27 §8` rule 5: the probe with an `internal` key, and the branch around a
+    // call on an `internal` bit, printed in the order of the key's bits in both engines under
+    // `--virtual-time`, as the public twins do. Their check points are now uncounted, so every
+    // key gives one output and one whole trace in both engines. The report no longer lists the
+    // loop's iterations, which that closes; it still lists the call at `internal`, which can
+    // decide the depth of the task (#1677), as a `task switch` (`spec/13 §6`).
     let cases = [
-        ("task_switch_internal", "order.spin", 17, 3),
-        ("task_switch_internal_branch_call", "order.worker", 29, 7),
+        ("task_switch_internal", None),
+        (
+            "task_switch_internal_branch_call",
+            Some(("order.worker", 29, 7)),
+        ),
     ];
-    for (index, (case, function, line, col)) in cases.into_iter().enumerate() {
-        let source = task_switch_case(case);
-        for (key, order) in [(90, "0 2 5 7 1 3 4 6"), (165, "1 3 4 6 0 2 5 7")] {
-            let program = source.replace(
-                "let key: internal Int = 90",
-                &format!("let key: internal Int = {key}"),
-            );
-            assert!(
-                program.contains(&format!("let key: internal Int = {key}\n")),
-                "{case}"
-            );
-            let name = format!("t1res{index}k{key}");
-            let dir = within_package(&name, "order", &program);
-            let interpreted = una(&dir, &["--json", "run", ".", "--virtual-time"]);
-            assert_eq!(interpreted.status.code(), Some(0), "{interpreted:?}");
-            let document: Value = serde_json::from_slice(&interpreted.stdout).unwrap();
-            let expected: Vec<&str> = order.split(' ').collect();
-            assert_eq!(
-                document["output"],
-                serde_json::json!(expected),
-                "{case} {key}"
-            );
-            let native = Command::new(dir.join(format!("target/una/{name}")))
-                .arg("--virtual-time")
-                .current_dir(&dir)
-                .output()
-                .unwrap();
-            assert_eq!(native.status.code(), Some(0), "{key}: {native:?}");
-            let lines: Vec<String> = String::from_utf8_lossy(&native.stdout)
-                .lines()
-                .map(str::to_owned)
-                .collect();
-            assert_eq!(lines, expected, "{case} {key}");
-            let report = una(&dir, &["--json", "report", "."]);
-            assert_eq!(report.status.code(), Some(0), "{report:?}");
-            let report: Value = serde_json::from_slice(&report.stdout).unwrap();
-            // The report's key for a place is spelled with an escape: a bare string starting with a
-            // top-level directory of the repository reads as a path to the gate tier scan
-            // (scripts/gate-tier.sh), which would make the whole native suite depend on `site/`.
-            let mut entry = serde_json::json!({
-                "construct": "task switch",
-                "function": function,
-                "label": "internal",
-            });
-            entry["s\u{69}te"] = serde_json::json!({
-                "file": "src/order.una",
-                "start": {"line": line, "col": col},
-            });
-            assert_eq!(
-                report["information"]["timing"],
-                serde_json::json!([entry]),
-                "{case} {key}"
-            );
-            let _ = std::fs::remove_dir_all(&dir);
-        }
+    for (index, (case, listed)) in cases.into_iter().enumerate() {
+        assert_held(
+            &format!("t1res{index}"),
+            &task_switch_secret(case, "internal"),
+            &[90, 165, 0, 255],
+            &serde_json::json!(["0", "1", "2", "3", "4", "5", "6", "7"]),
+        );
+        let name = format!("t1rep{index}");
+        let dir = within_package(&name, "order", &task_switch_case(case));
+        let report = una(&dir, &["--json", "report", "."]);
+        assert_eq!(report.status.code(), Some(0), "{report:?}");
+        let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+        // The report's key for a place is spelled with an escape: a bare string starting with a
+        // top-level directory of the repository reads as a path to the gate tier scan
+        // (scripts/gate-tier.sh), which would make the whole native suite depend on `site/`.
+        let expected: Vec<Value> = listed
+            .into_iter()
+            .map(|(function, line, col)| {
+                let mut entry = serde_json::json!({
+                    "construct": "task switch",
+                    "function": function,
+                    "label": "internal",
+                });
+                entry["s\u{69}te"] = serde_json::json!({
+                    "file": "src/order.una",
+                    "start": {"line": line, "col": col},
+                });
+                entry
+            })
+            .collect();
+        let timing = report["information"]["timing"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let switches: Vec<Value> = timing
+            .into_iter()
+            .filter(|entry| entry["construct"] == "task switch")
+            .collect();
+        assert_eq!(switches, expected, "{case}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,6 +1,14 @@
--- test: a `for` loop over a list whose label is `secret`, whose length that data chose, in a started task; that data would decide how many check points the task passes, so the check point is U4002 (spec/27 §8 rule 5, #1684); its `internal` twin is `task_switch_internal_list_loop` (#1708)
+-- test: a `for` loop over a list whose label is `secret`, whose length that data chose, in a started task: #1684 refused it, since that data decided how many check points the task passed. Its iterations are now `uncounted`, so they move no switch, and the loop is accepted (spec/27 §8 rule 5, #1708); its `internal` twin is `task_switch_internal_list_loop`
 -- spec: spec/27 §8
--- expect: error U4002 at src/order.una:18:3
+-- grant: console
+-- expect: run-output "0"
+-- expect: run-output "1"
+-- expect: run-output "2"
+-- expect: run-output "3"
+-- expect: run-output "4"
+-- expect: run-output "5"
+-- expect: run-output "6"
+-- expect: run-output "7"
 module order
 
 noop() -> Unit = unit

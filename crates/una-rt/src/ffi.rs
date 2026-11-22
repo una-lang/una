@@ -747,6 +747,18 @@ pub extern "C" fn una_rt_quiet_leave(hush: i64) {
     runtime::quiet_leave(hush != 0);
 }
 
+/// Enters an `uncounted` expression ([`runtime::uncounted_enter`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_uncounted_enter() {
+    runtime::uncounted_enter();
+}
+
+/// Leaves an `uncounted` expression ([`runtime::uncounted_leave`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_uncounted_leave() {
+    runtime::uncounted_leave();
+}
+
 /// 1 when the task must stop before an operation ([`runtime::poll`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_poll() -> i64 {

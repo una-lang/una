@@ -1276,7 +1276,9 @@ impl Sites {
             | Expr::Tasks { body, .. } => {
                 self.expr(body);
             }
-            Expr::Start { task, .. } | Expr::Quiet { body: task, .. } => self.expr(task),
+            Expr::Start { task, .. }
+            | Expr::Quiet { body: task, .. }
+            | Expr::Uncounted { body: task, .. } => self.expr(task),
             Expr::Atom { .. }
             | Expr::Fail { .. }
             | Expr::Exit { .. }

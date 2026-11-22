@@ -3124,7 +3124,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             lets,
             t.clone(),
             tuple_type(types.clone()),
-            looped,
+            self.uncounted(stmt.span, looped),
             stmt.span,
             false,
         );
@@ -3205,7 +3205,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             lets,
             t.clone(),
             tuple_type(types.clone()),
-            looped,
+            self.uncounted(stmt.span, looped),
             stmt.span,
             false,
         );
@@ -3302,7 +3302,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             lets,
             t.clone(),
             tuple_type(types.clone()),
-            looped,
+            self.uncounted(stmt.span, looped),
             stmt.span,
             false,
         );
@@ -4596,7 +4596,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         args.push(Atom::Var(f));
         arg_spans.push(span);
         let function = self.function_path(id);
-        self.push(
+        self.push_uncounted(
             lets,
             span,
             Rhs::Call {
@@ -4607,6 +4607,34 @@ impl<'e, 'a> Fx<'e, 'a> {
                 span,
             },
         )
+    }
+
+    /// As [`Self::push`], `uncounted` when the checker recorded the call at `span` as a check
+    /// point that data above `public` can decide (`spec/27 §8` rule 5, #1708): a dense
+    /// function of `spec/29` that applies its function argument.
+    fn push_uncounted(&mut self, lets: &mut Vec<Let>, span: Span, rhs: Rhs) -> Atom {
+        if !self.findings.uncounted.contains(&span) {
+            return self.push(lets, span, rhs);
+        }
+        let t = self.temp();
+        let ty = self.type_at(span);
+        let inner = self.temp();
+        let value = Bound::Expr(CoreExpr::Uncounted {
+            body: Box::new(CoreExpr::Let {
+                name: inner.clone(),
+                ty: ty.clone(),
+                value: Box::new(Bound::Rhs(rhs)),
+                body: Box::new(CoreExpr::Atom {
+                    atom: Atom::Var(inner),
+                    span,
+                }),
+                span,
+                written: false,
+            }),
+            span,
+        });
+        lets.push(Let::inferred(t.clone(), ty, value, span));
+        Atom::Var(t)
     }
 
     /// Binds `rhs` to a fresh temporary of the type recorded at `span`.
@@ -5864,10 +5892,49 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// `expr`, `uncounted` when the checker recorded the construct at `key` as a check point
+    /// that data above `public` can decide (`spec/27 §8` rule 5, #1708): a call, an operation,
+    /// a loop, or a prelude function that applies a function argument.
+    fn uncounted(&self, key: Span, expr: CoreExpr) -> CoreExpr {
+        if self.findings.uncounted.contains(&key) {
+            CoreExpr::Uncounted {
+                body: Box::new(expr),
+                span: key,
+            }
+        } else {
+            expr
+        }
+    }
+
+    /// The value of a `let` of `call`, of type `ty`: [`Self::quiet_call_only`], `uncounted`
+    /// when the checker recorded the call as a check point that data above `public` can decide
+    /// (`spec/27 §8` rule 5, #1708).
+    fn quiet_call(&mut self, call: Rhs, ty: &Type, span: Span) -> Bound {
+        let value = self.quiet_call_only(call, ty, span);
+        if !self.findings.uncounted.contains(&span) {
+            return value;
+        }
+        let t = self.temp();
+        Bound::Expr(CoreExpr::Uncounted {
+            body: Box::new(CoreExpr::Let {
+                name: t.clone(),
+                ty: ty.clone(),
+                value: Box::new(value),
+                body: Box::new(CoreExpr::Atom {
+                    atom: Atom::Var(t),
+                    span,
+                }),
+                span,
+                written: false,
+            }),
+            span,
+        })
+    }
+
     /// The value of a `let` of `call`, of type `ty`: the call itself, or, for a call or an
     /// operation that the checker marked under a raised program counter, `quiet (let t = call in
     /// t)` (S-39, `spec/26 §6` rule 4).
-    fn quiet_call(&mut self, call: Rhs, ty: &Type, span: Span) -> Bound {
+    fn quiet_call_only(&mut self, call: Rhs, ty: &Type, span: Span) -> Bound {
         if !self.findings.quiet.contains(&span) {
             return Bound::Rhs(call);
         }

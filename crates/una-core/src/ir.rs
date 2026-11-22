@@ -2224,6 +2224,18 @@ pub enum Expr {
         /// The loop or the call in the source.
         span: Span,
     },
+    /// `uncounted e` (`spec/27 §8` rule 5, ADR 0117 amendment of 2026-11-22, second, #1708):
+    /// `e`, a call, an operation, a loop or a `start` whose running data above `public` can
+    /// decide. The check points that `e` passes, in its callees and in the tasks it starts
+    /// included, do not advance the count of the task's turn in the interpreter and in native
+    /// code under virtual time, so the moment a task switches is a function of the check points
+    /// that `public` data decide. Its value is `e`'s.
+    Uncounted {
+        /// The loop, the `start`, or the `let` of the call that ends in its result.
+        body: Box<Expr>,
+        /// The construct in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.

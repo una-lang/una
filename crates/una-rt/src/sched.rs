@@ -817,7 +817,12 @@ pub(crate) fn resume_turn((turn, turns): (u32, u64)) -> bool {
 /// end under the real clock (`Worker::turn_ends`), whatever raised the word: one atomic load
 /// and one clock read, O(1). The task then yields at the slow path ([`yield_due`]).
 pub(crate) fn turn_due() -> bool {
-    let over = if counting() {
+    let over = if counting() && crate::runtime::uncounted() {
+        // A check point in an `uncounted` expression neither advances the turn's count nor
+        // ends the turn, so the moment a task switches follows only the check points that
+        // `public` data decide (`spec/27 §8` rule 5, #1708): one more shared borrow, O(1).
+        false
+    } else if counting() {
         let checks = TURN.with(|turn| {
             let checks = turn.get().saturating_add(1);
             turn.set(checks);

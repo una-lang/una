@@ -597,7 +597,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, from);
         // `spec/27 §8` rule 5: each iteration is a check point, under the body's program counter.
-        self.switch_site(stmt.span, &Label::public(), || {
+        self.switch_loop(stmt.span, || {
             "how many times this `for` loop iterates".to_owned()
         });
         let mark = self.locals.len();
@@ -765,7 +765,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let before = self.taken_state();
         let before_len = self.locals.len();
         let saved = self.raise_pc(&label, stmt.condition.span);
-        self.switch_site(stmt.span, &Label::public(), || {
+        self.switch_loop(stmt.span, || {
             "how many times this `for until` loop iterates".to_owned()
         });
         let mark = self.locals.len();

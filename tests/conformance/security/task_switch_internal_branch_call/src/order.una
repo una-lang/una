@@ -1,14 +1,14 @@
--- test: the residual of #1708, the twin of `task_switch_branch_call` with an `internal` key: no loop bound is labeled, and a loop of `public` length calls a function only on one side of a branch on an `internal` bit. The rule's bound is `internal` (spec/27 §8 rule 5), so it is accepted, the report lists the call as a `task switch` at `internal` (spec/13 §6), and the prints follow the key's bits until the amendment of ADR 0117 that stops counting the check points under a raised program counter
+-- test: the twin of `task_switch_branch_call` with an `internal` key: no loop bound is labeled, and a loop of `public` length calls a function only on one side of a branch on an `internal` bit. The call is `uncounted` (spec/27 §8 rule 5, #1708), so the prints no longer follow the key's bits: the prints are `0` to `7` in order, for every key, as `una run` and native code under `--virtual-time` show alike (`crates/una-cli/tests/native.rs`). The rule's refusal stays at `internal`, since the call can decide the depth of the task (#1677), so the report still lists it as a `task switch` at `internal` (spec/13 §6)
 -- spec: spec/27 §8
 -- grant: console
 -- expect: run-output "0"
--- expect: run-output "2"
--- expect: run-output "5"
--- expect: run-output "7"
 -- expect: run-output "1"
+-- expect: run-output "2"
 -- expect: run-output "3"
 -- expect: run-output "4"
+-- expect: run-output "5"
 -- expect: run-output "6"
+-- expect: run-output "7"
 module order
 
 noop() -> Unit = unit
