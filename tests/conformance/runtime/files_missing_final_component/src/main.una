@@ -1,4 +1,4 @@
--- test: a final component that does not exist in a directory that exists is left to the operation: a read fails with NotFound, a write creates the file, and a read then finds it
+-- test: a final component that does not exist in a directory that exists is left to the operation: a read fails with NotFound, a write creates the file (or, in the native run, which shares the interpreter's copy of the tree, overwrites it), and a read then finds it
 -- spec: spec/14 §3
 -- grant: console
 -- grant: files:data:read,write
