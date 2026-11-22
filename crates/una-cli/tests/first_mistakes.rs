@@ -312,3 +312,161 @@ fn assigning_a_loop_variable_suggests_a_separate_let_edit_binding() {
         "`y` is not editable; declare it `let edit y`, or the parameter `edit y`"
     );
 }
+
+/// The advice of each U3013 of the package at `root`, after "statement or `let`; ", with its
+/// line and column.
+fn u3013_advice(root: &Path) -> Vec<(u64, u64, String)> {
+    diagnostics(root)
+        .iter()
+        .filter(|d| d["code"] == "U3013")
+        .map(|d| {
+            let message = d["message"].as_str().unwrap();
+            let (_, advice) = message.split_once("statement or `let`; ").unwrap();
+            (
+                d["primary"]["start"]["line"].as_u64().unwrap(),
+                d["primary"]["start"]["col"].as_u64().unwrap(),
+                advice.to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn u3013_advises_the_form_that_resolves_it_where_the_call_stands() {
+    // #837: "bind its result with `let` first" resolves U3013 only where a `let` before the
+    // statement runs the call as the statement would. Under a nested `attempt` the whole
+    // `attempt` is what is bound, in every place; a lambda body holds no `let`; code that runs
+    // only when something else decides would run the call every time; a `together` branch is
+    // one `let`; a call with `edit` cannot be wrapped in `attempt`; a `do` line binds nothing.
+    // `authority/u3013_advice_followed` follows each advice and checks.
+    const BIND: &str = "bind its result with `let` first";
+    const ATTEMPT: &str = "bind the whole `attempt` with `let` first, as `let outcome = attempt ...`, and use `outcome` in its place; binding the call alone would leave its failure unhandled";
+    const MARKED: &str = "`attempt` cannot wrap it, so make the call itself the whole expression of a statement or `let`, and handle a failure with `if error`";
+    const DROP: &str = "`attempt` cannot wrap a call with `edit` or `take`, so drop it and handle a failure with `if error`; ";
+    const DO: &str = "a `do` line binds nothing, so call a function that takes a plain argument and edits a local copy of it, as `let edit copy = n` in its body";
+    // What the advice holds in the place it names: the call, or the `attempt` bound.
+    let held = |attempt: bool| {
+        if attempt {
+            "`let outcome = attempt ...` as a `let`"
+        } else {
+            "the call as a statement or `let`"
+        }
+    };
+    let lambda = |a: bool| {
+        format!(
+            "the body of a lambda is one line and cannot hold a `let`, so move the work into a named function, with {} of its body, and pass that function",
+            held(a)
+        )
+    };
+    let error_clause = |a: bool| {
+        format!(
+            "the value of `if error use` runs only when the call before it fails, so a `let` before the statement would run this call every time: give the clause a value without effects that cannot fail, or bind `attempt` of the first call with `let` and branch on it with `when`, with {} of an arm `is Err(e)` written as a block",
+            held(a)
+        )
+    };
+    let none_clause = |a: bool| {
+        format!(
+            "the value of `if none use` runs only when the value before it is `None`, so a `let` before the statement would run this call every time: give the clause a value without effects that cannot fail, or bind the value without this clause and branch on it with `when`, with {} of an arm `is None` written as a block",
+            held(a)
+        )
+    };
+    let branch = |a: bool| {
+        format!(
+            "a branch of `if ... then ... else` runs only when the condition selects it, so a `let` before the `if` would run the call every time: write the `if` on several lines, with {} of its branch",
+            held(a)
+        )
+    };
+    let short = |a: bool| {
+        format!(
+            "the right operand of `and`, `or` and `implies` runs only when the left one does not decide, so a `let` before it would run the call every time: test the left operand with an `if` on several lines, with {} of the branch that needs it",
+            held(a)
+        )
+    };
+    let arm = |a: bool| {
+        format!(
+            "an arm of `when` runs only when its pattern matches, so a `let` before the `when` would run the call every time: write the arm as a block, with {} of the arm",
+            held(a)
+        )
+    };
+    let together = format!(
+        "a branch of `together` is one `let`, and a `let` before `together` would take the call out of it: call a named function from the branch's `let`, with {} of its body",
+        held(false)
+    );
+    let expected: Vec<(u64, u64, String)> = vec![
+        (79, 16, ATTEMPT.to_owned()),
+        (84, 7, BIND.to_owned()),
+        (89, 24, lambda(false)),
+        // A one-line `if` in a lambda: still the named function only.
+        (94, 34, lambda(false)),
+        (99, 39, lambda(true)),
+        (106, 18, error_clause(false)),
+        (113, 30, error_clause(true)),
+        (122, 17, none_clause(false)),
+        (130, 30, none_clause(true)),
+        (136, 17, branch(false)),
+        (141, 30, branch(true)),
+        (146, 6, BIND.to_owned()),
+        (151, 13, short(false)),
+        (156, 25, short(true)),
+        (161, 3, BIND.to_owned()),
+        (167, 17, arm(false)),
+        (174, 26, arm(true)),
+        (181, 17, together),
+        (189, 16, ATTEMPT.to_owned()),
+        (189, 28, BIND.to_owned()),
+        (194, 15, BIND.to_owned()),
+        (200, 25, MARKED.to_owned()),
+        (206, 39, format!("{DROP}{}", branch(false))),
+        (209, 50, ATTEMPT.to_owned()),
+        (209, 72, ATTEMPT.to_owned()),
+    ];
+    let conformance =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/authority");
+    assert_eq!(u3013_advice(&conformance.join("u3013_advice")), expected);
+    assert_eq!(
+        diagnostics(&conformance.join("u3013_advice_followed")),
+        Vec::<Value>::new()
+    );
+    // #1628, ADR 0137 rules 8 and 10: edition 0.5 says `let` while it reads `let`. When it reads
+    // `const` and `var` instead, this copy no longer parses and every text above must name the
+    // edition's form there.
+    for case in ["u3013_advice", "u3013_advice_followed"] {
+        let copy = package(&format!("u3013-0.5-{case}"), "advice", "");
+        std::fs::remove_file(copy.join("una.toml")).unwrap();
+        std::fs::remove_file(copy.join("verification.lock")).unwrap();
+        std::fs::write(
+            copy.join("ita.una"),
+            "ita case\n  version 0.1.0\n  edition 0.5\n",
+        )
+        .unwrap();
+        std::fs::copy(
+            conformance.join("../types/priority_queue_methods/ita.lock"),
+            copy.join("ita.lock"),
+        )
+        .unwrap();
+        std::fs::copy(
+            conformance.join(case).join("src/advice.una"),
+            copy.join("src/advice.una"),
+        )
+        .unwrap();
+        let found = u3013_advice(&copy);
+        if case == "u3013_advice" {
+            assert_eq!(found, expected, "edition 0.5");
+        } else {
+            assert_eq!(diagnostics(&copy), Vec::<Value>::new(), "edition 0.5");
+        }
+    }
+    // A `do` line binds nothing (`spec/17 §3` rule 5), in the case that covers it.
+    let memdo = diagnostics(&conformance.join("../types/memory_example_do"));
+    let on_do: Vec<&str> = memdo
+        .iter()
+        .filter(|d| d["code"] == "U3013")
+        .map(|d| d["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        on_do,
+        [format!(
+            "`bump` is called with `edit` or `take`, so the call must be the whole expression of a statement or `let`; {DO}"
+        )]
+    );
+}

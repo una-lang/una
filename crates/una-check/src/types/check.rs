@@ -130,6 +130,25 @@ impl Ctx {
     }
 }
 
+/// Where an expression stands when it is not a whole statement and a `let` just before the
+/// statement would not keep its meaning (#837, U3013's advice): code that runs only when something
+/// else decides, where such a `let` would run a call every time, and a branch of `together`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Conditional {
+    /// The value of an `if error use` clause.
+    ErrorClause,
+    /// The value of an `if none use` clause.
+    NoneClause,
+    /// A branch of `if ... then ... else`.
+    Branch,
+    /// The right operand of `and`, `or` or `implies`.
+    ShortCircuit,
+    /// The one-line body of an arm of `when`.
+    Arm,
+    /// The value of a branch's `let` in `together`, one `let` per branch (U2024).
+    Together,
+}
+
 /// Where an expression stands, as far as calls care: the whole expression of its statement,
 /// with its failure handled, or directly a call argument. Each flag applies to one expression.
 #[derive(Clone, Copy, Debug, Default)]
@@ -247,6 +266,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) loops: Vec<LoopFrame>,
     /// Inside an `on stop` block, whose statements must not fail (U3029, `spec/26 §5`).
     pub(crate) in_on_stop: bool,
+    /// The innermost code around the expression checked that runs only when something else
+    /// decides, so U3013 there cannot advise a `let` before the statement (#837).
+    pub(crate) conditional: Option<Conditional>,
     /// Inside the expression of a `start`, which must not fail after its handling clauses
     /// (U3029, `spec/27 §7`).
     pub(crate) in_start: bool,
@@ -284,6 +306,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// assignment: the only places for a call with `edit` or `take`, U3013 elsewhere
     /// (`spec/17 §3` rule 5), and where the desugar binds its tuple (`spec/17 §4`).
     pub(crate) statement_calls: Vec<Span>,
+    /// The last call with `edit` or `take` reported as U3013 (`spec/17 §3` rule 5): its effects
+    /// or failure are not reported again at the same call with other advice (#837).
+    pub(crate) marked_nested: Option<Span>,
     /// How many of the enclosing lambdas are checked in their caller's context, as the
     /// arguments of `of` parameters (ADR 0062).
     pub(crate) inherited: usize,
@@ -559,6 +584,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             receiver_marker: None,
             spread: None,
             statement_calls: Vec::new(),
+            marked_nested: None,
             inherited: 0,
             of_callee: None,
             of_argument: None,
@@ -574,6 +600,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             loops: Vec::new(),
             misplaced_exits: Vec::new(),
             in_on_stop: false,
+            conditional: None,
             in_start: false,
             server_branch: None,
             start_captures: Vec::new(),

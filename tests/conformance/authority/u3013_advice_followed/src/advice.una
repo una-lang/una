@@ -1,0 +1,261 @@
+-- test: following each advice of U3013 literally resolves it, keeps each call conditional where it was, and lets no failure pass unhandled (#837)
+-- spec: spec/04 §4
+-- expect: ok
+module advice
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+
+capability Log
+  op flush() -> Unit
+
+show(r: Result[Option[Int], StoreError]) -> Int = 1
+
+count(r: Result[Int, StoreError]) -> Int = 1
+
+opt(r: Result[Option[Int], StoreError]) -> Option[Int] = None
+
+logged(k: Int) -> Int
+  uses @log: Log
+=
+  @log.flush()
+  k
+
+each(f: fn(Int) -> Int uses @log: Log) -> Int
+  uses @log: Log
+=
+  0
+
+each_found(f: fn(Int) -> Int uses @store: Store) -> Int
+  uses @store: Store
+=
+  0
+
+bump(edit n: Int) -> Int
+=
+  n = n + 1
+  n
+
+bump_checked(edit n: Int) -> Int
+  fails StoreError
+=
+  if n > 9 then fail Timeout else 0
+
+parse(a: Int) -> Int
+  fails StoreError
+=
+  if a == 1 then 1 else fail Timeout
+
+add_logged(x: Int) -> Int
+  uses @log: Log
+=
+  let logged_x = logged(x)
+  x + logged_x
+
+logged_if_positive(x: Int) -> Int
+  uses @log: Log
+=
+  if x > 0
+    let logged_x = logged(x)
+    logged_x
+  else
+    0
+
+shown(x: Int) -> Int
+  uses @store: Store
+=
+  let outcome = attempt @store.find(x)
+  show(outcome)
+
+one_more_logged(k: Int) -> Int
+  uses @log: Log
+=
+  let logged_k = logged(k)
+  1 + logged_k
+
+pub attempted(k: Int) -> Int
+  uses @store: Store
+=
+  let outcome = attempt @store.find(k)
+  show(outcome)
+
+pub plain(k: Int) -> Int
+  uses @log: Log
+=
+  let logged_k = logged(k)
+  1 + logged_k
+
+pub in_lambda() -> Int
+  uses @log: Log
+=
+  each(f: add_logged)
+
+pub if_in_lambda() -> Int
+  uses @log: Log
+=
+  each(f: logged_if_positive)
+
+pub attempt_in_lambda() -> Int
+  uses @store: Store
+=
+  each_found(f: shown)
+
+pub in_error_clause() -> Option[Int]
+  uses @store: Store
+  fails StoreError
+=
+  let first = attempt @store.find(1)
+  when first
+    is Ok(v) -> v
+    is Err(e) ->
+      let second = @store.find(2)
+        if error pass
+      second
+
+pub attempt_in_error_clause() -> Option[Int]
+  uses @store: Store
+=
+  let first = attempt @store.find(1)
+  when first
+    is Ok(v) -> v
+    is Err(e) ->
+      let outcome = attempt @store.find(2)
+      opt(outcome)
+
+pub in_none_clause() -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  let v = @store.find(1)
+    if error use None
+  when v
+    is Some(found) -> found
+    is None ->
+      let logged_2 = logged(2)
+      logged_2
+
+pub attempt_in_none_clause() -> Int
+  uses @store: Store
+=
+  let v = @store.find(1)
+    if error use None
+  when v
+    is Some(found) -> found
+    is None ->
+      let outcome = attempt @store.find(2)
+      show(outcome)
+
+pub in_branch(k: Int) -> Int
+  uses @log: Log
+=
+  if k > 0
+    let logged_k = logged(k)
+    logged_k
+  else
+    0
+
+pub attempt_in_branch(k: Int) -> Int
+  uses @store: Store
+=
+  if k > 0
+    let outcome = attempt @store.find(k)
+    show(outcome)
+  else
+    0
+
+pub in_condition(k: Int) -> Int
+  uses @log: Log
+=
+  let logged_k = logged(k)
+  if logged_k > 0 then 1 else 0
+
+pub right_operand(k: Int) -> Bool
+  uses @log: Log
+=
+  if k > 0
+    let logged_k = logged(k)
+    logged_k > 0
+  else
+    false
+
+pub attempt_in_right_operand(k: Int) -> Bool
+  uses @store: Store
+=
+  if k > 0
+    true
+  else
+    let outcome = attempt @store.find(k)
+    show(outcome) > 0
+
+pub left_operand(k: Int) -> Bool
+  uses @log: Log
+=
+  let logged_k = logged(k)
+  logged_k > 0 and k > 0
+
+pub in_arm(k: Int) -> Int
+  uses @log: Log
+=
+  when k
+    is 0 ->
+      let logged_k = logged(k)
+      1 + logged_k
+    else -> 0
+
+pub attempt_in_arm(k: Int) -> Int
+  uses @store: Store
+=
+  when k
+    is 0 ->
+      let outcome = attempt @store.find(k)
+      show(outcome)
+    else -> 0
+
+pub in_together(k: Int) -> Int
+  uses @log: Log
+=
+  together
+    let a = one_more_logged(k)
+    let b = 2
+  a + b
+
+pub argument_of_attempted(k: Int) -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  let key = logged(k)
+  let outcome = attempt @store.find(key)
+  show(outcome)
+
+pub edit_nested() -> Int
+=
+  let edit n = 1
+  let r = bump(edit n)
+  1 + r
+
+pub edit_attempted() -> Int
+  fails StoreError
+=
+  let edit n = 1
+  let r = bump_checked(edit n)
+    if error pass
+  r
+
+pub edit_attempted_in_branch(k: Int) -> Int
+  fails StoreError
+=
+  let edit n = 1
+  if k > 0
+    let r = bump_checked(edit n)
+      if error pass
+    r
+  else
+    0
+
+predicate opaque same(a: Int) -> Bool =
+  let left = attempt parse(a)
+  let right = attempt parse(a)
+  left == right

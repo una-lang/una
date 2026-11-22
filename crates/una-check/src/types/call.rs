@@ -837,11 +837,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 .is_some_and(|(marker, _)| marker.is_some());
         let statement = self.statement_calls.contains(&span);
         if marked && !statement && self.pass == super::authority::Pass::Check {
+            // #837: the advice of the place where the call stands, a `do` line included.
+            let advice = self.nested_advice(site.handled, true);
+            self.marked_nested = Some(span);
             self.report.error(
                 Code::U3013,
                 span,
                 format!(
-                    "{callee} is called with `edit` or `take`, so the call must be the whole expression of a statement or `let`; bind its result with `let` first"
+                    "{callee} is called with `edit` or `take`, so the call must be the whole expression of a statement or `let`; {advice}"
                 ),
             );
         }

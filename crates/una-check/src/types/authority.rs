@@ -11,7 +11,7 @@ use una_project::Manifest;
 use una_syntax::Span;
 use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
-use super::check::Checker;
+use super::check::{Checker, Conditional};
 use super::env::{Entity, Env, FnAst};
 use super::ty::{CapId, Declared, FnUse, Ty, given};
 use super::{Findings, Report};
@@ -1495,6 +1495,70 @@ impl<'a> Checker<'_, 'a, '_> {
             && self.pass == Pass::Collect
     }
 
+    /// The advice of a U3013 at a call that is not the whole expression of its statement: the
+    /// form that resolves it where the call stands, and keeps what the program means (#837).
+    /// `handled` tells whether `attempt` handles the call's failure, which then makes the
+    /// `attempt` the expression to bind, since binding the call alone leaves its failure
+    /// unhandled (U3007); `marked` tells whether the call has an `edit` or `take` argument,
+    /// which `attempt` cannot wrap and a `do` line cannot hold (`spec/17 §3` rule 5). The place
+    /// is the innermost of:
+    ///
+    /// - the body of a lambda, which is one line and holds no `let`: a named function;
+    /// - a [`Conditional`] place, where a `let` before the statement would run the call every
+    ///   time or break a `together` branch: the form of that place that holds the call, or the
+    ///   `attempt`, as a statement or `let` of its own;
+    /// - elsewhere: the result, or the `attempt`, bound with `let` first.
+    ///
+    /// The binding form is `let` in every edition this checker serves. ADR 0137 rules 8 and 10
+    /// name `const` and `var` in edition 0.5 once it reads them (#1628): every text of U3013's
+    /// advice is here, and `first_mistakes.rs` checks it in edition 0.5 too, so that change
+    /// shows up there.
+    pub(crate) fn nested_advice(&self, handled: bool, marked: bool) -> String {
+        if marked && self.ctx.in_do {
+            return "a `do` line binds nothing, so call a function that takes a plain argument and edits a local copy of it, as `let edit copy = n` in its body".to_owned();
+        }
+        let held = if handled && !marked {
+            "`let outcome = attempt ...` as a `let`"
+        } else {
+            "the call as a statement or `let`"
+        };
+        let place = if self.lambda_depth > 0 {
+            Some(format!(
+                "the body of a lambda is one line and cannot hold a `let`, so move the work into a named function, with {held} of its body, and pass that function"
+            ))
+        } else {
+            self.conditional.map(|conditional| match conditional {
+                Conditional::ErrorClause => format!(
+                    "the value of `if error use` runs only when the call before it fails, so a `let` before the statement would run this call every time: give the clause a value without effects that cannot fail, or bind `attempt` of the first call with `let` and branch on it with `when`, with {held} of an arm `is Err(e)` written as a block"
+                ),
+                Conditional::NoneClause => format!(
+                    "the value of `if none use` runs only when the value before it is `None`, so a `let` before the statement would run this call every time: give the clause a value without effects that cannot fail, or bind the value without this clause and branch on it with `when`, with {held} of an arm `is None` written as a block"
+                ),
+                Conditional::Branch => format!(
+                    "a branch of `if ... then ... else` runs only when the condition selects it, so a `let` before the `if` would run the call every time: write the `if` on several lines, with {held} of its branch"
+                ),
+                Conditional::ShortCircuit => format!(
+                    "the right operand of `and`, `or` and `implies` runs only when the left one does not decide, so a `let` before it would run the call every time: test the left operand with an `if` on several lines, with {held} of the branch that needs it"
+                ),
+                Conditional::Arm => format!(
+                    "an arm of `when` runs only when its pattern matches, so a `let` before the `when` would run the call every time: write the arm as a block, with {held} of the arm"
+                ),
+                Conditional::Together => format!(
+                    "a branch of `together` is one `let`, and a `let` before `together` would take the call out of it: call a named function from the branch's `let`, with {held} of its body"
+                ),
+            })
+        };
+        match (place, handled, marked) {
+            (Some(place), true, true) => format!(
+                "`attempt` cannot wrap a call with `edit` or `take`, so drop it and handle a failure with `if error`; {place}"
+            ),
+            (Some(place), _, _) => place,
+            (None, true, true) => "`attempt` cannot wrap it, so make the call itself the whole expression of a statement or `let`, and handle a failure with `if error`".to_owned(),
+            (None, true, false) => "bind the whole `attempt` with `let` first, as `let outcome = attempt ...`, and use `outcome` in its place; binding the call alone would leave its failure unhandled".to_owned(),
+            (None, false, _) => "bind its result with `let` first".to_owned(),
+        }
+    }
+
     /// U3007 and U3013 at a call or operation with `effects` or failure `fails` (`spec/04 §4`,
     /// `spec/06 §3`). `top` tells whether it is the whole expression of its
     /// statement, and `handled` whether `attempt` or `if error` handles its failure.
@@ -1525,18 +1589,25 @@ impl<'a> Checker<'_, 'a, '_> {
                     Code::U3013,
                     span,
                     format!(
-                        "{what} can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first"
+                        "{what} can fail, so it must be the whole expression of a statement or `let`; {}",
+                        self.nested_advice(handled, false)
                     ),
                 );
             }
             return;
         }
         if !top && (effects || fails.is_some()) {
+            // The call's `edit` or `take` already made it U3013 here, with the advice that
+            // holds for a marked call (#837).
+            if self.marked_nested == Some(span) {
+                return;
+            }
             self.report.error(
                 Code::U3013,
                 span,
                 format!(
-                    "{what} has effects or can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first"
+                    "{what} has effects or can fail, so it must be the whole expression of a statement or `let`; {}",
+                    self.nested_advice(handled, false)
                 ),
             );
             return;

@@ -1,0 +1,209 @@
+-- test: U3013 advises the form that resolves it where the call stands, alone and in combination: the whole `attempt` under a nested `attempt`, a named function for a lambda body, a form that keeps a call conditional in a handling clause, a one-line `if`, a short-circuit operand and a `when` arm, a named function for a `together` branch, and a statement of its own for a call with `edit` (#837)
+-- spec: spec/04 §4
+-- expect: error U3013 at src/advice.una:79:16
+-- expect: error U3013 at src/advice.una:84:7
+-- expect: error U3013 at src/advice.una:89:24
+-- expect: error U3013 at src/advice.una:94:34
+-- expect: error U3013 at src/advice.una:99:39
+-- expect: error U3013 at src/advice.una:106:18
+-- expect: error U3013 at src/advice.una:113:30
+-- expect: error U3013 at src/advice.una:122:17
+-- expect: error U3013 at src/advice.una:130:30
+-- expect: error U3013 at src/advice.una:136:17
+-- expect: error U3013 at src/advice.una:141:30
+-- expect: error U3013 at src/advice.una:146:6
+-- expect: error U3013 at src/advice.una:151:13
+-- expect: error U3013 at src/advice.una:156:25
+-- expect: error U3013 at src/advice.una:161:3
+-- expect: error U3013 at src/advice.una:167:17
+-- expect: error U3013 at src/advice.una:174:26
+-- expect: error U3013 at src/advice.una:181:17
+-- expect: error U3013 at src/advice.una:189:16
+-- expect: error U3013 at src/advice.una:189:28
+-- expect: error U3013 at src/advice.una:194:15
+-- expect: error U3013 at src/advice.una:200:25
+-- expect: error U3013 at src/advice.una:206:39
+-- expect: error U3013 at src/advice.una:209:50
+-- expect: error U3013 at src/advice.una:209:72
+module advice
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+
+capability Log
+  op flush() -> Unit
+
+show(r: Result[Option[Int], StoreError]) -> Int = 1
+
+count(r: Result[Int, StoreError]) -> Int = 1
+
+opt(r: Result[Option[Int], StoreError]) -> Option[Int] = None
+
+logged(k: Int) -> Int
+  uses @log: Log
+=
+  @log.flush()
+  k
+
+each(f: fn(Int) -> Int uses @log: Log) -> Int
+  uses @log: Log
+=
+  0
+
+each_found(f: fn(Int) -> Int uses @store: Store) -> Int
+  uses @store: Store
+=
+  0
+
+bump(edit n: Int) -> Int
+=
+  n = n + 1
+  n
+
+bump_checked(edit n: Int) -> Int
+  fails StoreError
+=
+  if n > 9 then fail Timeout else 0
+
+parse(a: Int) -> Int
+  fails StoreError
+=
+  if a == 1 then 1 else fail Timeout
+
+pub attempted(k: Int) -> Int
+  uses @store: Store
+=
+  show(attempt @store.find(k))
+
+pub plain(k: Int) -> Int
+  uses @log: Log
+=
+  1 + logged(k)
+
+pub in_lambda() -> Int
+  uses @log: Log
+=
+  each(f: fn(x) -> x + logged(x))
+
+pub if_in_lambda() -> Int
+  uses @log: Log
+=
+  each(f: fn(x) -> if x > 0 then logged(x) else 0)
+
+pub attempt_in_lambda() -> Int
+  uses @store: Store
+=
+  each_found(f: fn(x) -> show(attempt @store.find(x)))
+
+pub in_error_clause() -> Option[Int]
+  uses @store: Store
+  fails StoreError
+=
+  let v = @store.find(1)
+    if error use @store.find(2)
+  v
+
+pub attempt_in_error_clause() -> Option[Int]
+  uses @store: Store
+=
+  let v = @store.find(1)
+    if error use opt(attempt @store.find(2))
+  v
+
+pub in_none_clause() -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  let v = @store.find(1)
+    if error use None
+    if none use logged(2)
+  v
+
+pub attempt_in_none_clause() -> Int
+  uses @store: Store
+=
+  let v = @store.find(1)
+    if error use None
+    if none use show(attempt @store.find(2))
+  v
+
+pub in_branch(k: Int) -> Int
+  uses @log: Log
+=
+  if k > 0 then logged(k) else 0
+
+pub attempt_in_branch(k: Int) -> Int
+  uses @store: Store
+=
+  if k > 0 then show(attempt @store.find(k)) else 0
+
+pub in_condition(k: Int) -> Int
+  uses @log: Log
+=
+  if logged(k) > 0 then 1 else 0
+
+pub right_operand(k: Int) -> Bool
+  uses @log: Log
+=
+  k > 0 and logged(k) > 0
+
+pub attempt_in_right_operand(k: Int) -> Bool
+  uses @store: Store
+=
+  k > 0 or show(attempt @store.find(k)) > 0
+
+pub left_operand(k: Int) -> Bool
+  uses @log: Log
+=
+  logged(k) > 0 and k > 0
+
+pub in_arm(k: Int) -> Int
+  uses @log: Log
+=
+  when k
+    is 0 -> 1 + logged(k)
+    else -> 0
+
+pub attempt_in_arm(k: Int) -> Int
+  uses @store: Store
+=
+  when k
+    is 0 -> show(attempt @store.find(k))
+    else -> 0
+
+pub in_together(k: Int) -> Int
+  uses @log: Log
+=
+  together
+    let a = 1 + logged(k)
+    let b = 2
+  a + b
+
+pub argument_of_attempted(k: Int) -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  show(attempt @store.find(logged(k)))
+
+pub edit_nested() -> Int
+=
+  let edit n = 1
+  let r = 1 + bump(edit n)
+  r
+
+pub edit_attempted() -> Int
+=
+  let edit n = 1
+  let r = count(attempt bump_checked(edit n))
+  r
+
+pub edit_attempted_in_branch(k: Int) -> Int
+=
+  let edit n = 1
+  let r = if k > 0 then count(attempt bump_checked(edit n)) else 0
+  r
+
+predicate opaque same(a: Int) -> Bool = (attempt parse(a)) == (attempt parse(a))
