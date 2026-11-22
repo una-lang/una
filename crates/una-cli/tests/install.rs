@@ -214,6 +214,11 @@ fn install(dir: &Path, version: &str, args: &[&str]) -> Output {
 
 const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
+/// The names in `envs` that set up a test rather than the installer, and are not passed on:
+/// `UMASK`, and, for [`install_on_with`], `DEFAULT_TMP`, the directory that stands for `/tmp`,
+/// and `FETCH_HOOK`; so are the names `HOOK_<tool>`.
+const TEST_SEAMS: [&str; 3] = ["UMASK", "DEFAULT_TMP", "FETCH_HOOK"];
+
 /// Runs `script` with `args` and `PATH` `path` into `dir/home`, from the release under `dir`, with
 /// `envs` set beside the installer's settings.
 fn run_installer(
@@ -243,9 +248,11 @@ fn run_installer(
         .env_clear()
         .env("PATH", path)
         .env("HOME", &home)
-        .envs(envs.iter().copied().filter(|(name, _)| {
-            !matches!(*name, "UMASK" | "FETCH_HOOK") && !name.starts_with("HOOK_")
-        }))
+        .envs(
+            envs.iter()
+                .copied()
+                .filter(|(name, _)| !TEST_SEAMS.contains(name) && !name.starts_with("HOOK_")),
+        )
         .env("UNA_VERSION", version)
         .env(
             "UNA_RELEASES",
@@ -1538,10 +1545,22 @@ fn install_on_with(
         1,
         "install.sh has no single `loaders=/lib` line"
     );
-    let patched = original.replace(
+    let mut patched = original.replace(
         "\nloaders=/lib\n",
         &format!("\nloaders='{}'\n", lib.display()),
     );
+    // And, when `envs` names `DEFAULT_TMP`, its one `default_tmp=/tmp` line pointing there.
+    if let Some((_, tmp)) = envs.iter().find(|(name, _)| *name == "DEFAULT_TMP") {
+        assert_eq!(
+            original
+                .lines()
+                .filter(|line| *line == "default_tmp=/tmp")
+                .count(),
+            1,
+            "install.sh has no single `default_tmp=/tmp` line"
+        );
+        patched = patched.replace("\ndefault_tmp=/tmp\n", &format!("\ndefault_tmp='{tmp}'\n"));
+    }
     let copy = dir.join("install-on-host.sh");
     std::fs::write(&copy, patched).unwrap();
     let bin = dir.join("fake-bin");
@@ -1586,6 +1605,16 @@ fn install_on_with(
                 host.uid
             )
         },
+    );
+    // `mktemp` records its arguments in `dir/mktemps`, so that a test sees where the work
+    // directory was made.
+    let _ = std::fs::remove_file(dir.join("mktemps"));
+    script(
+        &bin.join("mktemp"),
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{}'\nPATH={SYSTEM_PATH} exec mktemp \"$@\"",
+            dir.join("mktemps").display()
+        ),
     );
     // `FETCH_HOOK` in `envs`, a shell command that each download runs first: a test changes
     // UNA_HOME while the installer downloads, between its checks and its removals.
@@ -2082,6 +2111,111 @@ fn a_32_bit_userland_is_refused_before_anything_is_downloaded() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn an_existing_file_is_replaced_and_never_written_through_a_hard_link() {
+    // #1966: a target that is a hard link to another file, which as root could be outside
+    // UNA_HOME, passes the owner and mode checks; `cp` and `>` would then write into that
+    // other file. Each target's name is removed first, so the other file keeps its contents,
+    // as root and as an ordinary user.
+    use std::os::unix::fs::MetadataExt;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-hard-links");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.8.9";
+    let home = dir.join("home/.una");
+    let elsewhere = dir.join("elsewhere");
+    let target = "aarch64-unknown-linux-gnu";
+    let pass = "PASS (every gate)";
+    let targets = [
+        "bin/una.new",
+        "lib/libuna_rt.a",
+        "README.md",
+        "LICENSE",
+        "docs/guide/getting-started.md",
+        ".una-install",
+    ];
+    release_holding(
+        &dir,
+        target,
+        version,
+        pass,
+        None,
+        &[
+            ("lib/libuna_rt.a", "runtime"),
+            ("README.md", "readme"),
+            ("LICENSE", "license"),
+            ("docs/guide/getting-started.md", "guide"),
+        ],
+    );
+    let root = Host {
+        uid: "0",
+        ..GLIBC_239
+    };
+    for host in [&root, &GLIBC_239] {
+        for name in targets {
+            let _ = std::fs::remove_dir_all(dir.join("home"));
+            let _ = std::fs::remove_dir_all(&elsewhere);
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            let victim = elsewhere.join("victim");
+            std::fs::write(&victim, "not una's").unwrap();
+            let path = home.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::hard_link(&victim, &path).unwrap();
+            let (output, _) = install_on(&dir, version, host);
+            let case = format!("{name} as uid {}", host.uid);
+            assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "not una's",
+                "{case}: written through"
+            );
+            assert_eq!(std::fs::metadata(&victim).unwrap().nlink(), 1, "{case}");
+            if name != "bin/una.new" {
+                assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1, "{case}");
+                assert_ne!(
+                    std::fs::read_to_string(&path).unwrap(),
+                    "not una's",
+                    "{case}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(home.join("bin/una")).unwrap(),
+                "#!/bin/sh\necho una stub\n",
+                "{case}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_work_directory_whose_name_holds_a_newline_still_matches_the_digest() {
+    // The digest is read from the archive's bytes on stdin, never with its file name, which
+    // `sha256sum` would escape, prefixing the digest with `\`.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-newline-tmp");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.8.8";
+    release(
+        &dir,
+        "aarch64-unknown-linux-gnu",
+        version,
+        "PASS (every gate)",
+        None,
+    );
+    let tmp = dir.join("tmp\nline");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let (output, _) = install_on_with(
+        &dir,
+        version,
+        &GLIBC_239,
+        &[],
+        &[("TMPDIR", tmp.to_str().unwrap())],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(dir.join("home/.una/bin/una").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A directory owned by neither root nor this test's user and writable by neither its group nor
 /// others, when the machine has one, for the owner check as root.
 fn a_directory_of_another_user() -> Option<PathBuf> {
@@ -2213,6 +2347,23 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
             writable,
         ),
         (
+            "LICENSE is a directory",
+            Box::new(|| std::fs::create_dir_all(home.join("LICENSE")).unwrap()),
+            "must be a regular file",
+        ),
+        (
+            "LICENSE is a FIFO",
+            Box::new(|| {
+                std::fs::create_dir_all(&home).unwrap();
+                let made = Command::new("mkfifo")
+                    .arg(home.join("LICENSE"))
+                    .status()
+                    .unwrap();
+                assert!(made.success());
+            }),
+            "must be a regular file",
+        ),
+        (
             "the record is a link",
             Box::new(|| {
                 std::fs::create_dir_all(&home).unwrap();
@@ -2311,6 +2462,79 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
         &fetched,
         writable,
         &home,
+    );
+    // TMPDIR unset: the default, /tmp, is checked the same way (here a directory of the test
+    // stands for it): writable by others and not sticky, refused; sticky, installed.
+    reset();
+    let default = dir.join("home/default-tmp");
+    std::fs::create_dir_all(&default).unwrap();
+    mode(&default, 0o777);
+    let seam = [("DEFAULT_TMP", default.to_str().unwrap())];
+    let (output, fetched) = install_on_with(&dir, version, &root, &[], &seam);
+    assert_refused("default TMPDIR", &output, &fetched, writable, &home);
+    mode(&default, 0o1777);
+    let (output, _) = install_on_with(&dir, version, &root, &[], &seam);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let made = std::fs::read_to_string(dir.join("mktemps")).unwrap();
+    assert_eq!(
+        made,
+        format!(
+            "-d {}/una-install.XXXXXX\n",
+            std::fs::canonicalize(&default).unwrap().display()
+        )
+    );
+    // A TMPDIR that is a link in a directory that others can write, to a directory only root
+    // can write: the work directory is made in the physical path that was checked, never
+    // through the link, which another user could point elsewhere after the check.
+    reset();
+    let open = dir.join("home/open");
+    let only = dir.join("home/only-root");
+    std::fs::create_dir_all(&open).unwrap();
+    std::fs::create_dir_all(&only).unwrap();
+    symlink(&only, open.join("tmp")).unwrap();
+    mode(&open, 0o777);
+    let through = open.join("tmp");
+    let (output, _) = install_on_with(
+        &dir,
+        version,
+        &root,
+        &[],
+        &[("TMPDIR", through.to_str().unwrap())],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let made = std::fs::read_to_string(dir.join("mktemps")).unwrap();
+    assert_eq!(
+        made,
+        format!(
+            "-d {}/una-install.XXXXXX\n",
+            std::fs::canonicalize(&only).unwrap().display()
+        )
+    );
+    // Uninstall makes no work directory: as root it does not check TMPDIR.
+    mode(&open, 0o755);
+    std::fs::remove_file(open.join("tmp")).unwrap();
+    mode(&open, 0o777);
+    let (output, _) = install_on_with(
+        &dir,
+        version,
+        &root,
+        &["--uninstall"],
+        &[("TMPDIR", open.to_str().unwrap())],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!home.exists());
+    // An `id -u` that prints root's id with leading zeros is root's.
+    reset();
+    let zeros = Host {
+        uid: "00",
+        ..GLIBC_239
+    };
+    let (output, _) = install_on(&dir, version, &zeros);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("as root, the installer does not run the installed una"),
+        "{}",
+        stdout(&output)
     );
     // Under a umask of 000, root's installation is still writable only by root.
     reset();

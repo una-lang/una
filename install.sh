@@ -36,7 +36,8 @@
 # same holds for TMPDIR (default /tmp), where the archive is checked and unpacked, which may
 # itself be sticky. Otherwise the installer refuses before anything is downloaded or removed, and
 # it never runs the installed `una` as root. Only owners and mode bits are read: write access
-# granted by an ACL is not seen.
+# granted by an ACL is not seen. Each file is written as a new one, after its name is removed,
+# never into an existing file, which could be a hard link to a file elsewhere (#1966).
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -93,6 +94,9 @@ uid=$(id -u 2> /dev/null) || fail "cannot read this process's user id (id -u)"
 case $uid in
     "" | *[!0-9]*) fail "cannot read this process's user id (id -u printed '$uid')" ;;
 esac
+# Compared as a number, written without leading zeros: an `id` that prints `00` names root.
+uid=${uid#"${uid%%[!0]*}"}
+uid=${uid:-0}
 only_root() {
     [ ! -L "$1" ] || fail "as root, the installer does not follow the symbolic link $1; as root, the installer writes only where only root can change"
     if [ "${2:-}" = file ]; then
@@ -129,8 +133,10 @@ only_root_on() {
         only_root "$on"
     done
 }
-# Where the work directory is made; as root, checked below.
-tmp=${TMPDIR:-/tmp}
+# Where the work directory is made; as root, checked before it is made. A test points the one
+# `default_tmp=/tmp` line at a directory of its own.
+default_tmp=/tmp
+tmp=${TMPDIR:-$default_tmp}
 if [ "$uid" = 0 ]; then
     umask 022
     case $home in
@@ -184,18 +190,6 @@ if [ "$uid" = 0 ]; then
             [ -d "$path" ] || only_root "$path" file
         done
     fi
-    # The work directory, where the archive is checked and unpacked: in TMPDIR (default /tmp),
-    # which must be one only root can change as well, though it may be sticky, as /tmp is (an
-    # entry root makes there cannot be renamed by another user). Otherwise another user could
-    # replace the checked archive before it is unpacked.
-    [ -d "$tmp" ] || fail "as root, TMPDIR ($tmp) must be a directory"
-    tmp=$(cd "$tmp" && pwd -P) || fail "as root, cannot resolve TMPDIR ($tmp)"
-    only_root "$tmp" above
-    above=$tmp
-    while [ "$above" != / ]; do
-        above=$(dirname "$above")
-        only_root "$above" above
-    done
 fi
 
 marker=$home/.una-install
@@ -450,10 +444,12 @@ elif command -v wget > /dev/null 2>&1; then
 else
     fail "neither curl nor wget is installed"
 fi
+# The digest of the file's bytes, read on stdin: a file name is never printed, so that a work
+# directory whose name holds a newline is not escaped into the digest's line.
 if command -v sha256sum > /dev/null 2>&1; then
-    digest() { sha256sum "$1" | cut -d ' ' -f 1; }
+    digest() { sha256sum < "$1" | cut -d ' ' -f 1; }
 elif command -v shasum > /dev/null 2>&1; then
-    digest() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
+    digest() { shasum -a 256 < "$1" | cut -d ' ' -f 1; }
 else
     fail "neither sha256sum nor shasum is installed"
 fi
@@ -461,6 +457,22 @@ for tool in tar; do
     command -v "$tool" > /dev/null 2>&1 || fail "$tool is not installed"
 done
 
+# As root, the work directory, where the archive is checked and unpacked: in TMPDIR (default
+# /tmp), which must be one only root can change as well, though it may be sticky, as /tmp is (an
+# entry root makes there cannot be renamed by another user). Otherwise another user could
+# replace the checked archive before it is unpacked. Checked here, before anything is
+# downloaded, since uninstall makes no work directory; the work directory is made in the
+# physical path that was checked.
+if [ "$uid" = 0 ]; then
+    [ -d "$tmp" ] || fail "as root, TMPDIR ($tmp) must be a directory"
+    tmp=$(cd "$tmp" && pwd -P) || fail "as root, cannot resolve TMPDIR ($tmp)"
+    only_root "$tmp" above
+    above=$tmp
+    while [ "$above" != / ]; do
+        above=$(dirname "$above")
+        only_root "$above" above
+    done
+fi
 work=$(mktemp -d "$tmp/una-install.XXXXXX")
 trap 'rm -rf "${work:?}"' EXIT
 [ "$uid" != 0 ] || only_root "$work"
@@ -552,17 +564,23 @@ created=$work/created
 for dir in . bin ${runtime:+lib}; do
     [ -d "$home/$dir" ] || echo "$dir" >> "$created"
 done
+# Each file is written as a new one: an existing name is removed first (#1966), so that `cp` and
+# `>` never write into an existing file, which could be a hard link to another file (as root, one
+# outside UNA_HOME). `rm -f` removes the name, never another link to the same file.
 mkdir -p "$home/bin"
+rm -f "$home/bin/una.new"
 cp "$unpacked/una" "$home/bin/una.new" && mv "$home/bin/una.new" "$home/bin/una"
 chmod +x "$home/bin/una"
 files="bin/una"
 if [ -n "$runtime" ]; then
     mkdir -p "$home/lib"
+    rm -f "${home:?}/$runtime"
     cp "$unpacked/$runtime" "$home/$runtime"
     files="$files $runtime"
 fi
 for doc in README.md LICENSE; do
     if [ -f "$unpacked/$doc" ]; then
+        rm -f "${home:?}/$doc"
         cp "$unpacked/$doc" "$home/$doc"
         files="$files $doc"
     fi
@@ -581,6 +599,7 @@ if [ -d "$unpacked/docs/guide" ]; then
         case $base in
             -* | *[[:space:]]*) fail "$archive holds a guide named '$base', which this installer refuses" ;;
         esac
+        rm -f "$home/docs/guide/$base"
         cp "$guide" "$home/docs/guide/$base"
         files="$files docs/guide/$base"
     done
@@ -631,6 +650,7 @@ if [ -f "$marker" ]; then
             esac
         done
 fi
+rm -f "$marker"
 {
     echo "# Una $version, installed by install.sh; \`sh install.sh --uninstall\` removes what follows."
     echo "version $version"
