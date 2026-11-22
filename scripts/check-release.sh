@@ -169,6 +169,27 @@ if "$una" --version | grep -q '^development build$'; then
     echo "error: $una is a development build, without the release solver or the runtime built in (ADR 0124 rule 19)" >&2
     exit 1
 fi
+# The glibc floor of a Linux `una` (#2105): the packed `una` asks the loader for no `GLIBC_`
+# symbol version above the floor that install.sh refuses a system below (its `glibc_floor`,
+# read here so that the two cannot differ), by scripts/glibc-floor.sh. The Z3 library and the
+# C++ runtime are linked into `una`, so their needs are read with it. The same scan with the
+# floor 2.17, the first glibc of AArch64, which every executable linked against a later glibc
+# exceeds, is the canary: it must fail, or the scan proves nothing.
+glibc_floor=
+case $target in
+    *-linux-*)
+        glibc_floor=$(sed -n 's/^glibc_floor=\([0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' install.sh)
+        if [ -z "$glibc_floor" ] || [ "$(printf '%s\n' "$glibc_floor" | wc -l)" -ne 1 ]; then
+            echo "error: install.sh does not set glibc_floor to one MAJOR.MINOR; the glibc floor of $una cannot be checked" >&2
+            exit 1
+        fi
+        if scripts/glibc-floor.sh 2.17 "$una" > /dev/null 2>&1; then
+            echo "error: the glibc floor scan accepts $una at the floor 2.17; it cannot be trusted" >&2
+            exit 1
+        fi
+        scripts/glibc-floor.sh "$glibc_floor" "$una"
+        ;;
+esac
 # The runtime built into the packed `una`, as scripts/release.sh stripped and embedded it: its
 # digest must be the one the packed `una` reports (`native.runtime_sha256`, ADR 0124 rule 28),
 # so the scans below read the bytes that every executable links.
@@ -436,6 +457,16 @@ done
 if ! cmp -s "$tmp/install-one/out/hello" "$tmp/a-second-install-elsewhere/out/hello"; then
     echo "error: examples/hello built by $name in two places gives two different executables" >&2
     exit 1
+fi
+# An executable that the packed `una` builds links the runtime built into it with this image's
+# `cc` and glibc: it stays at or below the same glibc floor (#2105), so the runtime asks for
+# nothing that the oldest supported system lacks.
+if [ -n "$glibc_floor" ]; then
+    if scripts/glibc-floor.sh 2.17 "$tmp/install-one/out/hello" > /dev/null 2>&1; then
+        echo "error: the glibc floor scan accepts the executable of examples/hello at the floor 2.17; it cannot be trusted" >&2
+        exit 1
+    fi
+    scripts/glibc-floor.sh "$glibc_floor" "$tmp/install-one/out/hello"
 fi
 # The builder's user name is refused too, in any form (`~name`, a home elsewhere), when it is long
 # enough to mean something; inside Rust's own path, as a CI runner's user is, it is allowed.
