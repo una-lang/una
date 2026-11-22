@@ -1460,9 +1460,9 @@ Options rejected:
 
 ## Amendment (2026-11-19): what the root floor's digest covers
 
-- Status: Proposed (2026-11-19); needs the Owner's acceptance.
+- Status: Accepted (2026-11-22, by the Owner: option A); proposed 2026-11-19.
 - Card #2132, from the finding that the adversarial review of PR #2128 (card #2099) recorded outside that pull request's diff, and from its finding L3 on the floor lock.
-- Implementation: on the branch of #2132, in the same pull request, which is held until this amendment is accepted. The spec sentences below land with it.
+- Implementation: on the branch of #2132, in the same pull request. The spec sentences below land with it.
 - This amendment adds to the accepted text above, which is unchanged. It settles, for the stored root-version floor only, what "the digest of that root metadata" in Decision L3 of the amendment of 2026-11-09 is computed over.
 
 **Context.** Root metadata is a signed note (`spec/30 §11` rules 3 and 8): a text, a blank line, and signature lines. A client verifies the text against the keys it knows, and ignores the lines of every other key, as a C2SP signed note asks. So one root text, signed by the same thresholds, has many valid forms, and making another form needs no key: add a line under any name, drop the line of a signer beyond the threshold, or change the order of the lines. The digest of root metadata is `sha256:` and the hex SHA-256 of the whole signed note (`spec/30 §11` rule 8), so each form has its own digest.
