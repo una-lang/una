@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.4.0%20Beta-7c5cff" alt="Version v0.4.0, Beta">
+  <img src="https://img.shields.io/badge/version-v0.5.0%20Beta-7c5cff" alt="Version v0.5.0, Beta">
   <img src="https://img.shields.io/badge/solver-Z3%205.1.0-4f46e5" alt="Solver: Z3 5.1.0">
   <img src="https://img.shields.io/badge/rust-1.98.1-3b3b58" alt="Rust 1.98.1">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2e2e48" alt="License: Apache-2.0"></a>
@@ -32,7 +32,7 @@ Una is a verification-first programming language for software that AI agents wri
 
 ## Status
 
-**v0.3.0 is the Beta**, and v0.4.0, release R0.4, is the current release. It has:
+**v0.3.0 is the Beta**, and v0.5.0, the first increment of release R0.5 (security fixes and hardening on the language of v0.4.0), is the current release. It has:
 - the verifier and the reference interpreter;
 - the native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
 - in edition 0.2, a standard library for real programs: maps, text operations, JSON and an HTTP client, every result labeled;
@@ -44,9 +44,9 @@ Una is a verification-first programming language for software that AI agents wri
 - importable standard modules;
 - editions 0.1 and 0.2, and edition 0.3 as a preview: it has every rule of 0.2, conditions on the operations a function may perform, locked contracts of public functions, the first part of module boundaries, and errors for failure handling on code that cannot fail; later releases add the rest of its designs, so they may reject a package that this one accepts;
 - edition 0.4 as a preview, the edition of this release (below), and edition 0.5 as an early preview, without module constants or `const` and `var` yet;
-- archives for macOS on arm64 and Linux on arm64 with glibc 2.39 or later, each listed with its digest in the validation record `docs/validation/0.4.0.md`; Linux on x86-64 and Windows are not targets of v0.4.0.
+- archives for macOS on arm64 and Linux on arm64 with glibc 2.39 or later, each listed with its digest in the validation record `docs/validation/0.5.0.md`; Linux on x86-64 and Windows are not targets of v0.5.0.
 
-Releases, compiler versions and editions follow one number (ADR 0139): release R0.N ships `una` v0.N.0, and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of ADR 0121, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is kept by the maintainers.
+Releases, compiler versions and editions follow one number (ADR 0139): increment R0.N.k of release R0.N ships `una` v0.N.k, the first being R0.N.0 (amendment of 2026-11-20), and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of ADR 0121, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is kept by the maintainers.
 
 Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. Edition 0.4, the edition of v0.4.0, is a preview (ADR 0121): a later release may ask for edits to a package of edition 0.4. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md); what this release proves, tests and assumes is in [Known limits](docs/guide/known-limits.md#assurance-in-this-release).
 
