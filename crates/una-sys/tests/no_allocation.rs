@@ -1,22 +1,36 @@
 //! The handler's work allocates nothing (ADR 0116 rule 18), and a real signal keeps `errno`:
 //! under a counting allocator, in a process of its own. This file holds one test only, since
 //! the handlers it installs and the sticky count of stop requests are the process's.
+//!
+//! Only the allocations of the test's own thread are counted: the handler's work and the real
+//! signal both run on it (`raise` delivers to the calling thread). The harness's main thread
+//! allocates after it has started the test's thread (its table of running tests, its timeout
+//! queue, its first wait), and those allocations could fall inside the window (#2218: 174
+//! against 171 in the release gates of 2026-11-23).
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Counting;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+thread_local! {
+    // Constant-initialized and without a destructor: reading it allocates nothing.
+    static COUNTED: Cell<bool> = const { Cell::new(false) };
+}
+
 // SAFETY: every method forwards to the system allocator, with the same arguments.
 #[allow(unsafe_code)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        if COUNTED.try_with(Cell::get).unwrap_or(false) {
+            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        }
         // SAFETY: the caller's contract for `alloc` is passed on unchanged.
         unsafe { System.alloc(layout) }
     }
@@ -47,6 +61,7 @@ fn errno_location() -> *mut libc::c_int {
 #[test]
 #[allow(unsafe_code)]
 fn the_handlers_work_allocates_nothing_keeps_errno_and_wakes_the_pipe() {
+    COUNTED.with(|counted| counted.set(true));
     una_sys::signals::install().unwrap();
     // A second call gives the first's outcome.
     una_sys::signals::install().unwrap();
@@ -64,6 +79,9 @@ fn the_handlers_work_allocates_nothing_keeps_errno_and_wakes_the_pipe() {
         *errno_location()
     };
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), allocations);
+    // The count is live: an allocation of this thread is counted.
+    drop(std::hint::black_box(Box::new(0u64)));
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), allocations + 1);
     assert_eq!(kept, 1234);
     assert!(word.changed_since(before).is_some());
     assert_eq!(una_sys::attention::stop_requests(), 2);
