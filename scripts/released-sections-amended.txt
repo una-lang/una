@@ -11,5 +11,10 @@
 v0.3.4 bafa53a587fbc4d9b1a5ee5d91ee8d684408ca2786809883ec1777ce240998fb #2111
 v0.3.8 a1cfac98adff68a62f210661f7260a3334ddaa885ce6547741199e0b15a1e4dd #2111
 
+# Theme headings over the 318 entries of the v0.4.0 section, every entry kept verbatim, and the bare
+# `<area>` of its U0103 entry set in backticks so that the section renders as text (2026-11-25, the
+# builder's recommended default under process v5; the Owner decides it in the batch look-back).
+v0.4.0 9ac9db990e9073dca6f35108c08dd95454f6114792ef3cb2a15575b46e7b1ce3 #2076
+
 # Dated note on the third class of #1459 in the v0.5.0 section (commit 2e5d568ca, 2026-11-22, asked by the Owner).
 v0.5.0 96a1fd5329d7cb5240e17e90a949dc5f46119807644edef38e01a874536b1de2 #2190
