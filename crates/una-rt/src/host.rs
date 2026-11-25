@@ -1589,6 +1589,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "uses the file system, which Miri's isolation refuses")]
     #[allow(clippy::unwrap_used)]
     fn files_read_and_write_give_the_world_no_path_below_an_absent_directory_2138() {
         // `spec/14 §3` rule 2, #1459, end to end in the runtime (#2138): the operations that
