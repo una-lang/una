@@ -373,11 +373,12 @@ fn no_step_of_the_release_run_builds_the_website() {
     // The docs gate: the link check after its self-test, then the bundle, which alone receives
     // the neutrality pattern, on a pipe of its own.
     let docs = gate_body(&text, "docs").join("\n");
-    assert!(docs.contains("run docs sh -c"), "{docs}");
+    assert!(docs.contains("run docs with_product sh -c"), "{docs}");
     let order = [
         "scripts/doc-links.py --self-test",
         "&& scripts/doc-links.py \\",
-        "&& with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh",
+        // The product's `una` (#2254), never target/release/una.
+        "&& with_pattern env UNA_BIN=\"$UNA_PRODUCT\" scripts/site-bundle.sh",
     ];
     let mut from = 0;
     for step in order {
@@ -3231,4 +3232,315 @@ fn a_schedule_switch_that_is_neither_0_nor_1_stops_the_run_before_any_gate() {
     assert!(!out.join("results.tsv").exists());
     let _ = std::fs::remove_dir_all(&out);
     let _ = std::fs::remove_dir_all(out.with_extension("bin"));
+}
+
+/// A scratch repository at `dir/source` for the product (#2254), committed, with stubs that
+/// log to `STUB_LOG` the arguments they were started with: the build gate's checks
+/// (no-libm-build.sh, no-libm.sh, load-commands.sh and their canaries), the docs gate's
+/// doc-links.py and site-bundle.sh (which logs its `UNA_BIN` and runs it), a passing
+/// sanitize.sh, and one package, examples/a. A fake `cargo`, in `dir/bin`, which `product_path`
+/// puts first on PATH: `cargo build` writes target/release/una, a script that logs its
+/// arguments and holds the text of `STUB_UNA_TEXT`, and target/release/libuna_rt.a; `cargo test`
+/// relinks target/release/una with the test hooks' marker when `STUB_RELINK` is set, as
+/// `cargo test --release` does. Then a copy of the gate script and a run of its clone gate into
+/// `dir/out`. Gives the script, the commit and `out`.
+fn product_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
+    let source = dir.join("source");
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(source.join("scripts")).unwrap();
+    std::fs::create_dir_all(source.join("examples/a")).unwrap();
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    let logs = |name: &str| format!("#!/bin/sh\necho \"{name} $*\" >> \"$STUB_LOG\"\n");
+    let mut files = vec![
+        (".gitignore", "target/\n".to_owned()),
+        ("Cargo.toml", "version = \"9.9.9\"\n".to_owned()),
+        ("examples/a/una.toml", "[package]\n".to_owned()),
+        (
+            "scripts/z3-library.sh",
+            "#!/bin/sh\nlib=$(pwd)/target/stub-z3/libz3shell.a\nmkdir -p \"${lib%/*}\" && echo z3 > \"$lib\" && echo \"$lib\"\n".to_owned(),
+        ),
+        (
+            "scripts/site-bundle.sh",
+            format!("{}\"$UNA_BIN\" --version\n", logs("site-bundle.sh UNA_BIN=$UNA_BIN")),
+        ),
+    ];
+    for name in [
+        "no-libm-build.sh",
+        "no-libm-test.sh",
+        "no-libm.sh",
+        "load-commands-test.sh",
+        "load-commands.sh",
+        "doc-links.py",
+        "sanitize.sh",
+    ] {
+        files.push((name, logs(name)));
+    }
+    let mut executables = Vec::new();
+    for (path, text) in files {
+        let path = if path.ends_with(".sh") || path.ends_with(".py") {
+            format!("scripts/{}", path.trim_start_matches("scripts/"))
+        } else {
+            path.to_owned()
+        };
+        std::fs::write(source.join(&path), text).unwrap();
+        if path.starts_with("scripts/") {
+            executables.push(path);
+        }
+    }
+    std::fs::write(
+        dir.join("bin/cargo"),
+        "#!/bin/sh\necho \"cargo $*\" >> \"$STUB_LOG\"\ncase $1 in\n    build)\n        mkdir -p target/release || exit 1\n        printf '#!/bin/sh\\necho \"una $*\" >> \"$STUB_LOG\"\\n# %s\\n' \"${STUB_UNA_TEXT:-shipped}\" > target/release/una\n        chmod 755 target/release/una && echo runtime > target/release/libuna_rt.a ;;\n    test)\n        [ -z \"${STUB_RELINK:-}\" ] || printf '#!/bin/sh\\n# UNA_CLI_TEST_HOOKS_MARKER\\n' > target/release/una ;;\nesac\n",
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .args(&executables)
+        .arg(dir.join("bin/cargo"))
+        .current_dir(&source)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "a product"]);
+    let sha = git(&["rev-parse", "HEAD"]);
+    let script = gates_copy(&dir.join("gates"), SHIPPED);
+    let out = dir.join("out");
+    let output = gates_of(&script, &sha, &out, &["clone"], &source, &[]);
+    assert!(
+        output.status.code() == Some(3),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (script, sha, out)
+}
+
+/// The PATH of `product_fixture`'s runs: its fake `cargo`, then what `gates_of` puts first.
+fn product_path(dir: &Path, out: &Path) -> String {
+    // The test's own PATH, with the fakes in front (compiler/conventions.md §1 covers libraries).
+    #[allow(clippy::disallowed_methods)]
+    let inherited = std::env::var("PATH").unwrap();
+    format!(
+        "{}:{}:{inherited}",
+        dir.join("bin").display(),
+        out.with_extension("bin").display()
+    )
+}
+
+#[test]
+fn the_gates_that_run_una_run_the_build_gates_copy_and_refuse_a_test_build() {
+    if head().is_none() {
+        return;
+    }
+    // #2254: `cargo test --release` relinks target/release/una with the test features, so the
+    // build gate copies the release build into OUT/product before any test build, and the docs,
+    // hunt and determinism gates run that copy, checked, never target/release.
+    // hunt-linux-arm64 builds its own `una` in its container, right before its run, and refuses
+    // it by the same names.
+    let text = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    let hooks = text
+        .lines()
+        .find_map(|line| line.strip_prefix("PRODUCT_HOOKS='"))
+        .expect("a PRODUCT_HOOKS line")
+        .trim_end_matches('\'');
+    let linux = std::fs::read_to_string(root().join("scripts/hunt-linux.sh")).unwrap();
+    assert!(
+        linux.contains(&format!("grep -a -q -E \"{hooks}\" target/release/una")),
+        "{hooks}"
+    );
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-product");
+    let log = dir.join("stub.log");
+    let log_path = log.display().to_string();
+    // Both schedules: in sequence, and sanitize beside build in its own clone.
+    for (parallel, gates, rows_expected) in [
+        ("0", &["build", "docs"][..], "build PASS,docs PASS"),
+        (
+            "1",
+            &["build", "sanitize", "docs"][..],
+            "build PASS,sanitize PASS,docs PASS",
+        ),
+    ] {
+        let (script, sha, out) = product_fixture(&dir);
+        let path = product_path(&dir, &out);
+        let source = dir.join("source");
+        let env = [
+            ("PATH", path.as_str()),
+            ("STUB_LOG", log_path.as_str()),
+            ("STUB_RELINK", "1"),
+            ("UNA_GATES_PARALLEL", parallel),
+        ];
+        let output = gates_of(&script, &sha, &out, gates, &source, &env);
+        let context = format!(
+            "{parallel} {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let got: Vec<String> = rows(&out)
+            .iter()
+            .map(|row| format!("{} {}", row[0], row[2]))
+            .collect();
+        assert_eq!(got.join(","), rows_expected, "{context}");
+        let physical = out.canonicalize().unwrap();
+        let product = physical.join("product");
+        let una = product.join("una").display().to_string();
+        let runtime = product.join("libuna_rt.a").display().to_string();
+        let ran = std::fs::read_to_string(&log).unwrap();
+        // The product, saved before the test build, checks the examples, is what the build
+        // gate's checks read and what the docs gate runs; the clone's own target/release/una
+        // is the relinked test build.
+        for line in [
+            "cargo build --locked --release -p una-cli -p una-rt".to_owned(),
+            "una check --tier 1 examples/a".to_owned(),
+            "cargo test --workspace --locked".to_owned(),
+            format!("no-libm-build.sh {una} "),
+            format!("no-libm.sh {una} {runtime} "),
+            format!("load-commands.sh {una}"),
+            format!("site-bundle.sh UNA_BIN={una} "),
+        ] {
+            assert!(ran.contains(&line), "{line}: {ran}");
+        }
+        let position = |text: &str| ran.find(text).unwrap();
+        assert!(position("una check --tier 1") < position("cargo test --workspace"));
+        assert!(ran.contains("una --version"), "{ran}");
+        assert_eq!(
+            std::fs::read_to_string(product.join("commit")).unwrap(),
+            format!("{sha}\n")
+        );
+        let sums = std::fs::read_to_string(product.join("SHA256SUMS")).unwrap();
+        let names: Vec<&str> = sums
+            .lines()
+            .map(|line| line.split_whitespace().nth(1).unwrap())
+            .collect();
+        assert_eq!(names, ["una", "libuna_rt.a"], "{sums}");
+        assert!(
+            std::fs::read_to_string(physical.join("clone/target/release/una"))
+                .unwrap()
+                .contains("UNA_CLI_TEST_HOOKS_MARKER")
+        );
+        assert!(
+            !std::fs::read_to_string(&una)
+                .unwrap()
+                .contains("UNA_CLI_TEST_HOOKS_MARKER")
+        );
+        let _ = std::fs::remove_file(&log);
+    }
+
+    // A product that is not the build gate's copy fails every gate that runs it: changed bytes,
+    // another commit's copy, and a copy whose digests were recorded again over a test hook's
+    // name. The command of the gate never runs.
+    let (script, sha, out) = product_fixture(&dir);
+    let path = product_path(&dir, &out);
+    let source = dir.join("source");
+    let env = [("PATH", path.as_str()), ("STUB_LOG", log_path.as_str())];
+    let output = gates_of(&script, &sha, &out, &["build"], &source, &env);
+    assert_eq!(output.status.code(), Some(3));
+    let product = out.join("product");
+    let una = product.join("una");
+    let shipped = std::fs::read(&una).unwrap();
+    let commit = std::fs::read(product.join("commit")).unwrap();
+    let resum = || {
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg("shasum -a 256 una libuna_rt.a > SHA256SUMS")
+            .current_dir(&product)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    for (case, expected) in [
+        (
+            "changed",
+            "does not match the digests the build gate recorded",
+        ),
+        ("commit", "is not the build of"),
+        (
+            "hook",
+            "was built with test features, it holds: UNA_TEST_RUN_SERVER",
+        ),
+        ("marker", "UNA_HTTP_TEST_HOOKS_MARKER"),
+        ("missing", "no product at"),
+    ] {
+        std::fs::create_dir_all(&product).unwrap();
+        std::fs::write(&una, &shipped).unwrap();
+        std::fs::write(product.join("commit"), &commit).unwrap();
+        match case {
+            "changed" => std::fs::write(&una, [&shipped[..], b"# more\n"].concat()).unwrap(),
+            "commit" => std::fs::write(product.join("commit"), "0".repeat(40) + "\n").unwrap(),
+            "hook" | "marker" => {
+                let name = if case == "hook" {
+                    "UNA_TEST_RUN_SERVER"
+                } else {
+                    "UNA_HTTP_TEST_HOOKS_MARKER"
+                };
+                std::fs::write(
+                    &una,
+                    [&shipped[..], format!("# {name}\n").as_bytes()].concat(),
+                )
+                .unwrap();
+                resum();
+            }
+            _ => std::fs::remove_dir_all(&product).unwrap(),
+        }
+        let _ = std::fs::remove_file(&log);
+        let output = gates_of(
+            &script,
+            &sha,
+            &out,
+            &["docs", "hunt", "determinism"],
+            &source,
+            &env,
+        );
+        assert_eq!(output.status.code(), Some(1), "{case}");
+        for gate in ["docs", "hunt", "determinism"] {
+            assert_eq!(result_of(&out, gate), "FAIL", "{case} {gate}");
+            let text = std::fs::read_to_string(out.join(format!("logs/{gate}.log"))).unwrap();
+            assert!(text.contains(expected), "{case} {gate}: {text}");
+        }
+        assert!(
+            !std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("site-bundle.sh"),
+            "{case}"
+        );
+    }
+
+    // A build whose `una` holds a test hook's name saves no product, and fails.
+    let _ = std::fs::remove_file(&log);
+    let env = [
+        ("PATH", path.as_str()),
+        ("STUB_LOG", log_path.as_str()),
+        ("STUB_UNA_TEXT", "UNA_HASH_TEST_HOOKS_MARKER"),
+    ];
+    let output = gates_of(&script, &sha, &out, &["build", "docs"], &source, &env);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(result_of(&out, "build"), "FAIL");
+    assert_eq!(result_of(&out, "docs"), "FAIL");
+    assert!(!product.exists());
+    let build = std::fs::read_to_string(out.join("logs/build.log")).unwrap();
+    assert!(
+        build.contains("was built with test features, it holds: UNA_HASH_TEST_HOOKS_MARKER"),
+        "{build}"
+    );
+    assert!(
+        !std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("cargo test"),
+        "the build gate went on after refusing its product"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

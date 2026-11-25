@@ -7,9 +7,11 @@
 # Gates, in order (the required ones when none is named: every gate of the gate machine, and the
 # gates of each target that scripts/release-targets.txt lists, below):
 #   clone        a fresh clone of the commit, from the repository's remote
-#   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold,
-#                then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
-#                `una` links the runtime conformance programs, and no C math library symbol
+#   build        cargo build --release -p una-cli -p una-rt, copied as the product into
+#                OUT/product (#2254, `una` and `libuna_rt.a` with their SHA256SUMS), which then
+#                checks every package of examples/ at tier 1 (so it holds the solver), then
+#                cargo test --workspace, cold, then scripts/no-libm-build.sh and scripts/no-libm.sh (#1092): the release
+#                `una` (the product) links the runtime conformance programs, and no C math library symbol
 #                in the release `libuna_rt.a` or those executables, nor in that `una` beyond
 #                the solver's imports of scripts/no-libm-una.txt (#1277)
 #                then scripts/load-commands.sh (#1103): that `una` and examples/hello it links
@@ -31,7 +33,7 @@
 #   reproducible scripts/local-release.sh a second time, from cold, in a new checkout and new
 #                Docker volumes, and each archive's digest compared with the release gate's (#679)
 #   determinism  the conformance suite twice, and `una --json check` of every case and example
-#                twice, compared
+#                twice with the product's `una` (#2254), compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
 #   timing-channels
@@ -59,7 +61,7 @@
 #   docs         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
-#                clone's release `una`, its files checked against the neutrality pattern. The
+#                product's `una` (#2254), its files checked against the neutrality pattern. The
 #                gate was named `site` before #2081, when it also built the website from that
 #                bundle; the website is now validated by its own repository's flow against a
 #                published bundle, and no step of this run clones, installs or builds it. A
@@ -67,7 +69,7 @@
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
 #   hunt         the security hunt's fixed, seeded run (scripts/security-hunt, `python3 -m hunt
-#                gate`): its generators through the must-reject and must-keep drivers, the
+#                gate`), with the product's `una` (#2254): its generators through the must-reject and must-keep drivers, the
 #                two-run oracle and the comparison with the formal model's re-check, with five
 #                canaries, failing closed (#767, #791). It runs after `formal`, and builds the
 #                re-check's executable (`lake build una-core-check`) with the same pinned Lean.
@@ -396,6 +398,106 @@ unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCA
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
+# The product (#2254, docs/release-gates.md §2 "The product"): the release build of the gated
+# commit exactly as it ships its code, `cargo build --locked --release -p una-cli -p una-rt`
+# with the solver library of `run`, which the build gate copies, right after that build and
+# before any test build, into OUT/product: `una` and the `libuna_rt.a` it links native programs
+# with (beside it, as a Cargo build leaves it), their SHA256SUMS and the commit. A later
+# `cargo test --release` relinks target/release/una with the features of the dev-dependencies
+# (the `test-hooks` of una-cli, una-http and una-hash, the `counters` of una-core), so no gate
+# that runs `una` as the product reads target/release: each runs the copy through
+# `with_product`, which first checks it (`product_verify`) and fails the gate when the copy is
+# missing, is another commit's, does not match its digests or holds a test hook's name.
+PRODUCT=$OUT/product
+PRODUCT_FILES="una libuna_rt.a"
+# A test build's names: the markers that the `test-hooks` features of una-cli
+# (crates/una-cli/src/solver_child.rs), una-hash and una-http keep in the binary (`#[used]`),
+# which scripts/check-release.sh refuses in an archive, and the environment variables of the
+# test hooks, `UNA_TEST_<NAME>`, which only code under `test-hooks` reads (the `counters` of
+# una-core unify in only with those dev-dependencies). Read with grep -a under LC_ALL=C.
+PRODUCT_HOOKS='UNA_(CLI|HASH|HTTP)_TEST_HOOKS_MARKER|UNA_TEST_[A-Z0-9_]+'
+
+# Whether the file $1 holds none of the test build's names; prints those it holds.
+product_clean() {
+    local found status
+    LC_ALL=C grep -a -q -E "$PRODUCT_HOOKS" "$1"
+    status=$?
+    case $status in
+        1) return 0 ;;
+        0)
+            found=$(LC_ALL=C grep -a -o -E "$PRODUCT_HOOKS" "$1" | LC_ALL=C sort -u | head -n 20)
+            echo "release gates: FAIL: $1 was built with test features, it holds: $(printf '%s ' $found)(#2254)"
+            ;;
+        *) echo "release gates: FAIL: cannot read $1 (#2254)" ;;
+    esac
+    return 1
+}
+
+# The build gate's copy of the product, from the clone's target/release (the working directory):
+# any earlier copy removed first, and none left when a file is missing or holds a test name.
+product_save() {
+    local file
+    rm -rf "${PRODUCT:?}"
+    mkdir -p "$PRODUCT" || return 1
+    for file in $PRODUCT_FILES; do
+        if [ ! -f "target/release/$file" ] || [ -L "target/release/$file" ]; then
+            echo "release gates: FAIL: no target/release/$file to save as the product (#2254)"
+            rm -rf "${PRODUCT:?}"
+            return 1
+        fi
+        cp "target/release/$file" "$PRODUCT/$file" && product_clean "$PRODUCT/$file" \
+            || { rm -rf "${PRODUCT:?}"; return 1; }
+    done
+    # shellcheck disable=SC2086
+    (cd "$PRODUCT" && shasum -a 256 $PRODUCT_FILES > SHA256SUMS) && printf '%s\n' "$SHA" > "$PRODUCT/commit" \
+        || { rm -rf "${PRODUCT:?}"; return 1; }
+    echo "release gates: the product of $SHA, in $PRODUCT (#2254):"
+    cat "$PRODUCT/SHA256SUMS"
+}
+
+# Whether OUT/product is the build gate's copy for this commit: its files regular, their digests
+# those SHA256SUMS recorded (and it lists exactly them), and no test name in either.
+product_verify() {
+    local file listed
+    if [ ! -d "$PRODUCT" ] || [ -L "$PRODUCT" ]; then
+        echo "release gates: FAIL: no product at $PRODUCT; the build gate saves it (#2254)"
+        return 1
+    fi
+    if [ "$(cat "$PRODUCT/commit" 2> /dev/null)" != "$SHA" ]; then
+        echo "release gates: FAIL: the product at $PRODUCT is not the build of $SHA; run the build gate (#2254)"
+        return 1
+    fi
+    for file in $PRODUCT_FILES; do
+        if [ ! -f "$PRODUCT/$file" ] || [ -L "$PRODUCT/$file" ]; then
+            echo "release gates: FAIL: no $PRODUCT/$file (#2254)"
+            return 1
+        fi
+    done
+    listed=$(awk '{ print $2 }' "$PRODUCT/SHA256SUMS" 2> /dev/null | paste -sd ' ' -)
+    if [ "$listed" != "$PRODUCT_FILES" ]; then
+        echo "release gates: FAIL: $PRODUCT/SHA256SUMS does not list exactly $PRODUCT_FILES (#2254)"
+        return 1
+    fi
+    (cd "$PRODUCT" && shasum -a 256 -c SHA256SUMS) || {
+        echo "release gates: FAIL: the product at $PRODUCT does not match the digests the build gate recorded (#2254)"
+        return 1
+    }
+    for file in $PRODUCT_FILES; do
+        product_clean "$PRODUCT/$file" || return 1
+    done
+    echo "release gates: the product: $PRODUCT/una, sha256 $(digest "$PRODUCT/una") (#2254)"
+}
+
+# Runs the command that follows with UNA_PRODUCT naming the product's `una`, once it is checked;
+# a product that fails the check fails the gate before its command. Called inside `run`.
+with_product() {
+    # The docs gate's descriptor 3 (the neutrality pattern) is its command's alone.
+    product_verify 3<&- || return 1
+    UNA_PRODUCT=$PRODUCT/una
+    export UNA_PRODUCT
+    "$@"
+}
+
 record() { # gate result seconds
     local log=$OUT/logs/$1.log
     if [ $ISOLATED = 1 ]; then
@@ -514,6 +616,8 @@ gate_clone() {
     local log=$OUT/logs/clone.log start result=FAIL
     start=$(date +%s)
     [ -e "$CLONE" ] && rm -rf "${CLONE:?}"
+    # A new clone has no product until its build gate saves one (#2254).
+    rm -rf "${PRODUCT:?}"
     {
         echo "source: $SOURCE"
         git clone --quiet --no-checkout "$SOURCE" "$CLONE" \
@@ -540,16 +644,40 @@ gate_build() {
     # of the release `libuna_rt.a` and of those executables, strictly, and of that `una`, which
     # holds the solver, against scripts/no-libm-una.txt too (#1277). Each symbol and load
     # command check first runs its canaries, which must fail it.
-    run build sh -c '
+    # No earlier product survives a build gate that fails before saving its own (#2254).
+    rm -rf "${PRODUCT:?}"
+    run build build_steps
+}
+
+# The build gate's steps (#2254): the release build, then its copy as the product, before the
+# test build, then the checks of the product's files themselves.
+build_steps() {
+    cargo build --locked --release -p una-cli -p una-rt || return 1
+    product_save || return 1
+    # The product holds the solver (ADR 0124, #1996): it checks every package of examples/ at
+    # tier 1, whose contracts are proof obligations; a `una` without the solver fails them with
+    # U5003.
+    sh -c '
+        una=$1 checked=0
+        for manifest in examples/*/una.toml; do
+            [ -f "$manifest" ] || continue
+            "$una" check --tier 1 "${manifest%/una.toml}" || { echo "release gates: FAIL: the product does not check ${manifest%/una.toml} (#2254)"; exit 1; }
+            checked=$((checked + 1))
+        done
+        [ "$checked" -gt 0 ] || { echo "release gates: FAIL: no package of examples/ for the product to check (#2254)"; exit 1; }
+        echo "release gates: the product checked $checked packages of examples/ at tier 1"' sh "$PRODUCT/una" || return 1
+    sh -c '
+        una=$1 runtime=$2
         no_libm=$(pwd)/target/no-libm
         rm -rf "${no_libm:?}"
-        cargo build --locked --release -p una-cli -p una-rt \
-            && cargo test --workspace --locked \
-            && scripts/no-libm-build.sh target/release/una "$no_libm" \
+        cargo test --workspace --locked \
+            && scripts/no-libm-build.sh "$una" "$no_libm" \
             && scripts/no-libm-test.sh \
-            && scripts/no-libm.sh target/release/una target/release/libuna_rt.a "$no_libm/executables" "$no_libm/una-without-solver" \
+            && scripts/no-libm.sh "$una" "$runtime" "$no_libm/executables" "$no_libm/una-without-solver" \
             && scripts/load-commands-test.sh \
-            && scripts/load-commands.sh target/release/una'
+            && scripts/load-commands.sh "$una"' sh "$PRODUCT/una" "$PRODUCT/libuna_rt.a" || return 1
+    # What the checks read is still what the build gate saved.
+    product_verify
 }
 
 gate_solver-identity() {
@@ -693,9 +821,10 @@ gate_reproducible() {
 }
 
 gate_determinism() {
-    run determinism bash -c '
+    # The `una --json check` outputs are the product's (#2254): the conformance suite's test
+    # build relinks target/debug/una with the test features.
+    run determinism with_product bash -c '
         set -e
-        cargo build --quiet -p una-cli
         # One test per case (#1652): no failure is the exit status of cargo test; the summary
         # compared between the runs is the case count, the sorted pending lines and the libtest
         # result line without its time.
@@ -723,7 +852,7 @@ gate_determinism() {
                 find tests/conformance examples -name una.toml -exec dirname {} \;
                 find tests/conformance -mindepth 2 -maxdepth 2 -type f -name "*.una"
             } | LC_ALL=C sort | while read -r target; do
-                printf "%s %s\n" "$(./target/debug/una --json check "$target" | shasum -a 256 | cut -c1-16)" "$target"
+                printf "%s %s\n" "$("$UNA_PRODUCT" --json check "$target" | shasum -a 256 | cut -c1-16)" "$target"
             done
         }
         scratch=$(mktemp -d)
@@ -745,7 +874,7 @@ gate_native() {
 }
 
 gate_hunt() {
-    # The security hunt's fixed run (#767, docs/release-gates.md): the clone's release `una`,
+    # The security hunt's fixed run (#767, docs/release-gates.md): the product's `una` (#2254),
     # every compiler run under sandbox-exec, the evidence in OUT/hunt, outside the clone. Python
     # runs with -B, so the clone gets no bytecode files and stays exact.
     local hunt=$OUT/hunt
@@ -754,13 +883,12 @@ gate_hunt() {
     # script's text.
     # The re-check's executable comes from the pinned Lean, as scripts/formal.sh finds it; a
     # missing executable fails the gate. The pinned standalone z3 that the hunt compares with is
-    # installed as the solver-identity gate installs it, when it is not there yet (#1996), and
-    # a release `una` that the hunt has to build gets the library from `run`.
-    run hunt sh -c '
+    # installed as the solver-identity gate installs it, when it is not there yet (#1996); the
+    # hunt builds no `una`, and a missing product fails the gate (#2254).
+    run hunt with_product sh -c '
         if [ ! -x "$3/bin/z3" ]; then scripts/install-z3.sh "$3" || exit 1; fi
         scripts/check-solver.sh || exit 1
-        [ -x target/release/una ] || cargo build --locked --release -p una-cli || exit 1
-        una=$(pwd)/target/release/una
+        una=$UNA_PRODUCT
         root=$(pwd)
         . scripts/lean-env.sh || exit 1
         (cd formal && lake build una-core-check) || exit 1
@@ -782,13 +910,13 @@ gate_hunt-linux-arm64() {
 
 gate_docs() {
     # The documents and the docs bundle, the two products of this repository that the website
-    # reads (#2081): the link check, then the bundle, built with the clone's own release `una`.
+    # reads (#2081): the link check, then the bundle, built with the product's `una` (#2254).
     # The website itself is built and checked by its own repository's flow against a published
     # bundle, never here: this gate clones, installs and builds nothing of it.
     # The neutrality pattern reaches this one command on file descriptor 3 (`run`), never in
     # its environment or arguments; the command reads it into a variable, closes the
     # descriptor, and hands it to the bundle step on a pipe of its own.
-    run docs sh -c '
+    run docs with_product sh -c '
         unset neutrality
         neutrality=
         if [ -n "${UNA_NEUTRALITY_PATTERN_FD:-}" ]; then
@@ -806,7 +934,7 @@ gate_docs() {
         }
         scripts/doc-links.py --self-test \
             && scripts/doc-links.py \
-            && with_pattern env UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle"'
+            && with_pattern env UNA_BIN="$UNA_PRODUCT" scripts/site-bundle.sh "'"$OUT"'/site-bundle"'
 }
 gate_formal() { run formal scripts/formal.sh; }
 
