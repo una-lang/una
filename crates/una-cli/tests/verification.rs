@@ -72,7 +72,9 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
     )
     .unwrap();
     for (path, text) in files {
-        std::fs::write(root.join(path), text).unwrap();
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
     }
     root
 }
@@ -1164,6 +1166,77 @@ pub rate(parcel: Parcel) -> Int
             .iter()
             .any(|variant| line.contains(variant)),
         "{line}"
+    );
+}
+
+#[test]
+fn the_pantry_counterexample_of_a_nat_refinement_shows_its_values() {
+    // #825: in `examples/pantry`, deleting `requires used <= item.amount` from `use_up` gave a
+    // U5001 whose counterexample read `item.amount = , used = ` in text and in `--json` (v0.3.14):
+    // the model query asked for the tag of `item.measure`, which no assertion declared, so the
+    // solver gave no values, and the empty values were printed. #668 made such a model say it
+    // has no values, and #902 declared the tag; this pins the values the reader gives.
+    let example = corpus().join("examples/pantry");
+    let stock = std::fs::read_to_string(example.join("src/pantry/stock.una")).unwrap();
+    let guard = "  requires used <= item.amount\n";
+    assert_eq!(stock.matches(guard).count(), 1, "{stock}");
+    let main = std::fs::read_to_string(example.join("src/pantry/main.una")).unwrap();
+    let root = package_of_edition(
+        "pantry-nat-counterexample",
+        "0.1",
+        &[
+            ("src/pantry/stock.una", &stock.replace(guard, "")),
+            ("src/pantry/main.una", &main),
+        ],
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(
+        text.contains("refinement `(item.amount - used) >= 0` is refuted"),
+        "{text}"
+    );
+    let line = text
+        .lines()
+        .find(|line| line.contains("counterexample:"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        line.ends_with(
+            "counterexample: item = Item#0, item.amount = 0, item.measure = Grams, \
+             item.name = Text#0, used = 1"
+        ),
+        "{line}"
+    );
+    let output = una(&["check", "--json", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    let refuted: Vec<&Value> = diagnostics
+        .iter()
+        .filter(|d| d["code"] == "U5001")
+        .collect();
+    assert_eq!(refuted.len(), 1, "{document}");
+    let counterexample = &refuted[0]["counterexample"];
+    assert!(
+        counterexample.get("unavailable").is_none(),
+        "{counterexample}"
+    );
+    let bindings: Vec<(&str, &Value)> = counterexample["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["name"].as_str().unwrap(), &b["value"]))
+        .collect();
+    assert_eq!(
+        bindings,
+        [
+            ("item", &Value::from("Item#0")),
+            ("item.amount", &Value::from(0)),
+            ("item.measure", &Value::from("Grams")),
+            ("item.name", &Value::from("Text#0")),
+            ("used", &Value::from(1)),
+        ],
+        "{counterexample}"
     );
 }
 
