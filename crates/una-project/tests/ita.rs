@@ -785,3 +785,75 @@ fn edition_0_5_is_named_in_ita_una() {
         "edition `0.6` is not supported",
     );
 }
+
+/// What the `ita_lock` fuzz target checks (#997), and that a package's name and version name
+/// the bytes they are read from: every range lies within the text as given (#2249).
+fn ranges_lie_within(text: &str) {
+    let (lock, errors) = parse_ita_lock(text);
+    for error in &errors {
+        assert!(
+            error.range.start <= error.range.end && error.range.end <= text.len(),
+            "{text:?}: {error:?}"
+        );
+    }
+    for package in &lock.read.packages {
+        assert!(text.get(package.range.clone()).is_some(), "{text:?}");
+        assert_eq!(
+            text.get(package.name.range.clone()),
+            Some(package.name.value.to_string().as_str()),
+            "{text:?}"
+        );
+        assert_eq!(
+            text.get(package.version.range.clone()),
+            Some(package.version.value.as_str()),
+            "{text:?}"
+        );
+    }
+}
+
+/// The input the `ita_lock` fuzz target found (#2249): a `\r\n` line end, then an invalid UTF-8
+/// byte before a `package` line. The ranges indexed the decoded text, one byte shorter per
+/// `\r\n`, so the package's range began inside the U+FFFD. Its variants: `\r\n` line ends
+/// throughout, invalid bytes before and inside a package line.
+#[test]
+fn the_lock_ranges_index_the_text_as_given() {
+    let found = b"lock\nsolver\r\n\xffpackage r 0.3";
+    assert_eq!(found.len(), 27);
+    let text = String::from_utf8_lossy(found);
+    ranges_lie_within(&text);
+    let (lock, _) = parse_ita_lock(&text);
+    assert_eq!(lock.read.packages.len(), 1);
+    assert_eq!(&text[lock.read.packages[0].range.clone()], "package r 0.3");
+    let package = format!("\npackage json 2.1.0\n  from itaty\n  digest \"{DIGEST}\"\n");
+    let variants: Vec<Vec<u8>> = vec![
+        format!("{LOCK}{package}")
+            .replace('\n', "\r\n")
+            .into_bytes(),
+        format!("{LOCK}\r\n\u{FFFD}{package}").into_bytes(),
+        [
+            LOCK.replace('\n', "\r\n").as_bytes(),
+            b"\xff\xfe",
+            package.as_bytes(),
+        ]
+        .concat(),
+        [
+            LOCK.as_bytes(),
+            b"\r\npackage js\xffon 2.1.0\r\n  from itaty\r\n",
+        ]
+        .concat(),
+        [LOCK.as_bytes(), b"\r\npackage json 2.\xe2\x821.0\r\n"].concat(),
+        b"lock 1\r\n\r\nsolver\r\n\r\n\xc3package a 1.0.0\r\npackage b 1.0.0".to_vec(),
+        b"\r\n\r\nlock\r\nsolver\r\npackage\r\n\xff".to_vec(),
+    ];
+    for bytes in variants {
+        ranges_lie_within(&String::from_utf8_lossy(&bytes));
+    }
+    // With `\r\n` line ends throughout, the lock reads as with `\n` alone.
+    let lf = format!("{LOCK}{package}");
+    let crlf = lf.replace('\n', "\r\n");
+    assert_eq!(
+        render(&parse_ita_lock(&crlf).1),
+        render(&parse_ita_lock(&lf).1)
+    );
+    assert_eq!(parse_ita_lock(&crlf).0.solver, parse_ita_lock(&lf).0.solver);
+}

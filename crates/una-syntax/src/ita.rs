@@ -141,14 +141,18 @@ pub struct Lines {
     pub comments_after: Vec<Range<usize>>,
     /// Lexical and layout errors.
     pub errors: Vec<Error>,
-    /// The decoded text that every range indexes: `\r\n` read as `\n`, and each invalid UTF-8
-    /// sequence as U+FFFD (`spec/01 §1`).
+    /// The text that every range indexes: the text given to [`lines`], as written. The lexer
+    /// reads `\r\n` as `\n` (`spec/01 §1`), and each range it gives is mapped back to the
+    /// bytes it names in this text (#2249).
     pub text: String,
 }
 
 /// Reads `text` into lines (ADR 0122 rule 4): the lexer's project mode, then one tree of lines
-/// by indentation. O(n).
+/// by indentation. Every range indexes `text` itself: the lexer reads the decoded text, where
+/// each `\r\n` is one `\n`, and its offsets are mapped back to `text` at the end (#2249).
+/// O(n), and O(r log c) for the r ranges of a text with c `\r\n` line ends.
 pub fn lines(text: &str) -> Lines {
+    let given = text;
     let mut sources = SourceDb::new();
     let file = sources.add("project", text.as_bytes());
     let mut interner = Interner::new();
@@ -156,7 +160,7 @@ pub fn lines(text: &str) -> Lines {
     let decoded = sources.file(file).text().to_owned();
     let text = decoded.as_str();
     let mut out = Lines {
-        text: decoded.clone(),
+        text: given.to_owned(),
         errors: lexed
             .errors
             .iter()
@@ -266,7 +270,71 @@ pub fn lines(text: &str) -> Lines {
     out.comments_after = pending_comments;
     out.comments_after
         .extend(comments.map(|comment| comment.start..comment.end));
+    let crlf = Crlf::of(given);
+    if !crlf.is_empty() {
+        crlf.lines(&mut out);
+    }
     out
+}
+
+/// The `\r\n` line ends of a text, by the offset of their `\n` in the decoded text, where
+/// each is one `\n`: what maps an offset of the decoded text back to the text (#2249).
+///
+/// A text given as `&str` is valid UTF-8, so decoding it (`spec/01 §1`) changes nothing but
+/// its `\r\n` line ends, each one byte shorter. An offset `d` of the decoded text is the
+/// offset `d + k` of the text, for the k line ends whose `\n` lies before `d`: an offset at
+/// such a `\n`, the end of a line's last token or an empty range at the end of a line, lands
+/// before its `\r`, and an offset after it lands after the `\n`. Each is a character
+/// boundary of the text, since `\r` and `\n` are ASCII.
+struct Crlf(Vec<usize>);
+
+impl Crlf {
+    /// O(n).
+    fn of(text: &str) -> Crlf {
+        Crlf(
+            text.match_indices("\r\n")
+                .enumerate()
+                .map(|(k, (at, _))| at - k)
+                .collect(),
+        )
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// O(log c).
+    fn offset(&self, decoded: usize) -> usize {
+        decoded + self.0.partition_point(|&lf| lf < decoded)
+    }
+
+    fn range(&self, range: &mut Range<usize>) {
+        *range = self.offset(range.start)..self.offset(range.end);
+    }
+
+    /// Maps every range of `out` back to the text. O(r log c).
+    fn lines(&self, out: &mut Lines) {
+        for error in &mut out.errors {
+            self.range(&mut error.range);
+        }
+        for comment in &mut out.comments_after {
+            self.range(comment);
+        }
+        let mut stack: Vec<&mut Line> = out.lines.iter_mut().collect();
+        while let Some(line) = stack.pop() {
+            self.range(&mut line.range);
+            for token in &mut line.tokens {
+                self.range(&mut token.range);
+            }
+            for comment in &mut line.comments_before {
+                self.range(comment);
+            }
+            if let Some(comment) = &mut line.trailing_comment {
+                self.range(comment);
+            }
+            stack.extend(line.children.iter_mut());
+        }
+    }
 }
 
 /// Closes the innermost block: its lines become the children of the last line of the block
@@ -877,7 +945,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
         );
     }
     let read = lines(text);
-    let decoded = read.text.as_str();
+    let written = read.text.as_str();
     let mut errors = read.errors.clone();
     let mut lines = read.lines.iter();
     match lines.next() {
@@ -947,7 +1015,11 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
     }
     for contract in &mut manifest.contracts {
         for clause in &mut contract.clauses {
-            clause.value = decoded.get(clause.range.clone()).unwrap_or("").to_owned();
+            // The clause as written, a `\r\n` within it read as `\n`.
+            clause.value = written
+                .get(clause.range.clone())
+                .unwrap_or("")
+                .replace("\r\n", "\n");
         }
     }
     (manifest, errors)
@@ -2712,7 +2784,10 @@ pub fn parse_workspace(text: &str) -> (Workspace, Vec<Error>) {
 /// or layout error, which the formatter does not repair. O(n log n) for the head's sort, O(n)
 /// otherwise.
 pub fn format(text: &str) -> Option<String> {
-    let read = lines(text);
+    // The canonical form ends its lines with `\n` alone; reading the decoded text keeps every
+    // token and comment free of a `\r` of a `\r\n` line end.
+    let decoded = text.replace("\r\n", "\n");
+    let read = lines(&decoded);
     if !read.errors.is_empty() {
         return None;
     }

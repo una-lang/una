@@ -618,3 +618,103 @@ fn limit_lines_read_and_a_grant_with_a_broken_one_is_dropped() {
         ]
     );
 }
+
+/// Every token and comment of `lines`, depth first, with the line it is on.
+fn flat(read: &ita::Lines) -> Vec<(Item, std::ops::Range<usize>)> {
+    fn walk(line: &ita::Line, out: &mut Vec<(Item, std::ops::Range<usize>)>) {
+        for comment in &line.comments_before {
+            out.push((Item::Punct("--"), comment.clone()));
+        }
+        out.push((Item::Punct("line"), line.range.clone()));
+        for token in &line.tokens {
+            out.push((token.item.clone(), token.range.clone()));
+        }
+        if let Some(comment) = &line.trailing_comment {
+            out.push((Item::Punct("--"), comment.clone()));
+        }
+        for child in &line.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for line in &read.lines {
+        walk(line, &mut out);
+    }
+    for comment in &read.comments_after {
+        out.push((Item::Punct("--"), comment.clone()));
+    }
+    out
+}
+
+/// A file with `\r\n` line ends reads as the one with `\n` alone, and every range indexes the
+/// text as written (#2249): it names the same bytes, `\r\n` read as `\n`, and lies on
+/// character boundaries.
+#[test]
+fn ranges_index_the_text_with_crlf_line_ends() {
+    for lf in [MANIFEST, LOCK] {
+        let crlf = lf.replace('\n', "\r\n");
+        let (a, b) = (lines(lf), lines(&crlf));
+        assert_eq!(b.text, crlf);
+        assert!(a.errors.is_empty() && b.errors.is_empty());
+        let (a, b) = (flat(&a), flat(&b));
+        assert_eq!(a.len(), b.len());
+        for ((item, at_lf), (item_crlf, at_crlf)) in a.iter().zip(&b) {
+            assert_eq!(item, item_crlf);
+            let written = crlf.get(at_crlf.clone()).unwrap();
+            assert_eq!(written.replace("\r\n", "\n"), lf[at_lf.clone()]);
+            assert!(!written.ends_with('\r'), "{written:?}");
+        }
+    }
+    let (lf, _) = parse_lock(LOCK);
+    let crlf_text = LOCK.replace('\n', "\r\n");
+    let (crlf, errors) = parse_lock(&crlf_text);
+    assert_eq!(messages(&errors), Vec::<String>::new());
+    assert_eq!(crlf.packages.len(), lf.packages.len());
+    for package in &crlf.packages {
+        assert_eq!(
+            crlf_text[package.name.range.clone()],
+            package.name.value.to_string()
+        );
+        assert_eq!(
+            crlf_text[package.version.range.clone()],
+            package.version.value
+        );
+    }
+    let (manifest, _) = parse_manifest(MANIFEST);
+    let (manifest_crlf, _) = parse_manifest(&MANIFEST.replace('\n', "\r\n"));
+    for (a, b) in manifest.contracts.iter().zip(&manifest_crlf.contracts) {
+        let values = |c: &ita::ContractEntry| {
+            c.clauses
+                .iter()
+                .map(|k| k.value.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values(a), values(b));
+    }
+    assert_eq!(format(&MANIFEST.replace('\n', "\r\n")), format(MANIFEST));
+}
+
+/// An error's range indexes the text as written too: an empty range at the end of a line ends
+/// before its `\r`, and a range after a `\r\n` starts after it (#2249).
+#[test]
+fn error_ranges_index_the_text_with_crlf_line_ends() {
+    let text = "lock 1\r\n\r\nsolver\r\n  encoding \"una-smt-1\"\r\n  name\r\n";
+    let (_, errors) = parse_lock(text);
+    assert!(!errors.is_empty());
+    for error in &errors {
+        let written = text.get(error.range.clone()).unwrap();
+        assert!(
+            !written.contains('\r') || written.contains("\r\n"),
+            "{written:?}"
+        );
+    }
+    let lf = text.replace("\r\n", "\n");
+    let (_, lf_errors) = parse_lock(&lf);
+    assert_eq!(messages(&errors), messages(&lf_errors));
+    for (error, lf_error) in errors.iter().zip(&lf_errors) {
+        assert_eq!(
+            text[error.range.clone()].replace("\r\n", "\n"),
+            lf[lf_error.range.clone()]
+        );
+    }
+}
