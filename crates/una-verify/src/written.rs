@@ -66,7 +66,9 @@ fn written(clause: &Clause, replace: &dyn Fn(&Term) -> Option<String>) -> Option
     let file = sources.add("<clause-text>", text.as_bytes());
     let mut interner = Interner::new();
     let lexed = lex_in(sources.file(file), file, &mut interner, KeywordSet::V0_5);
-    if !lexed.errors.is_empty() {
+    // A comment inside the clause would be copied into the goal, its message and its repairs,
+    // where it reads as hiding the rest of the formula: the printed term instead.
+    if !lexed.errors.is_empty() || !lexed.comments.is_empty() {
         return None;
     }
     let tokens = &lexed.tokens;
@@ -113,6 +115,14 @@ fn written(clause: &Clause, replace: &dyn Fn(&Term) -> Option<String>) -> Option
         let Some(Some(replacement)) = names.get(name) else {
             continue;
         };
+        // A number that lands as a receiver, `2.5.coefficient()`, is no valid code, and a bare
+        // float literal is an `F64`: the printed term instead.
+        let receiver = tokens
+            .get(index + 1)
+            .is_some_and(|after| after.kind == TokenKind::Dot);
+        if receiver && starts_with_number(replacement) {
+            return None;
+        }
         out.push_str(text.get(previous..token.span.start)?);
         let whole = token.span.start == 0 && token.span.end == text.len();
         if whole || atomic(replacement) {
@@ -132,6 +142,12 @@ fn written(clause: &Clause, replace: &dyn Fn(&Term) -> Option<String>) -> Option
         .iter()
         .all(|(name, shown)| shown.is_none() || used.contains_key(name));
     complete.then_some(out)
+}
+
+/// Whether `text` starts with a number, under any `(` and `-`: a literal argument.
+fn starts_with_number(text: &str) -> bool {
+    text.trim_start_matches(['(', '-', ' '])
+        .starts_with(|c: char| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -221,5 +237,48 @@ mod tests {
         let missing = clause(binary(BinOp::Ge, var("y"), int("0")), "z >= 0.00");
         let rename = |term: &Term| matches!(term, Term::Var(_)).then(|| "w".to_owned());
         assert_eq!(shown(&missing, &rename), "w >= 0");
+    }
+
+    #[test]
+    fn a_goal_whose_text_cannot_be_trusted_is_its_printed_term() {
+        let rename = |term: &Term| match term {
+            Term::Var(name) if name == "x%1" => Some("a".to_owned()),
+            Term::Var(name) if name == "x%2" => Some("b".to_owned()),
+            Term::Var(name) if name == "x" => Some("price".to_owned()),
+            _ => None,
+        };
+        // One source name with two replacements: the text cannot say which is which.
+        let ambiguous = clause(
+            binary(
+                BinOp::And,
+                binary(BinOp::Gt, var("x%1"), int("0")),
+                binary(BinOp::Gt, var("x%2"), int("100")),
+            ),
+            "x > 0.00 and x > 1.00",
+        );
+        assert_eq!(shown(&ambiguous, &rename), "a > 0 and b > 100");
+        // A text that does not lex.
+        let unlexed = clause(binary(BinOp::Gt, var("x"), int("0")), "x > 0.00 ¤");
+        assert_eq!(shown(&unlexed, &rename), "price > 0");
+        // A comment inside a wrapped clause would leak into the goal and its repairs (#2228).
+        let commented = clause(
+            binary(
+                BinOp::And,
+                binary(BinOp::Gt, var("x"), int("0")),
+                binary(BinOp::Gt, var("x"), int("100")),
+            ),
+            "(x > 0.00 -- the price\n    and x > 1.00)",
+        );
+        assert_eq!(shown(&commented, &rename), "price > 0 and price > 100");
+        // A literal argument as the receiver of `coefficient()`: `2.5.coefficient()` is no
+        // valid code.
+        let literal = |term: &Term| matches!(term, Term::Var(_)).then(|| "2.5".to_owned());
+        let receiver = clause(
+            binary(BinOp::Lt, var("x"), int("100")),
+            "x.coefficient() < 100",
+        );
+        assert_eq!(shown(&receiver, &literal), "2.5 < 100");
+        let negative = |term: &Term| matches!(term, Term::Var(_)).then(|| "-2.5".to_owned());
+        assert_eq!(shown(&receiver, &negative), "(-2.5) < 100");
     }
 }

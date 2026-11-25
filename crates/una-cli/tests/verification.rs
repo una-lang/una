@@ -341,6 +341,24 @@ pub priced(y: Decimal[2]) -> Bool
   requires y == 2.00
 =
   cents(y)
+
+pub both(x: Decimal[2], y: Decimal[2]) -> Bool
+  requires (x > 0.00 -- the price
+    and y > 1.00)
+=
+  true
+
+pub lowered(y: Decimal[2]) -> Bool
+  requires y == 0.50
+=
+  both(y, y: y - 1.00)
+
+pub small(x: Decimal[2]) -> Bool
+  requires x.coefficient() < 100
+=
+  true
+
+pub literal() -> Bool = small(2.5)
 ",
     );
     let output = una(&["--json", "check", root.to_str().unwrap()]);
@@ -392,6 +410,20 @@ pub priced(y: Decimal[2]) -> Bool
                 "goal": "y.coefficient() > 300",
                 "counterexample": {"bindings": [{"name": "y", "value": "2.00"}]},
                 "checked": "check the value with `checked(value, y.coefficient() > 300) else fail <Variant>`",
+            }),
+            // A comment inside the clause, and a literal as the receiver of `coefficient()`,
+            // are never copied into the goal: the printed term instead (review of #2228).
+            json!({
+                "message": "precondition `y > 0 and (y - 1.00) > 100` of this call is refuted",
+                "goal": "y > 0 and (y - 1.00) > 100",
+                "counterexample": {"bindings": [{"name": "y", "value": "0.50"}]},
+                "checked": "check the value with `checked(value, y > 0 and (y - 1.00) > 100) else fail <Variant>`",
+            }),
+            json!({
+                "message": "precondition `2.5 < 100` of this call is refuted",
+                "goal": "2.5 < 100",
+                "counterexample": null,
+                "checked": null,
             }),
         ]
     );
