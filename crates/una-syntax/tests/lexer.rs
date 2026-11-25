@@ -813,3 +813,64 @@ fn test_is_the_keyword_of_the_test_declaration_from_edition_0_3() {
     assert!(!tokens.contains(&"example".to_owned()));
     assert_eq!(errors, []);
 }
+
+#[test]
+fn a_reserved_word_where_its_keyword_would_stand_gets_no_rename_836() {
+    // #836: a rename is offered only where the renamed file parses. Where the word stands as
+    // the keyword of its later construct, `the_edit` would leave a file that does not parse,
+    // so the U0103 stays with no edit; where it names something, the rename stays.
+    let rename = |text: &str| {
+        let lexed = lex_text(text);
+        lexed
+            .errors
+            .iter()
+            .zip(&lexed.edits)
+            .filter(|(error, _)| error.starts_with("U0103"))
+            .map(|(_, edits)| {
+                edits
+                    .iter()
+                    .find(|edit| edit.contains(" -> "))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<String>>()
+    };
+    let body = |line: &str| format!("module m\n\npub f(x: Int) -> Int\n=\n  {line}\n  x\n");
+    for keyword_position in [
+        body("let edit total = 0"),
+        body("edit x"),
+        body("g(take x)"),
+        body("together\n    let a = 1\n    let b = 2"),
+        body("let y = together for i in xs\n    i"),
+        "module m\n\npub f(edit x: Int) -> Int = x\n".to_owned(),
+        "module m\n\npub f(take x: Int) -> Int = x\n".to_owned(),
+    ] {
+        assert_eq!(
+            rename(&keyword_position),
+            [String::new()],
+            "{keyword_position}"
+        );
+    }
+    for name_position in [
+        body("let edit = 0"),
+        body("let table: Int = x"),
+        body("g(edit)"),
+        "module m\n\npub f(table: Int) -> Int = table + 1\n".to_owned(),
+        "module m\n\npub kind service = Open | Closed\n".to_owned(),
+    ] {
+        let renames = rename(&name_position);
+        assert!(
+            !renames.is_empty() && renames.iter().all(|r| r.contains(" -> ")),
+            "{name_position}: {renames:?}"
+        );
+    }
+    // A name and a keyword position of one word: the name is renamed, the keyword is not.
+    assert_eq!(
+        rename(&body("let edit = 1\n  let edit total = edit")),
+        [
+            "\"edit\" -> \"the_edit\"".to_owned(),
+            String::new(),
+            "\"edit\" -> \"the_edit\"".to_owned(),
+        ]
+    );
+}
