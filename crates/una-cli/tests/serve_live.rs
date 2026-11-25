@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use native_build::{root, runtime};
+use native_build::{hooked_una, root, runtime};
 
 /// The longest a run may last before the test fails it as hung.
 const HANG: Duration = Duration::from_secs(60);
@@ -2075,7 +2075,7 @@ fn the_scripted_engine_keeps_http_on_the_interpreter_thread() {
     );
     let script = dir.join("script.jsonl");
     std::fs::write(&script, "").unwrap();
-    let ran = Command::new(env!("CARGO_BIN_EXE_una"))
+    let ran = Command::new(hooked_una())
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("NO_COLOR", "1")
         .env("UNA_TEST_RUN_SERVER", "1")

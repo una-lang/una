@@ -465,7 +465,7 @@ fn both_engines(
     name: &str,
     args: &[&str],
 ) -> [(&'static str, std::process::Command); 2] {
-    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    let mut interpreter = std::process::Command::new(hooked_una());
     interpreter
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .arg("run")
@@ -757,13 +757,16 @@ fn a_program_that_holds_most_of_its_memory_still_serves_alike_in_both_engines() 
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-use native_build::hooked_runtime;
+use native_build::{hold_test_build, hooked_runtime, hooked_una};
 
 /// The executable of the case `dir`, built with the runtime's test hook in a fresh copy of it:
 /// the scratch directory, the copy and the package's name. `tag` tells the copies of one case
 /// apart. The description of a package with a `serve` section carries the section (ADR 0123
 /// rule 16).
 fn build_native(dir: &Path, tag: &str) -> (PathBuf, PathBuf, String) {
+    // The test build of `una` is held first, before the runtime's build, which takes seconds in
+    // which another cargo command could replace it (#2201).
+    let una = hooked_una();
     let runtime = hooked_runtime();
     let scratch = std::env::temp_dir().join(format!(
         "una-serve-native-{}-{}{tag}",
@@ -780,7 +783,7 @@ fn build_native(dir: &Path, tag: &str) -> (PathBuf, PathBuf, String) {
         .unwrap();
     assert!(status.success());
     let package = scratch.join("case");
-    let built = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+    let built = std::process::Command::new(una)
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("UNA_RT_LIB", &runtime)
         .env("NO_COLOR", "1")
@@ -1310,7 +1313,7 @@ fn a_script_runs_through_the_flags_alike_in_both_engines() {
             .collect();
         let (scratch, package, name) = build_native(&dir, "-flags");
         let engines = || {
-            let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+            let mut interpreter = std::process::Command::new(hooked_una());
             interpreter
                 .env("HOME", env!("CARGO_TARGET_TMPDIR"))
                 .arg("run");
@@ -1366,7 +1369,7 @@ fn a_run_that_aborts_reports_its_abort_then_an_unwritable_serve_out_alike_in_bot
     let (scratch, package, name) = build_native(&dir, "-aborts");
     let script = flag_script(&dir, &|k| k);
     let engines = || {
-        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        let mut interpreter = std::process::Command::new(hooked_una());
         interpreter
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .arg("run");
@@ -1428,7 +1431,7 @@ fn serve_out_follows_no_link_never_blocks_and_is_private() {
     std::fs::hard_link(&other, &hard).unwrap();
     let device = PathBuf::from("/dev/null");
     let engines = || {
-        let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+        let mut interpreter = std::process::Command::new(hooked_una());
         interpreter
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .arg("run");
@@ -1545,7 +1548,7 @@ fn the_hard_stop_ends_a_run_with_u6007_and_503_alike_in_both_engines() {
     };
     let script = format!("{}{}", request(1, "/held"), request(2, "/answered"));
     let (built, package, name) = build_native(&dir, "-hard-stop");
-    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    let mut interpreter = std::process::Command::new(hooked_una());
     interpreter
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["run", "--stop-grace", "1"]);
@@ -1679,7 +1682,7 @@ fn a_trace_that_fails_at_the_end_still_writes_serve_out_alike_in_both_engines() 
     std::fs::create_dir_all(&scratch).unwrap();
     let (dir, script) = many_requests(&scratch, 2_000, false);
     let (built, package, name) = build_native(&dir, "-trace-fails");
-    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    let mut interpreter = std::process::Command::new(hooked_una());
     interpreter
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .arg("run");
@@ -1719,7 +1722,7 @@ fn an_aborted_run_reports_its_abort_then_serve_out_then_the_trace_alike_in_both_
     std::fs::create_dir_all(&scratch).unwrap();
     let (dir, script) = many_requests(&scratch, 2_000, true);
     let (built, package, name) = build_native(&dir, "-abort-trace");
-    let mut interpreter = std::process::Command::new(env!("CARGO_BIN_EXE_una"));
+    let mut interpreter = std::process::Command::new(hooked_una());
     interpreter
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .arg("run");
@@ -1748,4 +1751,87 @@ fn an_aborted_run_reports_its_abort_then_serve_out_then_the_trace_alike_in_both_
     assert_eq!(tails[0].lines().next(), tails[1].lines().next());
     let _ = std::fs::remove_dir_all(&built);
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn the_test_build_of_una_is_held_whatever_replaces_its_path() {
+    // #2201: `target/<profile>/una` is where cargo puts whichever `una` it built last, the tests'
+    // build with its hooks or a plain one; another cargo command in the same target directory
+    // swapped it under a running test, whose later cases then met a `una` that refuses
+    // `--serve-script`. The tests run a hard link to the file that was there, checked to hold the
+    // hooks, so a replacement of the path, as cargo makes it (the old name removed, a new file
+    // at it), changes nothing for them, and a path that holds a plain build fails at once with
+    // the reason.
+    let scratch = std::env::temp_dir().join(format!("una-hold-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let source = scratch.join("una");
+    let dir = scratch.join("held");
+    let hooked = format!(
+        "test build {} {}\n",
+        native_build::TEST_HOOK_MARKERS[0],
+        native_build::TEST_HOOK_MARKERS[1]
+    );
+    std::fs::write(&source, &hooked).unwrap();
+    let held = hold_test_build(&source, &dir).unwrap();
+    assert_ne!(held, source);
+    // Every process that holds the same build shares one link, and leaves nothing pending.
+    assert_eq!(hold_test_build(&source, &dir).unwrap(), held);
+    let names = || {
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names().len(), 1, "{:?}", names());
+    // A later copy of the same build, as each cargo command puts one there (a new file with the
+    // build's size and time), takes the same name.
+    let copy = scratch.join("copy");
+    let copied = std::process::Command::new("cp")
+        .arg("-p")
+        .arg(&source)
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    std::fs::rename(&copy, &source).unwrap();
+    assert_eq!(hold_test_build(&source, &dir).unwrap(), held);
+    assert_eq!(names().len(), 1, "{:?}", names());
+    // A plain build takes the path, as `cargo build -p una-cli` puts it there.
+    std::fs::remove_file(&source).unwrap();
+    std::fs::write(&source, "plain build\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), hooked);
+    // Holding the path now fails closed, naming the cause, and holds nothing more.
+    let refused = hold_test_build(&source, &dir).unwrap_err();
+    assert!(
+        refused.contains("built without the test hooks"),
+        "{refused}"
+    );
+    assert!(refused.contains("CARGO_TARGET_DIR"), "{refused}");
+    let only = vec![held.file_name().unwrap().to_string_lossy().into_owned()];
+    assert_eq!(names(), only);
+    // Only one marker is not enough either: both hooks must be in the build.
+    std::fs::remove_file(&source).unwrap();
+    std::fs::write(&source, native_build::TEST_HOOK_MARKERS[0]).unwrap();
+    let refused = hold_test_build(&source, &dir).unwrap_err();
+    assert!(
+        refused.contains(native_build::TEST_HOOK_MARKERS[1]),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn the_una_these_tests_run_is_a_held_test_build() {
+    // #2201: every `una` these tests start is the held link, never the path cargo rewrites.
+    let held = hooked_una();
+    assert_ne!(held, Path::new(env!("CARGO_BIN_EXE_una")));
+    assert!(
+        held.starts_with(env!("CARGO_TARGET_TMPDIR")),
+        "{}",
+        held.display()
+    );
+    assert_eq!(hooked_una(), held);
 }
