@@ -21,6 +21,7 @@ use crate::smt::{
     HASHED, LIST, LU, MAP, MATRIX, Query, REPLY_RIGHT, Sort, TENSOR, TEXT, UNIT, kind_sort,
     path_selector,
 };
+use crate::written::shown as written_text;
 
 /// How the source text of an obligation's goal and hypotheses is normalized: by the edition of
 /// the package, whose canonical form decides the layout of that text (`spec/12 §8`, ADR 0125,
@@ -1639,9 +1640,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             };
             self.term(&refinement.clause.term, &env)
         };
-        let text = print_term_with(&refinement.clause.term, &|term| {
-            matches!(term, Term::It).then(|| "result".to_owned())
-        });
+        let text = instantiate(&refinement.clause, "result");
         self.returns(
             ObligationKind::Refinement,
             ctx,
@@ -1717,9 +1716,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 };
                 self.term(&refinement.clause.term, &env)
             };
-            let text = print_term_with(&refinement.clause.term, &|term| {
-                matches!(term, Term::It).then(|| "result".to_owned())
-            });
+            let text = instantiate(&refinement.clause, "result");
             self.returns(
                 ObligationKind::Refinement,
                 &ctx,
@@ -2422,7 +2419,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 result: None,
                             };
                             let goal = self.term(&refinement.clause.term, &env);
-                            let text = instantiate(&refinement.clause.term, &value_text);
+                            let text = instantiate(&refinement.clause, &value_text);
                             self.site(
                                 ObligationKind::Refinement,
                                 &ctx,
@@ -3414,7 +3411,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             .requires
             .iter()
             .map(|clause| {
-                print_term_with(&clause.term, &|term| match term {
+                written_text(clause, &|term| match term {
                     Term::Var(name) => texts.get(name.as_str()).cloned(),
                     _ => None,
                 })
@@ -3475,7 +3472,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 result: None,
             };
             let goal = self.term(&clause.term, &env);
-            let text = print_term_with(&clause.term, &|term| match term {
+            let text = written_text(clause, &|term| match term {
                 Term::Var(name) => texts.get(name.as_str()).cloned(),
                 _ => None,
             });
@@ -3960,7 +3957,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 result: None,
             };
             let goal = self.term(&refinement.clause.term, &env);
-            let text = instantiate(&refinement.clause.term, &value_text);
+            let text = instantiate(&refinement.clause, &value_text);
             self.site(
                 ObligationKind::Refinement,
                 ctx,
@@ -4113,7 +4110,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         let binder = self.fresh_binder(&shown_binder);
         let value = self.flow_binder(&mut closed, &binder, from);
         for goal in &missing {
-            let shown = instantiate(&goal.clause.term, &shown_binder);
+            let shown = instantiate(&goal.clause, &shown_binder);
             // The repair does not quote the value: its text may name an escape, as
             // `checked(…)` does, which an unmarked repair must never propose.
             let repair = format!(
@@ -4179,7 +4176,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         if refinements(b).contains(goal) {
                             continue;
                         }
-                        let shown = instantiate(&goal.clause.term, name);
+                        let shown = instantiate(&goal.clause, name);
                         let repair = format!(
                             "strengthen parameter {} of `{}` to a refined kind that implies `{shown}`",
                             index + 1,
@@ -4213,7 +4210,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     if refinements(from_result).contains(goal) {
                         continue;
                     }
-                    let shown = instantiate(&goal.clause.term, "result");
+                    let shown = instantiate(&goal.clause, "result");
                     // D-151: rule 6 names the expected type's position for a
                     // parameter; for the result, the position to strengthen is the value's.
                     let repair = format!(
@@ -4337,7 +4334,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 };
                 self.term(&refinement.clause.term, &env)
             };
-            let shown = instantiate(&refinement.clause.term, "result");
+            let shown = instantiate(&refinement.clause, "result");
             let before = self.obligations.len();
             self.returns(
                 ObligationKind::Refinement,
@@ -8758,8 +8755,8 @@ fn source_name(name: &str) -> String {
 }
 
 /// A refinement's term with `it` written as `value`.
-fn instantiate(term: &Term, value: &str) -> String {
-    print_term_with(term, &|t| matches!(t, Term::It).then(|| value.to_owned()))
+fn instantiate(clause: &Clause, value: &str) -> String {
+    written_text(clause, &|t| matches!(t, Term::It).then(|| value.to_owned()))
 }
 
 /// What declares a refinement, for the related span.

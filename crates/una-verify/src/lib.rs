@@ -10,6 +10,7 @@ mod report;
 mod run;
 mod smt;
 mod solver;
+mod written;
 
 pub use cache::{KEY_DOMAIN, ProofCache};
 pub use generate::{
