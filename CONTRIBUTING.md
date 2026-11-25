@@ -39,6 +39,20 @@ cargo nextest run --workspace --locked   # the test suites; `cargo test --worksp
 
 These commands are known to pass on macOS arm64, the platform of the maintainers' validation; on other platforms `cargo clippy` may report warnings that are not yet fixed. The public tree has no continuous-integration workflow.
 
+### Building on Linux
+
+On Linux, every build of `una`, a development build included, links the C++ runtime of the solver statically, so the toolchain needs GCC's static archives: `libstdc++.a` (on Debian and Ubuntu, the package `libstdc++-<version>-dev` that `g++` installs; on Fedora and RHEL, `libstdc++-static`) and `libgcc.a`. `crates/una-z3/stage.rs` asks for it with the directive `cargo:rustc-link-lib=static:-bundle=stdc++`, and the release build of `scripts/release.sh` adds `-C link-arg=-static-libstdc++ -C link-arg=-static-libgcc`, so the Linux `una` needs no `libstdc++.so.6` (#1956, ADR 0124 rule 1). It still loads glibc and GCC's unwinder `libgcc_s.so.1`, which the Rust standard library links (ADR 0124, amendment of 2026-11-13). `cc -print-file-name=libstdc++.a` prints the archive's path when the toolchain has it, and only its name when it does not.
+
+The release `una` is linked in the image of `scripts/local-ci/Dockerfile`, which installs its packages with apt and no version. Their versions and the files the linker puts into `una` from them are pinned in `supply-chain/z3.lock`:
+
+- `[toolchain.aarch64-unknown-linux-gnu]`: the Debian packages and their versions, as `dpkg-query -W` printed them in the image (binutils, cmake, make, GCC 13, `libstdc++-13-dev`, `libgcc-13-dev`, `libgcc-s1`, `libc6`, `libc6-dev`).
+- `[toolchain-files.aarch64-unknown-linux-gnu]`: the SHA-256 of `libstdc++.a`, `libgcc.a`, `libgcc_eh.a`, the start-up objects (`Scrt1.o`, `crti.o`, `crtn.o`, `crtbeginS.o`, `crtendS.o`) and `libc_nonshared.a`.
+
+Two scripts enforce them:
+
+- `scripts/check-toolchain.sh TARGET` compares each package with `dpkg-query -W` and each file, found where `cc -print-file-name=<file>` names it, with its digest, and exits 2 on a missing table, package or file or on another version or digest. `scripts/release.sh` runs it for a Linux target before it builds `una`, so a rebuilt image whose packages changed cannot ship until the lock is updated deliberately. It reads the image's files at the paths `cc` names and does not trace the link. Run it in that image: `scripts/check-toolchain.sh aarch64-unknown-linux-gnu` prints one line `toolchain: <target>: ...` per package and file.
+- `scripts/load-commands.sh target/release/una` reads the `NEEDED` entries of `una` with `readelf -d` and fails on any library that `scripts/load-commands.txt` and `scripts/load-commands-una.txt` do not list, so a `una` that needs `libstdc++.so.6` fails. `scripts/load-commands-test.sh` holds its canaries: a program linked with `-l stdc++` must fail as `una`, one linked with `-l static:-bundle=stdc++` must pass. [`docs/release-gates.md`](docs/release-gates.md) describes both in the `build` and `release` gates.
+
 `una` uses no `z3` on `PATH`. Without `UNA_Z3_LIB` the build makes a `una` with no solver, and a check at tier 1 fails with U5003. A pull request is merged after the maintainers' own validation on its final commit; a release is tagged when every gate passes on one commit, or when the maintainer accepts it in the record, whose verdict line says so. Each release's record is in [`docs/validation/`](docs/validation/) and states which gates ran and on which commit, as [`docs/release-gates.md`](docs/release-gates.md) describes.
 
 ## Rules for the code
