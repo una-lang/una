@@ -98,6 +98,13 @@
 # context, an OUT that another run holds, or a release tag of an earlier run that cannot be
 # undone in the clone (#1017).
 #
+# The schedule (#2181, docs/release-gates.md §2 "The schedule"): with UNA_GATES_PARALLEL=1, the
+# default, the sanitize gate runs in a clone of its own, OUT/clone-sanitize (its own target
+# directory), beside the build and deps gates, and every other gate runs alone, in order, once
+# sanitize has ended; UNA_GATES_PARALLEL=0 runs every gate in sequence, in one clone, as before.
+# results.tsv lists the gates in the order they were named whatever the order they end in, and
+# the record and the verdict are written once every gate has ended.
+#
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 # The test profile of the per-PR gate is opt-level 1 for speed (#1697); the release evidence keeps
@@ -195,6 +202,37 @@ GATES=("$@")
 for gate in "${GATES[@]}"; do
     case " ${ALL[*]} " in *" $gate "*) ;; *) usage ;; esac
 done
+
+# The schedule (#2181). Only a gate whose result does not depend on the machine's load, and that
+# can have a clone and a target directory of its own, runs beside others: sanitize (Miri, a
+# fixed count of fuzz inputs, the native equivalence test under AddressSanitizer, one test at a
+# time), in OUT/clone-sanitize, beside build and deps, which read nothing it writes. It reads no
+# tag, so the release tag that only release and reproducible make (after it ends) cannot reach
+# it. Every other gate runs alone: mac and linux-arm64 run the timing oracles of
+# timing_channels.rs and the cryptography's timing tests (local-ci.sh), as timing-channels does;
+# the hunt gates judge each compiler run against a timeout; limits and its legs measure memory,
+# CPU and wall-clock limits; owner-replay runs under a watchdog; solver-identity compares the
+# solver's answers, which a time limit can change; and the Docker gates share one target volume
+# per architecture. Nothing else changes: each gate runs the same command on the same commit.
+case ${UNA_GATES_PARALLEL-1} in
+    1) PARALLEL=1 ;;
+    0) PARALLEL=0 ;;
+    *)
+        echo "release gates: UNA_GATES_PARALLEL is 1 (the default: sanitize beside build and deps) or 0 (every gate in sequence), not ${UNA_GATES_PARALLEL}" >&2
+        exit 2
+        ;;
+esac
+ISOLATED_GATE=sanitize
+BESIDE_ISOLATED=" build deps "
+# ISOLATED=1 when this run runs the isolated gate beside another: in parallel mode, with that
+# gate and at least one of the gates it runs beside named. ISOLATED_INDEX is its first position.
+ISOLATED=0 ISOLATED_INDEX="" beside=0 index=0
+for gate in "${GATES[@]}"; do
+    [ "$gate" = "$ISOLATED_GATE" ] && [ -z "$ISOLATED_INDEX" ] && ISOLATED_INDEX=$index
+    case "$BESIDE_ISOLATED" in *" $gate "*) beside=1 ;; esac
+    index=$((index + 1))
+done
+[ $PARALLEL = 1 ] && [ -n "$ISOLATED_INDEX" ] && [ $beside = 1 ] && ISOLATED=1
 
 # The release tag of the clone, made and undone by the release and reproducible gates (#1017).
 . "$REPO/scripts/release-gates-tag.sh"
@@ -305,12 +343,27 @@ OUT=$(CDPATH='' cd -P -- "$OUT" && pwd -P)
 # release tag as a release, and undo that live tag at its start. The lock holds this run's pid,
 # is released at its exit, and a lock whose run is gone (killed with SIGKILL) is taken over.
 gates_lock "$OUT" || exit 2
-trap 'gates_unlock "$OUT"' EXIT
+# A run stopped by a signal waits for the isolated gate as for the gate in progress (#2181), and
+# keeps the rows of every gate that ended, in their order.
+ROWS=$OUT/rows ISOLATED_PID="" ISOLATED_WAITED=0 FLUSHED=0
+gates_finish() {
+    if [ $ISOLATED = 1 ]; then
+        [ -z "$ISOLATED_PID" ] || wait_isolated
+        ! declare -F flush_rows > /dev/null || flush_rows all
+        rm -rf "${ROWS:?}"
+    fi
+    gates_unlock "$OUT"
+}
+trap gates_finish EXIT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 CLONE=$OUT/clone
 RESULTS=$OUT/results.tsv
 printf 'gate\tsha\tresult\tseconds\tlog_sha256\n' > "$RESULTS"
+if [ $ISOLATED = 1 ]; then
+    rm -rf "${ROWS:?}"
+    mkdir -p "$ROWS" || exit 2
+fi
 # A tag that an earlier run made in this clone and could not undo, killed in the middle of the
 # release or reproducible gate, is undone before any gate (#1017): a gate that reads tags would
 # otherwise see the version as released. A run that cannot undo it stops here, unless its first
@@ -345,8 +398,75 @@ digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 record() { # gate result seconds
     local log=$OUT/logs/$1.log
-    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$SHA" "$2" "$3" "$(digest "$log")" >> "$RESULTS"
+    if [ $ISOLATED = 1 ]; then
+        # The row of the gate at position CURRENT_INDEX, which flush_rows copies into
+        # results.tsv in the order of the gates (#2181); written whole, then renamed.
+        printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$SHA" "$2" "$3" "$(digest "$log")" > "$ROWS/$CURRENT_INDEX.tmp" \
+            && mv "$ROWS/$CURRENT_INDEX.tmp" "$ROWS/$CURRENT_INDEX"
+    else
+        printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$SHA" "$2" "$3" "$(digest "$log")" >> "$RESULTS"
+    fi
     echo "== $1: $2 (${3}s)"
+}
+
+# The rows of the gates, in their order, into results.tsv (#2181): every row from the first not
+# yet copied up to the first gate that has not ended. With `all`, at the end of the run, every
+# row there is, in order, skipping a gate that never ended (a run stopped by a signal).
+flush_rows() {
+    while [ "$FLUSHED" -lt ${#GATES[@]} ]; do
+        if [ -f "$ROWS/$FLUSHED" ]; then
+            cat "$ROWS/$FLUSHED" >> "$RESULTS"
+        elif [ "${1:-}" != all ]; then
+            return 0
+        fi
+        FLUSHED=$((FLUSHED + 1))
+    done
+}
+
+# The isolated gate (#2181), started in the background in its own clone, OUT/clone-sanitize,
+# made from OUT/clone once that is exact (a local clone: the same objects, the same tags), and
+# checked to be exact by `run`, as any clone. Its log is OUT/logs/sanitize.log; what making the
+# clone printed is OUT/logs/clone-sanitize.log. The Z3 library's cache is filled first, so that
+# the two gates that start at once never both build it. When the gate passes, its clone is
+# deleted; when it fails, all but target/debug is kept (the fuzzer's inputs, the logs of target/sanitize).
+start_isolated() {
+    local isolated=$OUT/clone-$ISOLATED_GATE prepared=$OUT/logs/clone-$ISOLATED_GATE.log
+    echo "== $ISOLATED_GATE: started in $isolated, beside${BESIDE_ISOLATED% } (#2181)"
+    # The cache first, here, before either gate starts: a failure is the gates' to report.
+    { exact && (cd "$CLONE" && scripts/z3-library.sh); } > "$prepared" 2>&1
+    (
+        trap - EXIT TERM HUP
+        CURRENT_INDEX=$ISOLATED_INDEX
+        {
+            rm -rf "${isolated:?}"
+            if exact; then
+                git clone --quiet --no-checkout "$CLONE" "$isolated" \
+                    && git -C "$isolated" checkout --quiet --detach "$SHA" \
+                    && git -C "$isolated" log -1 --format='commit %H%n%s'
+            else
+                echo "the clone is not exactly $SHA with no change; run the clone gate first"
+            fi
+        } >> "$prepared" 2>&1
+        CLONE=$isolated
+        "gate_$ISOLATED_GATE"
+        if [ "$(cut -f3 "$ROWS/$CURRENT_INDEX" 2> /dev/null)" = PASS ]; then
+            rm -rf "${isolated:?}"
+        else
+            rm -rf "${isolated:?}/target/debug"
+        fi
+    ) &
+    ISOLATED_PID=$!
+}
+
+# Waits for the isolated gate, once; a gate that ended without its row (killed) is a FAIL.
+wait_isolated() {
+    [ -n "$ISOLATED_PID" ] && [ $ISOLATED_WAITED = 0 ] || return 0
+    wait "$ISOLATED_PID"
+    ISOLATED_WAITED=1
+    if [ ! -f "$ROWS/$ISOLATED_INDEX" ]; then
+        echo "release gates: the $ISOLATED_GATE gate ended without a result" >> "$OUT/logs/$ISOLATED_GATE.log"
+        CURRENT_INDEX=$ISOLATED_INDEX record "$ISOLATED_GATE" FAIL 0
+    fi
 }
 
 # Whether the clone is exactly SHA, with no change and no untracked file.
@@ -721,9 +841,33 @@ gate_owner-replay() {
 # builds no release artifact.
 gate_sanitize() { run sanitize scripts/sanitize.sh; }
 
+# The gates, in order; with ISOLATED (#2181), the isolated gate starts at its own position or at
+# the first gate it runs beside, whichever comes first, and any other gate waits for it to end.
+if [ $ISOLATED = 1 ]; then
+    echo "release gates: the parallel plan (#2181): $ISOLATED_GATE beside${BESIDE_ISOLATED% }, every other gate alone; UNA_GATES_PARALLEL=0 runs them in sequence"
+fi
+CURRENT_INDEX=0
 for gate in "${GATES[@]}"; do
+    if [ $ISOLATED = 1 ]; then
+        if [ "$CURRENT_INDEX" = "$ISOLATED_INDEX" ]; then
+            [ -n "$ISOLATED_PID" ] || start_isolated
+            CURRENT_INDEX=$((CURRENT_INDEX + 1))
+            continue
+        fi
+        case "$BESIDE_ISOLATED" in
+            *" $gate "*) [ -n "$ISOLATED_PID" ] || start_isolated ;;
+            *) wait_isolated ;;
+        esac
+    fi
     "gate_$gate"
+    [ $ISOLATED = 1 ] && flush_rows
+    CURRENT_INDEX=$((CURRENT_INDEX + 1))
 done
+if [ $ISOLATED = 1 ]; then
+    wait_isolated
+    flush_rows all
+    rm -rf "${ROWS:?}"
+fi
 
 # The Docker volume that local-ci made for this clone's target directory (named from its
 # path), so that runs do not pile volumes up. Only a run that used Docker removes them, on the

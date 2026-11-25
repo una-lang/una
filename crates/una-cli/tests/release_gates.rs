@@ -2968,3 +2968,267 @@ fn every_gate_that_reaches_cargo_is_a_solver_gate_or_a_known_exception() {
         PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-solver-lists"),
     );
 }
+
+/// A scratch repository at `dir/source` for the schedule of the gates (#2181), committed, with
+/// stubs that log to `STUB_LOG`, one line as each starts (with its directory, commit and
+/// uncommitted changes) and as each ends: deps-audit.sh (`deps`), sanitize.sh (`sanitize`,
+/// which writes a file under target/debug and fails when `STUB_SANITIZE_FAIL` is set) and
+/// local-ci.sh (`mac`). With `STUB_PARALLEL`, deps and sanitize each pass only when the other
+/// has started too (files in `STUB_DIR`), so a pass shows they ran at once, and sanitize ends a
+/// second after deps. Then a copy of the gate script and a run of its clone gate into
+/// `dir/out`. Gives the script, the commit and `out`.
+fn schedule_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
+    let source = dir.join("source");
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(source.join("scripts")).unwrap();
+    // Waits up to 60 s for the file STUB_DIR/$1.
+    let await_other = "await() { i=0; while [ ! -e \"$STUB_DIR/$1\" ]; do i=$((i + 1)); [ $i -lt 600 ] || { echo \"$1 never came\"; exit 1; }; sleep 0.1; done; }\n";
+    let start = |name: &str| {
+        format!(
+            "echo \"{name} start $(pwd -P) $(git rev-parse HEAD) [$(git status --porcelain --untracked-files=all)]\" >> \"$STUB_LOG\"\n"
+        )
+    };
+    for (path, text) in [
+        (".gitignore", "target/\n".to_owned()),
+        ("Cargo.toml", "version = \"9.9.9\"\n".to_owned()),
+        (
+            "scripts/z3-library.sh",
+            "#!/bin/sh\nlib=$(pwd)/target/stub-z3/libz3shell.a\nmkdir -p \"${lib%/*}\" && echo z3 > \"$lib\" && echo \"$lib\"\n".to_owned(),
+        ),
+        (
+            "scripts/deps-audit.sh",
+            format!(
+                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/deps\"; await sanitize; fi\necho \"deps end\" >> \"$STUB_LOG\"\n",
+                start("deps")
+            ),
+        ),
+        (
+            "scripts/sanitize.sh",
+            format!(
+                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/sanitize\"; await deps; sleep 1; fi\nmkdir -p target/debug && echo built > target/debug/una\necho \"sanitize end\" >> \"$STUB_LOG\"\n[ -z \"${{STUB_SANITIZE_FAIL:-}}\" ]\n",
+                start("sanitize")
+            ),
+        ),
+        (
+            "scripts/local-ci.sh",
+            format!("#!/bin/sh\n{}echo \"mac end\" >> \"$STUB_LOG\"\n", start("mac")),
+        ),
+    ] {
+        std::fs::write(source.join(path), text).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .current_dir(&source)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let status = Command::new("chmod")
+        .args([
+            "755",
+            "scripts/z3-library.sh",
+            "scripts/deps-audit.sh",
+            "scripts/sanitize.sh",
+            "scripts/local-ci.sh",
+        ])
+        .current_dir(&source)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git(&["init", "--quiet"]);
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "a schedule"]);
+    let sha = git(&["rev-parse", "HEAD"]);
+    let script = gates_copy(&dir.join("gates"), SHIPPED);
+    let out = dir.join("out");
+    let output = gates_of(&script, &sha, &out, &["clone"], &source, &[]);
+    assert!(
+        output.status.code() == Some(3),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (script, sha, out)
+}
+
+#[test]
+fn sanitize_runs_in_its_own_clone_beside_build_and_deps_and_every_other_gate_alone() {
+    if head().is_none() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-schedule");
+    let stub = dir.join("stub");
+    let log = dir.join("stub.log");
+    // (UNA_GATES_PARALLEL, gates, STUB_PARALLEL, STUB_SANITIZE_FAIL, exit code, the rows'
+    // gates and results, the stubs' log with each line's first two words).
+    for (parallel, gates, at_once, fail, code, rows_expected, ran_expected) in [
+        // The default: sanitize starts beside deps, in its own clone; mac waits for it to end;
+        // the rows keep the order the gates were named in, sanitize's last.
+        (
+            None,
+            &["deps", "mac", "sanitize"][..],
+            "1",
+            "",
+            3,
+            "deps PASS,mac PASS,sanitize PASS",
+            "",
+        ),
+        // A failing sanitize fails the run, after every gate, and its row stays in its place;
+        // named first, it starts at once, and the run waits for it before its verdict.
+        (
+            Some("1"),
+            &["sanitize", "deps"][..],
+            "1",
+            "1",
+            1,
+            "sanitize FAIL,deps PASS",
+            "",
+        ),
+        // UNA_GATES_PARALLEL=0: every gate in sequence, in the one clone.
+        (
+            Some("0"),
+            &["deps", "mac", "sanitize"][..],
+            "",
+            "",
+            3,
+            "deps PASS,mac PASS,sanitize PASS",
+            "deps start,deps end,mac start,mac end,sanitize start,sanitize end",
+        ),
+        // With no gate to run beside, sanitize runs in its place, in the one clone.
+        (
+            None,
+            &["mac", "sanitize"][..],
+            "",
+            "",
+            3,
+            "mac PASS,sanitize PASS",
+            "mac start,mac end,sanitize start,sanitize end",
+        ),
+    ] {
+        let (script, sha, out) = schedule_fixture(&dir);
+        std::fs::create_dir_all(&stub).unwrap();
+        let log_path = log.display().to_string();
+        let stub_path = stub.display().to_string();
+        let mut env = vec![
+            ("STUB_LOG", log_path.as_str()),
+            ("STUB_DIR", stub_path.as_str()),
+            ("STUB_PARALLEL", at_once),
+            ("STUB_SANITIZE_FAIL", fail),
+        ];
+        if let Some(value) = parallel {
+            env.push(("UNA_GATES_PARALLEL", value));
+        }
+        let output = gates_of(&script, &sha, &out, gates, &dir.join("source"), &env);
+        let context = format!(
+            "{parallel:?} {gates:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(code), "{context}");
+        let rows = rows(&out);
+        let got: Vec<String> = rows
+            .iter()
+            .map(|row| format!("{} {}", row[0], row[2]))
+            .collect();
+        assert_eq!(got.join(","), rows_expected, "{context}");
+        assert!(rows.iter().all(|row| row[1] == sha), "{rows:?}");
+        let ran = std::fs::read_to_string(&log).unwrap();
+        let words: Vec<String> = ran
+            .lines()
+            .map(|line| line.split(' ').take(2).collect::<Vec<_>>().join(" "))
+            .collect();
+        let physical = out.canonicalize().unwrap();
+        let clone = physical.join("clone").display().to_string();
+        let isolated = physical.join("clone-sanitize").display().to_string();
+        let started = |name: &str| {
+            ran.lines()
+                .find(|line| line.starts_with(&format!("{name} start ")))
+                .unwrap_or_else(|| panic!("{name} did not start: {ran}"))
+                .to_owned()
+        };
+        // Each stub ran in an exact clone of the commit: no change, no untracked file.
+        for line in ran.lines().filter(|line| line.contains(" start ")) {
+            assert!(line.ends_with(&format!(" {sha} []")), "{line}");
+        }
+        let position = |line: &str| words.iter().position(|word| word == line).unwrap();
+        if at_once.is_empty() {
+            assert_eq!(words.join(","), ran_expected, "{context}");
+            assert!(started("sanitize").contains(&format!(" {clone} ")), "{ran}");
+            assert!(!physical.join("clone-sanitize").exists());
+        } else {
+            // Isolation: sanitize in its own clone (its own target directory), deps in the
+            // run's; the stubs' handshake shows they ran at once.
+            assert!(
+                started("sanitize").contains(&format!(" {isolated} ")),
+                "{ran}"
+            );
+            assert!(started("deps").contains(&format!(" {clone} ")), "{ran}");
+            assert!(position("deps start") < position("sanitize end"), "{ran}");
+            assert!(position("sanitize start") < position("deps end"), "{ran}");
+            // Any other gate waits for sanitize to end.
+            if gates.contains(&"mac") {
+                assert!(position("sanitize end") < position("mac start"), "{ran}");
+            }
+            // The isolated clone is deleted when the gate passes; when it fails, all but
+            // its target/debug is kept.
+            if fail.is_empty() {
+                assert!(!physical.join("clone-sanitize").exists());
+            } else {
+                assert!(physical.join("clone-sanitize/.git").exists());
+                assert!(!physical.join("clone-sanitize/target/debug").exists());
+            }
+            assert!(!physical.join("rows").exists());
+        }
+        // The run's own clone holds nothing the isolated gate wrote.
+        assert_eq!(
+            physical.join("clone/target/debug/una").exists(),
+            at_once.is_empty(),
+            "{ran}"
+        );
+        let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+        if fail.is_empty() {
+            assert!(record.contains("Verdict: INCOMPLETE"), "{record}");
+        } else {
+            assert!(record.contains("Verdict: FAIL (sanitize)"), "{record}");
+        }
+        for (gate, result) in got.iter().map(|row| row.split_once(' ').unwrap()) {
+            assert!(
+                record.contains(&format!("| {gate} | {result} | ")),
+                "{record}"
+            );
+        }
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_dir_all(&stub);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_schedule_switch_that_is_neither_0_nor_1_stops_the_run_before_any_gate() {
+    let Some(sha) = head() else {
+        return;
+    };
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-schedule-switch");
+    let _ = std::fs::remove_dir_all(&out);
+    let output = gates_of(
+        &root().join("scripts/release-gates.sh"),
+        &sha,
+        &out,
+        &["clone"],
+        &root(),
+        &[("UNA_GATES_PARALLEL", "yes")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("UNA_GATES_PARALLEL is 1"), "{stderr}");
+    assert!(!out.join("results.tsv").exists());
+    let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(out.with_extension("bin"));
+}
