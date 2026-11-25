@@ -1686,7 +1686,8 @@ fn add_writes_nothing_when_the_need_has_no_resolution() {
 fn verify_checks_each_registry_package_wherever_it_is() {
     let (dir, itaoca) = with_registry("verify", true);
     // Every copy matches the lock, and still nothing is reported verified: the owner's key
-    // chain is not held, so the package is unavailable (U7013), exit code 1.
+    // chain is checked when a release is read but not stored beside the package, so it is
+    // unavailable (U7013), exit code 1.
     let (code, out, err) = una_in(&["una", "ita", "verify", path(&dir)], &itaoca);
     assert_eq!((code, out.as_str()), (1, ""), "{err}");
     assert!(
