@@ -139,11 +139,11 @@ $ una ita unbundle ../shop.bundle
 Itaoca holds every locked registry package already
 ```
 
-`una ita verify` reads every copy again. In this release it reports a package whose copies all match the lock as not yet verified, since the owner's key chain is not held beside it yet, and exits with code 1:
+`una ita verify` reads every copy again. The registry client checks the owner's key chain when it reads a release, but does not store it beside the package, so `verify`, which reads no network, cannot check it again. In this release it reports a package whose copies all match the lock as not verified, and exits with code 1:
 
 ```text
 $ una ita verify
-[U7013] Error: `acme/ledger 0.3.1` is not verified: its files and provenance in vendor/ita and Itaoca match the lock, but the owner's key chain and its name map proof are not held until the registry client supplies them
+[U7013] Error: `acme/ledger 0.3.1` is not verified: its files and provenance in vendor/ita and Itaoca match the lock, but the owner's key chain and its name map proof, which the registry client checks when it reads a release, are not stored beside it, so they cannot be checked again
 ```
 
 ## Edge cases

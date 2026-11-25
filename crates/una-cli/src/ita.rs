@@ -2935,9 +2935,9 @@ pub(crate) fn add_command(
 /// its files read again with no link followed, their digest, and the stored statement,
 /// checkpoint and root (U7010 for a copy that does not verify). Even when every copy checks,
 /// the package is not reported verified: the owner's key chain and its name map proof, which
-/// show that the signing key was valid (rules 36.1 and 36.3), are not held until the registry
-/// client supplies them, so each package is unavailable (U7013) and the command exits with
-/// code 1. Nothing is written or repaired. Path packages are the root author's working tree,
+/// show that the signing key was valid (rules 36.1 and 36.3), are checked by the registry
+/// client when it reads a release but not stored beside the package, so they cannot be checked
+/// again: each package is unavailable (U7013) and the command exits with code 1. Nothing is written or repaired. Path packages are the root author's working tree,
 /// which `una ita lock --check` compares. No network. O(bytes of the packages).
 pub(crate) fn verify_command(
     path: &Path,
@@ -3077,7 +3077,7 @@ pub(crate) fn verify_command(
         refuse(
             Code::U7013,
             format!(
-                "`{what}` is not verified: its files and provenance in {} match the lock, but the owner's key chain and its name map proof are not held until the registry client supplies them",
+                "`{what}` is not verified: its files and provenance in {} match the lock, but the owner's key chain and its name map proof, which the registry client checks when it reads a release, are not stored beside it, so they cannot be checked again",
                 places.join(" and ")
             ),
         );
