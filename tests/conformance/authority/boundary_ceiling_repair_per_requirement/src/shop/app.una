@@ -1,0 +1,12 @@
+-- test: with two requirements of one capability, U3021's repair gives one narrowed grant per requirement, each to the operations its requirement declares (ADR 0093 rule 6, #2213)
+-- spec: spec/13 §3
+-- expect: error U3021 at src/shop/app.una:12:3
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+pub granted(item: Text) -> Int
+  uses @full: Prices[price, set, drop]
+=
+  quote(item) with @a = @full, @b = @full

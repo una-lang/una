@@ -1,0 +1,12 @@
+-- test: when the ceiling withholds the operations of one requirement, U3021's repair names that requirement for a handler and keeps a narrowed grant for the other (ADR 0093 rule 6, spec/13 §3, #2213)
+-- spec: spec/13 §3
+-- expect: error U3021 at src/shop/app.una:12:3
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+pub granted(item: Text) -> Int
+  uses @full: Prices[price, set, drop]
+=
+  quote(item) with @a = @full, @b = @full

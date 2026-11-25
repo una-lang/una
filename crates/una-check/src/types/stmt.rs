@@ -1504,9 +1504,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
                     };
-                    let conditional = self
-                        .conditional
-                        .replace(super::check::Conditional::ErrorClause);
+                    let conditional =
+                        self.enter_conditional(super::check::Conditional::ErrorClause);
                     let used = self.within(ctx, |checker| {
                         {
                             // The default's flow is the binder's (ADR 0103).
@@ -1549,9 +1548,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     let saved = self.raise_pc(&option, handled.expr.span);
                     // The default's flow is the binder's (ADR 0103).
                     self.flow_hints.insert(value.span);
-                    let conditional = self
-                        .conditional
-                        .replace(super::check::Conditional::NoneClause);
+                    let conditional = self.enter_conditional(super::check::Conditional::NoneClause);
                     let used = self.expr_as(value, Some(&expected), Role::Plain);
                     self.conditional = conditional;
                     self.restore_pc(saved);
@@ -1995,7 +1992,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             // #837: a one-line arm runs only on its match.
             let conditional = if matches!(arm.body, Body::Line(_)) {
-                self.conditional.replace(super::check::Conditional::Arm)
+                self.enter_conditional(super::check::Conditional::Arm)
             } else {
                 self.conditional
             };

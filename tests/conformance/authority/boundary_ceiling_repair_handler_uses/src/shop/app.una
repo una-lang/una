@@ -1,0 +1,18 @@
+-- test: when the excess comes from a granted handler's own uses, U3021's repair names that handler rather than repeat the grant already within the ceiling (ADR 0093 rules 5 and 6, #2213)
+-- spec: spec/13 §3
+-- expect: error U3021 at src/shop/app.una:18:3
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+handler leaky() for Clock
+  uses @store: Prices[set]
+  op now() =
+    @store.set("t", value: 1)
+    0
+
+pub granted(item: Text) -> Int
+  uses @store: Prices[price, set]
+=
+  quote(item) with @prices = @store[price], @clock = leaky()

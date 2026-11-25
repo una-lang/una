@@ -653,6 +653,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     // ----- helpers -----
 
+    /// Enters `inner`, code that runs only when something else decides, for U3013's advice
+    /// (#837), and returns the context to restore after it. Inside a branch of `together` the
+    /// branch's own context stays: the branch is one `let` (U2024), so the inner advice, a
+    /// `let`, an `if` on several lines or an arm written as a block, cannot be written there,
+    /// and the named function that the branch's advice names can (#2213). A block or a lambda
+    /// inside the branch clears it, as it clears every context.
+    pub(crate) fn enter_conditional(&mut self, inner: Conditional) -> Option<Conditional> {
+        let outer = self.conditional;
+        if outer != Some(Conditional::Together) {
+            self.conditional = Some(inner);
+        }
+        outer
+    }
+
     /// The text of a name of this module.
     pub(crate) fn name(&self, ident: &Ident) -> &'a str {
         self.env.text(self.module, ident.name)

@@ -1,0 +1,17 @@
+-- test: following U3021's repair for a withheld requirement keeps the call within the ceiling: a handler with no uses for it, and a narrowed grant for the other (ADR 0093 rules 5 and 6, #2213)
+-- spec: spec/05 §4
+-- expect: ok
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+handler frozen() for Prices
+  op price(item) = 0
+  op set(item, value) = unit
+  op drop(item) = unit
+
+pub granted(item: Text) -> Int
+  uses @full: Prices[price, set, drop]
+=
+  quote(item) with @a = @full[price], @b = frozen()

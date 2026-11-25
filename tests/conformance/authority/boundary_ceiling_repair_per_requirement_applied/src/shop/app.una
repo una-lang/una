@@ -1,0 +1,12 @@
+-- test: one narrowed grant per requirement keeps the call within the ceiling, where one grant of both operations does not (ADR 0093 rules 5 and 6, #2213)
+-- spec: spec/05 §4
+-- expect: ok
+module shop.app
+
+import shop.quote (quote)
+import shop.store (Prices)
+
+pub granted(item: Text) -> Int
+  uses @full: Prices[price, set, drop]
+=
+  quote(item) with @a = @full[price], @b = @full[set]
