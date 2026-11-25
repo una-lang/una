@@ -103,14 +103,26 @@ export UNA_EMBED_Z3 UNA_EMBED_Z3_SHA256
 # una-z3's build refuses both variables at once, and the release embeds only the library above,
 # by its digest (#1954).
 unset UNA_Z3_LIB
+# On Linux every link also goes through scripts/link-trace.sh, which runs `cc` with rustc's
+# arguments and GNU ld's --trace-symbol for each name of scripts/no-libm.txt, which changes no
+# byte of the output, and keeps ld's record of which object refers to each of them: the trace of
+# the `una` link is kept as $built/una.link-trace, which scripts/check-release.sh gives
+# scripts/no-libm.sh --link-trace, so that the C math library check reads the shipped `una`,
+# libstdc++.a's objects inside it included, object by object (#1953).
+built="$root/target/release-remapped"
 case $target in
-    *-linux-*) RUSTFLAGS="$RUSTFLAGS -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc" ;;
+    *-linux-*)
+        RUSTFLAGS="$RUSTFLAGS -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc -C linker=$root/scripts/link-trace.sh"
+        UNA_LINK_TRACE_DIR="$built/link-traces"
+        rm -rf "${UNA_LINK_TRACE_DIR:?}" "${built:?}/una.link-trace"
+        mkdir -p "$UNA_LINK_TRACE_DIR"
+        export UNA_LINK_TRACE_DIR
+        ;;
 esac
 export RUSTFLAGS
 # The C and assembly sources of dependencies (ring's), which the `cc` crate compiles, the same.
 CFLAGS="${CFLAGS:-} -ffile-prefix-map=$root=/una -ffile-prefix-map=$cargo_home=/cargo"
 export CFLAGS
-built="$root/target/release-remapped"
 # The build order of ADR 0124 rule 18: the runtime first, from this commit, then `una`, which
 # embeds it. The runtime loses its debug sections (rule 12), so that no path or line table of
 # this machine reaches an executable and the embedded bytes are smaller: the Xcode toolchain's
@@ -211,6 +223,24 @@ case $target in
     *-linux-*) scripts/check-toolchain.sh "$target" || exit 2 ;;
 esac
 cargo build --release --locked --target-dir "$built" --package una-cli
+# The trace of the link that wrote this `una`: exactly one trace names a file that is it byte
+# for byte (cargo copies or links rustc's output to release/una).
+case $target in
+    *-linux-*)
+        una_trace=
+        for linked_trace in "$UNA_LINK_TRACE_DIR"/link.*; do
+            [ -f "$linked_trace" ] || continue
+            linked=$(sed -n '1s/^output: //p' "$linked_trace")
+            if [ -n "$linked" ] && [ -f "$linked" ] && cmp -s "$linked" "$built/release/una"; then
+                [ -z "$una_trace" ] || { echo "error: two link traces of $UNA_LINK_TRACE_DIR name the release una" >&2; exit 2; }
+                una_trace=$linked_trace
+            fi
+        done
+        [ -n "$una_trace" ] || { echo "error: no link trace of $UNA_LINK_TRACE_DIR names the release una" >&2; exit 2; }
+        cp "$una_trace" "$built/una.link-trace"
+        echo "link trace: $target: $built/una.link-trace, of $(sed -n '1s/^output: //p' "$una_trace")"
+        ;;
+esac
 name="una-$version-$target"
 out="$root/target/release-archives"
 rm -rf "${out:?}/$name" "$out/$name.tar.gz" "$out/$name.tar.gz.sha256"

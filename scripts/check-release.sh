@@ -426,6 +426,38 @@ for example in examples/*/; do
         exit 1
     fi
 done
+# No C math library symbol in what ships (#1092, #1953): on Linux, scripts/no-libm.sh reads the
+# packed `una` by the trace of its own link (scripts/release.sh, scripts/link-trace.sh), which
+# names each object that refers to a name of scripts/no-libm.txt, libstdc++.a's objects inside
+# `una` included: only the objects of the Z3 library that supply-chain/z3.lock pins for this
+# target that scripts/no-libm-una.txt names may. The runtime built into `una` and the examples'
+# executables it built above are strict. The Z3 library is the cache entry whose digest is the
+# lock's, as scripts/release.sh takes it, checked again here. The check's canaries run first.
+case $target in
+    *-linux-*)
+        z3_digest=$(sed -n '/^\[library\]$/,$s/^"'"$target"'" *= *"\([0-9a-f]*\)"$/\1/p' supply-chain/z3.lock | head -n 1)
+        [ -n "$z3_digest" ] || { echo "error: supply-chain/z3.lock records no library digest for $target" >&2; exit 1; }
+        z3_lib=
+        for recorded in "${UNA_Z3_CACHE:-$HOME/.cache/una/z3}"/*/library.sha256; do
+            [ -f "$recorded" ] || continue
+            if [ "$(cat "$recorded")" = "$z3_digest" ]; then
+                z3_lib=$(dirname "$recorded")/lib/libz3shell.a
+                break
+            fi
+        done
+        [ -n "$z3_lib" ] && [ -f "$z3_lib" ] && [ "$(sha256sum "$z3_lib" | cut -d ' ' -f 1)" = "$z3_digest" ] \
+            || { echo "error: no Z3 library of the cache has the digest $z3_digest that supply-chain/z3.lock records for $target" >&2; exit 1; }
+        link_trace="$root/target/release-remapped/una.link-trace"
+        [ -f "$link_trace" ] || { echo "error: $link_trace, the trace of the link of una that scripts/release.sh keeps, is missing" >&2; exit 1; }
+        mkdir "$tmp/no-libm-executables"
+        for exe in "$tmp"/native-*/native-exe; do
+            [ -f "$exe" ] || continue
+            cp "$exe" "$tmp/no-libm-executables/$(basename "$(dirname "$exe")")"
+        done
+        scripts/no-libm-test.sh
+        UNA_Z3_LIB=$z3_lib scripts/no-libm.sh --link-trace "$link_trace" "$una" "$runtime" "$tmp/no-libm-executables"
+        ;;
+esac
 # The release una reads no variable and no file for its runtime (ADR 0124 rules 14 and 15):
 # UNA_RT_LIB naming a file that is no runtime, and such a file at each place a development build
 # looks (lib/ beside una, beside una, ../lib), change nothing, so a runtime older than una cannot
