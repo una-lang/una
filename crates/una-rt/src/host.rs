@@ -764,7 +764,16 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
         };
         let Some(shown) = shown else {
             // The event was the last one pushed, and nothing was written since: it goes, and
-            // no longer holds the trace open.
+            // no longer holds the trace open. Nothing pushes an event between `event` and the
+            // operation's arguments; were a later change to, the event would stay `aborted`
+            // and hold a streaming trace open, so a debug build stops there.
+            debug_assert!(
+                state
+                    .trace
+                    .as_ref()
+                    .is_none_or(|trace| trace.len() == slot + 1),
+                "an operation's event is the last one while its arguments are written"
+            );
             if let Some(trace) = state.trace.as_mut()
                 && trace.len() == slot + 1
             {

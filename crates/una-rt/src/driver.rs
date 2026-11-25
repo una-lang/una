@@ -57,8 +57,11 @@ fn operation(op: i64, instance: i64, args: &[i64], perform: impl FnOnce() -> i64
     let failed = host::host_failed();
     runtime::operation_end();
     host::event_end(op, slot, value, failed);
-    // So did an outcome too long for text, which the task does not use (#1550).
+    // So did an outcome too long for text, which the task does not use (#1550): the value or
+    // failure the operation gave is owned here, so it is released before the task stops. No
+    // outcome of the server's operations holds such an integer today.
     if runtime::stopped() != 0 {
+        values::release(value);
         return Outcome::Stopped;
     }
     if failed != 0 {
