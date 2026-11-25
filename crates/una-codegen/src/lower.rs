@@ -4435,25 +4435,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
     }
 
-    /// `a op b` over tagged words whose result is proven to fit one: plain machine arithmetic.
+    /// `a op b` over tagged words whose result is proven to fit one: plain machine arithmetic,
+    /// with its tag bit forced ([`unchecked_word`]).
     fn unchecked(&mut self, prim: Prim, a: Value, b: Value) -> Value {
-        // With `a = 2x + 1` and `b = 2y + 1`, as in `arithmetic`.
-        match prim {
-            Prim::Add => {
-                let untagged = self.builder.ins().iadd_imm_s(a, -1);
-                self.builder.ins().iadd(untagged, b)
-            }
-            Prim::Sub => {
-                let difference = self.builder.ins().isub(a, b);
-                self.builder.ins().iadd_imm_s(difference, 1)
-            }
-            _ => {
-                let x = self.builder.ins().sshr_imm_s(a, 1);
-                let twice_y = self.builder.ins().iadd_imm_s(b, -1);
-                let product = self.builder.ins().imul(x, twice_y);
-                self.builder.ins().iadd_imm_s(product, 1)
-            }
-        }
+        unchecked_word(&mut self.builder, prim, a, b)
     }
 
     /// `a op b` over integer words: computed inline when both are tagged and the result fits
@@ -4649,6 +4634,50 @@ const STOPPED: i64 = -1;
 /// The trap of a branch that verification proves unreachable.
 const TRAP: cranelift_codegen::ir::TrapCode = cranelift_codegen::ir::TrapCode::unwrap_user(1);
 
+/// `a op b`, for `+`, `-` or `*`, at a site where the range facts prove both operands and the
+/// result in the tagged range (ADR 0055 NB-3, `range.rs`): wrapping 64-bit machine arithmetic on
+/// the tagged words, with no tag test, no overflow test and no promotion, and bit 0 of the
+/// result forced to 1 (#2245), one `bor_imm` per site.
+///
+/// **Why forcing the tag changes no correct result.** A tagged `Int` `v` is the word
+/// `2v + 1` (`una-rt`, `values.rs`): bit 0 is 1, and a handle is an even word other than 0.
+/// When both operands are tagged, `a = 2x + 1` and `b = 2y + 1`, and the word computed is
+///
+/// - `+`: `(a - 1) + b = 2(x + y) + 1`;
+/// - `-`: `(a - b) + 1 = 2(x - y) + 1`;
+/// - `*`: `(a >> 1) * (b - 1) + 1 = x * 2y + 1 = 2xy + 1`, where `a >> 1` is arithmetic and
+///   gives `x` exactly.
+///
+/// Each is computed modulo 2^64, and 2^64 is even, so the parity of each is that of the exact
+/// value: odd. Bit 0 is already 1, and `r | 1 = r`. This holds for any two tagged operands,
+/// whether or not the result fact holds; when it holds the word is also exactly the tagged word
+/// of `x op y`, since `2(x op y) + 1` then lies in `[-2^63, 2^63)` and nothing wraps. So the
+/// `bor_imm` changes the word only when an operand is not a tagged word, which a correct operand
+/// fact excludes: a handle (an `Int` promoted past the tagged range, against its proven range)
+/// or 0. Then it turns what could be an even word, a handle naming a live object of the heap,
+/// into an odd word, an `Int` immediate: a wrong fact costs a wrong `Int` value at worst, as
+/// ADR 0112 EL-2 bounds a wrong proof, never a word that the runtime would read, retain or
+/// release as an object.
+fn unchecked_word(builder: &mut FunctionBuilder<'_>, prim: Prim, a: Value, b: Value) -> Value {
+    let word = match prim {
+        Prim::Add => {
+            let untagged = builder.ins().iadd_imm_s(a, -1);
+            builder.ins().iadd(untagged, b)
+        }
+        Prim::Sub => {
+            let difference = builder.ins().isub(a, b);
+            builder.ins().iadd_imm_s(difference, 1)
+        }
+        _ => {
+            let x = builder.ins().sshr_imm_s(a, 1);
+            let twice_y = builder.ins().iadd_imm_s(b, -1);
+            let product = builder.ins().imul(x, twice_y);
+            builder.ins().iadd_imm_s(product, 1)
+        }
+    };
+    builder.ins().bor_imm_s(word, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use una_core::IntType;
@@ -4661,6 +4690,258 @@ mod tests {
             name: name.to_owned(),
             args: Vec::new(),
         })
+    }
+
+    /// The function `(a, b) -> a op b` of [`unchecked_word`], or, with `operands`, the same
+    /// function of no parameters over those two constant words; with `optimized`, after the
+    /// mid-end of the instruction set that `una build` compiles for (opt level `speed`).
+    fn unchecked_function(
+        prim: Prim,
+        operands: Option<(i64, i64)>,
+        optimized: bool,
+    ) -> cranelift_codegen::ir::Function {
+        use cranelift_codegen::Context;
+        use cranelift_codegen::control::ControlPlane;
+        use cranelift_codegen::ir::{Function, Signature, UserFuncName};
+        use cranelift_frontend::FunctionBuilderContext;
+
+        let isa = crate::isa().unwrap();
+        let mut signature = Signature::new(isa.default_call_conv());
+        if operands.is_none() {
+            signature.params.push(AbiParam::new(types::I64));
+            signature.params.push(AbiParam::new(types::I64));
+        }
+        signature.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), signature);
+        let mut context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut func, &mut context);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let (a, b) = match operands {
+                Some((a, b)) => (
+                    builder.ins().iconst(types::I64, a),
+                    builder.ins().iconst(types::I64, b),
+                ),
+                None => {
+                    let params = builder.block_params(block);
+                    (params[0], params[1])
+                }
+            };
+            let result = unchecked_word(&mut builder, prim, a, b);
+            builder.ins().return_(&[result]);
+            builder.finalize(isa.frontend_config());
+        }
+        if !optimized {
+            return func;
+        }
+        let mut context = Context::for_function(func);
+        context
+            .optimize(isa.as_ref(), &mut ControlPlane::default())
+            .unwrap();
+        context.func
+    }
+
+    /// The word `a op b` of [`unchecked_word`] on two constant words, as Cranelift's own
+    /// constant folding computes it in the mid-end of `una build`: the 64-bit semantics of the
+    /// instructions it emits, without running them.
+    fn unchecked_constant(prim: Prim, a: i64, b: i64) -> i64 {
+        use cranelift_codegen::ir::InstructionData;
+        let func = unchecked_function(prim, Some((a, b)), true);
+        let entry = func.layout.entry_block().unwrap();
+        let last = func.layout.last_inst(entry).unwrap();
+        let returned = func.dfg.inst_args(last)[0];
+        let defined = func.dfg.value_def(returned).unwrap_inst();
+        match func.dfg.insts[defined] {
+            InstructionData::UnaryImm { imm, .. } => imm.bits(),
+            _ => panic!("not folded to a constant:\n{}", func.display()),
+        }
+    }
+
+    const PRIMS: [Prim; 3] = [Prim::Add, Prim::Sub, Prim::Mul];
+
+    /// The instructions of `func`'s entry block, without comments: the right-hand side of each
+    /// definition, then the `return`.
+    fn instructions(func: &cranelift_codegen::ir::Function) -> Vec<String> {
+        func.display()
+            .to_string()
+            .lines()
+            .map(|line| line.split(" ; ").next().unwrap_or(line).trim())
+            .filter_map(|line| {
+                line.split_once(" = ")
+                    .map(|(_, rhs)| rhs.to_owned())
+                    .or_else(|| line.starts_with("return").then(|| line.to_owned()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_unchecked_operation_forces_the_tag_bit_of_its_result_2245() {
+        // The lowering of `+`, `-` and `*` at a machine-width site ends with `bor` 1 on the
+        // arithmetic's word: one instruction per site, which the mid-end of `una build` keeps.
+        let expected: [(Prim, &[&str]); 3] = [
+            (
+                Prim::Add,
+                &[
+                    "iconst.i64 -1",
+                    "iadd v0, v2",
+                    "iadd v3, v1",
+                    "iconst.i64 1",
+                    "bor v4, v5",
+                    "return v6",
+                ],
+            ),
+            (
+                Prim::Sub,
+                &[
+                    "isub v0, v1",
+                    "iconst.i64 1",
+                    "iadd v2, v3",
+                    "iconst.i64 1",
+                    "bor v4, v5",
+                    "return v6",
+                ],
+            ),
+            (
+                Prim::Mul,
+                &[
+                    "iconst.i64 1",
+                    "sshr v0, v2",
+                    "iconst.i64 -1",
+                    "iadd v1, v4",
+                    "imul v3, v5",
+                    "iconst.i64 1",
+                    "iadd v6, v7",
+                    "iconst.i64 1",
+                    "bor v8, v9",
+                    "return v10",
+                ],
+            ),
+        ];
+        for (prim, lines) in expected {
+            let lowered = unchecked_function(prim, None, false);
+            assert_eq!(
+                instructions(&lowered),
+                lines,
+                "{prim:?}:\n{}",
+                lowered.display()
+            );
+            let optimized = unchecked_function(prim, None, true);
+            let after = instructions(&optimized);
+            let ors = after.iter().filter(|line| line.starts_with("bor ")).count();
+            let returned = after[after.len() - 2].clone();
+            assert!(
+                ors == 1 && returned.starts_with("bor "),
+                "{prim:?}: the mid-end dropped the tag:\n{}",
+                optimized.display()
+            );
+        }
+    }
+
+    /// The tagged word of `v`, as `una-rt` makes it.
+    fn tagged(v: i64) -> i64 {
+        (v << 1) | 1
+    }
+
+    #[test]
+    fn the_forced_tag_changes_no_result_in_the_tagged_range_2245() {
+        // Every pair of operands from the edges of the tagged range, and around 0, whose exact
+        // result is in range too: the word is the tagged word of the exact result, bit for bit.
+        const LOW: i64 = -(1 << 62);
+        const HIGH: i64 = (1 << 62) - 1;
+        let edges = [
+            LOW,
+            LOW + 1,
+            LOW / 2,
+            -(1 << 31),
+            -3,
+            -2,
+            -1,
+            0,
+            1,
+            2,
+            3,
+            (1 << 31) - 1,
+            HIGH / 2,
+            HIGH / 2 + 1,
+            HIGH - 1,
+            HIGH,
+        ];
+        let mut compared = 0;
+        for prim in PRIMS {
+            for x in edges {
+                for y in edges {
+                    let (x, y) = (i128::from(x), i128::from(y));
+                    let exact = match prim {
+                        Prim::Add => x + y,
+                        Prim::Sub => x - y,
+                        _ => x * y,
+                    };
+                    let Ok(exact) = i64::try_from(exact) else {
+                        continue;
+                    };
+                    if !(LOW..=HIGH).contains(&exact) {
+                        continue;
+                    }
+                    let (a, b) = (tagged(x as i64), tagged(y as i64));
+                    assert_eq!(
+                        unchecked_constant(prim, a, b),
+                        tagged(exact),
+                        "{prim:?} {x} {y}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        // Results at both edges are among them: `LOW + 0`, `HIGH - 0`, `LOW * 1`, `HIGH * 1`.
+        assert!(compared > 300, "{compared}");
+        // A wrong result fact alone, on tagged operands, still gives an odd word.
+        for prim in PRIMS {
+            for (x, y) in [(HIGH, HIGH), (LOW, LOW), (HIGH, LOW), (LOW, -1)] {
+                let word = unchecked_constant(prim, tagged(x), tagged(y));
+                assert_eq!(word & 1, 1, "{prim:?} {x} {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wrong_operand_fact_yields_an_odd_word_never_a_handle_2245() {
+        // An operand that a wrong fact takes for a tagged word while it is a handle (an even
+        // word other than 0, as a promoted `Int` is) or 0. Without the forced tag, `+` and `-`
+        // of a handle and a tagged word give an even word: one that could name a live object.
+        let handles = [
+            2_i64,
+            4,
+            6,
+            0x1000,
+            0x7ffe,
+            1 << 40,
+            i64::MAX - 1,
+            i64::MIN,
+            0,
+        ];
+        let tagged_words = [
+            tagged(0),
+            tagged(1),
+            tagged(-1),
+            tagged(7),
+            tagged((1 << 62) - 1),
+        ];
+        for prim in PRIMS {
+            for h in handles {
+                for t in tagged_words {
+                    for (a, b) in [(h, t), (t, h), (h, h)] {
+                        let word = unchecked_constant(prim, a, b);
+                        assert_eq!(word & 1, 1, "{prim:?} {a:#x} {b:#x}: {word:#x}");
+                    }
+                }
+            }
+        }
+        // The forced tag is what makes it so: `+` of the handle 4 and the tagged 0 is 4 before it.
+        assert_eq!(4_i64 - 1 + tagged(0), 4);
+        assert_eq!(unchecked_constant(Prim::Add, 4, tagged(0)), 5);
     }
 
     #[test]

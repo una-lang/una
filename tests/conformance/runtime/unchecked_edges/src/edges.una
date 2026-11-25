@@ -1,0 +1,75 @@
+-- test: `+`, `-` and `*` whose operands and result a refinement proves in the tagged range give the exact result at both edges of that range, so forcing the tag bit of an unchecked operation changes no value (#2245)
+-- spec: spec/16 §4
+-- grant: console
+-- expect: run-output "add: -4611686018427387904 4611686018427387902 0 -1"
+-- expect: run-output "sub: 4611686018427387903 -4611686018427387903 -4611686018427387904 4611686018427387903"
+-- expect: run-output "mul: -4611686018427387904 4611686018427387902 -4611686018427387903 4611686018427387903"
+-- expect: run-output "scaled: 4611686014132420609 -4611686014132420609 0"
+-- expect: run-output "past: 4611686018427387904 -4611686018427387905 true true"
+module edges
+
+pub kind Edge = Int in -4611686018427387904..4611686018427387903
+
+pub kind Half = Int in -2305843009213693952..2305843009213693951
+
+pub kind Root = Int in -2147483647..2147483647
+
+pub add(a: Half, b: Half) -> Edge
+=
+  let total: Edge = a + b
+  total
+
+pub sub(a: Half, b: Half) -> Edge
+=
+  let difference: Edge = a - b
+  difference
+
+pub down(a: Edge, b: Edge) -> Edge
+  requires a - b >= -4611686018427387904 and a - b <= 4611686018427387903
+=
+  let difference: Edge = a - b
+  difference
+
+pub twice(n: Half) -> Edge
+=
+  let doubled: Edge = n * 2
+  doubled
+
+pub negated(n: Edge) -> Edge
+  requires n > -4611686018427387904
+=
+  let flipped: Edge = n * -1
+  flipped
+
+pub scaled(n: Root) -> Edge
+=
+  let product: Edge = n * 2147483647
+  product
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let lowest = add(-2305843009213693952, b: -2305843009213693952)
+  let highest = add(2305843009213693951, b: 2305843009213693951)
+  let nothing = add(2305843009213693951, b: -2305843009213693951)
+  let minus = add(-2305843009213693952, b: 2305843009213693951)
+  @console.print("add: {lowest} {highest} {nothing} {minus}")
+  let top = sub(2305843009213693951, b: -2305843009213693952)
+  let near = sub(-2305843009213693952, b: 2305843009213693951)
+  let bottom = down(-4611686018427387903, b: 1)
+  let back = down(4611686018427387902, b: -1)
+  @console.print("sub: {top} {near} {bottom} {back}")
+  let low = twice(-2305843009213693952)
+  let high = twice(2305843009213693951)
+  let flip = negated(4611686018427387903)
+  let flop = negated(-4611686018427387903)
+  @console.print("mul: {low} {high} {flip} {flop}")
+  let big = scaled(2147483647)
+  let small = scaled(-2147483647)
+  let zero = scaled(0)
+  @console.print("scaled: {big} {small} {zero}")
+  let above = back + 1
+  let below = bottom - 1
+  let ordered = bottom < back
+  let promoted = above > back
+  @console.print("past: {above} {below} {ordered} {promoted}")
