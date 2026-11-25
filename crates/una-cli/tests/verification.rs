@@ -315,7 +315,7 @@ fn a_decimal_goal_and_its_counterexample_show_decimal_values_1041() {
     // shown as the source writes it, as its counterexample shows values (#1041): no
     // `result >= 0` for `it >= 0.00`, no aligned coefficient, and `coefficient()` named.
     let root = facts_package_0_5(
-        "decimal-goals",
+        "decimal_goals",
         "module facts
 
 pub kind Amount = Decimal[2] where it >= 0.00
