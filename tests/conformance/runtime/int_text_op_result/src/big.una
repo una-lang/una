@@ -1,0 +1,40 @@
+-- test: the result of an operation that holds an `Int` of more than 4300 digits aborts the run with U6003 at the operation, after its handler ran: its event ends `aborted`, whether or not the run records a trace, in both engines (spec/11 §7, #1550)
+-- spec: spec/11 §7
+-- grant: console
+-- expect: run-output "before"
+-- expect: run-output "made 4299"
+-- expect: run-output "made 4300"
+-- expect: error U6003 at src/big.una:31:11
+module big
+
+capability Source
+  op get(exp: Int) -> Int
+
+handler make() for Source
+  uses @console: Console[print]
+  op get(exp) =
+    @console.print("made {exp}")
+    power(exp)
+
+--- Ten to the `exp`, built by a loop of multiplications: cheap to build, quadratic to write.
+power(exp: Int) -> Int
+=
+  let edit n = 1
+  for i in 1..exp
+    n = n * 10
+  n
+
+--- Ten to the `exp`, from the source, modulo 7.
+digits(exp: Int) -> Int
+  uses @s: Source[get]
+=
+  let n = @s.get(exp)
+  n mod 7
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("before")
+  let small = digits(4299) with @s = make()
+  let big = digits(4300) with @s = make()
+  @console.print("done {small} {big}")

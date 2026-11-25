@@ -1,0 +1,37 @@
+-- test: an argument of an operation that holds an `Int` of more than 4300 digits aborts the run with U6003 at the operation, before it starts: the operation writes no event and its handler does not run, whether or not the run records a trace, in both engines (spec/11 §7, #1550)
+-- spec: spec/11 §7
+-- grant: console
+-- expect: run-output "before"
+-- expect: run-output "kept 4299"
+-- expect: error U6003 at src/big.una:29:3
+module big
+
+capability Sink
+  op put(note: Text, x: Int) -> Unit
+
+handler keep() for Sink
+  uses @console: Console[print]
+  op put(note, x) = @console.print("kept {note}")
+
+--- Ten to the `exp`, built by a loop of multiplications: cheap to build, quadratic to write.
+power(exp: Int) -> Int
+=
+  let edit n = 1
+  for i in 1..exp
+    n = n * 10
+  n
+
+--- Puts ten to the `exp`, which has `exp + 1` digits.
+send(exp: Int) -> Unit
+  uses @k: Sink[put]
+=
+  let note = "{exp}"
+  @k.put(note, x: power(exp))
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("before")
+  send(4299) with @k = keep()
+  send(4300) with @k = keep()
+  @console.print("done")

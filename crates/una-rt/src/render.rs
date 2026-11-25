@@ -176,6 +176,47 @@ impl Types {
         render(&self.0, ty, word, true, &[], None)
     }
 
+    /// Whether a value of the type at `ty`, written in a trace with its fields labeled above
+    /// `public` redacted, can hold an `Int`: only such a value can make [`Types::render`]
+    /// refuse it (`spec/11 §7`). A run that records no trace still checks the values an event
+    /// would show, and needs to write only those that can (#1550). It over-approximates: a
+    /// `true` only means the value is written to decide. O(types reachable from `ty`).
+    pub fn writes_int(&self, ty: usize) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut pending = vec![ty];
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            match self.0.get(ty) {
+                Some(Shape::Int) => return true,
+                Some(
+                    Shape::List(item)
+                    | Shape::Seq(item)
+                    | Shape::Set(item)
+                    | Shape::HashSet(item)
+                    | Shape::Dense(item),
+                ) => pending.push(*item),
+                Some(Shape::Map(key, value) | Shape::HashMap(key, value)) => {
+                    pending.extend([*key, *value]);
+                }
+                // A field labeled above `public` is written `<redacted:level>`, unless it is
+                // `unit`, which holds no `Int` either.
+                Some(Shape::Data(variants)) => pending.extend(
+                    variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .filter(|field| field.redacted.is_none())
+                        .map(|field| field.ty),
+                ),
+                // A type parameter is written `?` in a trace, which passes no descriptors; the
+                // other shapes write no `Int` of unbounded digits.
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// `word` in an event of the host's `HttpServer`: `<redacted:level>` when `redacted` names a
     /// level, as [`Types::redacted`] writes it, and otherwise its Una form with the fields of
     /// the server's kinds in the reduced form of ADR 0123 rule 1 under `key`
@@ -540,6 +581,48 @@ fn shape(value: &Value) -> Option<Shape> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_type_that_writes_an_int_in_a_trace_can_be_refused() {
+        // #1550: 0 Text, 1 Int, 2 List[Int], 3 a record whose one `Int` field is redacted, 4 a
+        // recursive kind that reaches an `Int` through itself, 5 a map of texts, 6 a kind
+        // whose redacted field is `unit` and whose other field is the record 3.
+        let field = |ty: usize, redacted: Option<&str>| Field {
+            name: "f".to_owned(),
+            ty,
+            redacted: redacted.map(str::to_owned),
+            shown: redacted.is_none(),
+        };
+        let variant = |fields: Vec<Field>| Variant {
+            name: "V".to_owned(),
+            fields,
+            server: None,
+        };
+        let types = Types(vec![
+            Shape::Text,
+            Shape::Int,
+            Shape::List(1),
+            Shape::Data(vec![variant(vec![
+                field(0, None),
+                field(1, Some("secret")),
+            ])]),
+            Shape::Data(vec![
+                variant(vec![]),
+                variant(vec![field(4, None), field(2, None)]),
+            ]),
+            Shape::Map(0, 0),
+            Shape::Data(vec![variant(vec![
+                field(7, Some("internal")),
+                field(3, None),
+            ])]),
+            Shape::Unit,
+        ]);
+        let writes: Vec<bool> = (0..8).map(|ty| types.writes_int(ty)).collect();
+        assert_eq!(
+            writes,
+            [false, true, true, false, true, false, false, false]
+        );
+    }
 
     #[test]
     fn a_failure_shows_its_public_fields_and_redacts_labeled_ones_inside() {
