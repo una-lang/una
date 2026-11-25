@@ -653,7 +653,6 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     // ----- helpers -----
 
-    /// The text of a name of this module.
     /// Enters `inner`, code that runs only when something else decides, for U3013's advice
     /// (#837), and returns the context to restore after it. Inside a branch of `together` the
     /// branch's own context stays: the branch is one `let` (U2024), so the inner advice, a
@@ -668,6 +667,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         outer
     }
 
+    /// The text of a name of this module.
     pub(crate) fn name(&self, ident: &Ident) -> &'a str {
         self.env.text(self.module, ident.name)
     }

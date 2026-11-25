@@ -680,6 +680,32 @@ fn u3021_names_the_handler_whose_own_uses_bring_in_the_excess() {
 }
 
 #[test]
+fn u3021_tells_a_handlers_own_uses_from_what_its_installation_gives_it() {
+    // Review 1 of #2241, M1: `relay` declares no `uses`, so the excess at 30:3 and 35:3 is what
+    // its installation's arguments give it (ADR 0093 rule 14), and the repair points at those
+    // arguments; `relay_held` at 40:3 brings in `Net` both ways, and the repair names both.
+    let diagnostics = check_json("security/boundary_installed_arguments");
+    let texts: Vec<Vec<Row>> = [(30, 3), (35, 3), (40, 3)]
+        .iter()
+        .map(|&(line, col)| {
+            let found = at(&diagnostics, "U3021", line, col);
+            assert_eq!(found.len(), 1, "{diagnostics:?}");
+            rows(&found[0])
+        })
+        .collect();
+    let args = "what the installation of the handler granted as `@log` gives it, the `uses` of the functions and lambdas among its arguments, which count at this call: install `@log` with arguments whose `uses` lie within the ceiling of `media.render`, which allows no operation of `Net`, such as a named function that declares none; a lambda given there counts the `uses` that its parameter's type declares";
+    let own = "the own `uses` of the handler granted as `@log`, which count at this call: grant `@log` a handler whose own `uses` lie within the ceiling of `media.render`, which allows no operation of `Net`";
+    assert_eq!(
+        texts,
+        [
+            vec![row("", &format!("narrow {args}"), "")],
+            vec![row("", &format!("narrow {args}"), "")],
+            vec![row("", &format!("narrow {own}; and {args}"), "")],
+        ]
+    );
+}
+
+#[test]
 fn u3021_narrows_to_the_ceiling_or_says_that_no_grant_keeps_both() {
     let ceiling = check_json("authority/boundary_ceiling");
     let found = at(&ceiling, "U3021", 12, 3);

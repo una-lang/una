@@ -841,7 +841,7 @@ impl Checker<'_, '_, '_> {
                         grants.extend(own);
                         if let Some(installed) = self.findings.installed.get(installed_at) {
                             for (capability, ops) in &installed.uses {
-                                granted.handlers.push((
+                                granted.installed.push((
                                     need.name.clone(),
                                     *capability,
                                     ops.clone(),
@@ -1505,8 +1505,13 @@ pub(crate) struct Granted {
     /// operation the binding permits, which is what it grants (rule 5).
     direct: Vec<(String, CapId, Vec<String>)>,
     /// Each requirement bound to a handler: its name, and each capability and operations of the
-    /// handler's own `uses` and of what its installation's arguments granted it (rules 5, 14).
+    /// handler's own `uses` (rule 5).
     handlers: Vec<(String, CapId, Vec<String>)>,
+    /// Each requirement bound to a handler: its name, and each capability and operations that
+    /// its installation's arguments granted it, the `uses` of the functions and lambdas given
+    /// to it (rule 14). Kept apart from `handlers`: a handler that declares no `uses` can still
+    /// carry them, and narrowing its own `uses` would change nothing.
+    installed: Vec<(String, CapId, Vec<String>)>,
 }
 
 /// ADR 0093 rule 6: the repair of a U3021 that grants `boundary` too much of `capability`, at a
@@ -1523,14 +1528,16 @@ pub(crate) struct Granted {
 ///   decision about trust, and none when no binding does;
 ///   but when every such requirement's own binding already lies within the ceiling, the excess
 ///   comes from elsewhere, and the repair names the handlers granted to the call whose own
-///   `uses` bring it in (`granted`, #2213) rather than repeat the grants already written;
+///   `uses`, or whose installation's arguments, bring it in (`granted`, #2213) rather than
+///   repeat the grants already written;
 /// - when it does not, no grant of a binding keeps both, and the repair says so, naming the
 ///   requirements whose operations the ceiling withholds; a handler whose own `uses` lie within
 ///   the ceiling still does, as U3020's repair says for the same requirement (#1931), and the
 ///   other requirements keep their narrowed grant in the same `with`; otherwise the consumer
 ///   decides between the module and its ceiling;
 /// - with no requirement of the callee on `capability`, narrow what is given to the ceiling, or
-///   the own `uses` of the handlers granted to the call that bring in the excess.
+///   the own `uses` of the handlers granted to the call, or the arguments of their
+///   installation, that bring in the excess.
 ///
 /// Linear in the requirements and grants of the call, times the operations of `capability`.
 fn ceiling_repair(
@@ -1564,28 +1571,50 @@ fn ceiling_repair(
         .filter(|need| need.capability == Some(capability) && !need.ops.is_empty())
         .map(|need| (need, in_order(env, capability, &need.ops)))
         .collect();
-    // The handlers granted to the call whose own `uses` bring in an operation of `capability`
-    // that the ceiling withholds.
-    let mut leaking: Vec<String> = Vec::new();
-    for (binding, of, ops) in &granted.handlers {
-        if *of == capability && !fits(ops) && !leaking.contains(binding) {
-            leaking.push(binding.clone());
+    // The handlers granted to the call whose own `uses`, or whose installation's arguments,
+    // bring in an operation of `capability` that the ceiling withholds.
+    let over_of = |grants: &[(String, CapId, Vec<String>)]| {
+        let mut bindings: Vec<String> = Vec::new();
+        for (binding, of, ops) in grants {
+            if *of == capability && !fits(ops) && !bindings.contains(binding) {
+                bindings.push(binding.clone());
+            }
         }
-    }
-    let through_handlers = || {
-        let bindings: Vec<String> = leaking.iter().map(|b| format!("`@{b}`")).collect();
-        let (them, a) = if leaking.len() == 1 {
-            ("the handler", "a handler")
-        } else {
-            ("the handlers", "handlers")
-        };
-        let bindings = and_list(&bindings);
-        format!(
-            "the own `uses` of {them} granted as {bindings}, which count at this call: grant {bindings} {a} whose own `uses` lie within the ceiling of `{key}`, which allows {within}"
-        )
+        bindings
     };
+    let leaking = over_of(&granted.handlers);
+    let carrying = over_of(&granted.installed);
+    let through_handlers = || {
+        let mut parts = Vec::new();
+        if !leaking.is_empty() {
+            let bindings: Vec<String> = leaking.iter().map(|b| format!("`@{b}`")).collect();
+            let (them, a) = if leaking.len() == 1 {
+                ("the handler", "a handler")
+            } else {
+                ("the handlers", "handlers")
+            };
+            let bindings = and_list(&bindings);
+            parts.push(format!(
+                "the own `uses` of {them} granted as {bindings}, which count at this call: grant {bindings} {a} whose own `uses` lie within the ceiling of `{key}`, which allows {within}"
+            ));
+        }
+        if !carrying.is_empty() {
+            let bindings: Vec<String> = carrying.iter().map(|b| format!("`@{b}`")).collect();
+            let (them, it) = if carrying.len() == 1 {
+                ("the handler", "it")
+            } else {
+                ("the handlers", "them")
+            };
+            let bindings = and_list(&bindings);
+            parts.push(format!(
+                "what the installation of {them} granted as {bindings} gives {it}, the `uses` of the functions and lambdas among its arguments, which count at this call: install {bindings} with arguments whose `uses` lie within the ceiling of `{key}`, which allows {within}, such as a named function that declares none; a lambda given there counts the `uses` that its parameter's type declares"
+            ));
+        }
+        parts.join("; and ")
+    };
+    let leaks = !leaking.is_empty() || !carrying.is_empty();
     if named.is_empty() {
-        return Some(Report::advice(if leaking.is_empty() {
+        return Some(Report::advice(if !leaks {
             format!(
                 "narrow what this gives `{key}` to its ceiling, which allows {within}: a handler or a function value whose own `uses` lie within it"
             )
@@ -1619,7 +1648,7 @@ fn ceiling_repair(
                     and_list(&bindings)
                 )
             };
-            return Some(Report::advice(if leaking.is_empty() {
+            return Some(Report::advice(if !leaks {
                 format!(
                     "{lead}; narrow the rest of what this gives `{key}` to its ceiling, which allows {within}: a handler or a function value whose own `uses` lie within it"
                 )
