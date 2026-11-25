@@ -718,3 +718,34 @@ Rule 1's "What is linked" says that on Linux `una` depends dynamically only on g
 - **Where it is checked.** `scripts/load-commands.txt` lists what a released `una` and an executable that `una build` links may ask the dynamic loader for, and `scripts/load-commands-una.txt` what `una` alone may add (`libm.so.6` on Linux); `scripts/load-commands.sh` fails on anything else. Besides glibc's own libraries (`libc.so.6`, `libm.so.6`, `ld-linux-x86-64.so.2`, `ld-linux-aarch64.so.1`), `libgcc_s.so.1` is the only library those lists allow on Linux.
 - **What does not change.** `una` still does not run on musl distributions, and needs glibc from the gate image's version on. No C++ runtime is a NEEDED entry (`libstdc++` is linked statically, #1956). No foreign code enters a Una program, and nothing is added to what `una` loads: `libgcc_s.so.1` was already a NEEDED entry of every Linux `una`, allowed by `scripts/load-commands.txt` and listed in `docs/foreign-code-inventory.md` (the unwinder, sections 2 to 4).
 - **Cost.** None: no algorithm, build step or run-time work changes.
+
+## Amendment (2026-11-25): uninstall removes the proof-cache key (rule 32, #2205)
+
+- Status: Proposed (2026-11-25), for the Owner's decision. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment would govern once accepted. The implementation applies it since #2097 (released in 0.5.0).
+- Issue: #2205.
+
+**Why.** Rule 32's "Uninstall" bullet says that uninstall never touches the proof-cache key (`~/.una/proof-cache.key` or the file `UNA_PROOF_KEY` names, ADR 0064) and prints the path of each that exists. #2097 changed the default key. `una` makes `~/.una/proof-cache.key` at run time (ADR 0064 rule 2), so the installer's record does not list it, and an uninstall that kept it left a file with no use without the installation, and left `~/.una` behind. More than tidiness: the key authenticates the proof cache. Each cache entry carries an HMAC-SHA-256 tag under that key (ADR 0064 rule 1), so an entry is trusted when its tag matches. A key left after an uninstall would let a later install of `una` trust the cache entries that the earlier one wrote; with the key removed, the later install makes a new key, the old entries fail their tags, and each such query is solved again (never an error, ADR 0064 rule 1).
+
+**The change.** In rule 32's "Uninstall" bullet, "It never touches Itaoca (ADR 0122) or the proof-cache key (`~/.una/proof-cache.key` or the file `UNA_PROOF_KEY` names, ADR 0064), and prints the path of each that exists, for the user to remove if they wish" reads: it never touches Itaoca (ADR 0122); it removes the default proof-cache key, `$HOME/.una/proof-cache.key`, and then `$HOME/.una` when it is empty; and it keeps a key file that `UNA_PROOF_KEY` names, and prints its path.
+
+**What uninstall does, as `install.sh` and its tests have it on `origin/main` (092022e22).**
+
+- It removes the recorded files, the key, and the recorded directories when they are empty. The header of `install.sh` says: "It also removes the one file `una` makes outside a package at run time, the proof cache's key $HOME/.una/proof-cache.key (ADR 0064), and then $HOME/.una when it is empty. A key file that UNA_PROOF_KEY names is the user's choice of file and is kept. The messages say what was removed and name what is left."
+- It removes only that one name, with `rm -f`: "Only that one name is removed, with `rm -f`, which removes a symbolic link and never what the link names; a directory or anything else at the name is kept." A key that is a symbolic link goes, and the message says "removed the proof cache's key $key, a symbolic link; the file it named is kept". A directory at the name stays, and the message says "kept $key, which is not a file". The test `uninstall_removes_a_key_that_is_a_link_and_never_what_it_names` covers a link to a file, to a directory and to nothing.
+- The key is the one of `$HOME/.una`, whatever `UNA_HOME` is (`keydir=$HOME/.una`). When `UNA_HOME` is elsewhere, `$HOME/.una` is removed after it only when it is empty; otherwise the message says "kept $keydir, which holds: ...". The empty directory is removed with `rmdir`, which refuses a directory that holds anything.
+- As root, the key is removed only when `$HOME/.una` is `UNA_HOME`, which the script has checked to be a place only root can change; otherwise it is kept and the message says "as root, kept the proof cache's key $keydir/proof-cache.key, which is outside $home".
+- A file that `UNA_PROOF_KEY` names is never removed. When it exists, the message says "kept the proof cache's key $UNA_PROOF_KEY, which UNA_PROOF_KEY names".
+- Nothing else of the user's is removed: a file or directory in `~/.una` that the installer did not make stays, and the message names it ("removed Una from ...; kept there, since the installer did not install them: keys, notes.txt, proof-cache.key.bak").
+- Tests, in `crates/una-cli/tests/install.rs`: `uninstall_removes_the_proof_cache_key_and_then_the_empty_directory` (the key and `~/.una` are gone, the message says "removed the proof cache's key ..." and "removed ...", and with no key nothing is said of one); `uninstall_keeps_and_names_what_the_product_did_not_make` (foreign files, a staged `proof-cache.key.bak`, a directory at the key's name, `UNA_HOME` elsewhere with and without a foreign file in `~/.una`, and `UNA_PROOF_KEY`).
+
+**What does not change.**
+
+- The record still lists exactly `bin/una` and `bin/ita`, and uninstall removes exactly what it lists, with the path checks of rule 32. The key is not in the record: it is removed by name, and only that name.
+- Uninstall never touches Itaoca (ADR 0122), the proof cache's entries in a package's `.una/`, or any file it did not make. A key file chosen with `UNA_PROOF_KEY` stays the user's.
+- The key's format, location and creation (ADR 0064 rule 2) and the trust the cache has under it are unchanged. Removing the key makes no obligation pass: the cache only skips solving an identical query (ADR 0064 rule 6), and solver `unknown` stays an error.
+
+**Security.** The change removes a secret that has no use without the installation, so it only narrows what a later install can trust. The removal never follows a symbolic link, never removes a directory, and, as root, acts only inside the directory the script has already checked.
+
+**Cost.** O(1): one `rm -f` and one `rmdir`.
+
+**Documentation.** The Getting started guide (uninstall bullet), the release notes of 0.5.0 and the changelog already say this; `install.sh`'s own header says it. Only rule 32's "Uninstall" bullet states the opposite, and it stays as accepted until this amendment is decided.
