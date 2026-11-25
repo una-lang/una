@@ -2197,7 +2197,7 @@ fn what_the_installer_may_not_replace_at_a_target_is_refused_before_anything_is_
     // the installer's own one-line message, for every user: at a fixed name before anything is
     // downloaded, at a guide's name once the archive is unpacked, and in both cases before
     // anything is written or removed. As root, the root checks refuse most of them first.
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-fixed-targets");
     let _ = std::fs::remove_dir_all(&dir);
     let version = "9.8.7";
@@ -2363,6 +2363,42 @@ fn what_the_installer_may_not_replace_at_a_target_is_refused_before_anything_is_
                 std::fs::read_dir(&elsewhere).unwrap().count(),
                 0,
                 "{case}: written outside UNA_HOME"
+            );
+        }
+    }
+    // #2224 review 1: as an ordinary user, an existing directory the installer writes in that
+    // the user cannot write in made `rm -f` stop the installation halfway in the same way. It is
+    // refused before anything is written: `bin/` before any download, `docs/guide/` once the
+    // archive is unpacked. As root, the owner and mode checks stand unchanged.
+    let read_only = "is a directory this user cannot write in";
+    for (rel, fixed) in [("bin", true), ("docs/guide", false), ("lib", false)] {
+        let _ = std::fs::remove_dir_all(dir.join("home"));
+        file("bin/una");
+        file("README.md");
+        directory(rel);
+        std::fs::set_permissions(home.join(rel), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let (output, fetched) = install_on(&dir, version, &GLIBC_239);
+        std::fs::set_permissions(home.join(rel), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let case = format!("{rel} of mode 555");
+        assert_eq!(output.status.code(), Some(1), "{case}: {}", stderr(&output));
+        let message = format!("una install: error: {}/{rel} {read_only}", home.display());
+        assert!(
+            stderr(&output).starts_with(&message),
+            "{case}: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stderr(&output).lines().count(),
+            1,
+            "{case}: {}",
+            stderr(&output)
+        );
+        assert_eq!(fetched.is_empty(), fixed, "{case}: {fetched:?}");
+        for kept in ["bin/una", "README.md"] {
+            assert_eq!(
+                std::fs::read_to_string(home.join(kept)).unwrap(),
+                "theirs",
+                "{case}: {kept} replaced"
             );
         }
     }

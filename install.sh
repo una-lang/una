@@ -41,7 +41,9 @@
 # user, what is already at a name the installer writes must be something it may replace (a
 # regular file or a symbolic link where a file goes, a directory where a directory goes), or the
 # installer refuses before anything is written, and the fixed names before anything is downloaded
-# (#2216): it never removes what it did not install.
+# (#2216). A regular file or a link at such a name is replaced, whoever made it; a directory or a
+# special file is never removed to make room. As an ordinary user, an existing directory the
+# installer writes in must also be writable by this user.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -359,25 +361,32 @@ fi
 # `replaceable REL [dir]`: what is at UNA_HOME/REL, where the installer writes, is something it
 # may replace (#2216), for every user: nothing, a regular file, or a symbolic link that does not
 # name a directory, which `rm -f` removes as itself, never what it names; with `dir`, nothing or
-# a directory the installer writes in. Anything else (a directory where a file goes, a FIFO, a
-# file where a directory goes) is not the installer's to remove, and would stop the installation
-# halfway, after `bin/una` was replaced: it is refused before anything is written. A link that
-# names a directory is refused too: `mv` onto it would move `bin/una.new` into that directory.
-# `[ -f ]` and `[ -d ]` follow a link, so a link is told apart first; as root, the block above
-# refused every link already.
+# a directory the installer writes in. A regular file or a link at a name the installer writes is
+# replaced, whoever made it; anything else (a directory where a file goes, a FIFO, a file where
+# a directory goes) is never removed to make room, and would stop the installation halfway,
+# after `bin/una` was replaced: it is refused before anything is written. A link that names a
+# directory is refused too: `mv` onto it would move `bin/una.new` into that directory, and one
+# rule holds for every file target. `[ -f ]` and `[ -d ]` follow a link, so a link is told apart
+# first; as root, the block above refused every link already. As an ordinary user, an existing
+# directory the installer writes in must also be one this user can write in and enter, where
+# `rm -f` and `cp` would fail halfway too (#2224 review 1); every file target lies in one of
+# those directories, so this covers the directory each file is removed from. As root, the
+# owner and mode checks above stand, unchanged.
 replaceable() {
     at=$home
     [ "$1" = . ] || at=$home/$1
     [ -e "$at" ] || [ -L "$at" ] || return 0
     if [ "${2:-}" = dir ]; then
         [ -d "$at" ] \
-            || fail "$at is not a directory, and the installer writes in it; the installer does not remove what it did not install, so nothing was changed"
+            || fail "$at is not a directory, and the installer writes in it; it removes no file, directory or special file to make room for a directory, so nothing was changed"
+        [ "$uid" = 0 ] || { [ -w "$at" ] && [ -x "$at" ]; } \
+            || fail "$at is a directory this user cannot write in, and the installer writes in it; nothing was changed: make it writable (chmod u+wx) and run the installer again"
     elif [ -L "$at" ]; then
         [ ! -d "$at" ] \
-            || fail "$at is a symbolic link to a directory, where the installer writes a file; the installer does not write into what the link names, so nothing was changed"
+            || fail "$at is a symbolic link to a directory, where the installer writes a file; it replaces only a regular file or a symbolic link that names no directory there, so nothing was changed"
     else
         [ -f "$at" ] \
-            || fail "$at is neither a regular file nor a symbolic link, and the installer writes a file there; the installer does not remove what it did not install, so nothing was changed"
+            || fail "$at is neither a regular file nor a symbolic link, and the installer writes a file there; it replaces only a regular file or a symbolic link there, and removes no directory or special file to make room, so nothing was changed"
     fi
 }
 # The fixed targets of every installation, before anything is downloaded: UNA_HOME, `bin/`, the
