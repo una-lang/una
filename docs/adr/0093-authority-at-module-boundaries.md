@@ -184,3 +184,26 @@ This closes the known limitation recorded earlier on 2026-10-14 (#669).
 - **Codes.** No new code.
 - **Complexity.** A summary of (binding, boundary) pairs, closed by a worklist over its edges: one edge per `uses` entry resolved at each call, reference, lambda and installation, and each pair follows each edge out of its binding once. That is O(E × K) for E edges and K boundaries, linear in the program for a fixed `una.toml`. A scaling test runs a chain of forwarding functions at growing sizes.
 - **Formal.** It extends the obligation of #629.
+
+## Amendment (2026-11-25, Proposed): what rule 6 says a U3021 repair keeps
+
+- Status: Proposed (2026-11-25), for the Owner's decision. The accepted text of this record above this amendment is unchanged. Once accepted, this amendment governs where the two differ.
+- Issue: #2213, from point 2 of the review of #2207 (card #1931).
+
+### Why
+
+Rule 6's U3021 bullet reads: "If the callee needs more than the ceiling, there is no repair that keeps both, and the diagnostic says so". Since #1931, U3021's repair offers a handler whose own `uses` lie within the ceiling for such a requirement. U3020's repair offers the same handler (rule 6's U3020 bullet: "a handler skeleton whose `uses` lie within the ceiling"). Rule 5 counts a handler granted at a boundary with its own `uses`, not with the operations it implements. References B10, B11 and B12 build with exactly such handlers.
+
+So a handler does keep both the library and the ceiling. `spec/13 §3` reads the rule's words as "no grant of a binding keeps both" in a dated sentence (#1931). That reading agrees with rule 5, with rule 6's U3020 bullet and with the references, but it is not what the accepted sentence literally says. This amendment states the reading in the record itself. No program's meaning changes: rule 6 governs repair texts, and `una fix` applies no edit of U3021 under either text.
+
+### Decision
+
+6a. **U3021's repairs.** Rule 6's U3021 bullet reads as follows. Rank 1 narrows each grant to the ceiling. Where the callee has several requirements of one capability, it narrows each to the operations its own requirement declares (#2213). If a requirement needs more than the ceiling, no grant of a binding keeps both, and the diagnostic says so. A handler whose own `uses` lie within the ceiling still keeps both (rule 5), and the repair names it for that requirement, as U3020's does. Otherwise the consumer decides between the library and the ceiling. No repair raises a ceiling, and `una fix` applies no edit of U3021.
+
+### Consequences
+
+- **Implementation.** None waits on this amendment. The handler route has been in the checker since #1931, under `spec/13 §3`'s dated reading. #2213 (PR #2241) adds one narrowed grant per requirement, which the accepted words "narrows the grant to the ceiling" already allow.
+- **Spec.** `spec/13 §3` keeps its dated sentence. Once this amendment is accepted, that sentence cites rule 6a instead of reading rule 6.
+- **If it is refused.** The handler route leaves U3021's repair, which then only narrows a grant, or says that nothing keeps both. U3020's handler route stays, since rule 6's U3020 bullet states it.
+- **Codes.** No new code.
+- **Formal.** None: repair texts are outside the authority confinement obligation (#562, #629).
