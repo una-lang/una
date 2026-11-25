@@ -30,6 +30,8 @@ pub enum Construct {
     Drive,
     /// A test's `stop after N` line.
     StopAfter,
+    /// The standard module `std.time`: its units and constants.
+    StdTime,
     // Edition 0.4, ADR 0117 (`spec/27`).
     /// `e within d`, a deadline.
     Within,
@@ -69,8 +71,8 @@ pub enum Construct {
     Dot,
     /// The product, factorization and solve kernels.
     MatrixKernels,
-    /// The clause `simd required`.
-    SimdRequired,
+    /// `simd` as a name: no longer reserved.
+    SimdName,
     /// The argument labels `with:` and `and:`.
     ArgumentLabels,
     /// `F32` and the finite kinds.
@@ -273,7 +275,7 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
         contextual: &["ever", "on"],
         prelude: &[],
         methods: &[],
-        modules: &["std.time"],
+        modules: &[],
         variants: &[("HttpError", "Interrupted")],
         manifest: &[],
         codes: &["U6007"],
@@ -348,6 +350,26 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
         prelude: &[],
         methods: &[],
         modules: &[],
+        variants: &[],
+        manifest: &[],
+        codes: &[],
+        clashes: &[],
+        trust: NO_TRUST,
+        unsettled: &[],
+        landed: "v0.4.0",
+        changed: &[],
+    },
+    Entry {
+        id: Construct::StdTime,
+        name: "std.time",
+        edition: Edition::V0_4,
+        record: "ADR 0116",
+        spec: "spec/26 §2",
+        reserved: &[],
+        contextual: &[],
+        prelude: &[],
+        methods: &[],
+        modules: &["std.time"],
         variants: &[],
         manifest: &[],
         codes: &[],
@@ -547,7 +569,19 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
         contextual: &[],
         prelude: &[],
         methods: &[],
-        modules: &["std.host.HttpServer", "std.testing.test_request"],
+        modules: &[
+            "std.host.HttpServer",
+            "std.host.Method",
+            "std.host.Param",
+            "std.host.Request",
+            "std.host.Exchange",
+            "std.host.Status",
+            "std.host.Reply",
+            "std.host.ServeError",
+            "std.testing.test_request",
+            "std.testing.test_exchange",
+            "std.testing.TestRequestError",
+        ],
         variants: &[],
         manifest: &["a `serve:` grant"],
         codes: &["U3033"],
@@ -815,6 +849,9 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
             ("Matrix", "cholesky"),
             ("Matrix", "solve_lower"),
             ("Matrix", "solve_upper"),
+            ("Matrix", "solve"),
+            ("Matrix", "solve_array"),
+            ("Lu", "solve"),
             ("Tensor", "contract"),
         ],
         modules: &[],
@@ -827,20 +864,23 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
         landed: "v0.4.0",
         changed: &[],
     },
+    // The clause `simd required` of ADR 0120 rule 58 is refused until it lands (`spec/29
+    // §17`); its entry joins the ledger with the release that accepts it. What has landed is
+    // the word: `simd` is a name in edition 0.5.
     Entry {
-        id: Construct::SimdRequired,
-        name: "simd required",
+        id: Construct::SimdName,
+        name: "simd as a name",
         edition: Edition::V0_5,
         record: "ADR 0120",
-        spec: "spec/29 §17",
+        spec: "spec/01 §5",
         reserved: &[],
-        contextual: &["simd", "required", "target", "neon", "avx2", "avx512"],
+        contextual: &[],
         prelude: &[],
         methods: &[],
         modules: &[],
         variants: &[],
         manifest: &[],
-        codes: &["U2039", "U3032"],
+        codes: &[],
         clashes: &[Clash {
             id: "0120-simd-word",
             program: "`simd` as an identifier: U0103",

@@ -17,6 +17,7 @@ mod lsp;
 mod migrate;
 mod musl_inputs;
 mod package;
+mod preview;
 mod proof_key;
 mod recovery;
 mod registry;
@@ -176,6 +177,9 @@ struct Analysis {
     drive_units: Option<una_check::DriveUnits>,
     /// The graph of ADR 0116 P1 as the type checker recorded it, for [`Checked`].
     timing_graph: una_check::TimingGraph,
+    /// The constructs of the edition ledger that only the checker sees, by span, for the
+    /// report's `preview_constructs` (ADR 0121 rule 8).
+    preview_sites: Vec<(una_project::ledger::Construct, una_syntax::Span)>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -338,6 +342,7 @@ fn analyze_and(
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
         timing: types.timing,
+        preview_sites: types.preview_sites,
         limit_label: types.limit_label,
         drive_units: types.drive_units,
         timing_graph: types.timing_graph,
@@ -375,6 +380,7 @@ fn environment_failure(probe: &str) -> Analysis {
         file_state: una_core::Label::public(),
         mounts: Vec::new(),
         timing: Vec::new(),
+        preview_sites: Vec::new(),
         limit_label: una_core::Label::public(),
         drive_units: None,
         timing_graph: una_check::TimingGraph::default(),

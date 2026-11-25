@@ -249,15 +249,29 @@ struct PackageDoc {
     max_memory: Option<u64>,
 }
 
-/// The edition section of the report (ADR 0121 rule 8, `spec/13 §6`). Its third key,
-/// `preview_constructs`, is not emitted yet: it lands with the edition ledger of ADR 0121
-/// rule 9 (#1752).
+/// The edition section of the report (ADR 0121 rule 8, `spec/13 §6`).
 #[derive(Serialize)]
 struct EditionDoc {
     /// The package's edition, as `ita.una` or `una.toml` names it.
     name: &'static str,
     /// Whether this release serves that edition as a preview (`spec/13 §7`).
     preview: bool,
+    /// Each construct of the edition ledger (ADR 0121 rule 9) that the package uses, ordered
+    /// by record, then construct; `[]` for a package of an edition with no ledger entry.
+    preview_constructs: Vec<PreviewConstructDoc>,
+}
+
+/// A construct of the edition ledger that the package uses (ADR 0121 rule 8).
+#[derive(Serialize)]
+struct PreviewConstructDoc {
+    /// The construct's name in the ledger.
+    construct: &'static str,
+    /// Its record, as `ADR 0116`.
+    record: &'static str,
+    /// The number of its sites in the package.
+    sites: usize,
+    /// The names of its unsettled points (ADR 0121 rule 5).
+    unsettled: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -972,6 +986,15 @@ fn build(
         edition: EditionDoc {
             name: manifest.edition.name(),
             preview: manifest.edition.is_preview(),
+            preview_constructs: crate::preview::preview_constructs(package, analysis, &manifest)
+                .into_iter()
+                .map(|(entry, sites)| PreviewConstructDoc {
+                    construct: entry.name,
+                    record: entry.record,
+                    sites,
+                    unsettled: entry.unsettled.iter().map(|point| point.name).collect(),
+                })
+                .collect(),
         },
         lock: LockDoc {
             solver_version: lock.solver_version.clone(),
@@ -1407,6 +1430,30 @@ fn module_lines(modules: &Modules<'_>, module: &str) -> usize {
 }
 
 /// The report as labeled lines.
+/// The constructs of the human `edition:` line (ADR 0121 rule 8): `: for ever (ADR 0116, 3
+/// sites), sum (ADR 0120, 1 site; unsettled: ...)`, or nothing when the package uses none.
+fn preview_constructs_line(constructs: &[PreviewConstructDoc]) -> String {
+    if constructs.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = constructs
+        .iter()
+        .map(|c| {
+            let sites = if c.sites == 1 { "site" } else { "sites" };
+            let unsettled = if c.unsettled.is_empty() {
+                String::new()
+            } else {
+                format!("; unsettled: {}", c.unsettled.join(", "))
+            };
+            format!(
+                "{} ({}, {} {sites}{unsettled})",
+                c.construct, c.record, c.sites
+            )
+        })
+        .collect();
+    format!(": {}", items.join(", "))
+}
+
 fn human(report: &Report) -> String {
     let mut out = String::new();
     let mut line = |text: String| {
@@ -1426,7 +1473,11 @@ fn human(report: &Report) -> String {
     } else {
         ""
     };
-    line(format!("edition: {}{preview}", report.edition.name));
+    line(format!(
+        "edition: {}{preview}{}",
+        report.edition.name,
+        preview_constructs_line(&report.edition.preview_constructs)
+    ));
     line(format!(
         "lock: z3 {}, sha256 {}",
         report.lock.solver_version, report.lock.hash

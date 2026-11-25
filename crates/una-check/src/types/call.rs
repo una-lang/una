@@ -370,6 +370,10 @@ impl<'a> Checker<'_, 'a, '_> {
             && let Some(id) = self.env.map_update
             && matches!(resolved, Ty::Map(..))
         {
+            // ADR 0121 rule 8: elaboration lowers the call, so the report counts it from here.
+            self.findings
+                .preview_sites
+                .insert((una_project::ledger::Construct::MapUpdate, span));
             self.outside_rl(span, || format!("the method `{method}`"));
             self.receiver_marker = Some((marker, target.clone()));
             let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
