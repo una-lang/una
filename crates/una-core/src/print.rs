@@ -43,7 +43,7 @@ pub fn print_term_with(term: &Term, replace: &dyn Fn(&Term) -> Option<String>) -
 
 /// Whether source text is a single primary or postfix expression: no white space outside
 /// brackets and text literals, and no leading minus, so it needs no parentheses.
-fn atomic(text: &str) -> bool {
+pub fn atomic(text: &str) -> bool {
     let mut depth = 0usize;
     let mut quoted = false;
     let mut escaped = false;

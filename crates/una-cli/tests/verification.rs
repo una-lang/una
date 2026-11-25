@@ -310,6 +310,94 @@ pub availability(remaining: Seats) -> Availability
 }
 
 #[test]
+fn a_decimal_goal_and_its_counterexample_show_decimal_values_1041() {
+    // `spec/29 §16` rule 11: a decimal is its coefficient in the verifier, but its goal is
+    // shown as the source writes it, as its counterexample shows values (#1041): no
+    // `result >= 0` for `it >= 0.00`, no aligned coefficient, and `coefficient()` named.
+    let root = facts_package_0_5(
+        "decimal-goals",
+        "module facts
+
+pub kind Amount = Decimal[2] where it >= 0.00
+
+pub kind Rate = Decimal[4] where it < 2.5
+
+pub diff(a: Amount, b: Amount) -> Amount
+  requires a == 1.25 and b == 1.30
+=
+  a - b
+
+pub rate(x: Decimal[4]) -> Rate
+  requires x == 2.5000
+=
+  x
+
+pub cents(x: Decimal[2]) -> Bool
+  requires x.coefficient() > 300
+=
+  true
+
+pub priced(y: Decimal[2]) -> Bool
+  requires y == 2.00
+=
+  cents(y)
+",
+    );
+    let output = una(&["--json", "check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let shown: Vec<Value> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| {
+            let repairs: Vec<&Value> = diagnostic["repairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|repair| &repair["description"])
+                .collect();
+            json!({
+                "message": diagnostic["message"],
+                "goal": diagnostic["obligation"]["goal"],
+                "counterexample": diagnostic["counterexample"],
+                "checked": repairs.last(),
+            })
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            json!({
+                "message": "refinement `result >= 0.00` is refuted",
+                "goal": "result >= 0.00",
+                "counterexample": {"bindings": [
+                    {"name": "a", "value": "1.25"},
+                    {"name": "b", "value": "1.30"},
+                    {"name": "result", "value": "-0.05"}
+                ]},
+                "checked": "check the value with `checked(value, result >= 0.00) else fail <Variant>`",
+            }),
+            json!({
+                "message": "refinement `result < 2.5` is refuted",
+                "goal": "result < 2.5",
+                "counterexample": {"bindings": [
+                    {"name": "result", "value": "2.5000"},
+                    {"name": "x", "value": "2.5000"}
+                ]},
+                "checked": "check the value with `checked(value, result < 2.5) else fail <Variant>`",
+            }),
+            json!({
+                "message": "precondition `y.coefficient() > 300` of this call is refuted",
+                "goal": "y.coefficient() > 300",
+                "counterexample": {"bindings": [{"name": "y", "value": "2.00"}]},
+                "checked": "check the value with `checked(value, y.coefficient() > 300) else fail <Variant>`",
+            }),
+        ]
+    );
+}
+
+#[test]
 fn a_missing_solver_is_u5003_and_never_a_silent_pass() {
     // `spec/12 §5`, `compiler/testing.md §3`: without the pinned solver, tier 1 fails.
     let root = package(
