@@ -832,3 +832,103 @@ fn a_clause_on_a_callee_that_fails_without_a_kind_survives_una_fix_0100() {
     std::fs::write(root.join("src/m.una"), fixed).unwrap();
     assert_eq!(codes_of(&root), Vec::<String>::new());
 }
+
+/// The codes of `una --json fix .` on `root`, after it wrote the package.
+fn fix_codes(root: &Path) -> Vec<String> {
+    let output = una(root, &["--json", "fix", "."]);
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema"], "una.fix/1", "{document}");
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_fix_of_a_reserved_word_leaves_a_program_that_parses_836() {
+    // #836: `una fix` renamed `edit` in `let edit total = 0` of edition 0.1 to `the_edit`,
+    // and wrote `let the_edit total = 0`, which does not parse. A rename is now offered only
+    // where the renamed program parses. In each position below, `una fix` runs and the
+    // program it leaves is parsed again by the check that follows: no syntax error of the
+    // parser (U0101) is left, and where the word names something the program checks.
+    let program = |line: &str| {
+        format!(
+            "module m\n\ng(x: Int) -> Int = x\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  {line}\n  @console.print(\"done\")\n"
+        )
+    };
+    let keyword_positions = [
+        ("let-edit", program("let edit total = g(1)")),
+        ("edit-statement", program("edit total")),
+        ("take-argument", program("let y = g(take total)")),
+        (
+            "together-block",
+            program("together\n    let a = g(1)\n    let b = g(2)"),
+        ),
+        (
+            "together-for",
+            program("let y = together for i in [1, 2]\n    g(i)"),
+        ),
+        (
+            "edit-parameter",
+            "module m\n\npub f(edit x: Int) -> Int = x\n".to_owned(),
+        ),
+    ];
+    for (name, source) in &keyword_positions {
+        let root = package(&format!("reserved-keyword-{name}"), "0.1", source);
+        // The repair is not offered where it would break the program: the diagnostic stays,
+        // with no edit, and `una fix` leaves the file as it was.
+        let found = diagnostics(&root);
+        let reserved: Vec<&Value> = found.iter().filter(|d| d["code"] == "U0103").collect();
+        assert!(!reserved.is_empty(), "{name}: {found:?}");
+        for diagnostic in &reserved {
+            let repairs = diagnostic["repairs"].as_array().unwrap();
+            assert!(
+                repairs.iter().all(|repair| repair["edit"].is_null()),
+                "{name}: {diagnostic}"
+            );
+        }
+        let codes = fix_codes(&root);
+        assert_eq!(&repaired(&root), source, "{name}");
+        assert!(codes.contains(&"U0103".to_owned()), "{name}: {codes:?}");
+        assert!(!codes.contains(&"U0101".to_owned()), "{name}: {codes:?}");
+    }
+    let name_positions = [
+        ("let-name", program("let edit = g(1)\n  let y = g(edit)")),
+        ("argument-name", program("let table = 2\n  let y = g(table)")),
+        (
+            "parameter-name",
+            "module m\n\npub f(take: Int) -> Int = take + 1\n".to_owned(),
+        ),
+        (
+            "kind-name",
+            "module m\n\npub kind service = Open | Closed\n\npub f(s: service) -> Bool = s is Open\n"
+                .to_owned(),
+        ),
+        (
+            "name-and-keyword",
+            program("let edit = g(1)\n  let edit total = g(edit)"),
+        ),
+    ];
+    for (name, source) in &name_positions {
+        let root = package(&format!("reserved-name-{name}"), "0.1", source);
+        let codes = fix_codes(&root);
+        let fixed = repaired(&root);
+        assert_ne!(&fixed, source, "{name}");
+        assert!(
+            !codes.contains(&"U0101".to_owned()),
+            "{name}: {codes:?}\n{fixed}"
+        );
+        if *name == "name-and-keyword" {
+            // The name is renamed; the keyword position keeps its U0103, with no edit.
+            assert!(
+                fixed.contains("let the_edit = g(1)\n  let edit total = g(the_edit)\n"),
+                "{fixed}"
+            );
+            assert_eq!(codes, ["U0103"], "{fixed}");
+        } else {
+            assert_eq!(codes, Vec::<String>::new(), "{name}: {fixed}");
+        }
+    }
+}

@@ -99,6 +99,8 @@ traced trait type unsafe var while
 | `macro` | not supported (charter §6) |
 | `async`, `await` | not supported; see structured concurrency in v0.2 |
 
+(2026-11-25, #836.) A word reserved for a later version that names something carries a rename edit (`spec/13 §3`), the same new name at every occurrence in the package. The edit is offered only where the program with the package's renames applied parses there: where the word stands as the keyword of its later construct, as `edit` in `let edit total = 0` or `take` in `f(take x)` of edition `0.1`, no name keeps the program's meaning, so the U0103 carries no edit and `una fix` leaves the word as it is.
+
 (2026-11-10, #1899, ADR 0014 Consequences.) The messages of `law`, `all`, `costs`, `traced`, `service`, `table`, `query`, `observe` and `commit` say "reserved for a later edition" instead of naming v0.3 or v0.4, since no release shipped those features; the same holds for `shared`, `iso` and `weak` in edition `0.2` (`spec/17 §9`). The words stay reserved, with the same code, in every edition.
 
 (v0.2, ADR 0056.) **Editions.** The keyword tables of this section are those of edition `0.1`, and a package of edition `0.1` keeps them in every version of the compiler. Only a package of edition `0.2` (`spec/13 §7`) gets the memory model's keywords (`spec/17`). There:

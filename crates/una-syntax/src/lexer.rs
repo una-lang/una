@@ -66,6 +66,28 @@ pub fn lex_in(
     interner: &mut Interner,
     keywords: KeywordSet,
 ) -> Lexed {
+    let mut out = lex_tokens(source, file, interner, keywords);
+    // The names the file uses are collected only to choose a rename clear of them, so a file
+    // with no rename, such as every standard module, skips the collection (#1894).
+    if !out.renames.is_empty() {
+        let used = names(&out, interner);
+        let chosen = choose(&out.renames, &used);
+        apply(&mut out, &chosen);
+    }
+    // The renames of names that start with `_` (ADR 0096 A).
+    crate::rewrite::underscore_renames(&out.text, file, keywords, &mut out.errors);
+    out
+}
+
+/// The tokens and lexical errors of `source` under `keywords`, with no repair chosen: what
+/// [`lex_in`] starts from, and what [`parsing_renames`] lexes its trial text with, so that a
+/// trial never starts another.
+fn lex_tokens(
+    source: &SourceFile,
+    file: FileId,
+    interner: &mut Interner,
+    keywords: KeywordSet,
+) -> Lexed {
     let mut lexer = Lexer {
         source,
         text: source.text(),
@@ -83,17 +105,6 @@ pub fn lex_in(
         project: false,
     };
     lexer.run();
-    // The names the file uses are collected only to choose a rename clear of them, so a file
-    // with no rename, such as every standard module, skips the collection (#1894).
-    if !lexer.out.renames.is_empty() {
-        let used = names(&lexer.out, lexer.interner);
-        let chosen = choose(&lexer.out.renames, &used);
-        apply(&mut lexer.out, &chosen);
-    }
-    let out = &mut lexer.out;
-    // The renames of names that start with `_` (ADR 0096 A).
-    let keywords = out.keywords;
-    crate::rewrite::underscore_renames(&out.text, file, keywords, &mut out.errors);
     lexer.out
 }
 
@@ -191,17 +202,32 @@ fn choose(renames: &[Rename], used: &BTreeSet<String>) -> BTreeMap<String, Strin
     chosen
 }
 
-/// Sets the rename edit of each error of `lexed.renames` to the name `chosen` gives its word.
+/// Sets the rename edit of each error of `lexed.renames` to the name `chosen` gives its word,
+/// where the renamed file parses there (#836, [`parsing_renames`]). Elsewhere the word stands
+/// where its construct's keyword would, as `edit` in `let edit total = 0` of edition 0.1, and
+/// no new name keeps the program's meaning, so the error keeps no edit.
 fn apply(lexed: &mut Lexed, chosen: &BTreeMap<String, String>) {
+    let edits: Vec<(usize, Span, String)> = lexed
+        .renames
+        .iter()
+        .filter_map(|rename| {
+            let name = chosen.get(&rename.word)?;
+            let error = lexed.errors.get(rename.error)?;
+            Some((rename.error, error.span, name.clone()))
+        })
+        .collect();
+    let parsing = parsing_renames(&lexed.text, lexed.keywords, edits);
     for rename in &lexed.renames {
-        let (Some(name), Some(error)) =
-            (chosen.get(&rename.word), lexed.errors.get_mut(rename.error))
-        else {
+        let Some(error) = lexed.errors.get_mut(rename.error) else {
             continue;
         };
         // The rename comes first; advice without an edit, such as edition 0.4's for `simd`,
-        // stays after it. `apply` runs again across files, so an earlier rename is replaced.
+        // stays after it. `apply` runs again across files, so an earlier rename is replaced,
+        // and removed when the renames of the whole package no longer parse there.
         error.repairs.retain(|repair| repair.edit.is_none());
+        let Some(name) = parsing.get(&rename.error) else {
+            continue;
+        };
         error.repairs.insert(
             0,
             SyntaxRepair {
@@ -209,6 +235,100 @@ fn apply(lexed: &mut Lexed, chosen: &BTreeMap<String, String>) {
                 edit: Some((error.span, name.clone())),
             },
         );
+    }
+}
+
+/// The renames of `edits`, each the index of its error, the reserved word's span in `text`
+/// and its new name, whose result parses (#836): the text with every kept rename applied is
+/// lexed and parsed, and a rename is dropped when a syntax error starts at its new name or
+/// before the end of the next token that is not layout, which is where the parser meets a
+/// name that stands where a keyword would (`let the_edit total = 0`, `g(the_take x)`, a
+/// `the_together` line over a block). The parser reads a reserved word as it reads a name
+/// (`Parser::lower_name`), so a rename that parses there gives the program the reading the
+/// checks already gave it. Each trial drops at least one rename or ends the search, so a file
+/// with `r` renames is parsed at most `r + 1` times, and each trial is linear in the length of
+/// the text and its tokens, with `O(log r)` per syntax error; a file with no rename, as every
+/// standard module, is never parsed here.
+fn parsing_renames(
+    text: &str,
+    keywords: KeywordSet,
+    mut edits: Vec<(usize, Span, String)>,
+) -> BTreeMap<usize, String> {
+    edits.sort_by_key(|(_, span, _)| span.start);
+    loop {
+        if edits.is_empty() {
+            return BTreeMap::new();
+        }
+        let mut trial = String::with_capacity(text.len());
+        let mut starts = Vec::with_capacity(edits.len());
+        let mut at = 0;
+        for (_, span, name) in &edits {
+            trial.push_str(text.get(at..span.start).unwrap_or(""));
+            starts.push(trial.len());
+            trial.push_str(name);
+            at = span.end;
+        }
+        trial.push_str(text.get(at..).unwrap_or(""));
+        let mut sources = crate::source::SourceDb::new();
+        let id = sources.add("rename.una", trial.as_bytes());
+        let mut interner = Interner::new();
+        let mut lexed = lex_tokens(sources.file(id), id, &mut interner, keywords);
+        // Every parse error counts: none is explained away by a lexical error of the same
+        // declaration, which the parser otherwise does not report (`Parser::report_error`).
+        lexed.errors.clear();
+        let parsed = crate::parser::parse_plain(&lexed, id, &interner);
+        // Where each rename's window ends: the end of the first token after the new name that
+        // is not a newline or an indentation change. `starts` is sorted, so one pass over the
+        // tokens finds every end.
+        let layout = |token: &Token| {
+            matches!(
+                token.kind,
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+            )
+        };
+        let mut ends = Vec::with_capacity(starts.len());
+        let mut next = 0;
+        for start in &starts {
+            while lexed
+                .tokens
+                .get(next)
+                .is_some_and(|token| token.span.start <= *start)
+            {
+                next += 1;
+            }
+            let end = lexed
+                .tokens
+                .iter()
+                .skip(next)
+                .find(|token| !layout(token))
+                .map_or(trial.len(), |token| token.span.end);
+            ends.push(end);
+        }
+        // An error is blamed on the last rename that starts at or before it, when it lies in
+        // that rename's window.
+        let blamed: BTreeSet<usize> = parsed
+            .errors
+            .iter()
+            .filter_map(|error| {
+                let at = error.span.start;
+                let last = starts
+                    .partition_point(|start| *start <= at)
+                    .checked_sub(1)?;
+                ends.get(last).is_some_and(|end| at <= *end).then_some(last)
+            })
+            .collect();
+        if blamed.is_empty() {
+            return edits
+                .into_iter()
+                .map(|(error, _, name)| (error, name))
+                .collect();
+        }
+        let mut index = 0;
+        edits.retain(|_| {
+            let keep = !blamed.contains(&index);
+            index += 1;
+            keep
+        });
     }
 }
 
