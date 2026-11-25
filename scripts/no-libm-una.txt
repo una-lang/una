@@ -4,29 +4,60 @@
 # its own floating-point model and in the C++ library's text formatting, never in a value of a
 # Una program. scripts/no-libm.sh reads this list for `una` only: the
 # release `libuna_rt.a` and every executable that `una build` links stay strict against
-# scripts/no-libm.txt, so none of these names is reachable from emitted code. Each name here
-# must be on scripts/no-libm.txt, and each one `una` imports must be imported by the Z3 library
-# it was linked with (UNA_Z3_LIB); a name of scripts/no-libm.txt that `una` imports and this
-# list does not hold fails the check. One name per line; `#` starts a comment, which says where
-# Z3 calls it (`nm -A -u` of the library of supply-chain/z3.lock: 2026-10-31, macOS arm64;
-# 2026-11-11, Linux aarch64, #1951). A name need not be imported on every platform: the check
-# ties only the names `una` imports.
-exp  # sat_local_search, sat_solver
-exp2  # luby, pb_card, pb_pb, sat_lookahead, smt_lookahead (macOS only: clang writes `pow(2.0, x)` as `exp2`; the Linux build imports pow there)
-log  # fpa2bv_converter, luby, pdd_solver, sat_solver, sls_arith_lookahead, sls_bv_engine, sls_bv_lookahead
-log2  # parallel_tactical, smt_parallel
-pow  # sat_lookahead, sat_prob, sat_solver, sls_arith_base
+# scripts/no-libm.txt, so none of these names is reachable from emitted code.
+#
+# One entry per line: the platform (`macos`, `linux` or `linux-builtins`, below), the name, and
+# the objects of the Z3 library that may import it there, by their member names in `libz3shell.a` (#1953); `#` starts
+# a comment. Each name must be on scripts/no-libm.txt. A name is allowed in `una` only on a
+# platform it is listed for, and only from those objects: every object of the Z3 library that
+# UNA_Z3_LIB names (`nm -A -u`) importing it must be listed here for it, and at least one must
+# import it, so a new import of a future Z3 (a new supply-chain/z3.lock) in another object fails
+# the check until this list names it, by review. The shipped Linux `una` is checked by its link
+# trace too (scripts/no-libm.sh --link-trace, from scripts/check-release.sh): there every object
+# of the link that references the name must be one of these objects of the Z3 library the lock
+# pins, so a reference of libstdc++.a's own objects, of Rust code or of any other object fails.
+# A name `una` imports that this list does not hold for the platform fails. Objects from
+# `nm -A -u` of the library of supply-chain/z3.lock: 2026-10-31, macOS arm64; 2026-11-11 and
+# 2026-11-25, Linux aarch64 (#1951, #1953).
+#
+# Clang writes `pow(2.0, x)` as `exp2`, so on macOS luby, pb_card, pb_pb, sat_lookahead and
+# smt_lookahead import `exp2` where GCC's Linux build imports `pow`.
+macos exp sat_local_search.cpp.o sat_solver.cpp.o
+macos exp2 luby.cpp.o pb_card.cpp.o pb_pb.cpp.o sat_lookahead.cpp.o smt_lookahead.cpp.o
+macos log fpa2bv_converter.cpp.o luby.cpp.o pdd_solver.cpp.o sat_solver.cpp.o sls_arith_lookahead.cpp.o sls_bv_engine.cpp.o sls_bv_lookahead.cpp.o
+macos log2 parallel_tactical.cpp.o smt_parallel.cpp.o
+macos pow sat_lookahead.cpp.o sat_prob.cpp.o sat_solver.cpp.o sls_arith_base.cpp.o
+linux exp sat_local_search.cpp.o sat_solver.cpp.o
+linux log fpa2bv_converter.cpp.o luby.cpp.o pdd_solver.cpp.o sat_solver.cpp.o sls_arith_lookahead.cpp.o sls_bv_engine.cpp.o sls_bv_lookahead.cpp.o
+linux log2 parallel_tactical.cpp.o smt_parallel.cpp.o
+linux pow luby.cpp.o pb_card.cpp.o pb_pb.cpp.o sat_lookahead.cpp.o sat_prob.cpp.o sat_solver.cpp.o sls_arith_base.cpp.o smt_lookahead.cpp.o
 #
 # Linux, glibc and GCC's libstdc++ (#1951). The `std::format` of libstdc++ 13 formats a
 # floating-point value in its header (`std::__format::__formatter_fp<char>::format<T>`, which
 # calls `frexp` for `double`, `frexpf` for `float`, `frexpl` for `long double`), so each Z3
 # object that instantiates it imports the three; Apple's libc++ formats through `std::to_chars`
-# in the dylib and its Z3 imports none of them. `remainder` is `hwf_manager::rem` of Z3's
-# hardware floating-point numbers (hwf.cpp, the floating-point theory's constants); Z3 imports
-# it on both platforms, but ld64 drops each unreferenced function of an object and GNU ld keeps
-# the whole text section of hwf.cpp.o (Z3 is not built with -ffunction-sections), so only the
-# Linux `una` imports it.
-frexp  # libstdc++ <format> in array_decl_plugin, ast, bv_decl_plugin, datatype_decl_plugin, dl_decl_plugin, seq_decl_plugin
-frexpf  # libstdc++ <format> in the same objects as frexp
-frexpl  # libstdc++ <format> in the same objects as frexp
-remainder  # hwf (hwf_manager::rem)
+# in the dylib and its Z3 imports none of them. libstdc++.a's own importers of `frexpl`
+# (hash_tr1.o, hash_c++0x.o) are not Z3 objects: the link trace of the shipped `una` must show
+# no reference of theirs.
+linux frexp array_decl_plugin.cpp.o ast.cpp.o bv_decl_plugin.cpp.o datatype_decl_plugin.cpp.o dl_decl_plugin.cpp.o seq_decl_plugin.cpp.o
+linux frexpf array_decl_plugin.cpp.o ast.cpp.o bv_decl_plugin.cpp.o datatype_decl_plugin.cpp.o dl_decl_plugin.cpp.o seq_decl_plugin.cpp.o
+linux frexpl array_decl_plugin.cpp.o ast.cpp.o bv_decl_plugin.cpp.o datatype_decl_plugin.cpp.o dl_decl_plugin.cpp.o seq_decl_plugin.cpp.o
+#
+# `remainder` is called by `hwf_manager::rem` of hwf.cpp, Z3's hardware floating-point numbers:
+# dead code, referenced by no object of the Z3 library, on Linux and on macOS (#1951 review, L4).
+# The macOS library imports it too, but ld64 drops each unreferenced function of an object, so
+# the macOS `una` does not; GNU ld keeps the whole text section of hwf.cpp.o (Z3 is not built
+# with -ffunction-sections), so the Linux `una` does.
+macos remainder hwf.cpp.o
+linux remainder hwf.cpp.o
+#
+# `linux-builtins`: the names that Z3 objects refer to on Linux and that the link of `una`
+# resolves inside it, to the compiler_builtins of the pinned Rust toolchain (its weak
+# definitions of the math functions, Rust's own code, not the platform's C library), so that
+# `una` does not import them and `nm -u` cannot see them; the link trace of the shipped `una`
+# shows them (#1953). Only the trace mode reads these entries: a reference must be from one of
+# these Z3 objects, and the definition must be compiler_builtins' or a shared library's; `una`
+# may not import these names, since they are not `linux` entries. The objects are those that
+# refer to them in the trace of the shipped `una` of 2026-11-25.
+linux-builtins ceil pdd_solver.cpp.o
+linux-builtins sqrt hwf.cpp.o sls_arith_lookahead.cpp.o sls_bv_engine.cpp.o sls_bv_lookahead.cpp.o

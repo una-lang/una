@@ -5,10 +5,17 @@
 # is allowed in `una` alone and only when the Z3 library imports it, never in `una` built
 # without the solver, in `libuna_rt.a` or in an executable that `una build` links, and any
 # other name of scripts/no-libm.txt fails everywhere. Every name of scripts/no-libm-una.txt is
-# then checked on its own in each of those scopes, the tie to the Z3 library by name (#1951).
-# The canaries declare the C function
-# themselves (`extern "C"`), so that each artifact imports exactly the names it is meant to. The
-# real artifacts are never changed.
+# then checked on its own in each of those scopes (#1951), and the tie to the Z3 library is by
+# object (#1953): the stand-in Z3 libraries hold members named as the objects the list names, and
+# a name imported by another member of the Z3 library fails. One `una` imports two names of the
+# list, with a Z3 library that imports only the first, and must fail on the second. On Linux the
+# check of the shipped `una` by its link trace (--link-trace) is given real links, made with
+# scripts/link-trace.sh as scripts/release.sh makes them, and each of its rules a link or a
+# trace that breaks it.
+# The canaries declare the C function themselves (`extern "C"`), in crates marked
+# `#![no_builtins]`, so that LLVM keeps each call (it would turn a call of `sqrt` or `ceil` into an
+# instruction) and each artifact imports exactly the names it is meant to. The real artifacts are
+# never changed.
 #
 # The release graph check (scripts/no-libm-graph.sh, #1949) has canaries of its own: its verdict
 # on each kind of `cargo tree` result, given as files, and on the real graph of this repository,
@@ -24,11 +31,22 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/no-libm-test.XXXXXX")
 trap 'rm -rf "${work:?}"' EXIT
 status=0
 
+case $(uname -s) in
+Darwin) os=macos ;;
+Linux) os=linux ;;
+*) echo "error: no rule for the platform $(uname -s)" >&2; exit 1 ;;
+esac
+list=$root/scripts/no-libm-una.txt
+# The names the solver's list holds for this platform, in its order, and the first object it
+# names for a name.
+names=$(sed 's/#.*//' "$list" | awk -v os="$os" '$1 == os { print $2 }')
+object_of() { sed 's/#.*//' "$list" | awk -v os="$os" -v n="$1" '$1 == os && $2 == n { print $3; exit }'; }
 # The first allowed name of the solver's list, and a denied name that it does not hold.
-allowed=$(sed 's/#.*//' "$root/scripts/no-libm-una.txt" | awk 'NF { print $1; exit }')
-[ -n "$allowed" ] || { echo "error: scripts/no-libm-una.txt lists no name" >&2; exit 1; }
+allowed=$(printf '%s\n' "$names" | sed -n 1p)
+[ -n "$allowed" ] || { echo "error: scripts/no-libm-una.txt lists no name for $os" >&2; exit 1; }
+allowed_object=$(object_of "$allowed")
 denied=cbrt
-if sed 's/#.*//' "$root/scripts/no-libm-una.txt" | grep -qxF "$denied"; then
+if sed 's/#.*//' "$list" | awk '{ print $2 }' | grep -qxF "$denied"; then
     echo "error: the canary's denied name $denied is on scripts/no-libm-una.txt" >&2
     exit 1
 fi
@@ -48,11 +66,12 @@ rust_source() {
     shift
     {
         echo '#![allow(unused)]'
+        echo '#![no_builtins]'
         printf '#[cfg_attr(target_os = "linux", link(name = "m"))]\nextern "C" {\n'
         for name in "$@"; do printf '    fn %s(x: f64) -> f64;\n' "$name"; done
         echo '}'
         if [ "$kind" = lib ]; then
-            printf '#[no_mangle]\npub extern "C" fn una_canary(x: f64) -> f64 {\n    let mut y = x;\n'
+            printf '#[no_mangle]\npub extern "C" fn %s(x: f64) -> f64 {\n    let mut y = x;\n' "${exported:-una_canary}"
         else
             printf 'fn main() {\n    let mut y = std::hint::black_box(2.0f64);\n'
         fi
@@ -85,6 +104,32 @@ archive() {
     ranlib "$work/$out.a" 2> /dev/null || true
 }
 
+# z3lib NAME MEMBER:FUNCTION...: a stand-in for the Z3 library at $work/NAME.a, one member per
+# argument, named MEMBER and importing FUNCTION (none when it is empty), each exporting a
+# function of its own.
+z3lib() {
+    out=$1
+    shift
+    rm -rf "${work:?}/members-$out" "$work/$out.a"
+    mkdir "$work/members-$out"
+    index=0
+    for pair in "$@"; do
+        index=$((index + 1))
+        member=${pair%%:*} function=${pair#*:}
+        exported=una_${out}_$index
+        # shellcheck disable=SC2086 # an empty FUNCTION is no argument
+        rust_source lib $function > "$work/members-$out/$index.rs"
+        exported=
+        compile --crate-type lib --emit obj -o "$work/members-$out/$member" "$work/members-$out/$index.rs"
+        (cd "$work/members-$out" && ar rc "$work/$out.a" "$member") > "$work/ar.log" 2>&1 || {
+            cat "$work/ar.log" >&2
+            echo "error: ar failed" >&2
+            exit 1
+        }
+    done
+    ranlib "$work/$out.a" 2> /dev/null || true
+}
+
 # A directory holding the executable $1 alone.
 dir_of() {
     rm -rf "${work:?}/exes-$1"
@@ -102,15 +147,19 @@ exe denied_exe "$denied"
 archive clean_rt
 archive allowed_rt "$allowed"   # the solver's name in the runtime
 archive denied_rt "$denied"
-archive z3 "$allowed"           # a stand-in for the Z3 library, importing the solver's name
-archive other_z3                # a Z3 library that does not import it
+z3lib z3 "$allowed_object:$allowed"  # a stand-in for the Z3 library, importing the solver's name
+z3lib other_z3 "$allowed_object:"    # a Z3 library that does not import it
+z3lib elsewhere_z3 "$allowed_object:$allowed" "elsewhere.cpp.o:$allowed"  # and from an object the list does not name
 
 # run NAME UNA_Z3_LIB UNA LIBUNA_RT EXECUTABLES: runs the check, its output in $work/NAME.log,
 # with `una` without the solver $rust (clean_una unless set).
+# With --link-trace, the check's trace mode, which has no UNA_WITHOUT_SOLVER.
 run() {
     name=$1 z3=$2
     shift 2
-    if [ -n "$z3" ]; then
+    if [ "$1" = --link-trace ]; then
+        UNA_Z3_LIB=$z3 "$check" "$@" > "$work/$name.log" 2>&1
+    elif [ -n "$z3" ]; then
         UNA_Z3_LIB=$z3 "$check" "$@" "${rust:-$work/clean_una}" > "$work/$name.log" 2>&1
     else
         env -u UNA_Z3_LIB "$check" "$@" "${rust:-$work/clean_una}" > "$work/$name.log" 2>&1
@@ -150,6 +199,8 @@ reject una-no-z3 "UNA_Z3_LIB names no Z3 library" \
     "" "$work/solver_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
 reject una-not-from-z3 "$allowed, which the Z3 library $work/other_z3.a does not import" \
     "$work/other_z3.a" "$work/solver_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
+reject una-not-from-listed-object "$allowed, which the object elsewhere.cpp.o of the Z3 library $work/elsewhere_z3.a imports" \
+    "$work/elsewhere_z3.a" "$work/solver_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
 rust=$work/solver_una
 reject rust-solver-name "$work/solver_una: $allowed" \
     "$work/z3.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
@@ -168,22 +219,25 @@ reject executable-denied "denied_exe: $denied" \
 # name of the list, in `una` without the solver, in `libuna_rt.a` and in an executable. The
 # canaries are linked, never run, so each C function is declared `f64 -> f64` whatever its real
 # signature (`frexp` takes a pointer too).
-names=$(sed 's/#.*//' "$root/scripts/no-libm-una.txt" | awk 'NF { print $1 }')
 first=$(printf '%s\n' "$names" | sed -n 1p)
 second=$(printf '%s\n' "$names" | sed -n 2p)
-[ -n "$second" ] || { echo "error: scripts/no-libm-una.txt lists fewer than two names" >&2; exit 1; }
+[ -n "$second" ] || { echo "error: scripts/no-libm-una.txt lists fewer than two names for $os" >&2; exit 1; }
 named=0
 for listed in $names; do
     named=$((named + 1))
     if [ "$listed" = "$first" ]; then other=$second; else other=$first; fi
+    object=$(object_of "$listed")
     exe "una_$listed" "$listed"
     exe "exe_$listed" "$listed"
     archive "rt_$listed" "$listed"
-    archive "z3_$listed" "$listed"
-    archive "z3_not_$listed" "$other"
+    z3lib "z3_$listed" "$object:$listed"
+    z3lib "z3_not_$listed" "$(object_of "$other"):$other"
+    z3lib "z3_elsewhere_$listed" "elsewhere.cpp.o:$listed"
     pass "solver-$listed" "$work/z3_$listed.a" "$work/una_$listed" "$work/clean_rt.a" "$(dir_of clean_exe)"
     reject "una-not-from-z3-$listed" "$listed, which the Z3 library $work/z3_not_$listed.a does not import" \
         "$work/z3_not_$listed.a" "$work/una_$listed" "$work/clean_rt.a" "$(dir_of clean_exe)"
+    reject "una-not-from-listed-object-$listed" "$listed, which the object elsewhere.cpp.o of the Z3 library $work/z3_elsewhere_$listed.a imports" \
+        "$work/z3_elsewhere_$listed.a" "$work/una_$listed" "$work/clean_rt.a" "$(dir_of clean_exe)"
     rust=$work/una_$listed
     reject "rust-$listed" "$work/una_$listed: $listed" \
         "$work/z3_$listed.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
@@ -193,6 +247,133 @@ for listed in $names; do
     reject "executable-$listed" "exe_$listed: $listed" \
         "$work/z3_$listed.a" "$work/clean_una" "$work/clean_rt.a" "$(dir_of "exe_$listed")"
 done
+
+# Two names of the list in one `una` (#1953): allowed when the Z3 library imports both, each from
+# an object the list names for it, and rejected on the second when it imports only the first.
+exe two_una "$first" "$second"
+z3lib two_z3 "$(object_of "$first"):$first" "$(object_of "$second"):$second"
+pass two-names "$work/two_z3.a" "$work/two_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
+reject two-names-second-not-from-z3 "$second, which the Z3 library $work/z3_$first.a does not import" \
+    "$work/z3_$first.a" "$work/two_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
+if grep -qF "$first, which the Z3 library" "$work/two-names-second-not-from-z3.log"; then
+    echo "error: canary two-names-second-not-from-z3 rejects $first, which the Z3 library imports" >&2
+    status=1
+fi
+
+# The check of the shipped `una` by its link trace (#1953), Linux only, where scripts/release.sh
+# links through scripts/link-trace.sh: real links of a `una` that calls a stand-in Z3 library,
+# each made by that linker, and traces that break one rule each.
+traced=0
+if [ "$os" = linux ]; then
+    tname=$(printf '%s\n' "$names" | sed -n 1p)
+    tobject=$(object_of "$tname")
+    z3lib libz3t "$tobject:$tname"
+    z3lib libz3e "elsewhere.cpp.o:$tname"
+    z3lib libcxxt "hash_tr1.o:$tname"
+    z3lib libz3other "$tobject:$tname" "extra.cpp.o:"
+    mkdir -p "$work/copy"
+    cp "$work/libz3other.a" "$work/copy/libz3t.a"  # another library at a path of the same name
+    # traced_exe NAME LIBS DIRECT [CALLS]: `una` at $work/NAME, its link trace at $work/NAME.trace,
+    # linked with the stand-in libraries LIBS; it calls the functions CALLS (by default the first
+    # one of each library of LIBS), and DIRECT (a name or nothing) itself.
+    traced_exe() {
+        tout=$1 libs=$2 direct=$3 calls=${4:-}
+        if [ -z "$calls" ]; then
+            for lib in $libs; do calls="$calls una_${lib}_1"; done
+        fi
+        {
+            echo '#![allow(unused)]'
+            echo '#![no_builtins]'
+            printf '#[cfg_attr(target_os = "linux", link(name = "m"))]\nextern "C" {\n'
+            for call in $calls; do printf '    fn %s(x: f64) -> f64;\n' "$call"; done
+            [ -z "$direct" ] || printf '    fn %s(x: f64) -> f64;\n' "$direct"
+            printf '}\nfn main() {\n    let mut y = std::hint::black_box(2.0f64);\n'
+            for call in $calls; do printf '    y += unsafe { %s(y) };\n' "$call"; done
+            [ -z "$direct" ] || printf '    y += unsafe { %s(y) };\n' "$direct"
+            echo '    println!("{y}");'
+            echo '}'
+        } > "$work/$tout.rs"
+        set --
+        for lib in $libs; do set -- "$@" -l "static=${lib#lib}"; done
+        rm -rf "${work:?}/traces-$tout"
+        mkdir "$work/traces-$tout"
+        UNA_LINK_TRACE_DIR=$work/traces-$tout
+        export UNA_LINK_TRACE_DIR
+        compile -o "$work/$tout" "$work/$tout.rs" -L "$work" "$@" -C "linker=$root/scripts/link-trace.sh"
+        unset UNA_LINK_TRACE_DIR
+        set -- "$work/traces-$tout"/link.*
+        [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "error: the link of $tout left not exactly one trace" >&2; exit 1; }
+        cp "$1" "$work/$tout.trace"
+    }
+    # The Z3 objects reach the shipped link inside una-z3's rlib: libbundle.a holds libz3t.a's
+    # member, the same bytes, in another archive. libz3b's member refers to a name of the
+    # `linux-builtins` entries, which the link resolves to the toolchain's compiler_builtins.
+    bname=$(sed 's/#.*//' "$list" | awk '$1 == "linux-builtins" { print $2; exit }')
+    bobject=$(sed 's/#.*//' "$list" | awk -v n="$bname" '$1 == "linux-builtins" && $2 == n { print $3; exit }')
+    [ -n "$bname" ] && [ -n "$bobject" ] || { echo "error: scripts/no-libm-una.txt has no linux-builtins entry" >&2; exit 1; }
+    rm -rf "${work:?}/bundle"
+    mkdir "$work/bundle"
+    (cd "$work/bundle" && ar x "$work/libz3t.a" "$tobject" && ar rc "$work/libbundle.a" "$tobject") \
+        || { echo "error: cannot make libbundle.a" >&2; exit 1; }
+    z3lib libz3b "$tobject:$tname" "$bobject:$bname"
+    traced_exe t_una libz3t ""
+    traced_exe t_bundle libbundle "" una_libz3t_1
+    traced_exe t_builtin libz3b "" "una_libz3b_1 una_libz3b_2"
+    traced_exe t_own_builtin libz3t "$bname"
+    traced_exe t_own libz3t "$tname"
+    traced_exe t_cxx "libz3t libcxxt" ""
+    traced_exe t_else libz3e ""
+    # tpass NAME UNA_Z3_LIB TRACE UNA, treject NAME MESSAGE UNA_Z3_LIB TRACE UNA: the check in
+    # its trace mode.
+    tpass() { traced=$((traced + 1)); pass "$1" "$2" --link-trace "$3" "$4" "$work/clean_rt.a" "$(dir_of clean_exe)"; }
+    treject() { traced=$((traced + 1)); reject "$1" "$2" "$3" --link-trace "$4" "$5" "$work/clean_rt.a" "$(dir_of clean_exe)"; }
+    tpass trace-clean "$work/libz3t.a" "$work/t_una.trace" "$work/t_una"
+    tpass trace-z3-object-in-another-archive "$work/libz3t.a" "$work/t_bundle.trace" "$work/t_bundle"
+    tpass trace-builtins "$work/libz3b.a" "$work/t_builtin.trace" "$work/t_builtin"
+    treject trace-builtins-own-reference "rcgu.o references $bname" \
+        "$work/libz3t.a" "$work/t_own_builtin.trace" "$work/t_own_builtin"
+    sed "s|^definition $bname .*|definition $bname /elsewhere/libcompiler_builtins-0.rlib(a.o)|" "$work/t_builtin.trace" > "$work/t_builtin_elsewhere.trace"
+    treject trace-builtins-elsewhere "/elsewhere/libcompiler_builtins-0.rlib(a.o) defines $bname" \
+        "$work/libz3b.a" "$work/t_builtin_elsewhere.trace" "$work/t_builtin"
+    # compiler_builtins' definition of the builtins name, given as the definition of the solver's.
+    cbdef=$(awk -v n="$bname" '$1 == "definition" && $2 == n && $3 ~ /libcompiler_builtins-/ { print $3; exit }' "$work/t_builtin.trace")
+    [ -n "$cbdef" ] || { echo "error: the trace of t_builtin shows no definition of $bname by compiler_builtins" >&2; status=1; }
+    { awk -v n="$tname" '!($1 == "definition" && $2 == n)' "$work/t_builtin.trace"; echo "definition $tname $cbdef"; } \
+        > "$work/t_builtin_solver.trace"
+    treject trace-builtins-not-for-solver-name "defines $tname" \
+        "$work/libz3b.a" "$work/t_builtin_solver.trace" "$work/t_builtin"
+    treject trace-own-reference "rcgu.o references $tname" \
+        "$work/libz3t.a" "$work/t_own.trace" "$work/t_own"
+    sed -n '3,$p' "$work/t_own.trace" | grep -q "^reference $tname .*t_own.*rcgu\.o$" \
+        || { echo "error: the trace of t_own names no reference of its own object to $tname" >&2; status=1; }
+    treject trace-libstdcxx-reference "$work/libcxxt.a(hash_tr1.o) references $tname" \
+        "$work/libz3t.a" "$work/t_cxx.trace" "$work/t_cxx"
+    treject trace-unlisted-object "$work/libz3e.a(elsewhere.cpp.o) references $tname" \
+        "$work/libz3e.a" "$work/t_else.trace" "$work/t_else"
+    treject trace-other-z3 "$work/libz3t.a($tobject) references $tname" \
+        "$work/copy/libz3t.a" "$work/t_una.trace" "$work/t_una"
+    treject trace-not-this-una "which is not $work/t_cxx byte for byte" \
+        "$work/libz3t.a" "$work/t_una.trace" "$work/t_cxx"
+    sed "2s/ $denied / /" "$work/t_una.trace" > "$work/t_untraced.trace"
+    treject trace-name-not-traced "does not trace $denied" \
+        "$work/libz3t.a" "$work/t_untraced.trace" "$work/t_una"
+    sed "/^reference $tname /d" "$work/t_una.trace" > "$work/t_noref.trace"
+    treject trace-no-reference "shows no reference of an object of the Z3 library to $tname" \
+        "$work/libz3t.a" "$work/t_noref.trace" "$work/t_una"
+    { cat "$work/t_una.trace"; echo "definition $tname $work/libmstatic.a(e_$tname.o)"; } > "$work/t_static.trace"
+    treject trace-static-definition "$work/libmstatic.a(e_$tname.o) defines $tname, outside a shared library" \
+        "$work/libz3t.a" "$work/t_static.trace" "$work/t_una"
+    { cat "$work/t_una.trace"; echo "relocation $tname somewhere"; } > "$work/t_garbled.trace"
+    treject trace-garbled "a line that is not a reference or a definition" \
+        "$work/libz3t.a" "$work/t_garbled.trace" "$work/t_una"
+    { sed -n 1p "$work/t_una.trace" | sed 's/^output: /output- /'; sed -n '2,$p' "$work/t_una.trace"; } > "$work/t_nooutput.trace"
+    treject trace-no-output "its first line names no linked file" \
+        "$work/libz3t.a" "$work/t_nooutput.trace" "$work/t_una"
+else
+    traced=1
+    reject trace-not-linux "a link trace is GNU ld's, read on Linux only" \
+        "$work/z3.a" --link-trace "$work/z3.a" "$work/solver_una" "$work/clean_rt.a" "$(dir_of clean_exe)"
+fi
 
 # The release graph check. expect_verdict NAME EXPECT COMMAND...: the verdict of COMMAND, a
 # function of scripts/no-libm-graph.sh, must be EXPECT (absent or finding).
@@ -256,4 +437,4 @@ if [ "$status" -ne 0 ]; then
     echo "no-libm-test: FAIL" >&2
     exit 1
 fi
-echo "no-libm-test: PASS (2 clean runs pass, 8 canaries fail as they must, $named names of the solver's list each allowed in una when Z3 imports it and rejected in 4 scopes, $graph_cases graph canaries)"
+echo "no-libm-test: PASS (2 clean runs pass, 9 canaries fail as they must, $named names of the solver's list on $os each allowed in una when Z3 imports it from an object the list names and rejected in 5 scopes, 2 names in one una, $traced link-trace canaries, $graph_cases graph canaries)"

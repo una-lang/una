@@ -15,12 +15,29 @@
 #   (scripts/no-libm-build.sh): Una's own Rust code, the interpreter's included.
 #
 # UNA, the release `una` binary, holds the Z3 solver (ADR 0124), C++ that calls the math library
-# in its heuristics (#1277). It is checked against the same list, except for the names of
-# scripts/no-libm-una.txt, each of which must also be on scripts/no-libm.txt and, when `una`
-# imports it, be imported by the Z3 library that UNA_Z3_LIB names, the one `una` was linked with
-# (`nm -A -u`): a name `una` imports that the solver does not, or with no UNA_Z3_LIB to tie it
-# to, fails. On Linux both the static and the dynamic symbol tables of `una` and of the
-# executables are read (`nm -u` and `nm -D -u`).
+# in its heuristics (#1277). It is checked against the same list, except for the names that
+# scripts/no-libm-una.txt lists for this platform, each of which must also be on
+# scripts/no-libm.txt and, when `una` imports it, be imported by the Z3 library that UNA_Z3_LIB
+# names, the one `una` was linked with (`nm -A -u`), and only from objects of that library that
+# the list names for it (#1953): a name `una` imports that the solver does not, that an object
+# the list does not name imports, or with no UNA_Z3_LIB to tie it to, fails. On Linux both the
+# static and the dynamic symbol tables of `una` and of the executables are read (`nm -u` and
+# `nm -D -u`).
+#
+# With --link-trace TRACE (Linux only), UNA is the shipped `una`, which scripts/release.sh links
+# with libstdc++.a and libgcc.a inside it, and TRACE is the record of that very link that
+# scripts/link-trace.sh wrote (GNU ld's --trace-symbol for every name of scripts/no-libm.txt):
+# its first line names the linked file, which must be byte for byte UNA, and its second the
+# traced names, which must be all of scripts/no-libm.txt. Each object of the link that refers to
+# one of those names must then be an archive member that is, byte for byte (`ar p`), the member
+# of the same name of the Z3 library UNA_Z3_LIB names (the Z3 objects reach the link inside
+# una-z3's rlib), and one that scripts/no-libm-una.txt names for that name on Linux; any other
+# object (a member of libstdc++.a, of a Rust library, the binary's own code) is a finding. A
+# definition of one of those names outside a shared library (a math library linked in
+# statically) is a finding too, except one by the pinned toolchain's compiler_builtins of a name
+# of the list's `linux-builtins` entries, which only Z3's listed objects may refer to. Each
+# solver name `una` imports must have such a reference. The trace names each object, so this mode needs no
+# `una` built without the solver; it has no UNA_WITHOUT_SOLVER argument.
 #
 # First it asserts the release dependency graph (`cargo tree --locked -e normal -p una-cli -p
 # una-rt`): it holds none of num-bigint, num-integer and num-traits, whose `std` code called the
@@ -39,6 +56,7 @@
 # symbols is a failure, never a skip.
 #
 # Usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES UNA_WITHOUT_SOLVER
+#        scripts/no-libm.sh --link-trace TRACE UNA LIBUNA_RT EXECUTABLES
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -46,14 +64,20 @@ deny=$root/scripts/no-libm.txt
 solver=$root/scripts/no-libm-una.txt
 graph=$root/scripts/no-libm-graph.sh
 
-if [ "$#" -ne 4 ]; then
+trace=""
+rust_una=""
+if [ "$#" -eq 5 ] && [ "$1" = --link-trace ]; then
+    trace=$2
+    shift 2
+elif [ "$#" -ne 4 ]; then
     echo "usage: scripts/no-libm.sh UNA LIBUNA_RT EXECUTABLES UNA_WITHOUT_SOLVER" >&2
+    echo "       scripts/no-libm.sh --link-trace TRACE UNA LIBUNA_RT EXECUTABLES" >&2
     exit 2
 fi
 una=$1
 archive=$2
 executables=$3
-rust_una=$4
+[ -n "$trace" ] || rust_una=$4
 
 fail() {
     echo "no-libm: FAIL ($1)" >&2
@@ -66,7 +90,11 @@ fail() {
 # shellcheck source=scripts/no-libm-graph.sh
 . "$graph"
 [ -f "$una" ] && [ -r "$una" ] || fail "no una binary at $una"
-[ -f "$rust_una" ] && [ -r "$rust_una" ] || fail "no una without the solver at $rust_una"
+if [ -n "$trace" ]; then
+    [ -f "$trace" ] && [ -r "$trace" ] || fail "no link trace at $trace"
+else
+    [ -f "$rust_una" ] && [ -r "$rust_una" ] || fail "no una without the solver at $rust_una"
+fi
 [ -f "$archive" ] && [ -r "$archive" ] || fail "no runtime library at $archive"
 [ -d "$executables" ] || fail "no executable directory at $executables"
 present=0
@@ -80,6 +108,7 @@ Darwin) os=macos ;;
 Linux) os=linux ;;
 *) fail "no rule for the platform $(uname -s)" ;;
 esac
+[ -z "$trace" ] || [ "$os" = linux ] || fail "a link trace is GNU ld's, read on Linux only"
 
 # The pinned toolchain's own llvm-nm, when its llvm-tools component is installed.
 toolchain_nm() {
@@ -118,13 +147,14 @@ list() {
 }
 
 # Checks the listing in $tmp/out of the artifact $1, strictly; with $2 = archive, each line
-# names its object (`nm -A`); with $2 = una, a name of scripts/no-libm-una.txt is not a finding
-# but is written to $tmp/solver, to be tied to the Z3 library. Prints each finding; exits
+# names its object (`nm -A`); with $2 = una, a name that scripts/no-libm-una.txt lists for this
+# platform ($tmp/names) is not a finding but is written to $tmp/solver, to be tied to the Z3
+# library. Prints each finding; exits
 # non-zero on one.
 check() {
     : > "$tmp/solver"
     awk -v artifact="$1" -v mode="${2:-binary}" -v os="$os" -v denyfile="$deny" \
-        -v solverfile="$solver" -v solverout="$tmp/solver" '
+        -v solverfile="$tmp/names" -v solverout="$tmp/solver" '
         function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
         function name(s) {
             sub(/@.*/, "", s)
@@ -171,42 +201,104 @@ check() {
 
 findings=0
 
-# The solver's list: every name must be one of the denylist's, so a typo or a name that is not
-# the math library's cannot hide anything.
-for name in $(sed 's/#.*//' "$solver"); do
-    if ! sed 's/#.*//' "$deny" | grep -qxF "$name"; then
-        echo "no-libm: $solver: $name is not a name of $deny"
-        findings=1
-    fi
-done
+# The solver's list, one entry per line: a platform (`macos`, `linux` or `linux-builtins`), a
+# name, which must be one of the denylist's, so that a typo or a name that is not the math
+# library's cannot hide anything, and at least one object of the Z3 library. $tmp/allowed gets
+# `name object` for each object of this platform's entries, $tmp/names this platform's names,
+# and on Linux $tmp/builtins `name object` for each object of the `linux-builtins` entries: the
+# references of Z3 objects that the link resolves to the pinned toolchain's compiler_builtins,
+# which only the trace mode reads; `una` may not import those names.
+awk -v os="$os" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allowed" -v names="$tmp/names" \
+    -v builtins="$tmp/builtins" '
+    function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    BEGIN {
+        while ((getline line < denyfile) > 0) {
+            line = trim(line)
+            if (line != "") denied[line] = 1
+        }
+        close(denyfile)
+        printf "" > allowed
+        printf "" > names
+        printf "" > builtins
+    }
+    {
+        line = trim($0)
+        if (line == "") next
+        n = split(line, w, /[ \t]+/)
+        if (n < 3 || (w[1] != "macos" && w[1] != "linux" && w[1] != "linux-builtins")) {
+            print "no-libm: " listfile ": an entry that is not a platform, a name and its objects: " $0
+            bad = 1
+            next
+        }
+        if (!(w[2] in denied)) { print "no-libm: " listfile ": " w[2] " is not a name of " denyfile; bad = 1; next }
+        if ((w[1] " " w[2]) in seen) { print "no-libm: " listfile ": " w[2] " is listed twice for " w[1]; bad = 1; next }
+        seen[w[1] " " w[2]] = 1
+        if (w[1] == "linux-builtins") {
+            if (os == "linux") for (i = 3; i <= n; i++) print w[2] " " w[i] > builtins
+            next
+        }
+        if (w[1] != os) next
+        print w[2] > names
+        for (i = 3; i <= n; i++) print w[2] " " w[i] > allowed
+    }
+    END { exit bad ? 1 : 0 }
+' "$solver" || findings=1
 # The release dependency graph holds none of the crates whose `std` code called the C math
 # library (#1093); scripts/no-libm-graph.sh judges each run of `cargo tree`.
 for crate in num-bigint num-integer num-traits; do
     no_libm_graph_check "$root" "$tmp" "$crate" || findings=1
 done
 
+imported=""
 : > "$tmp/out"
 if list -u "$una"; then
     if [ "$os" = linux ]; then list -D -u "$una" || findings=1; fi
     check "$una" una || findings=1
     imported=$(LC_ALL=C sort -u "$tmp/solver" | tr '\n' ' ' | sed 's/ $//')
     if [ -n "$imported" ]; then
-        # Each of them must be an import of the Z3 library `una` was linked with.
+        # Each of them must be an import of the Z3 library `una` was linked with, and only of
+        # objects of that library that the list names for it on this platform (#1953).
         if [ -z "${UNA_Z3_LIB:-}" ] || [ ! -f "$UNA_Z3_LIB" ]; then
             echo "no-libm: $una imports $imported, which only the solver may, and UNA_Z3_LIB names no Z3 library to tie them to"
             findings=1
         else
             : > "$tmp/out"
             if list -A -u "$UNA_Z3_LIB"; then
-                awk -v os="$os" '{ s = $NF; sub(/@.*/, "", s); if (os == "macos") sub(/^_/, "", s); print s }' \
-                    "$tmp/out" | LC_ALL=C sort -u > "$tmp/z3"
+                # `name object` for each import of a name of the list by an object of the library.
+                awk -v os="$os" -v lib="$UNA_Z3_LIB" -v namesfile="$tmp/names" -v pairs="$tmp/z3" '
+                    BEGIN {
+                        while ((getline line < namesfile) > 0) if (line != "") listed[line] = 1
+                        close(namesfile)
+                        prefix = lib ":"
+                        printf "" > pairs
+                    }
+                    /^[ \t]*$/ { next }
+                    {
+                        if (index($0, prefix) != 1) { print "no-libm: " lib ": a line nm wrote that names no object: " $0; bad = 1; next }
+                        rest = substr($0, length(prefix) + 1)
+                        colon = index(rest, ":")
+                        if (colon == 0) { print "no-libm: " lib ": a line nm wrote that names no object: " $0; bad = 1; next }
+                        object = substr(rest, 1, colon - 1)
+                        s = $NF
+                        sub(/@.*/, "", s)
+                        if (os == "macos") sub(/^_/, "", s)
+                        if (s in listed) print s " " object > pairs
+                    }
+                    END { exit bad ? 1 : 0 }
+                ' "$tmp/out" || findings=1
                 for name in $imported; do
-                    if ! grep -qxF "$name" "$tmp/z3"; then
+                    if ! awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$tmp/z3"; then
                         echo "no-libm: $una: $name, which the Z3 library $UNA_Z3_LIB does not import"
                         findings=1
                     fi
+                    for object in $(awk -v n="$name" '$1 == n { print $2 }' "$tmp/z3" | LC_ALL=C sort -u); do
+                        if ! grep -qxF "$name $object" "$tmp/allowed"; then
+                            echo "no-libm: $una: $name, which the object $object of the Z3 library $UNA_Z3_LIB imports and $solver does not name for it on $os"
+                            findings=1
+                        fi
+                    done
                 done
-                echo "no-libm: $una: the solver's imports, allowed by $solver: $imported"
+                echo "no-libm: $una: the solver's imports, allowed by $solver from the objects it names: $imported"
             else
                 findings=1
             fi
@@ -216,12 +308,124 @@ else
     findings=1
 fi
 
+if [ -n "$trace" ]; then
+    # The link of the shipped `una`, by its trace (#1953).
+    linked=$(sed -n '1s/^output: //p' "$trace")
+    if [ -z "$linked" ] || [ "$(sed -n '1p' "$trace")" != "output: $linked" ]; then
+        echo "no-libm: $trace: its first line names no linked file"
+        findings=1
+    elif [ ! -f "$linked" ] || ! cmp -s "$linked" "$una"; then
+        echo "no-libm: $trace is the trace of $linked, which is not $una byte for byte"
+        findings=1
+    fi
+    # Every name of the denylist must have been traced.
+    sed -n '2s/^traced: //p' "$trace" | tr ' ' '\n' | awk 'NF' | LC_ALL=C sort -u > "$tmp/traced"
+    sed 's/#.*//' "$deny" | awk 'NF { print $1 }' | LC_ALL=C sort -u > "$tmp/deny"
+    missing=$(LC_ALL=C comm -23 "$tmp/deny" "$tmp/traced" | tr '\n' ' ' | sed 's/ $//')
+    if [ -n "$missing" ]; then
+        echo "no-libm: $trace does not trace $missing"
+        findings=1
+    fi
+    if [ -z "${UNA_Z3_LIB:-}" ] || [ ! -f "$UNA_Z3_LIB" ]; then
+        echo "no-libm: $trace: UNA_Z3_LIB names no Z3 library to tie the trace's references to"
+        findings=1
+        z3_digest=none
+    else
+        z3_digest=present
+    fi
+    # The archive members that the trace's references name and that are, byte for byte, the
+    # member of that name of the Z3 library (`ar p`): the Z3 library's objects reach the link
+    # inside una-z3's rlib, so an object is matched by its bytes, not by the archive's path.
+    : > "$tmp/z3members"
+    sed -n '3,$s/^reference [^ ]* \(.*\)$/\1/p' "$trace" | grep '([^()]*)$' | LC_ALL=C sort -u > "$tmp/members"
+    while IFS= read -r object_file; do
+        [ "$z3_digest" != none ] || break
+        member=$(printf '%s\n' "$object_file" | sed 's/^.*(\([^()]*\))$/\1/')
+        archive_file=$(printf '%s\n' "$object_file" | sed 's/([^()]*)$//')
+        [ -f "$archive_file" ] || continue
+        if ar p "$archive_file" "$member" > "$tmp/member" 2> /dev/null && [ -s "$tmp/member" ] \
+            && ar p "$UNA_Z3_LIB" "$member" > "$tmp/z3member" 2> /dev/null && [ -s "$tmp/z3member" ] \
+            && cmp -s "$tmp/member" "$tmp/z3member"; then
+            printf '%s\n' "$object_file" >> "$tmp/z3members"
+        fi
+    done < "$tmp/members"
+    # The pinned toolchain's compiler_builtins, which may define a name of the `linux-builtins`
+    # entries.
+    sysroot=$(cd "$root" && rustc --print sysroot 2> /dev/null) || sysroot=""
+    host=$(cd "$root" && rustc -vV 2> /dev/null | sed -n 's/^host: //p') || host=""
+    if [ -z "$sysroot" ] || [ -z "$host" ]; then
+        echo "no-libm: rustc names no sysroot, so no definition by the toolchain's compiler_builtins can be accepted"
+        findings=1
+        builtins_prefix=none
+    else
+        builtins_prefix=$sysroot/lib/rustlib/$host/lib/libcompiler_builtins-
+    fi
+    : > "$tmp/referenced"
+    awk -v trace="$trace" -v denyfile="$tmp/deny" -v allowedfile="$tmp/allowed" \
+        -v builtinsfile="$tmp/builtins" -v membersfile="$tmp/z3members" -v cb="$builtins_prefix" \
+        -v referenced="$tmp/referenced" '
+        BEGIN {
+            while ((getline line < denyfile) > 0) denied[line] = 1
+            close(denyfile)
+            while ((getline line < allowedfile) > 0) allowed[line] = 1
+            close(allowedfile)
+            while ((getline line < builtinsfile) > 0) {
+                builtin[line] = 1
+                split(line, bw, " ")
+                builtin_name[bw[1]] = 1
+            }
+            close(builtinsfile)
+            while ((getline line < membersfile) > 0) z3member[line] = 1
+            close(membersfile)
+        }
+        NR <= 2 { next }
+        /^[ \t]*$/ { next }
+        {
+            kind = $1
+            sym = $2
+            file = substr($0, length(kind) + length(sym) + 3)
+            if ((kind != "reference" && kind != "definition") || sym == "" || file == "") {
+                print "no-libm: " trace ": a line that is not a reference or a definition: " $0
+                bad = 1
+                next
+            }
+            if (!(sym in denied)) next
+            if (kind == "definition") {
+                if (file ~ /\.so(\.[0-9]+)*$/) next
+                if ((sym in builtin_name) && cb != "none" && index(file, cb) == 1 && file ~ /\.rlib\([^()]*\)$/) next
+                print "no-libm: " trace ": " file " defines " sym ", outside a shared library, and not by the compiler_builtins of the pinned toolchain for a name of the linux-builtins entries"
+                bad = 1
+                next
+            }
+            ok = 0
+            if ((file in z3member) && match(file, /\([^()]*\)$/)) {
+                member = substr(file, RSTART + 1, RLENGTH - 2)
+                ok = ((sym " " member) in allowed) || ((sym " " member) in builtin)
+            }
+            if (ok) { print sym > referenced; next }
+            print "no-libm: " trace ": " file " references " sym ", and is not, byte for byte, an object of the Z3 library that scripts/no-libm-una.txt names for it"
+            bad = 1
+        }
+        END { exit bad ? 1 : 0 }
+    ' "$trace" || findings=1
+    # Each solver name `una` imports comes from such a reference.
+    for name in $imported; do
+        if ! grep -qxF "$name" "$tmp/referenced"; then
+            echo "no-libm: $trace shows no reference of an object of the Z3 library to $name, which $una imports"
+            findings=1
+        fi
+    done
+    echo "no-libm: $trace: every reference to a name of $deny is from an object of the Z3 library that $solver names for it"
+fi
+
 : > "$tmp/out"
-if list -u "$rust_una"; then
-    if [ "$os" = linux ]; then list -D -u "$rust_una" || findings=1; fi
-    check "$rust_una" || findings=1
-else
-    findings=1
+if [ -z "$trace" ]; then
+    if list -u "$rust_una"; then
+        if [ "$os" = linux ]; then list -D -u "$rust_una" || findings=1; fi
+        check "$rust_una" || findings=1
+    else
+        findings=1
+    fi
 fi
 
 : > "$tmp/out"
@@ -249,7 +453,8 @@ for exe in "$executables"/* "$executables"/.[!.]*; do
     fi
 done
 
+if [ -n "$trace" ]; then what="the link trace $trace"; else what=$rust_una; fi
 if [ "$findings" -ne 0 ]; then
-    fail "a std feature, a C math library symbol, or a cargo tree or nm error above, in $una, $rust_una, $archive or $count executables of $executables"
+    fail "a std feature, a C math library symbol, or a cargo tree or nm error above, in $una, $what, $archive or $count executables of $executables"
 fi
-echo "no-libm: PASS ($una, $rust_una, $archive and $count executables of $executables)"
+echo "no-libm: PASS ($una, $what, $archive and $count executables of $executables)"
