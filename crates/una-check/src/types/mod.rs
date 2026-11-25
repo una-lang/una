@@ -452,6 +452,10 @@ pub struct TypeCheck {
     /// The graph of ADR 0116 P1 and the construct trees of P3 as checking recorded them, for
     /// the completeness test of P1.
     pub timing_graph: TimingGraph,
+    /// The constructs of the edition ledger that elaboration lowers into other Core IR, each
+    /// with the span of its site, in span order: the report counts them with what it reads in
+    /// Core IR (ADR 0121 rule 8).
+    pub preview_sites: Vec<(una_project::ledger::Construct, Span)>,
 }
 
 /// The units of measure at each position of the state types of a `[drive]` module: the
@@ -499,6 +503,7 @@ impl Default for TypeCheck {
             limit_label: una_core::Label::public(),
             timing_graph: TimingGraph::default(),
             drive_units: None,
+            preview_sites: Vec::new(),
         }
     }
 }
@@ -1052,6 +1057,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     };
     let timing_graph = timing::recorded_graph(&env, &findings);
     let check = TypeCheck {
+        preview_sites: findings.preview_sites.iter().copied().collect(),
         limit_label,
         drive_units,
         timing_graph,
@@ -1392,6 +1398,9 @@ pub(crate) struct Findings {
     pub(crate) contained: std::collections::BTreeSet<Span>,
     /// The spans of the calls of declared functions, apart from their mentions as values.
     pub(crate) named_calls: std::collections::BTreeSet<Span>,
+    /// The constructs of the edition ledger that only the checker sees, by span: those that
+    /// elaboration lowers into other Core IR, such as `Map.update` (ADR 0121 rule 8).
+    pub(crate) preview_sites: std::collections::BTreeSet<(una_project::ledger::Construct, Span)>,
     /// The functions whose bodies have a site of U3007, U3008 or U3009, held ones included.
     pub(crate) family: std::collections::BTreeSet<usize>,
 }

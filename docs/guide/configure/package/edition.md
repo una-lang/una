@@ -124,7 +124,7 @@ Further rules:
 
 The stable editions are `0.1` and `0.2`; `0.3`, `0.4` and `0.5` are previews. `una --version` lists the editions a release serves, and on its `preview:` line the ones that are previews.
 
-The constructs of editions `0.4` and `0.5` are the entries of the compiler's edition ledger (ADR 0121 rule 9), and a test checks this list against it. A package of a preview edition may use every construct of its edition and of the previews before it. An unsettled point is a part of a construct whose meaning may still change while its edition is a preview, without a new form (ADR 0121 rule 5); the changelog lists each change of one.
+The constructs of editions `0.4` and `0.5` are the entries of the compiler's edition ledger (ADR 0121 rule 9), and a test checks this list against it. A package of a preview edition may use every construct of its edition and of the previews before it. `una report` lists those a package uses on its `edition:` line, each with its record and its number of sites, and `una report --json` as `edition.preview_constructs`. An unsettled point is a part of a construct whose meaning may still change while its edition is a preview, without a new form (ADR 0121 rule 5); the changelog lists each change of one.
 
 | Edition | Construct | Record | Unsettled points |
 | --- | --- | --- | --- |
@@ -135,6 +135,7 @@ The constructs of editions `0.4` and `0.5` are the entries of the compiler's edi
 | `0.4` | `for ever within` | ADR 0116 | none |
 | `0.4` | `drive` | ADR 0116 | none |
 | `0.4` | `stop after` | ADR 0116 | none |
+| `0.4` | `std.time` | ADR 0116 | none |
 | `0.4` | `within` | ADR 0117 | none |
 | `0.4` | `first of` | ADR 0117 | none |
 | `0.4` | `tasks and start` | ADR 0117 | none |
@@ -152,7 +153,7 @@ The constructs of editions `0.4` and `0.5` are the entries of the compiler's edi
 | `0.5` | `sum` | ADR 0120 | the accumulation order of 0120's kernels (L, KB) |
 | `0.5` | `dot` | ADR 0120 | the accumulation order of 0120's kernels (L, KB) |
 | `0.5` | `matrix kernels` | ADR 0120 | the accumulation order of 0120's kernels (L, KB) |
-| `0.5` | `simd required` | ADR 0120 | none |
+| `0.5` | `simd as a name` | ADR 0120 | none |
 | `0.5` | `with: and and: labels` | ADR 0120 | none |
 | `0.5` | `F32` | ADR 0120 | none |
 | `0.5` | `Complex` | ADR 0120 | none |

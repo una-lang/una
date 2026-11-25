@@ -126,7 +126,10 @@ fn the_report_of_the_events_example() {
     // `tcb.serve_grants`, `tcb.server` and `tcb.tls`, empty for a package that serves nothing;
     // ADR 0121 rule 8 `edition`, after `package`.
     assert_eq!(keys.len(), 20);
-    assert_eq!(report["edition"], json!({"name": "0.1", "preview": false}));
+    assert_eq!(
+        report["edition"],
+        json!({"name": "0.1", "preview": false, "preview_constructs": []})
+    );
     assert_eq!(report["warnings"], json!([]));
     assert_eq!(report["tcb"]["serve_grants"], json!([]));
     assert_eq!(report["tcb"]["server"], json!(null));
@@ -309,9 +312,19 @@ fn the_report_names_the_edition_and_whether_it_is_a_preview() {
         let output = una_in(&dir, &["--json", "report", "."]);
         assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
         let report = json(&output);
+        // ADR 0121 rule 8: a package of a preview edition lists the constructs of the edition
+        // ledger it uses; this one only writes its project files (`tests/preview_constructs.rs`).
+        let constructs = if preview {
+            json!([
+                { "construct": "ita.lock", "record": "ADR 0122", "sites": 1, "unsettled": [] },
+                { "construct": "ita.una", "record": "ADR 0122", "sites": 1, "unsettled": [] }
+            ])
+        } else {
+            json!([])
+        };
         assert_eq!(
             report["edition"],
-            json!({ "name": edition, "preview": preview })
+            json!({ "name": edition, "preview": preview, "preview_constructs": constructs })
         );
         let text = stdout(&output);
         let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
@@ -321,7 +334,9 @@ fn the_report_names_the_edition_and_whether_it_is_a_preview() {
         );
         let output = una_in(&dir, &["report", "."]);
         let line = if preview {
-            format!("\nedition: {edition} (preview)\nlock: ")
+            format!(
+                "\nedition: {edition} (preview): ita.lock (ADR 0122, 1 site), ita.una (ADR 0122, 1 site)\nlock: "
+            )
         } else {
             format!("\nedition: {edition}\nlock: ")
         };
