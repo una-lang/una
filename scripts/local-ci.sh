@@ -252,6 +252,11 @@ step "No C math library symbol (canaries)" scripts/no-libm-test.sh
 step "No C math library symbol" \
     scripts/no-libm.sh "$root/target/release/una" "$root/target/release/libuna_rt.a" \
     "$no_libm/executables" "$no_libm/una-without-solver"
+# The x86-64 contraction canary (#1228; ADR 0114 Appendix C rule 7, ADR 0120 Appendix A): the
+# float corpus's contraction-sensitive case, built with the shipped flags, passes the FMA gate of
+# scripts/check-fma.sh, and built with contraction forced on it makes the gate fail. It runs on
+# the --linux leg; on an AArch64 host it prints that it is not applicable.
+step "FMA gate (contraction canary)" scripts/fma-canary.sh
 # The documents' links (#708): every link of the documents names a tracked file or directory,
 # and every fragment a heading of its document; the check's own test refuses each kind of
 # broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
