@@ -1,0 +1,10 @@
+module shop.quote
+
+import shop.store (Prices)
+
+pub quote(item: Text) -> Int
+  uses @a: Prices[price]
+  uses @b: Prices[set]
+=
+  @b.set(item, value: 1)
+  @a.price(item)

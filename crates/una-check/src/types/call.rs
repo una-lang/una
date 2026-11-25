@@ -843,6 +843,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if marked && !statement && self.pass == super::authority::Pass::Check {
             // #837: the advice of the place where the call stands, a `do` line included.
             let advice = self.nested_advice(site.handled, true);
+            // Read by `position_site` later in this function, which must run after this
+            // report: it skips the U3013 of the call's effects at this span (#2213).
             self.marked_nested = Some(span);
             self.report.error(
                 Code::U3013,
@@ -956,6 +958,10 @@ impl<'a> Checker<'_, 'a, '_> {
         // A callee with `of` clauses performs the effects of its arguments too, so its
         // position is checked once they are known (ADR 0062).
         let of_clauses = !def.uses_of.is_empty() || def.fails_of.is_some();
+        // Order matters (#837, #2213): the U3013 of a call with `edit` or `take` above sets
+        // `marked_nested` and is reported before this check, which then skips the U3013 of its
+        // effects at the same span. Moving this check before it, or rolling back the report
+        // between the two (speculative checking), would drop both diagnostics silently.
         if !of_clauses {
             self.position_site(
                 &callee,
@@ -1091,6 +1097,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.note_effect();
             }
             call_fails = call_fails.or(found.fails);
+            // After the marked U3013 above, as the check without `of` clauses (#2213).
             self.position_site(
                 &callee,
                 span,

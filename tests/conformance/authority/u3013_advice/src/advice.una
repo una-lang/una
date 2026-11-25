@@ -1,30 +1,32 @@
--- test: U3013 advises the form that resolves it where the call stands, alone and in combination: the whole `attempt` under a nested `attempt`, a named function for a lambda body, a form that keeps a call conditional in a handling clause, a one-line `if`, a short-circuit operand and a `when` arm, a named function for a `together` branch, and a statement of its own for a call with `edit` (#837)
+-- test: U3013 advises the form that resolves it where the call stands, alone and in combination: the whole `attempt` under a nested `attempt`, a named function for a lambda body, a form that keeps a call conditional in a handling clause, a one-line `if`, a short-circuit operand and a `when` arm, a named function for a `together` branch, also around a one-line `if` or a handling clause there (#2213), and a statement of its own for a call with `edit` (#837)
 -- spec: spec/04 §4
--- expect: error U3013 at src/advice.una:79:16
--- expect: error U3013 at src/advice.una:84:7
--- expect: error U3013 at src/advice.una:89:24
--- expect: error U3013 at src/advice.una:94:34
--- expect: error U3013 at src/advice.una:99:39
--- expect: error U3013 at src/advice.una:106:18
--- expect: error U3013 at src/advice.una:113:30
--- expect: error U3013 at src/advice.una:122:17
--- expect: error U3013 at src/advice.una:130:30
--- expect: error U3013 at src/advice.una:136:17
--- expect: error U3013 at src/advice.una:141:30
--- expect: error U3013 at src/advice.una:146:6
--- expect: error U3013 at src/advice.una:151:13
--- expect: error U3013 at src/advice.una:156:25
--- expect: error U3013 at src/advice.una:161:3
--- expect: error U3013 at src/advice.una:167:17
--- expect: error U3013 at src/advice.una:174:26
--- expect: error U3013 at src/advice.una:181:17
--- expect: error U3013 at src/advice.una:189:16
--- expect: error U3013 at src/advice.una:189:28
--- expect: error U3013 at src/advice.una:194:15
--- expect: error U3013 at src/advice.una:200:25
--- expect: error U3013 at src/advice.una:206:39
--- expect: error U3013 at src/advice.una:209:50
--- expect: error U3013 at src/advice.una:209:72
+-- expect: error U3013 at src/advice.una:81:16
+-- expect: error U3013 at src/advice.una:86:7
+-- expect: error U3013 at src/advice.una:91:24
+-- expect: error U3013 at src/advice.una:96:34
+-- expect: error U3013 at src/advice.una:101:39
+-- expect: error U3013 at src/advice.una:108:18
+-- expect: error U3013 at src/advice.una:115:30
+-- expect: error U3013 at src/advice.una:124:17
+-- expect: error U3013 at src/advice.una:132:30
+-- expect: error U3013 at src/advice.una:138:17
+-- expect: error U3013 at src/advice.una:143:30
+-- expect: error U3013 at src/advice.una:148:6
+-- expect: error U3013 at src/advice.una:153:13
+-- expect: error U3013 at src/advice.una:158:25
+-- expect: error U3013 at src/advice.una:163:3
+-- expect: error U3013 at src/advice.una:169:17
+-- expect: error U3013 at src/advice.una:176:26
+-- expect: error U3013 at src/advice.una:183:17
+-- expect: error U3013 at src/advice.una:191:16
+-- expect: error U3013 at src/advice.una:191:28
+-- expect: error U3013 at src/advice.una:196:15
+-- expect: error U3013 at src/advice.una:202:25
+-- expect: error U3013 at src/advice.una:208:39
+-- expect: error U3013 at src/advice.una:211:50
+-- expect: error U3013 at src/advice.una:211:72
+-- expect: error U3013 at src/advice.una:217:27
+-- expect: error U3013 at src/advice.una:228:19
 module advice
 
 kind StoreError = | Timeout
@@ -207,3 +209,22 @@ pub edit_attempted_in_branch(k: Int) -> Int
   r
 
 predicate opaque same(a: Int) -> Bool = (attempt parse(a)) == (attempt parse(a))
+
+pub if_in_together(k: Int) -> Int
+  uses @log: Log
+=
+  together
+    let a = if k > 0 then logged(k) else 0
+    let b = 2
+  a + b
+
+pub none_clause_in_together(k: Int) -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  together
+    let a = @store.find(k)
+      if error use None
+      if none use logged(k)
+    let b = 2
+  a + b

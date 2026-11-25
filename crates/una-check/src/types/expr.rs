@@ -1089,9 +1089,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let decided = self.deep(&found);
                 self.operands.push(found);
                 let saved = self.raise_pc(&decided, left.span);
-                let conditional = self
-                    .conditional
-                    .replace(super::check::Conditional::ShortCircuit);
+                let conditional = self.enter_conditional(super::check::Conditional::ShortCircuit);
                 let found = self.expr_as(right, Some(&Ty::Bool), Role::Condition(&operand));
                 self.conditional = conditional;
                 self.restore_pc(saved);
@@ -1807,7 +1805,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut joined = expected.cloned();
         let mut value: Option<Ty> = None;
         let mut found = Vec::new();
-        let conditional = self.conditional.replace(super::check::Conditional::Branch);
+        let conditional = self.enter_conditional(super::check::Conditional::Branch);
         for branch in branches {
             let ty = if tail {
                 self.tail_expr(branch, joined.as_ref(), role)

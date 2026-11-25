@@ -1,0 +1,11 @@
+module shop.quote
+
+import shop.store (Prices)
+
+pub quote(item: Text) -> Int
+  uses @prices: Prices[price]
+  uses @clock: Clock[now]
+=
+  let price = @prices.price(item)
+  let now = @clock.now()
+  price + now

@@ -610,6 +610,76 @@ fn u3021_names_the_callers_binding_and_the_handler_that_u3020_offers() {
 }
 
 #[test]
+fn u3021_gives_one_narrowed_grant_per_requirement() {
+    // #2213: two requirements of one capability each get the operations they declare, and
+    // following the repair checks, where one grant of both operations stays U3021.
+    let diagnostics = check_json("authority/boundary_ceiling_repair_per_requirement");
+    let found = at(&diagnostics, "U3021", 12, 3);
+    assert_eq!(found.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        rows(&found[0]),
+        [row(
+            "",
+            "narrow each grant to what the callee declares for it, `@a: Prices[price]` and `@b: Prices[set]`, which lie within the ceiling, with one narrowed grant per requirement: `with @a = @full[price], @b = @full[set]`, or a handler for each whose own `uses` lie within `Prices[price, set]`",
+            ""
+        )]
+    );
+    assert_eq!(
+        check_json("authority/boundary_ceiling_repair_per_requirement_applied"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn u3021_names_the_requirement_whose_operations_the_ceiling_withholds() {
+    // #2213: the handler route names `@b`, whose `set` the ceiling withholds, and `@a` keeps
+    // its narrowed grant in the same `with`; following both checks.
+    let diagnostics = check_json("authority/boundary_ceiling_repair_withheld_requirement");
+    let found = at(&diagnostics, "U3021", 12, 3);
+    assert_eq!(found.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        rows(&found[0]),
+        [row(
+            "",
+            "no grant of a binding keeps both: the callee declares `@b: Prices[set]`, and the ceiling of `shop.quote` allows `Prices[price]`; install a handler for `Prices` whose own `uses` lie within the ceiling for `@b`, and narrow the grant of `@a` to what the callee declares: `with @a = @full[price], @b = <handler>(...)`, where `handler <handler>(...) for Prices` is written outside the boundary, or the consumer decides between this module and its ceiling",
+            ""
+        )]
+    );
+    assert_eq!(
+        check_json("authority/boundary_ceiling_repair_withheld_applied"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn u3021_names_the_handler_whose_own_uses_bring_in_the_excess() {
+    // #2213: the grant of `@prices` is already within the ceiling; the repair points at the
+    // handler granted as `@clock`, not at the grant already written.
+    let diagnostics = check_json("authority/boundary_ceiling_repair_handler_uses");
+    let found = at(&diagnostics, "U3021", 18, 3);
+    assert_eq!(found.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        rows(&found[0]),
+        [row(
+            "",
+            "the grant of `@prices` already lies within the ceiling; what exceeds it is the own `uses` of the handler granted as `@clock`, which count at this call: grant `@clock` a handler whose own `uses` lie within the ceiling of `shop.quote`, which allows `Prices[price]`",
+            ""
+        )]
+    );
+    // A handler whose own `uses` name a capability that the callee does not require.
+    let handler = check_json("authority/boundary_ceiling_handler");
+    let found = at(&handler, "U3021", 25, 3);
+    assert_eq!(
+        rows(&found[0]),
+        [row(
+            "",
+            "narrow the own `uses` of the handler granted as `@files`, which count at this call: grant `@files` a handler whose own `uses` lie within the ceiling of `media.resize`, which allows no operation of `Net`",
+            ""
+        )]
+    );
+}
+
+#[test]
 fn u3021_narrows_to_the_ceiling_or_says_that_no_grant_keeps_both() {
     let ceiling = check_json("authority/boundary_ceiling");
     let found = at(&ceiling, "U3021", 12, 3);

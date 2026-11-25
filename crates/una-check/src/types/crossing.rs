@@ -805,6 +805,9 @@ impl Checker<'_, '_, '_> {
         // Rule 15: what the call grants, it reaches where those bindings lead, by name through
         // rebindings, header bindings and calls, up to the installation of their handler.
         let mut sources = granting.sources;
+        // #2213: what each requirement's own binding grants, for the repair of a U3021 whose
+        // excess comes from somewhere else, such as a granted handler's own `uses`.
+        let mut granted = Granted::default();
         for need in needs {
             let resolved = resolve_in(&self.frames, level, &need.name);
             sources.extend(self.source(&resolved));
@@ -815,6 +818,9 @@ impl Checker<'_, '_, '_> {
                     ..
                 } => {
                     let ops = ops.clone().unwrap_or_else(|| self.all_ops(*capability));
+                    granted
+                        .direct
+                        .push((need.name.clone(), *capability, ops.clone()));
                     grants.push((*capability, ops));
                 }
                 Resolved::Handler {
@@ -826,8 +832,21 @@ impl Checker<'_, '_, '_> {
                     // Rule 5: a handler counts with its own `uses`, and the boundary may run it.
                     // What its installation's arguments granted it, it may run too.
                     Some(handler) => {
-                        grants.extend(self.handler_uses(*handler));
+                        let own = self.handler_uses(*handler);
+                        for (capability, ops) in &own {
+                            granted
+                                .handlers
+                                .push((need.name.clone(), *capability, ops.clone()));
+                        }
+                        grants.extend(own);
                         if let Some(installed) = self.findings.installed.get(installed_at) {
+                            for (capability, ops) in &installed.uses {
+                                granted.handlers.push((
+                                    need.name.clone(),
+                                    *capability,
+                                    ops.clone(),
+                                ));
+                            }
                             grants.extend(installed.uses.iter().cloned());
                             if unseen.is_none() {
                                 unseen.clone_from(&installed.unseen);
@@ -860,7 +879,7 @@ impl Checker<'_, '_, '_> {
                 .as_ref()
                 .map_or(level, |statement| statement.outer.min(level))
         };
-        self.ceiling_needs_site(boundary, what, &grants, needs, holder_level, span);
+        self.ceiling_needs_site(boundary, what, &grants, needs, &granted, holder_level, span);
         for source in sources {
             self.findings.summary_seeds.push((source, boundary, span));
         }
@@ -912,7 +931,7 @@ impl Checker<'_, '_, '_> {
         grants: &[(CapId, Vec<String>)],
         span: Span,
     ) {
-        self.ceiling_needs_site(boundary, what, grants, &[], 0, span);
+        self.ceiling_needs_site(boundary, what, grants, &[], &Granted::default(), 0, span);
     }
 
     /// [`Self::ceiling_site`] at a call whose callee declares `needs`: the repair of each
@@ -927,6 +946,7 @@ impl Checker<'_, '_, '_> {
         what: &str,
         grants: &[(CapId, Vec<String>)],
         needs: &[FnUse],
+        granted: &Granted,
         holder_level: usize,
         span: Span,
     ) {
@@ -948,7 +968,7 @@ impl Checker<'_, '_, '_> {
                 )
             };
             diagnostic.repairs.extend(ceiling_repair(
-                &*self.env, boundary, capability, needs, holder,
+                &*self.env, boundary, capability, needs, granted, holder,
             ));
             self.report.push(diagnostic);
         }
@@ -1348,6 +1368,7 @@ fn installations(
                     boundary,
                     capability,
                     &[],
+                    &Granted::default(),
                     |_, _| Holder::None,
                 ));
                 diagnostic
@@ -1476,26 +1497,48 @@ fn excess(env: &Env<'_>, boundary: usize, grants: &[(CapId, Vec<String>)]) -> Ve
     messages
 }
 
+/// What the requirements of a call into a boundary grant by themselves, for the repair of its
+/// U3021 (#2213): the repair says which grant brings in the excess.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Granted {
+    /// Each requirement bound to a binding of a capability: its name, the capability, and every
+    /// operation the binding permits, which is what it grants (rule 5).
+    direct: Vec<(String, CapId, Vec<String>)>,
+    /// Each requirement bound to a handler: its name, and each capability and operations of the
+    /// handler's own `uses` and of what its installation's arguments granted it (rules 5, 14).
+    handlers: Vec<(String, CapId, Vec<String>)>,
+}
+
 /// ADR 0093 rule 6: the repair of a U3021 that grants `boundary` too much of `capability`, at a
 /// call whose callee declares `needs` (none for the other sites: an example's `given`, an
 /// installation, a value among the arguments). It is advice, never an edit, and it never raises
 /// the ceiling, which is the consumer's decision about trust and lives in `una.toml`, a file
 /// `una fix` never writes (ADR 0084):
 ///
-/// - when what the callee declares of `capability` lies within the ceiling, narrow the grant to
-///   those operations, with `with @x = @y[ops]` or a handler whose own `uses` lie within it,
-///   where `@y` is the binding of the caller that `holder` finds (#1931): `@x` itself or the
-///   only one that permits them, the bindings that do when several do, which is then a decision
-///   about trust, and none when no binding does;
-/// - when it does not, no grant of a binding keeps both, and the repair says so; a handler
-///   whose own `uses` lie within the ceiling still does, as U3020's repair says for the same
-///   requirement (#1931), and otherwise the consumer decides between the module and its ceiling;
-/// - with no requirement of the callee on `capability`, narrow what is given to the ceiling.
+/// - when what the callee declares of `capability` lies within the ceiling, narrow each grant to
+///   what its requirement declares, one narrowed grant per requirement (#2213), with
+///   `with @x = @y[ops]` or a handler whose own `uses` lie within it, where `@y` is the binding
+///   of the caller that `holder` finds for that requirement's operations (#1931): `@x` itself or
+///   the only one that permits them, the bindings that do when several do, which is then a
+///   decision about trust, and none when no binding does;
+///   but when every such requirement's own binding already lies within the ceiling, the excess
+///   comes from elsewhere, and the repair names the handlers granted to the call whose own
+///   `uses` bring it in (`granted`, #2213) rather than repeat the grants already written;
+/// - when it does not, no grant of a binding keeps both, and the repair says so, naming the
+///   requirements whose operations the ceiling withholds; a handler whose own `uses` lie within
+///   the ceiling still does, as U3020's repair says for the same requirement (#1931), and the
+///   other requirements keep their narrowed grant in the same `with`; otherwise the consumer
+///   decides between the module and its ceiling;
+/// - with no requirement of the callee on `capability`, narrow what is given to the ceiling, or
+///   the own `uses` of the handlers granted to the call that bring in the excess.
+///
+/// Linear in the requirements and grants of the call, times the operations of `capability`.
 fn ceiling_repair(
     env: &Env<'_>,
     boundary: usize,
     capability: CapId,
     needs: &[FnUse],
+    granted: &Granted,
     holder: impl Fn(&FnUse, &[String]) -> Holder,
 ) -> Option<Repair> {
     let resolved = env.boundaries.list.get(boundary)?;
@@ -1514,52 +1557,234 @@ fn ceiling_repair(
             in_order(env, capability, &allowed).join(", ")
         )
     };
-    let named: Vec<&FnUse> = needs
+    let fits = |ops: &[String]| ops.iter().all(|op| allowed.contains(op));
+    // The requirements on `capability` that name operations, each with its own.
+    let named: Vec<(&FnUse, Vec<String>)> = needs
         .iter()
-        .filter(|need| need.capability == Some(capability))
+        .filter(|need| need.capability == Some(capability) && !need.ops.is_empty())
+        .map(|need| (need, in_order(env, capability, &need.ops)))
         .collect();
-    let mut needed: Vec<String> = Vec::new();
-    for need in &named {
-        for op in &need.ops {
-            if !needed.contains(op) {
-                needed.push(op.clone());
-            }
+    // The handlers granted to the call whose own `uses` bring in an operation of `capability`
+    // that the ceiling withholds.
+    let mut leaking: Vec<String> = Vec::new();
+    for (binding, of, ops) in &granted.handlers {
+        if *of == capability && !fits(ops) && !leaking.contains(binding) {
+            leaking.push(binding.clone());
         }
     }
-    let needed = in_order(env, capability, &needed);
-    let description = if needed.is_empty() {
+    let through_handlers = || {
+        let bindings: Vec<String> = leaking.iter().map(|b| format!("`@{b}`")).collect();
+        let (them, a) = if leaking.len() == 1 {
+            ("the handler", "a handler")
+        } else {
+            ("the handlers", "handlers")
+        };
+        let bindings = and_list(&bindings);
         format!(
-            "narrow what this gives `{key}` to its ceiling, which allows {within}: a handler or a function value whose own `uses` lie within it"
+            "the own `uses` of {them} granted as {bindings}, which count at this call: grant {bindings} {a} whose own `uses` lie within the ceiling of `{key}`, which allows {within}"
         )
-    } else if let Some(need) = named.first()
-        && needed.iter().all(|op| allowed.contains(op))
-    {
+    };
+    if named.is_empty() {
+        return Some(Report::advice(if leaking.is_empty() {
+            format!(
+                "narrow what this gives `{key}` to its ceiling, which allows {within}: a handler or a function value whose own `uses` lie within it"
+            )
+        } else {
+            format!("narrow {}", through_handlers())
+        }));
+    }
+    let over: Vec<&(&FnUse, Vec<String>)> = named.iter().filter(|(_, ops)| !fits(ops)).collect();
+    if over.is_empty() {
+        // Every requirement's own binding already lies within the ceiling: the excess is not
+        // theirs, so narrowing them repeats what is written.
+        let written = named.iter().all(|(need, _)| {
+            granted
+                .direct
+                .iter()
+                .any(|(binding, of, ops)| *binding == need.name && *of == capability && fits(ops))
+        });
+        if written {
+            let bindings: Vec<String> = named
+                .iter()
+                .map(|(need, _)| format!("`@{}`", need.name))
+                .collect();
+            let lead = if bindings.len() == 1 {
+                format!(
+                    "the grant of {} already lies within the ceiling",
+                    and_list(&bindings)
+                )
+            } else {
+                format!(
+                    "the grants of {} already lie within the ceiling",
+                    and_list(&bindings)
+                )
+            };
+            return Some(Report::advice(if leaking.is_empty() {
+                format!(
+                    "{lead}; narrow the rest of what this gives `{key}` to its ceiling, which allows {within}: a handler or a function value whose own `uses` lie within it"
+                )
+            } else {
+                format!("{lead}; what exceeds it is {}", through_handlers())
+            }));
+        }
+        return Some(Report::advice(narrowed_grants(
+            &name, &within, &named, &holder,
+        )));
+    }
+    let declares = if let [(_, ops)] = named.as_slice() {
+        format!("`{name}[{}]`", ops.join(", "))
+    } else {
+        let listed: Vec<String> = over
+            .iter()
+            .map(|(need, ops)| format!("`@{}: {name}[{}]`", need.name, ops.join(", ")))
+            .collect();
+        and_list(&listed)
+    };
+    let handled: Vec<String> = over
+        .iter()
+        .map(|(need, _)| format!("`@{}`", need.name))
+        .collect();
+    let for_them = if named.len() == 1 {
+        String::new()
+    } else if over.len() == 1 {
+        format!(" for {}", and_list(&handled))
+    } else {
+        format!(" for each of {}", and_list(&handled))
+    };
+    // The requirements within the ceiling keep a narrowed grant each, in the same `with`.
+    let narrowed: Vec<String> = named
+        .iter()
+        .filter(|(_, ops)| fits(ops))
+        .map(|(need, _)| format!("`@{}`", need.name))
+        .collect();
+    let and_narrow = match narrowed.len() {
+        0 => String::new(),
+        1 => format!(
+            ", and narrow the grant of {} to what the callee declares",
+            and_list(&narrowed)
+        ),
+        _ => format!(
+            ", and narrow the grants of {} to what the callee declares, one per requirement",
+            and_list(&narrowed)
+        ),
+    };
+    let (grants, notes) = grant_list(&name, &named, &fits, &holder);
+    let notes = if notes.is_empty() {
+        notes
+    } else {
+        format!(", and where {notes}")
+    };
+    Some(Report::advice(format!(
+        "no grant of a binding keeps both: the callee declares {declares}, and the ceiling of `{key}` allows {within}; install a handler for `{name}` whose own `uses` lie within the ceiling{for_them}{and_narrow}: `with {grants}`, where `handler <handler>(...) for {name}` is written outside the boundary{notes}, or the consumer decides between this module and its ceiling"
+    )))
+}
+
+/// The narrowed grants of requirements `named` of capability `name`, each within the ceiling,
+/// which allows `within` (#1931, #2213): one requirement keeps the text of #1931, several get
+/// one narrowed grant each.
+fn narrowed_grants(
+    name: &str,
+    within: &str,
+    named: &[(&FnUse, Vec<String>)],
+    holder: &impl Fn(&FnUse, &[String]) -> Holder,
+) -> String {
+    if let [(need, ops)] = named {
         let x = need.name.as_str();
-        let ops = needed.join(", ");
-        let listed: Vec<String> = needed.iter().map(|op| format!("`{op}`")).collect();
-        let grant = match holder(need, &needed) {
-            Holder::One(y) => format!("`with @{x} = @{y}[{ops}]`"),
+        let joined = ops.join(", ");
+        let listed: Vec<String> = ops.iter().map(|op| format!("`{op}`")).collect();
+        let grant = match holder(need, ops) {
+            Holder::One(y) => format!("`with @{x} = @{y}[{joined}]`"),
             Holder::Several(names) => format!(
-                "`with @{x} = @y[{ops}]`, where `@y` is one of {}, which each permit {}; which binding the boundary receives is a decision about trust",
+                "`with @{x} = @y[{joined}]`, where `@y` is one of {}, which each permit {}; which binding the boundary receives is a decision about trust",
                 names_list(&names),
                 listed.join(", ")
             ),
             Holder::None => format!(
-                "`with @{x} = @<binding>[{ops}]`, where `<binding>` is a binding of `{name}` that permits {}",
+                "`with @{x} = @<binding>[{joined}]`, where `<binding>` is a binding of `{name}` that permits {}",
                 listed.join(", ")
             ),
         };
+        return format!(
+            "narrow the grant to what the callee declares, `{name}[{joined}]`, which lies within the ceiling: {grant}, or a handler whose own `uses` lie within {within}"
+        );
+    }
+    let declared: Vec<String> = named
+        .iter()
+        .map(|(need, ops)| format!("`@{}: {name}[{}]`", need.name, ops.join(", ")))
+        .collect();
+    let (grants, notes) = grant_list(name, named, &|_: &[String]| true, holder);
+    let notes = if notes.is_empty() {
+        notes
+    } else {
+        format!(", where {notes}")
+    };
+    format!(
+        "narrow each grant to what the callee declares for it, {}, which lie within the ceiling, with one narrowed grant per requirement: `with {grants}`{notes}, or a handler for each whose own `uses` lie within {within}",
+        and_list(&declared)
+    )
+}
+
+/// The bindings of one `with` for requirements `named`, joined with `, ` in their order: a
+/// narrowed grant `@x = @y[ops]` for each whose operations `fits` the ceiling, and
+/// `@x = <handler>(...)` for each other (#2213). Then the notes for the grants whose binding is
+/// not the only one that qualifies, empty when there are none: `<x>` stands for one of several,
+/// a decision about trust, or for a binding that permits the operations when none does.
+fn grant_list(
+    name: &str,
+    named: &[(&FnUse, Vec<String>)],
+    fits: &impl Fn(&[String]) -> bool,
+    holder: &impl Fn(&FnUse, &[String]) -> Holder,
+) -> (String, String) {
+    let mut grants = Vec::new();
+    let mut notes = Vec::new();
+    let mut trust = false;
+    for (need, ops) in named {
+        let x = need.name.as_str();
+        if !fits(ops) {
+            grants.push(format!("@{x} = <handler>(...)"));
+            continue;
+        }
+        let joined = ops.join(", ");
+        let listed: Vec<String> = ops.iter().map(|op| format!("`{op}`")).collect();
+        match holder(need, ops) {
+            Holder::One(y) => grants.push(format!("@{x} = @{y}[{joined}]")),
+            Holder::Several(names) => {
+                trust = true;
+                grants.push(format!("@{x} = @<{x}>[{joined}]"));
+                notes.push(format!(
+                    "`<{x}>` is one of {}, which each permit {}",
+                    names_list(&names),
+                    listed.join(", ")
+                ));
+            }
+            Holder::None => {
+                grants.push(format!("@{x} = @<{x}>[{joined}]"));
+                notes.push(format!(
+                    "`<{x}>` is a binding of `{name}` that permits {}",
+                    listed.join(", ")
+                ));
+            }
+        }
+    }
+    let notes = if notes.is_empty() {
+        String::new()
+    } else if trust {
         format!(
-            "narrow the grant to what the callee declares, `{name}[{ops}]`, which lies within the ceiling: {grant}, or a handler whose own `uses` lie within {within}"
+            "{}; which binding the boundary receives is a decision about trust",
+            and_list(&notes)
         )
     } else {
-        let x = named.first().map_or("x", |need| need.name.as_str());
-        format!(
-            "no grant of a binding keeps both: the callee declares `{name}[{}]`, and the ceiling of `{key}` allows {within}; install a handler for `{name}` whose own `uses` lie within the ceiling: `with @{x} = <handler>(...)`, where `handler <handler>(...) for {name}` is written outside the boundary, or the consumer decides between this module and its ceiling",
-            needed.join(", ")
-        )
+        and_list(&notes)
     };
-    Some(Report::advice(description))
+    (grants.join(", "), notes)
+}
+
+/// `` `a`, `b` and `c` `` from items already quoted.
+fn and_list(items: &[String]) -> String {
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.join(""),
+    }
 }
 
 /// Where a U3020's grant would be written (ADR 0093 rule 6, [`Checker::grant_repair`]).

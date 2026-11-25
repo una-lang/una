@@ -259,3 +259,32 @@ predicate opaque same(a: Int) -> Bool =
   let left = attempt parse(a)
   let right = attempt parse(a)
   left == right
+
+pub if_in_together(k: Int) -> Int
+  uses @log: Log
+=
+  together
+    let a = logged_if_positive(k)
+    let b = 2
+  a + b
+
+pub none_clause_in_together(k: Int) -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  together
+    let a = found_or_logged(k)
+    let b = 2
+  a + b
+
+found_or_logged(k: Int) -> Int
+  uses @store: Store
+  uses @log: Log
+=
+  let found = @store.find(k)
+    if error use None
+  when found
+    is Some(v) -> v
+    is None ->
+      let logged_k = logged(k)
+      logged_k
