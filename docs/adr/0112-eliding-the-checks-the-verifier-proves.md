@@ -204,3 +204,87 @@ In this amendment, the **release representation** is any representation of a pac
 ### Effect
 
 With this amendment, no rule of this record depends on emitted C. It is implementable with the release path, once the design record (#1305) is accepted, and it binds that record: the design states where elision is applied (item 2), how the present checks are read (item 6), and how each check carries its site.
+
+## Amendment (2026-11-25): the range facts of the Cranelift build (EL-1, #1986)
+
+- Status: Proposed (2026-11-25), for the Owner's decision
+- Lane: S (it states a trust boundary between the verifier and the code generator)
+- Changes no accepted sentence of this record. It states how one existing part of the Cranelift build relates to EL-1, from the code on `main` at commit `540ea4c85`, and proposes a reading of EL-1 and one follow-up for the Owner to accept or reject.
+
+### Context
+
+EL-1 says that `una build` without `--release` (Cranelift, ADR 0055) "keeps every check", and that a Cranelift executable is "the fully checked reference of every release executable". The Context of this record lists, among the executable's checks, "the tag test and promotion path of each `Int` operation (`spec/16 §4` rule 2)".
+
+The Cranelift build already leaves that tag test and promotion path out at some sites, and has since #116 (2026-10-02), before this record. It does so under ADR 0055 NB-3 ("a value whose range a refinement proves MAY use a plain machine integer with no check"), `spec/16 §4` rule 2 and `spec/18 §7`. The code is `crates/una-codegen/src/range.rs` (the range facts) and its two uses in `crates/una-codegen/src/lower.rs` (the lowering of a primitive operation, `Rhs::Prim`, and `Lowerer::prim`). Read literally, EL-1 does not describe this build. This amendment says what the build actually does, and what each fact rests on.
+
+### What range.rs computes
+
+`range.rs` exports three functions:
+
+- `proven_range(ty)` gives the closed interval that values of `ty` lie in, when it is bounded on both sides. It starts from the base type's range (a fixed-width type's least and greatest values; for `Int`, unbounded) and intersects it with the bounds of each refinement of `ty`. `bounds` reads only syntactic forms over `it`: `it in a..b` (with `..<`), `it op c` and `c op it` for `>=`, `>`, `<=`, `<` and `==` with an integer literal `c`, and `and` of those. Any other term (`or`, `!=`, a variable, a call, a literal that does not parse) gives no bound. An empty interval gives `None`.
+- `machine_width(ty)` holds when `proven_range(ty)` lies within the tagged range, -2^62 to 2^62 - 1.
+- `unrefined(ty)` removes the refinements of an `Int`. Any other type, a fixed-width type with its own refinements included, is returned unchanged.
+
+The code generator applies `unrefined` to the type of every binder whose `Int` refinements it does not count: an unwritten `let`, the components of `let (...)`, the fields bound by a `when` arm, loop state, a lambda's parameters and captures, the parameters of a handler's operations and the handler's own parameters, and the parameters of a predicate. It keeps the full type for two kinds of binder: a function's parameters, and a `let` whose type the source writes.
+
+### The facts, where each comes from, and what it may change
+
+Four kinds of fact feed `machine_width`, directly or beside it:
+
+| Fact | Where it comes from | Kind of trust |
+| --- | --- | --- |
+| **F1. A small literal.** An integer literal whose value is in the tagged range (`lower.rs`, the `SMALL` test beside `machine_width`) | The literal's digits | Sound by construction: the code generator emits it as the tagged word `(n << 1) \| 1`. Not a fact of `range.rs`. |
+| **F2. A fixed-width type's width.** `I8` to `I32` and `U8` to `U32`, at every binder | The `overflow` obligation of each `+`, `-`, `*`, `/`, `mod`, unary `-` and narrowing conversion on a fixed-width type (`spec/18 §3`), the literal check U2022, and the entry points that make fixed-width values | Proven by the verifier at tier 1, which `una build` always runs (`spec/16 §1` rule 5); a literal is checked by construction. Inside the body of a `reflect` predicate, which has no `overflow` obligation (`spec/18 §2`), the code generator sets `exact` and uses no fact at all. |
+| **F3. An `Int` refinement that bounds both sides.** At a function's parameter and at a written `let` | A function's parameter: the `precondition`/`refinement` obligation at each call, a call of a function value included (ADR 0037, `spec/12 §3`). A written `let`: its `refinement` obligation | Proven by the verifier at tier 1. |
+| **F4. A refinement of a fixed-width type** (`I64` or `U64` bounded inside the tagged range, or any fixed-width type narrowed further), at every binder, since `unrefined` keeps it | The `refinement` obligations at every point where a value flows into the refined position: construction of the record, variant or tuple that holds it, the call of a lambda (ADR 0037), a call's result (the callee's own obligation) | Proven by the verifier at tier 1, under the hypotheses that every obligation carries: the contracts of the standard library (ADR 0033) and of host capabilities (`spec/05 §2`). |
+
+Two parts are trusted local analysis, not proofs:
+
+- **The reading of a refinement** (`bounds`, `intersect`, `proven_range`). The interval it gives contains every value that satisfies the refinement: each recognized form gives its exact bounds, every other form gives none, and a conjunction intersects. This is sound by construction, and covered by the unit test of `range.rs`. A bug there would take a range wider or narrower than the proven one.
+- **The choice of which binders keep their refinements** (`unrefined` and its callers in `lib.rs` and `lower.rs`). It is sound only as long as every refinement it keeps is one the verifier proves of every value that reaches the binder. For `Int` it keeps two kinds (F3). For fixed-width types it keeps all (F4), relying on ADR 0037 and on the construction obligations. Note that the code comment at the lambda in `lib.rs` ("a lambda's refinements are not proven of its arguments") is stricter than `spec/12 §3`, which does prove them at each call of a function value. The code is conservative for `Int` and not for fixed-width types. Both are sound under the specification. The difference is stated here so that a later change to either side is reviewed against this amendment.
+
+A fifth premise is a runtime invariant. Every `Int` whose value lies in the tagged range is held tagged: `int_word` in `crates/una-rt/src/values.rs` is the one place that makes an arbitrary-precision object from a computed value, and it makes one only outside the tagged range. Copying between heaps (`import_node`) copies only such objects. This is EL-2a's canonical representation, held by construction in `una-rt`, which is in the trusted base (`spec/16 §4` rule 8). It has no debug assertion or entry-point test yet of the kind EL-2a asks of the release path.
+
+The facts change generated code in these ways only:
+
+| Use | Condition | What changes | Kind of change |
+| --- | --- | --- | --- |
+| `+`, `-`, `*` (`Lowerer::prim`, `Lowerer::unchecked`) | Every operand is F1, or a variable whose type is `machine_width`, and the result's type is `machine_width`, outside `exact` code | The tag test of both operands, the overflow test of the machine operation, and the call of the runtime's promoting operation (`una_rt_int_add`, `_sub`, `_mul`) are left out. The operation is a wrapping 64-bit `iadd`, `isub` or `imul` on the tagged words. | **A removed check:** the `Int` promotion path of EL-2, and, for a fixed-width type, the only overflow handling the operation has. No engine tests fixed-width arithmetic at run time: the interpreter computes it exactly, and the obligation proves that it fits. |
+| `==`, `!=`, `<`, `<=`, `>`, `>=` | Every operand is F1 or `machine_width` | A word comparison (`icmp`) replaces `compare_ints` | **A choice of instruction.** No check is removed: on two tagged words, both give the same answer. |
+| Representation | None | None. A value stays a tagged word or a handle, as `spec/18 §7` states. `una-cli`'s `arbitrary_precision` only lists in the build report the `Int` parameters and results that are not `machine_width`. | **None.** |
+
+Unary `-`, `div`, `mod`, conversions, and every memory-safety, resource, cancellation and `when` check are not affected by `range.rs`.
+
+### What a wrong fact would cost
+
+The removed checks rest on the verifier (encoding, generator, pinned solver, proof cache), on the trusted reading of refinements above, and on the canonical representation. This is the trust that EL-7 states for release elision, here for the Cranelift build, with no `--no-elision` to take it out.
+
+- **A wrong result fact** (operands right, result outside the proven range): the operands are tagged, and the wrapping operation on two tagged words gives an odd word again. The cost is a wrong value, as EL-2 requires.
+- **A wrong operand fact** (an operand is in fact a promoted `Int`, a handle): `Lowerer::unchecked` does not retag its result. A handle in the operation can give an even word, which the rest of the program reads as a handle, and may later release. The runtime refuses any word that is not a live handle, and has no `unsafe` code outside `ffi.rs`, so this stays memory safe (`docs/security/tcb.md` §3.3). But the word may name a live object: a later read returns another value's contents, possibly from a higher label, and a release may free that object early. This is more than EL-2 allows a wrong proof to cost in a release build, where the result is retagged with bit 0 set and "never frees one twice". It needs a bug in the verifier, in the trusted reading above or in `una-rt`. It does not arise from a correct proof.
+
+### Finding
+
+No fact that `range.rs` uses to remove a check is unproven or unsound by construction, within code that tier 1 verifies. The removed checks rest on proven obligations (F2, F3, F4), on literals (F1) and on two trusted local premises (the reading of refinements, the canonical representation). The bodies of the standard library are not verified (ADR 0033), so a fact used inside them rests on the trusted prelude, as everything inside them does.
+
+The gap found is the bound on a wrong operand proof stated above: the Cranelift form is weaker than EL-2's remaining operation.
+
+### Proposed reading of EL-1
+
+1. EL-1's "keeps every check" reads: keeps every check except ADR 0055 NB-3's machine-width arithmetic, where `range.rs` proves the operands and the result in the tagged range from the facts F1 to F4. That part is not an elision of this record. It runs no elision query, adds no entry to `native.elided`, and `--no-elision`, which concerns release builds, does not change it.
+2. "The fully checked reference" reads: checked at every site except those. The `elision-equivalence` gate's comparison with the Cranelift build therefore relies on the same proofs at those sites, so it cannot detect a wrong one there. The interpreter, which computes exactly, stays the reference.
+3. The verifier, the reading of refinements in `range.rs`, the choice of binders in `unrefined`'s callers, and the canonical representation of `una-rt` are in the trusted base of the Cranelift build, for the sites where these facts remove the promotion path (`docs/security/tcb.md`, proposed with this amendment).
+4. A change that widens the facts, such as a new binder that keeps its `Int` refinements, `systems`' `overflow` obligations, or a new kind of check removed, needs an amendment of this record, as a new kind of elision does (EL-2).
+
+### Proposed follow-up, for the Owner
+
+- **Retag the result** (recommended): make `Lowerer::unchecked` set bit 0 of its result, the form EL-2 gives the release path. This costs one `bor_imm` per operation, and makes a wrong operand proof cost a wrong value only, as EL-2 requires. It changes no output for a correct proof. It is a code change in lane S, with its own card and review. This amendment does not make it.
+- **Assert the canonical representation** as EL-2a asks of the release path: a debug assertion at each entry point and a test, so that the premise above is tested as well as held by construction.
+
+### Related, outside `range.rs`
+
+These are observed on `main` and also differ from a literal reading of EL-1. This amendment records them and decides nothing about them:
+
+- A narrowing conversion (`Prim::Convert`) keeps its value with no test in the Cranelift build, on its proven `overflow` obligation (`lower.rs`). The interpreter faults on a value outside the target (`una-interp`, `machine.rs`).
+- `div` and `mod` on `Int` call the runtime, which gives 0 for a zero divisor (`una-rt`, `values.rs`), on the proven `division` obligation. The interpreter faults.
+
+Both cost a wrong value under a wrong proof, never an access out of bounds.
