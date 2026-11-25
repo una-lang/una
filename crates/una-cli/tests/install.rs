@@ -2188,6 +2188,220 @@ fn an_existing_file_is_replaced_and_never_written_through_a_hard_link() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn what_the_installer_may_not_replace_at_a_target_is_refused_before_anything_is_written() {
+    // #2216: a directory, a FIFO or a link to a directory where the installer writes a file, or
+    // a file where it writes in a directory, made `rm -f`, `mkdir -p` or `mv` stop the
+    // installation halfway, with a raw error after `bin/una` was replaced. Each is refused with
+    // the installer's own one-line message, for every user: at a fixed name before anything is
+    // downloaded, at a guide's name once the archive is unpacked, and in both cases before
+    // anything is written or removed. As root, the root checks refuse most of them first.
+    use std::os::unix::fs::symlink;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-fixed-targets");
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = "9.8.7";
+    let home = dir.join("home/.una");
+    let elsewhere = dir.join("elsewhere");
+    let target = "aarch64-unknown-linux-gnu";
+    release_holding(
+        &dir,
+        target,
+        version,
+        "PASS (every gate)",
+        None,
+        &[
+            ("lib/libuna_rt.a", "runtime"),
+            ("README.md", "readme"),
+            ("LICENSE", "license"),
+            ("docs/guide/getting-started.md", "guide"),
+        ],
+    );
+    let root = Host {
+        uid: "0",
+        ..GLIBC_239
+    };
+    let not_a_file = "is neither a regular file nor a symbolic link";
+    let not_a_directory = "is not a directory";
+    let to_a_directory = "is a symbolic link to a directory";
+    let directory = |rel: &str| std::fs::create_dir_all(home.join(rel)).unwrap();
+    let file = |rel: &str| {
+        let path = home.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "theirs").unwrap();
+    };
+    type Setup<'a> = Box<dyn Fn() + 'a>;
+    // The case, the target it sets up, how, why it is refused, and whether the target is one of
+    // every installation (checked before any download) or one that only some archives hold, the
+    // runtime and the guides (checked once the archive is unpacked).
+    let cases: Vec<(&str, Setup, &str, bool)> = vec![
+        (
+            "README.md",
+            Box::new(|| directory("README.md")),
+            not_a_file,
+            true,
+        ),
+        (
+            "LICENSE",
+            Box::new(|| directory("LICENSE")),
+            not_a_file,
+            true,
+        ),
+        (
+            "bin/una",
+            Box::new(|| directory("bin/una")),
+            not_a_file,
+            true,
+        ),
+        (
+            "bin/una.new",
+            Box::new(|| directory("bin/una.new")),
+            not_a_file,
+            true,
+        ),
+        (
+            "lib/libuna_rt.a",
+            Box::new(|| directory("lib/libuna_rt.a")),
+            not_a_file,
+            false,
+        ),
+        (
+            ".una-install",
+            Box::new(|| directory(".una-install")),
+            not_a_file,
+            true,
+        ),
+        (
+            "README.md",
+            Box::new(|| {
+                std::fs::create_dir_all(&home).unwrap();
+                let made = Command::new("mkfifo")
+                    .arg(home.join("README.md"))
+                    .status()
+                    .unwrap();
+                assert!(made.success());
+            }),
+            not_a_file,
+            true,
+        ),
+        (
+            "bin/una",
+            Box::new(|| {
+                directory("bin");
+                symlink(&elsewhere, home.join("bin/una")).unwrap();
+            }),
+            to_a_directory,
+            true,
+        ),
+        ("bin", Box::new(|| file("bin")), not_a_directory, true),
+        ("lib", Box::new(|| file("lib")), not_a_directory, false),
+        ("docs", Box::new(|| file("docs")), not_a_directory, false),
+        (
+            "docs/guide",
+            Box::new(|| file("docs/guide")),
+            not_a_directory,
+            false,
+        ),
+        (
+            "docs/guide/getting-started.md",
+            Box::new(|| directory("docs/guide/getting-started.md")),
+            not_a_file,
+            false,
+        ),
+    ];
+    for host in [&GLIBC_239, &root] {
+        for (rel, setup, why, fixed) in &cases {
+            let _ = std::fs::remove_dir_all(dir.join("home"));
+            let _ = std::fs::remove_dir_all(&elsewhere);
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            // The `bin/una` of an earlier installation, which a refusal keeps.
+            let old = !rel.starts_with("bin");
+            if old {
+                file("bin/una");
+            }
+            setup();
+            let (output, fetched) = install_on(&dir, version, host);
+            let case = format!("{rel} ({why}) as uid {}", host.uid);
+            assert_eq!(output.status.code(), Some(1), "{case}: {}", stderr(&output));
+            // As root, the root checks refuse every case but a guide's name first, before any
+            // download, with their own message.
+            let before_download = if host.uid == "0" {
+                *rel != "docs/guide/getting-started.md"
+            } else {
+                *fixed
+            };
+            if !before_download || host.uid != "0" {
+                let message = format!("una install: error: {}/{rel} {why}", home.display());
+                assert!(
+                    stderr(&output).starts_with(&message),
+                    "{case}: {}",
+                    stderr(&output)
+                );
+                assert_eq!(
+                    stderr(&output).lines().count(),
+                    1,
+                    "{case}: {}",
+                    stderr(&output)
+                );
+            }
+            assert_eq!(fetched.is_empty(), before_download, "{case}: {fetched:?}");
+            if old {
+                assert_eq!(
+                    std::fs::read_to_string(home.join("bin/una")).unwrap(),
+                    "theirs",
+                    "{case}: bin/una replaced"
+                );
+            }
+            for written in ["bin/una.new", "README.md", "LICENSE", "lib/libuna_rt.a"] {
+                let path = home.join(written);
+                assert!(
+                    *rel == written || std::fs::symlink_metadata(&path).is_err(),
+                    "{case}: {written} written"
+                );
+            }
+            assert_eq!(
+                std::fs::read_dir(&elsewhere).unwrap().count(),
+                0,
+                "{case}: written outside UNA_HOME"
+            );
+        }
+    }
+    // UNA_HOME itself a file: refused before any download, the file kept.
+    let _ = std::fs::remove_dir_all(dir.join("home"));
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    std::fs::write(&home, "theirs").unwrap();
+    let (output, fetched) = install_on(&dir, version, &GLIBC_239);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains(not_a_directory),
+        "{}",
+        stderr(&output)
+    );
+    assert!(fetched.is_empty(), "{fetched:?}");
+    assert_eq!(std::fs::read_to_string(&home).unwrap(), "theirs");
+    // What the installer may replace still installs, for an ordinary user: a symbolic link at
+    // README.md to the user's own file is removed as itself, and the user's file is kept.
+    let _ = std::fs::remove_dir_all(dir.join("home"));
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(elsewhere.join("mine"), "the user's").unwrap();
+    symlink(elsewhere.join("mine"), home.join("README.md")).unwrap();
+    let (output, _) = install_on(&dir, version, &GLIBC_239);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("mine")).unwrap(),
+        "the user's"
+    );
+    let readme = std::fs::symlink_metadata(home.join("README.md")).unwrap();
+    assert!(readme.file_type().is_file());
+    assert_eq!(
+        std::fs::read_to_string(home.join("README.md")).unwrap(),
+        "readme"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_work_directory_whose_name_holds_a_newline_still_matches_the_digest() {
     // The digest is read from the archive's bytes on stdin, never with its file name, which
