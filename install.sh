@@ -37,7 +37,13 @@
 # itself be sticky. Otherwise the installer refuses before anything is downloaded or removed, and
 # it never runs the installed `una` as root. Only owners and mode bits are read: write access
 # granted by an ACL is not seen. Each file is written as a new one, after its name is removed,
-# never into an existing file, which could be a hard link to a file elsewhere (#1966).
+# never into an existing file, which could be a hard link to a file elsewhere (#1966). For every
+# user, what is already at a name the installer writes must be something it may replace (a
+# regular file or a symbolic link where a file goes, a directory where a directory goes), or the
+# installer refuses before anything is written, and the fixed names before anything is downloaded
+# (#2216). A regular file or a link at such a name is replaced, whoever made it; a directory or a
+# special file is never removed to make room. As an ordinary user, an existing directory the
+# installer writes in must also be writable by this user.
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
@@ -175,19 +181,19 @@ if [ "$uid" = 0 ]; then
     # The directories the installer writes in (a trailing / checks the directory itself), then
     # the files it writes, when they exist: `cp` and `>` would follow a link, and would keep the
     # owner and mode of a file that another user owns or can write.
-    for path in bin/ lib/ docs/guide/; do
-        only_root_on "$path"
+    for rel in bin/ lib/ docs/guide/; do
+        only_root_on "$rel"
     done
-    for path in bin/una bin/una.new lib/libuna_rt.a README.md LICENSE .una-install; do
-        [ -e "$home/$path" ] || [ -L "$home/$path" ] || continue
-        only_root "$home/$path" file
+    for rel in bin/una bin/una.new lib/libuna_rt.a README.md LICENSE .una-install; do
+        [ -e "$home/$rel" ] || [ -L "$home/$rel" ] || continue
+        only_root "$home/$rel" file
     done
     if [ -d "$home/docs/guide" ]; then
         [ -z "$(find "$home/docs/guide" -type l | head -n 1)" ] \
             || fail "as root, $home/docs/guide holds a symbolic link, which the installer does not follow"
-        for path in "$home"/docs/guide/*; do
-            [ -e "$path" ] || continue
-            [ -d "$path" ] || only_root "$path" file
+        for entry in "$home"/docs/guide/*; do
+            [ -e "$entry" ] || continue
+            [ -d "$entry" ] || only_root "$entry" file
         done
     fi
 fi
@@ -236,29 +242,29 @@ unlink_recorded() {
 # outside. Uninstall, and an installation over an earlier one, which removes what the new one
 # does not hold, check every path before anything is downloaded or removed.
 check_record() {
-    while read -r kind path; do
+    while read -r kind rel; do
         case $kind in
             file | dir)
-                case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac
+                case $rel in /* | *..* | "") fail "the record $marker names '$rel', which is not inside $home" ;; esac
                 # One spelling per path, the one the installer writes: no `.` or empty component
                 # (`./bin/una`, `bin//una`, `bin/`), which the comparison with the new files would
                 # miss; the one exception is the record's own `dir .`.
-                case $kind:$path in
+                case $kind:$rel in
                     dir:.) ;;
                     *:. | *:./* | */. | */./* | *//* | */)
-                        fail "the record $marker names '$path', which has a '.' or empty component" ;;
+                        fail "the record $marker names '$rel', which has a '.' or empty component" ;;
                 esac
                 # As root, every directory on the way (and a recorded directory itself) is one
                 # only root can change, which also refuses a link.
                 if [ "$uid" = 0 ]; then
-                    only_root_on "$path"
-                    [ "$kind" = file ] || only_root_on "$path/"
+                    only_root_on "$rel"
+                    [ "$kind" = file ] || only_root_on "$rel/"
                 fi
                 # Every user: no directory on the way is a link, nor a recorded directory itself.
                 # The last component of a `file` line may be a link (`bin/z3` is one): `rm -f`
                 # removes the link, never what it names.
-                no_link_on "$path" "$path"
-                [ "$kind" = file ] || no_link_on "$path/" "$path"
+                no_link_on "$rel" "$rel"
+                [ "$kind" = file ] || no_link_on "$rel/" "$rel"
                 ;;
         esac
     done < "$marker"
@@ -270,8 +276,8 @@ if [ "${1:-}" = --uninstall ]; then
     # The files first, then the directories that the installation created, deepest first, when
     # they are empty. A path that leaves UNA_HOME is never followed.
     check_record
-    while read -r kind path; do
-        [ "$kind" != file ] || unlink_recorded file "$path"
+    while read -r kind rel; do
+        [ "$kind" != file ] || unlink_recorded file "$rel"
     done < "$marker"
     # The proof cache's key (ADR 0064): `una` makes it on first use as $HOME/.una/proof-cache.key,
     # whatever UNA_HOME is, and it has no use without the installation. Only that one name is
@@ -309,10 +315,10 @@ if [ "${1:-}" = --uninstall ]; then
         fi
     fi
     dirs=$(sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
-    printf '%s\n' "$dirs" | while read -r path; do
-        case $path in
+    printf '%s\n' "$dirs" | while read -r rel; do
+        case $rel in
             "" | .) ;;
-            *) unlink_recorded dir "$path" ;;
+            *) unlink_recorded dir "$rel" ;;
         esac
     done
     # The record goes only now, once every recorded path was removed or kept: a check refused
@@ -351,6 +357,47 @@ fi
 }
 # An earlier record, whose files this installation may remove: checked before any download.
 [ ! -f "$marker" ] || check_record
+
+# `replaceable REL [dir]`: what is at UNA_HOME/REL, where the installer writes, is something it
+# may replace (#2216), for every user: nothing, a regular file, or a symbolic link that does not
+# name a directory, which `rm -f` removes as itself, never what it names; with `dir`, nothing or
+# a directory the installer writes in. A regular file or a link at a name the installer writes is
+# replaced, whoever made it; anything else (a directory where a file goes, a FIFO, a file where
+# a directory goes) is never removed to make room, and would stop the installation halfway,
+# after `bin/una` was replaced: it is refused before anything is written. A link that names a
+# directory is refused too: `mv` onto it would move `bin/una.new` into that directory, and one
+# rule holds for every file target. `[ -f ]` and `[ -d ]` follow a link, so a link is told apart
+# first; as root, the block above refused every link already. As an ordinary user, an existing
+# directory the installer writes in must also be one this user can write in and enter, where
+# `rm -f` and `cp` would fail halfway too (#2224 review 1); every file target lies in one of
+# those directories, so this covers the directory each file is removed from. As root, the
+# owner and mode checks above stand, unchanged.
+replaceable() {
+    at=$home
+    [ "$1" = . ] || at=$home/$1
+    [ -e "$at" ] || [ -L "$at" ] || return 0
+    if [ "${2:-}" = dir ]; then
+        [ -d "$at" ] \
+            || fail "$at is not a directory, and the installer writes in it; it removes no file, directory or special file to make room for a directory, so nothing was changed"
+        [ "$uid" = 0 ] || { [ -w "$at" ] && [ -x "$at" ]; } \
+            || fail "$at is a directory this user cannot write in, and the installer writes in it; nothing was changed: make it writable (chmod u+wx) and run the installer again"
+    elif [ -L "$at" ]; then
+        [ ! -d "$at" ] \
+            || fail "$at is a symbolic link to a directory, where the installer writes a file; it replaces only a regular file or a symbolic link that names no directory there, so nothing was changed"
+    else
+        [ -f "$at" ] \
+            || fail "$at is neither a regular file nor a symbolic link, and the installer writes a file there; it replaces only a regular file or a symbolic link there, and removes no directory or special file to make room, so nothing was changed"
+    fi
+}
+# The fixed targets of every installation, before anything is downloaded: UNA_HOME, `bin/`, the
+# files the installer writes at fixed names and the record. The runtime and the guides, which
+# only some archives hold, are checked once the archive is unpacked, still before anything is
+# written, so that a release that installs no runtime keeps a directory at `lib/libuna_rt.a`.
+replaceable . dir
+replaceable bin dir
+for rel in bin/una bin/una.new README.md LICENSE .una-install; do
+    replaceable "$rel"
+done
 
 version=${UNA_VERSION:-$DEFAULT_VERSION}
 releases=${UNA_RELEASES:-https://github.com/una-lang/una/releases/download}
@@ -555,6 +602,26 @@ for entry in "$unpacked"/* "$unpacked"/.[!.]* "$unpacked"/..?*; do
 done
 runtime=
 [ -f "$unpacked/lib/libuna_rt.a" ] && runtime=lib/libuna_rt.a
+# The targets that only some archives hold, checked before anything is written, as the fixed
+# ones were before the download (#2216): the runtime and its directory, then the guides' names,
+# which only the archive gives. The record is one path per word, and `cp` takes options: a
+# guide's name that would break either is refused, though no released archive has one.
+if [ -n "$runtime" ]; then
+    replaceable lib dir
+    replaceable "$runtime"
+fi
+if [ -d "$unpacked/docs/guide" ]; then
+    replaceable docs dir
+    replaceable docs/guide dir
+fi
+for guide in "$unpacked"/docs/guide/*.md; do
+    [ -f "$guide" ] || continue
+    base=$(basename "$guide")
+    case $base in
+        -* | *[[:space:]]*) fail "$archive holds a guide named '$base', which this installer refuses" ;;
+    esac
+    replaceable "docs/guide/$base"
+done
 
 # The directories this installation creates, kept from an earlier record when there is one, so
 # that uninstall removes them and no other.
@@ -594,11 +661,6 @@ if [ -d "$unpacked/docs/guide" ]; then
     for guide in "$unpacked"/docs/guide/*.md; do
         [ -f "$guide" ] || continue
         base=$(basename "$guide")
-        # The record is one path per word, and `cp` takes options: refuse a name that would break
-        # either, though no released archive has one.
-        case $base in
-            -* | *[[:space:]]*) fail "$archive holds a guide named '$base', which this installer refuses" ;;
-        esac
         rm -f "$home/docs/guide/$base"
         cp "$guide" "$home/docs/guide/$base"
         files="$files docs/guide/$base"
@@ -633,20 +695,20 @@ held_new() {
 }
 removed=
 if [ -f "$marker" ]; then
-    while read -r kind path; do
+    while read -r kind rel; do
         [ "$kind" = file ] || continue
-        case " $files " in *" $path "*) continue ;; esac
-        ! held_new "$path" || continue
-        if [ -L "$home/$path" ] || [ -f "$home/$path" ]; then
-            unlink_recorded file "$path"
-            removed="$removed $path"
+        case " $files " in *" $rel "*) continue ;; esac
+        ! held_new "$rel" || continue
+        if [ -L "$home/$rel" ] || [ -f "$home/$rel" ]; then
+            unlink_recorded file "$rel"
+            removed="$removed $rel"
         fi
     done < "$marker"
     sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2- \
-        | while read -r path; do
-            case $path in
+        | while read -r rel; do
+            case $rel in
                 "" | .) ;;
-                *) held_new "$path" || unlink_recorded dir "$path" ;;
+                *) held_new "$rel" || unlink_recorded dir "$rel" ;;
             esac
         done
 fi
