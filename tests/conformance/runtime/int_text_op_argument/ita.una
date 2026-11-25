@@ -1,0 +1,8 @@
+ita int_text_op_argument
+  version 0.1.0
+  edition 0.4
+
+run
+  entry big
+  grants
+    console

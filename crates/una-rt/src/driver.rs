@@ -45,6 +45,11 @@ fn operation(op: i64, instance: i64, args: &[i64], perform: impl FnOnce() -> i64
     for (index, &arg) in (0i64..).zip(args) {
         host::event_arg(op, slot, index, arg);
     }
+    // An argument too long for text stopped the task (`spec/11 §7`): the operation does not
+    // start, as in the compiled code (#1550).
+    if runtime::stopped() != 0 {
+        return Outcome::Stopped;
+    }
     let value = perform();
     if runtime::stopped() != 0 {
         return Outcome::Stopped;
@@ -52,6 +57,10 @@ fn operation(op: i64, instance: i64, args: &[i64], perform: impl FnOnce() -> i64
     let failed = host::host_failed();
     runtime::operation_end();
     host::event_end(op, slot, value, failed);
+    // So did an outcome too long for text, which the task does not use (#1550).
+    if runtime::stopped() != 0 {
+        return Outcome::Stopped;
+    }
     if failed != 0 {
         Outcome::Failed(value)
     } else {

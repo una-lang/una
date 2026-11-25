@@ -2431,6 +2431,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .map(|(name, _)| source_name(name))
             .collect();
         let site = i64::try_from(self.emitter.ops.len()).map_err(crate::internal)?;
+        // Where an abort at the operation is reported, an integer too long for text among its
+        // values (`spec/11 §7`), as the interpreter reports it (#1550).
+        let position = self.emitter.sites.len();
+        self.emitter.sites.push(*span);
         self.emitter.ops.push(serde_json::json!({
             "capability": capability,
             "op": op,
@@ -2439,6 +2443,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "result": result,
             "outcome": outcome,
             "error": error,
+            "site": position,
         }));
         let site = self.builder.ins().iconst(types::I64, site);
         // A cancelled task stops before its next operation (`spec/19 §6` rule 4).
@@ -2452,6 +2457,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
             let position = i64::try_from(position).map_err(crate::internal)?;
             let position = self.builder.ins().iconst(types::I64, position);
             self.runtime("una_rt_event_arg", &[site, slot, position, value]);
+        }
+        // An argument too long for text stopped the task (`spec/11 §7`): the operation does not
+        // start, as in the interpreter (#1550); in `main`'s thread the run has ended.
+        if !values.is_empty() {
+            let stopped = self.call("una_rt_stopped", &[])?;
+            self.stop_if(stopped);
         }
         let index = i64::try_from(index).map_err(crate::internal)?;
         let index = self.builder.ins().iconst(types::I64, index);
@@ -2575,6 +2586,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
             return Err(internal("an operation lost its result"));
         };
         self.runtime("una_rt_event_end", &[site, slot, value, failed]);
+        // An outcome too long for text stopped the task (`spec/11 §7`): it stops here, before
+        // it uses the value, as in the interpreter (#1550). An operation that ended with status
+        // 2 stopped at or in its call and goes on as a failure, as before.
+        let stopped = self.call("una_rt_stopped", &[])?;
+        let ended = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failed, 2);
+        let ended = self.builder.ins().uextend(types::I64, ended);
+        let stopping = self.builder.ins().band(stopped, ended);
+        self.stop_if(stopping);
         // An operation that cannot fail returns 0 as its failure flag, so every operation
         // checks it, as every call does (#267).
         self.check(value, failed, scope, catch);

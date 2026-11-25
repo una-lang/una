@@ -10120,3 +10120,224 @@ fn policy_2214_a_public_release_in_started_tasks_is_alike_across_secrets_in_both
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The line of a U6003 that names its position: `  at <file>:<line>:<col>` natively, and the
+/// primary position of the interpreter's diagnostic, written the same way.
+fn abort_position(native_stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(native_stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("  at ").map(str::to_owned))
+}
+
+/// The position of the interpreter's diagnostic `code` in the document of `una --json run`.
+fn document_position(document: &Value, code: &str) -> Option<String> {
+    document["diagnostics"]
+        .as_array()?
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == code)
+        .map(|diagnostic| {
+            let primary = &diagnostic["primary"];
+            format!(
+                "{}:{}:{}",
+                primary["file"].as_str().unwrap_or(""),
+                primary["start"]["line"],
+                primary["start"]["col"]
+            )
+        })
+}
+
+/// A task of a `together` block whose operation's argument is too long for text: the task
+/// stops before the operation, whose handler would print, and before its next line.
+const INT_TEXT_TASK: &str = "module big
+
+capability Sink
+  op put(note: Text, x: Int) -> Unit
+
+handler keep() for Sink
+  uses @console: Console[print]
+  op put(note, x) = @console.print(\"kept {note}\")
+
+power(exp: Int) -> Int
+=
+  let edit n = 1
+  for i in 1..exp
+    n = n * 10
+  n
+
+work(i: Int) -> Int
+  uses @k: Sink[put]
+  uses @console: Console[print]
+=
+  if i == 1
+    @k.put(\"one\", x: power(4300))
+  @console.print(\"after {i}\")
+  i
+
+every() -> List[Int]
+  uses @k: Sink[put]
+  uses @console: Console[print]
+=
+  together for i in [0, 1, 2]
+    work(i)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"before\")
+  let r = every() with @k = keep()
+  @console.print(\"done\")
+";
+
+#[test]
+fn an_integer_too_long_for_text_at_an_operation_aborts_alike_with_or_without_a_trace() {
+    // `spec/11 §7`, #1550: an argument or a result of an operation that holds an `Int` of more
+    // than 4300 digits aborts the run with U6003 at the operation in both engines, whether or
+    // not the executable records a trace (`--trace`, `spec/16 §3` rule 4). The output, the exit
+    // status, the position and, with `--trace`, the whole trace are the interpreter's: an
+    // argument aborts before the operation starts, which writes no event and whose handler
+    // does not run; a result leaves the operation's event `aborted`. Without a trace the
+    // native run used to go on past the operation and exit 0.
+    runtime();
+    for case in ["int_text_op_argument", "int_text_op_result"] {
+        let source = std::fs::read_to_string(
+            root().join(format!("tests/conformance/runtime/{case}/src/big.una")),
+        )
+        .unwrap();
+        let name = format!("i1550{}", case.trim_start_matches("int_text_op_"));
+        let dir = ita_package(
+            &name,
+            "\nrun\n  entry big\n  grants\n    console\n",
+            &[("src/big.una", &source)],
+        );
+        let run = una(&dir, &["--json", "run"]);
+        assert_eq!(run.status.code(), Some(1), "{case}: {run:?}");
+        let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+        assert_eq!(document["status"], "aborted", "{case}: {document}");
+        let expected: String = document["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| format!("{}\n", line.as_str().unwrap()))
+            .collect();
+        let position = document_position(&document, "U6003");
+        assert!(position.is_some(), "{case}: {document}");
+        let [_, mut plain] = engines(&dir, &name, &[]);
+        let plain = plain.output().unwrap();
+        let trace = dir.join("trace.json");
+        let [_, mut traced] = engines(&dir, &name, &["--trace", trace.to_str().unwrap()]);
+        let traced = traced.output().unwrap();
+        for (how, native) in [("without --trace", &plain), ("with --trace", &traced)] {
+            assert_eq!(native.status.code(), Some(1), "{case} {how}: {native:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&native.stdout),
+                expected,
+                "{case} {how}"
+            );
+            assert_eq!(
+                abort_position(&native.stderr),
+                position,
+                "{case} {how}: {}",
+                String::from_utf8_lossy(&native.stderr)
+            );
+        }
+        let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+        assert_eq!(
+            timeless(events.clone()),
+            timeless(document["trace"].clone()),
+            "{case}"
+        );
+        let last = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|event| event["capability"] != "Console");
+        let large =
+            |event: &Value| event["args"]["exp"] == "4300" || event["args"]["note"] == "4300";
+        match case {
+            // The operation that would show the integer has no event.
+            "int_text_op_argument" => {
+                assert!(last.is_some_and(|event| !large(event)), "{case}: {events}")
+            }
+            _ => assert!(
+                last.is_some_and(|event| large(event) && event["outcome"]["kind"] == "aborted"),
+                "{case}: {events}"
+            ),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn an_argument_too_long_for_text_stops_a_task_before_its_operation_with_or_without_a_trace() {
+    // `spec/11 §7`, `spec/19 §8`, #1550: in a task, the argument's abort stops the task before
+    // the operation, so its handler does not print and the task's next line is not printed; the
+    // run ends with U6003 at the operation, as in the interpreter, with a trace or without one.
+    // The other tasks run concurrently natively, so only the lines of the stopped task and the
+    // operation's event are compared.
+    runtime();
+    let dir = ita_package(
+        "i1550task",
+        "\nrun\n  entry big\n  grants\n    console\n",
+        &[("src/big.una", INT_TEXT_TASK)],
+    );
+    let run = una(&dir, &["--json", "run"]);
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(run.status.code(), Some(1), "{document}");
+    let position = document_position(&document, "U6003");
+    assert!(position.is_some(), "{document}");
+    let trace = dir.join("trace.json");
+    let [_, mut plain] = engines(&dir, "i1550task", &[]);
+    let plain = plain.output().unwrap();
+    let [_, mut traced] = engines(&dir, "i1550task", &["--trace", trace.to_str().unwrap()]);
+    let traced = traced.output().unwrap();
+    let interpreted = document["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| format!("{}\n", line.as_str().unwrap()))
+        .collect::<String>();
+    for (how, stdout, code) in [
+        ("interpreter", interpreted, run.status.code()),
+        (
+            "native without --trace",
+            String::from_utf8_lossy(&plain.stdout).into_owned(),
+            plain.status.code(),
+        ),
+        (
+            "native with --trace",
+            String::from_utf8_lossy(&traced.stdout).into_owned(),
+            traced.status.code(),
+        ),
+    ] {
+        assert_eq!(code, Some(1), "{how}: {stdout}");
+        assert!(stdout.starts_with("before\n"), "{how}: {stdout}");
+        assert!(!stdout.contains("kept"), "{how}: {stdout}");
+        assert!(!stdout.contains("after 1"), "{how}: {stdout}");
+        assert!(!stdout.contains("done"), "{how}: {stdout}");
+    }
+    for (how, native) in [("without --trace", &plain), ("with --trace", &traced)] {
+        assert_eq!(
+            abort_position(&native.stderr),
+            position,
+            "{how}: {}",
+            String::from_utf8_lossy(&native.stderr)
+        );
+    }
+    for (how, events) in [
+        ("interpreter", document["trace"].clone()),
+        (
+            "native",
+            serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap(),
+        ),
+    ] {
+        let puts = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["capability"] == "Sink")
+            .count();
+        assert_eq!(puts, 0, "{how}: {events}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
