@@ -16,6 +16,14 @@ A fix made before any release that it would affect is not an advisory. Neither i
 
 ## Advisories
 
+### UNA-SA-024: the order of started tasks' public events could follow data above `public`
+
+- **Severity:** High
+- **Affected:** v0.4.0 and v0.5.0, in editions `0.4` and `0.5`, under `una run` and in native executables run with `--virtual-time`. `CHANGELOG.md` names no affected release: tasks (`tasks` and `start`) exist only from edition `0.4`, which v0.4.0 first shipped, and the code of both defects is in v0.4.0 and v0.5.0. Neither was reproduced on a published archive.
+- **Fixed in:** v0.5.1.
+- **Summary:** In a program that starts tasks, the order in which the tasks' public events happen must not depend on data above `public` (`spec/27 §7` rule 4, `spec/27 §8` rule 5). Two paths broke it. A policy call runs its `via`, whose code the label rules do not check, and the checker did not record the call as a check point of the schedule (#2214): a `via` whose work depended on its argument ordered the public prints of started tasks by that argument, `secret` as well as `internal`, and the program was accepted with an empty report. And a `start` in code under a raised program counter took a place of its statement's bound, and quiet code that parked let the queued tasks run first (#1545, the S-40 remainder): the order of other tasks' public events followed `internal` data. Now a policy call is a check point, so a `via` given data above `internal` in a program that starts tasks is refused with U4002, and one given `internal` data is listed in the report's `information.timing`; a task started by quiet code is held by its statement, joins no queue and counts against no bound, so the public events keep the order of the same run without the quiet code, in both engines (ADR 0117 amendment of 2026-11-22). Native code under the real clock is out of model: its order across tasks is real time. A held task that runs longer than a turn while another task is ready remains a residual at `internal` (#1708). Users of an affected release should not release data above `internal` through a policy in a package that starts tasks, and should not start tasks in code that branches on `internal` data.
+- **References:** #2214, #1545, #1708, `spec/27 §7`, `spec/27 §8`, ADR 0117.
+
 ### UNA-SA-023: a `Files` grant on the current directory was not confined against symbolic links
 
 - **Severity:** High
