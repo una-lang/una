@@ -84,6 +84,10 @@ runtime::tests::a_refused_step_announces_nothing
 runtime::tests::a_refused_step_announces_nothing_scenario
 runtime::tests::a_step_between_the_reads_of_a_pass_is_never_missed
 runtime::tests::a_step_between_the_reads_of_a_pass_scenario
+runtime::tests::a_step_that_fits_is_never_refused_while_the_limit_changes
+runtime::tests::a_step_that_fits_is_never_refused_while_the_limit_changes_scenario
+runtime::tests::a_stop_that_finds_the_end_claimed_leaves_the_limit_in_place
+runtime::tests::a_stop_that_finds_the_end_claimed_scenario
 runtime::tests::a_table_the_build_did_not_foresee_faults_at_its_site
 runtime::tests::a_table_the_build_did_not_foresee_scenario
 runtime::tests::refused_steps_never_fail_the_steps_of_sibling_threads
