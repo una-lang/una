@@ -2364,7 +2364,10 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         Ok(text) => text,
         Err(error) => return unreadable(&manifest_path, &error, out),
     };
-    let (read, errors) = ita::parse_manifest(&text);
+    // The edit is made on the decoded text, `\r\n` read as `\n`, which the ranges of the
+    // grammar and of its lines index.
+    let decoded = text.replace("\r\n", "\n");
+    let (read, errors) = ita::parse_manifest(&decoded);
     if !errors.is_empty() {
         writeln!(
             out.stderr,
@@ -2380,8 +2383,7 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         writeln!(out.stderr, "error: the package does not need `{name}`")?;
         return Ok(ExitStatus::Usage);
     };
-    let lines = ita::lines(&text);
-    // The ranges of the grammar index the decoded text, so the edit is made on it.
+    let lines = ita::lines(&decoded);
     let text = lines.text.as_str();
     let Some(section) = lines.lines.iter().find(|line| {
         line.tokens
@@ -2638,7 +2640,8 @@ const AFTER_NEEDS: [&str; 10] = [
 /// `text` with `line` added as the last need: at the end of the `needs` section, or in a new
 /// one before the first section that follows it in the canonical order, or at the end.
 fn with_need(text: &str, line: &str) -> String {
-    let read = ita::lines(text);
+    let decoded = text.replace("\r\n", "\n");
+    let read = ita::lines(&decoded);
     let text = read.text.as_str();
     let line_start = |offset: usize| {
         text.get(..offset)

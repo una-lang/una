@@ -587,7 +587,7 @@ pub(crate) fn yank_command(
     };
     let mut sources = SourceDb::new();
     let id = sources.add("ita.una".to_owned(), text.as_bytes());
-    let (manifest, errors) = parse_ita_manifest(&text);
+    let (manifest, errors) = parse_ita_manifest(sources.file(id).text());
     let mut diagnostics = located(&sources, id, errors);
     let Some(read) = manifest.ita.as_deref().filter(|_| diagnostics.is_empty()) else {
         return finish("yank", &[], &[], &diagnostics, &sources, out);
