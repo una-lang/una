@@ -281,6 +281,16 @@ pub fn obligations(
             }
             all.extend(walker.obligations);
         }
+        // ADR 0126 rule 7: the obligations of each module constant's declared type, at its
+        // value, with no hypothesis: the value is closed.
+        for check in &module.constants {
+            let mut walker = Walker::new(&index, sources, &module.path, layout);
+            walker.declaration = format!("{}.{}", module.path, check.name);
+            walker.lambdas.clear();
+            let mut leaves = Vec::new();
+            walker.walk(&check.body, &Ctx::default(), &mut leaves);
+            all.extend(walker.obligations);
+        }
         for example in &module.examples {
             let mut walker = Walker::new(&index, sources, &module.path, layout);
             walker.declaration =
@@ -9256,6 +9266,7 @@ mod tests {
                 path: "m".to_owned(),
                 decls,
                 examples: Vec::new(),
+constants: Vec::new(),
             }],
             ..Program::default()
         }
@@ -9451,6 +9462,7 @@ mod tests {
                     public: false,
                 }))],
                 examples: Vec::new(),
+constants: Vec::new(),
             }],
             ..Program::default()
         }
@@ -9608,6 +9620,7 @@ mod tests {
                     public: false,
                 }))],
                 examples: Vec::new(),
+constants: Vec::new(),
             }],
             ..Program::default()
         };
@@ -9716,6 +9729,7 @@ mod tests {
                     record: false,
                 }],
                 examples: Vec::new(),
+constants: Vec::new(),
             }],
             ..Program::default()
         };
@@ -9747,6 +9761,7 @@ mod tests {
                     record: false,
                 }],
                 examples: Vec::new(),
+constants: Vec::new(),
             }],
             ..Program::default()
         };
@@ -9834,11 +9849,13 @@ mod tests {
                     path: "aaa".to_owned(),
                     decls: vec![files(vec![nonempty])],
                     examples: Vec::new(),
+constants: Vec::new(),
                 },
                 una_core::Module {
                     path: "bbb".to_owned(),
                     decls: vec![files(Vec::new())],
                     examples: Vec::new(),
+constants: Vec::new(),
                 },
             ],
             library: Vec::new(),

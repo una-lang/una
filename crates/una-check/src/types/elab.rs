@@ -187,7 +187,9 @@ fn core_key(
         (DeclKind::Handler(handler), _) => {
             ("handler", env.text(module, handler.name.name).to_owned())
         }
-        (DeclKind::Requirement(_) | DeclKind::Measure(_), _) => return None,
+        // A module constant is substituted at each reference (ADR 0126 rule 8): Core IR has no
+        // declaration of it.
+        (DeclKind::Requirement(_) | DeclKind::Measure(_) | DeclKind::Const(_), _) => return None,
     };
     Some(key)
 }
@@ -574,6 +576,11 @@ fn elaborate_module(
                     out.examples.push(example);
                 }
             }
+            (DeclKind::Const(_), Some(Entity::Const(id))) => {
+                if let Some(check) = fx.constant_check(id) {
+                    out.constants.push(check);
+                }
+            }
             (_, Some(entity)) => {
                 if let Some(core) = fx.decl(&decl.kind, entity) {
                     out.decls.push(core);
@@ -667,6 +674,9 @@ struct Fx<'e, 'a> {
     /// The names of the state of the innermost loop whose body is elaborated, outside any
     /// task in it: what its `skip` and `stop` exit with (`spec/26 §3`).
     loop_names: Option<Vec<String>>,
+    /// The module constant whose value is being substituted at a reference, edition 0.5
+    /// (ADR 0126 rule 8): its scalar nodes are their folded literals.
+    constant: Option<usize>,
 }
 
 /// How a tail value is wrapped into a tuple (`spec/17 §4`).
@@ -704,7 +714,82 @@ impl<'e, 'a> Fx<'e, 'a> {
             current_join: None,
             loop_names: None,
             call_tuple: None,
+            constant: None,
         }
+    }
+
+    // ----- module constants (ADR 0126 rule 8) -----
+
+    /// The check of constant `id` (ADR 0126 rule 7): its value, elaborated as a reference
+    /// substitutes it, bound to its declared type with the binder written, so the verifier
+    /// generates the obligations of the type at the value.
+    fn constant_check(&mut self, id: usize) -> Option<una_core::ConstantCheck> {
+        let def = self.env.constants.get(id)?;
+        let span = def.ast.value.span;
+        let mut lets = Vec::new();
+        let atom = self.substitute(id, |fx, value| fx.atom(&mut lets, value))?;
+        if self.broken.get() {
+            return None;
+        }
+        let ty = self.declared(&def.declared);
+        // A temporary, not a source name: a constant is not a binder, so no counterexample
+        // shows it, and the goal is closed (ADR 0126 rule 7, R-021).
+        let binder = self.temp();
+        bind_expr(
+            &mut lets,
+            binder.clone(),
+            ty,
+            CoreExpr::Atom { atom, span },
+            span,
+            true,
+        );
+        let body = close(
+            lets,
+            CoreExpr::Atom {
+                atom: Atom::Var(binder),
+                span,
+            },
+        );
+        Some(una_core::ConstantCheck {
+            name: def.name.to_owned(),
+            body,
+        })
+    }
+
+    /// The folded literal of the node at `span` of the value being substituted.
+    fn folded(&self, span: Span) -> Option<Atom> {
+        let id = self.constant?;
+        let def = self.env.constants.get(id)?;
+        let evaluated = if def.module >= self.env.prelude {
+            &self.findings.standard_constants
+        } else {
+            &self.findings.constants
+        };
+        evaluated.folded.get(&id)?.get(&span).cloned()
+    }
+
+    /// Elaborates the value of constant `id` with `elaborate`, in its own module and records,
+    /// so that a reference is substituted by the value (ADR 0126 rule 8). `None`, and the
+    /// declaration not elaborated, for a constant without a value, which a diagnostic reports.
+    fn substitute<R>(&mut self, id: usize, elaborate: impl FnOnce(&mut Self, &Expr) -> R) -> Option<R> {
+        let def = self.env.constants.get(id)?;
+        let evaluated = if def.module >= self.env.prelude {
+            &self.findings.standard_constants
+        } else {
+            &self.findings.constants
+        };
+        if !evaluated.folded.contains_key(&id) {
+            self.broken.set(true);
+            return None;
+        }
+        let value = &def.ast.value;
+        let saved = (self.module, self.records, self.constant);
+        self.module = def.module;
+        self.records = records_of(self.env, self.findings, def.module);
+        self.constant = Some(id);
+        let result = elaborate(self, value);
+        (self.module, self.records, self.constant) = saved;
+        Some(result)
     }
 
     // ----- names -----
@@ -1307,8 +1392,20 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// An expression of the refinement language as a term (`spec/03 §3`).
     /// The checker has already rejected every other form (U2014).
     fn term(&mut self, expr: &Expr) -> Term {
+        if let Some(term) = self.folded(expr.span).and_then(atom_term) {
+            return term;
+        }
         match &expr.kind {
             ExprKind::Paren(inner) => self.term(inner),
+            ExprKind::Name(ident)
+                if matches!(self.records.res.get(&ident.span), Some(Res::Const(_))) =>
+            {
+                let Some(Res::Const(id)) = self.records.res.get(&ident.span).cloned() else {
+                    return self.outside();
+                };
+                self.substitute(id, |fx, value| fx.term(value))
+                    .unwrap_or(Term::Bool(false))
+            }
             // A decimal is its coefficient (`spec/29 §16`, ADR 0120 V2).
             ExprKind::Literal(Literal::Float(text)) if self.decimal_at(expr.span).is_some() => {
                 let scale = self.decimal_at(expr.span).unwrap_or(0);
@@ -4653,6 +4750,9 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// An expression as an atom, its intermediate results bound in `lets` (A-normal form).
     fn atom(&mut self, lets: &mut Vec<Let>, expr: &Expr) -> Atom {
         let span = expr.span;
+        if let Some(atom) = self.folded(span) {
+            return atom;
+        }
         match &expr.kind {
             ExprKind::Old(_) => {
                 self.broken.set(true);
@@ -4660,6 +4760,15 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             ExprKind::Literal(literal) => self.literal_atom(lets, literal, span),
             ExprKind::Paren(inner) => self.atom(lets, inner),
+            ExprKind::Name(ident)
+                if matches!(self.records.res.get(&ident.span), Some(Res::Const(_))) =>
+            {
+                let Some(Res::Const(id)) = self.records.res.get(&ident.span).cloned() else {
+                    return self.unelaborated();
+                };
+                self.substitute(id, |fx, value| fx.atom(lets, value))
+                    .unwrap_or(Atom::Unit)
+            }
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
                 if let Some(local) = self.local(name) {
@@ -6273,6 +6382,21 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
 }
 
 /// The text of a literal without interpolation.
+/// The term of a folded literal of a module constant (ADR 0126 rule 8), where the refinement
+/// language has one; a decimal is its coefficient (`spec/29 §16`).
+fn atom_term(atom: Atom) -> Option<Term> {
+    Some(match atom {
+        Atom::Int(digits) => Term::Int(digits),
+        Atom::Bool(b) => Term::Bool(b),
+        Atom::Text(text) => Term::Text(text),
+        Atom::Unit => Term::Unit,
+        Atom::F64(bits) => Term::F64(bits),
+        Atom::F32(bits) => Term::F32(bits),
+        Atom::Decimal { coefficient, .. } => Term::Int(coefficient),
+        Atom::Var(_) => return None,
+    })
+}
+
 fn plain_text(text: &TextLit) -> Option<String> {
     let mut plain = String::new();
     for part in &text.parts {

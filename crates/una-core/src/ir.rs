@@ -2567,6 +2567,22 @@ pub struct Module {
     pub decls: Vec<Decl>,
     /// The examples, in source order.
     pub examples: Vec<Example>,
+    /// The checks of its module constants, edition 0.5, in source order (ADR 0126 rule 7).
+    /// They are not declarations: every reference to a constant is substituted by its value
+    /// (rule 8), and no engine runs a check. Only the verifier reads them, for the
+    /// obligations of a constant's declared type at its value.
+    pub constants: Vec<ConstantCheck>,
+}
+
+/// The check of a module constant (ADR 0126 rule 7): its value, elaborated as at a reference,
+/// bound to its declared type, as an annotated `const` binds a value, so that each refinement
+/// of the type, at the top or nested, is an obligation at the value, with no hypothesis.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstantCheck {
+    /// The constant's name.
+    pub name: String,
+    /// `let name: τ = value in name`, the binder written.
+    pub body: Expr,
 }
 
 /// A package's profile (ADR 0109): `app`, the language as it is, or `systems`, which only adds
