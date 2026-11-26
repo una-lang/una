@@ -26,7 +26,7 @@ use native_build::{root, una};
 /// outer loop over the rows and an inner one over a row's 4 columns.
 fn nested_sets(rows: usize) -> String {
     format!(
-        "module main\n\npub main() -> Unit\n=\n  let zero = 0.0\n  let edit m = matrix_filled(rows: {rows}, columns: 4, value: zero)\n  for i in 0..<{rows}\n    for j in 0..<4\n      let x = m.get(row: i, column: j)\n      edit m.set(row: i, column: j, item: x + 1.0)\n  unit\n"
+        "module main\n\npub main() -> Unit\n=\n  const zero = 0.0\n  var m = matrix_filled(rows: {rows}, columns: 4, value: zero)\n  for i in 0..<{rows}\n    for j in 0..<4\n      const x = m.get(row: i, column: j)\n      edit m.set(row: i, column: j, item: x + 1.0)\n  unit\n"
     )
 }
 

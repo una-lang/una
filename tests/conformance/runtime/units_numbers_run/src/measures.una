@@ -19,17 +19,17 @@ pub measure Cent = Usd / 100
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let k: F64 of Kilometer = 1.5
-  let m: F64 of Meter = k.convert()
-  let back: F64 of Kilometer = m.convert()
+  const k: F64 of Kilometer = 1.5
+  const m: F64 of Meter = k.convert()
+  const back: F64 of Kilometer = m.convert()
   @console.print("f64 {m} {back} {m.magnitude()} {k + k}")
-  let short: F32 of Meter = 0.25
+  const short: F32 of Meter = 0.25
   @console.print("f32 {short * short} {short.to_f64()}")
-  let price: Decimal[2] of Usd = 19.99
-  let cents: Decimal[2] of Cent = price.convert()
+  const price: Decimal[2] of Usd = 19.99
+  const cents: Decimal[2] of Cent = price.convert()
   @console.print("decimal {cents} {price + 0.01}")
-  let z: Complex[F64] of Meter = complex(re: 3.0, im: -4.0)
+  const z: Complex[F64] of Meter = complex(re: 3.0, im: -4.0)
   @console.print("complex {z} {z.norm_sqr()} {z.re}")
-  let two: F64 of Meter = 2.0
-  let a: Array[F64 of Meter] = array_filled(length: 3, value: two)
+  const two: F64 of Meter = 2.0
+  const a: Array[F64 of Meter] = array_filled(length: 3, value: two)
   @console.print("dense {a.sum()} {a.dot(with: a)}")

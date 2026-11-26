@@ -17,14 +17,14 @@ pub kind Patient
 --- A secret item into an editable hash set with a public top label.
 pub into_public(x: secret Int) -> Unit
 =
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   edit s.add(item: x)
   unit
 
 --- The control: the set is declared with a secret top label.
 pub into_secret(x: secret Int) -> Unit
 =
-  let edit s: secret HashSet[Int] = empty_hash_set()
+  var s: secret HashSet[Int] = empty_hash_set()
   edit s.add(item: x)
   unit
 
@@ -48,14 +48,14 @@ pub value_control(m: HashMap[Text, Int], k: secret Text) -> secret Option[Int] =
 pub tally(m: HashMap[Text, Unit], k: secret Text) -> Unit
   uses @console: Console[print]
 =
-  let edit out = m
+  var out = m
   edit out.update(key: k, initial: unit, change: fn(u) -> @console.print("changed"))
   unit
 
 pub tally_control(m: HashMap[Text, Unit], k: Text) -> Unit
   uses @console: Console[print]
 =
-  let edit out = m
+  var out = m
   edit out.update(key: k, initial: unit, change: fn(u) -> @console.print("changed"))
   unit
 
@@ -63,7 +63,7 @@ pub tally_control(m: HashMap[Text, Unit], k: Text) -> Unit
 pub listed(words: List[Text]) -> Unit
   uses @console: Console[print]
 =
-  let edit seen: HashSet[Text] = empty_hash_set()
+  var seen: HashSet[Text] = empty_hash_set()
   for word in words
     edit seen.add(item: word)
   @console.print("{seen.items()}")

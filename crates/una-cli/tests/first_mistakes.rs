@@ -11,6 +11,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "common/binding_words.rs"]
+mod binding_words;
+
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 
@@ -321,7 +324,11 @@ fn u3013_advice(root: &Path) -> Vec<(u64, u64, String)> {
         .filter(|d| d["code"] == "U3013")
         .map(|d| {
             let message = d["message"].as_str().unwrap();
-            let (_, advice) = message.split_once("statement or `let`; ").unwrap();
+            // Edition 0.5 names its binding words (ADR 0137 rule 10).
+            let (_, advice) = message
+                .split_once("statement or `let`; ")
+                .or_else(|| message.split_once("statement, or of a `const` or `var`; "))
+                .unwrap();
             (
                 d["primary"]["start"]["line"].as_u64().unwrap(),
                 d["primary"]["start"]["col"].as_u64().unwrap(),
@@ -431,9 +438,24 @@ fn u3013_advises_the_form_that_resolves_it_where_the_call_stands() {
         diagnostics(&conformance.join("u3013_advice_followed")),
         Vec::<Value>::new()
     );
-    // #1628, ADR 0137 rules 8 and 10: edition 0.5 says `let` while it reads `let`. When it reads
-    // `const` and `var` instead, this copy no longer parses and every text above must name the
-    // edition's form there.
+    // #1628, ADR 0137 rules 10 and 11: in edition 0.5 the case reads `const` and `var`, as
+    // `una fix` rewrites it, and every text above names the edition's binding words, at the
+    // positions of the rewritten case.
+    assert_eq!(
+        una_diag::binding_words::words_of_0_5(BIND),
+        "bind its result with `const` first"
+    );
+    let written = std::fs::read_to_string(conformance.join("u3013_advice/src/advice.una")).unwrap();
+    let expected: Vec<(u64, u64, String)> = expected
+        .into_iter()
+        .map(|(line, col, advice)| {
+            (
+                line,
+                binding_words::column_in_0_5(&written, line, col),
+                una_diag::binding_words::words_of_0_5(&advice),
+            )
+        })
+        .collect();
     for case in ["u3013_advice", "u3013_advice_followed"] {
         let copy = package(&format!("u3013-0.5-{case}"), "advice", "");
         std::fs::remove_file(copy.join("una.toml")).unwrap();
@@ -448,11 +470,9 @@ fn u3013_advises_the_form_that_resolves_it_where_the_call_stands() {
             copy.join("ita.lock"),
         )
         .unwrap();
-        std::fs::copy(
-            conformance.join(case).join("src/advice.una"),
-            copy.join("src/advice.una"),
-        )
-        .unwrap();
+        let source =
+            std::fs::read_to_string(conformance.join(case).join("src/advice.una")).unwrap();
+        std::fs::write(copy.join("src/advice.una"), binding_words::of_0_5(&source)).unwrap();
         let found = u3013_advice(&copy);
         if case == "u3013_advice" {
             assert_eq!(found, expected, "edition 0.5");

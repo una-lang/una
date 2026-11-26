@@ -2,6 +2,8 @@
 
 Status: Normative, v0.1.
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A test's `do` line is an expression and binds nothing, in every edition; when a later record lets a step of a test bind a name (issue #1591), the step is written `do const name = e`, and `do var` where it can be assigned, and no edition has `do let` (ADR 0137 rule 8). A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 ## 1. Requirements
 
 A requirement records a human or business statement with its origin and owner, so contracts can be traced to intent.

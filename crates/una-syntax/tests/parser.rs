@@ -1491,7 +1491,11 @@ fn edition_0_4_advises_edition_0_5_for_the_moved_syntax() {
         repairs_in(simd, KeywordSet::V0_3),
         vec![(reserved, vec![rename]); 2]
     );
-    assert_eq!(repairs_in(simd, KeywordSet::V0_5), vec![]);
+    // Edition 0.5 binds with `const` (ADR 0137).
+    assert_eq!(
+        repairs_in(&simd.replace("let ", "const "), KeywordSet::V0_5),
+        vec![]
+    );
     // Controls (review of #1758): in edition 0.4 another reserved word keeps exactly its
     // rename, and an integer argument of another type keeps no repair.
     assert_eq!(

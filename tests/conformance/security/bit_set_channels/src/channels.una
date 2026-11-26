@@ -10,14 +10,14 @@ import std.collections (BitSet, empty_bit_set)
 --- A secret item into an editable bit set with a public top label.
 pub into_public(x: secret Int) -> Unit
 =
-  let edit b: BitSet = empty_bit_set(size: 64)
+  var b: BitSet = empty_bit_set(size: 64)
   edit b.add(item: x)
   unit
 
 --- The control: the bit set is declared with a secret top label.
 pub into_secret(x: secret Int) -> Unit
 =
-  let edit b: secret BitSet = empty_bit_set(size: 64)
+  var b: secret BitSet = empty_bit_set(size: 64)
   edit b.add(item: x)
   unit
 
@@ -31,5 +31,5 @@ pub presence(b: BitSet, x: secret Int) -> Unit
 pub sized(n: secret Int) -> Unit
   uses @console: Console[print]
 =
-  let b = empty_bit_set(size: n)
+  const b = empty_bit_set(size: n)
   @console.print("{b.len}")

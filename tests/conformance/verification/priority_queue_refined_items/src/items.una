@@ -10,18 +10,18 @@ pub kind Pos = Int where it > 0
 
 pub kept(p: Pos) -> Int
 =
-  let edit q: PriorityQueue[Pos, Pos] = lowest_first()
+  var q: PriorityQueue[Pos, Pos] = lowest_first()
   edit q.push(item: p, priority: p)
   q.items().len
 
 pub moved_item() -> Int
 =
-  let edit q: PriorityQueue[Pos, Int] = lowest_first()
+  var q: PriorityQueue[Pos, Int] = lowest_first()
   edit q.push(item: 0, priority: 1)
   q.items().len
 
 pub moved_priority() -> Int
 =
-  let edit q: PriorityQueue[Text, Pos] = lowest_first()
+  var q: PriorityQueue[Text, Pos] = lowest_first()
   edit q.push(item: "a", priority: -2)
   q.items().len

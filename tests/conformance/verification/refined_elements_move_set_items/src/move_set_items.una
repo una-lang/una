@@ -1,7 +1,7 @@
 -- test: movement set_items: a set's `items()` and `first()` of a `Set[Int]` bound by a `let` annotated `List[Pos]` and `Option[Pos]` are `refinement` obligations, refuted, while the same movements at the same refined types give none (ADR 0103 rules 3 and 4, ADR 0119 V6)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_set_items.una:19:23
--- expect: error U5001 at src/move_set_items.una:20:24
+-- expect: error U5001 at src/move_set_items.una:19:25
+-- expect: error U5001 at src/move_set_items.una:20:26
 module move_set_items
 
 import std.collections (Set)
@@ -10,12 +10,12 @@ pub kind Pos = Int where it > 0
 
 pub kept(s: Set[Pos]) -> Int
 =
-  let xs: List[Pos] = s.items()
-  let o: Option[Pos] = s.first()
+  const xs: List[Pos] = s.items()
+  const o: Option[Pos] = s.first()
   xs.len
 
 pub moved(s: Set[Int]) -> Int
 =
-  let xs: List[Pos] = s.items()
-  let o: Option[Pos] = s.first()
+  const xs: List[Pos] = s.items()
+  const o: Option[Pos] = s.first()
   xs.len

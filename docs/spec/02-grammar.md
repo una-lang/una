@@ -189,6 +189,14 @@ if_block        = "if" line_expr NEWLINE INDENT block DEDENT
 
 (v0.2, ADR 0065.) In edition `0.2`, a block also takes `together` statements, and a `let` the `together for` form (`spec/19 §1`).
 
+(v0.5, ADR 0137 rules 2 and 3.) In edition `0.5`, a binding statement is written `const` or `var`:
+
+```ebnf
+let_stmt        = ( "const" | "var" ) lower_ident [ ":" type ] "=" ( handled | block_expr ) ;
+```
+
+The production keeps its name, as `spec/09` keeps the Core `let`. `const x = e` is what `let x = e` is in edition `0.4`, and `var x = e` what `let edit x = e` is (`spec/17 §1`), with the same typing, desugaring, verification and information flow. `const` binds a name to a value that does not change; at the top level of a module its type MUST be written and its value MUST be a constant expression (ADR 0126 rule 3), and in a block it MAY be any expression. `const edit x` and `var edit x` are U0101, since `edit` and `take` mark only parameters, arguments and receivers. A `var` at the top level of a module is U0101, `` a module declares no `var`; a module value is a `const` ``: a module has no mutable state. Module constants (ADR 0126) land with issue #1632: until then, a `const` at the top level is U0101. `let` is U7007 in edition `0.5` (`spec/01 §5`). Wherever this chapter and the others name a `let` of the surface language, edition `0.5` reads `const`, and a `let edit`, `var`; a Core `let` (`spec/09`) stays.
+
 (Edition 0.4, ADR 0117 rule 5.) In edition `0.4`, a `handled` line MAY bound its expression by a deadline, after its `with` clause, and `attempt` MAY take one, which it then holds (`spec/27 §5`):
 
 ```ebnf
@@ -259,7 +267,7 @@ These rules are enforced after parsing and reported with the listed codes.
 | `result` appears only in `ensures` clauses and `expect` lines | U2012 |
 | `it` appears only in `where` clauses and the second argument of `checked`. (v0.3, ADR 0092.) Only the `where` of a `kind`: not in an operation's `where` (`spec/05 §3`), where the message is "`it` names no value in an operation's condition" | U2013 |
 | `error` appears only inside the `fail` or `use` part of an `if error` handling clause | U2013 |
-| A capability operation, or a call to a function that uses capabilities or can fail, appears only as the whole `line_expr` of a `handled` statement, `let` or `final`, optionally wrapped in `attempt` (one effect per line). Example `do` lines are exempt (`spec/08 §2`) | U3013 |
+| A capability operation, or a call to a function that uses capabilities or can fail, appears only as the whole `line_expr` of a `handled` statement, `let` (in edition `0.5`, `const` or `var`) or `final`, optionally wrapped in `attempt` (one effect per line). Example `do` lines are exempt (`spec/08 §2`) | U3013 |
 | A bare `cap_ref` (not followed by `.op(...)`) appears only on either side of a `with` binding or after `given @x =` | U3005 |
 | `policy` appears only in `trusted` modules | U4004 |
 | `given` handlers and `with` handler instances name a `handler` for the capability of the bound reference | U3010 |

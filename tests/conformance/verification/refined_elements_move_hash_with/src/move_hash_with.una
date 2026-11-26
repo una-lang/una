@@ -1,7 +1,7 @@
 -- test: movement hash_with: a hash map's and a hash set's `with` of a `HashMap[Text, Int]` and a `HashSet[Int]` bound by a `let` annotated `HashMap[Text, Pos]` and `HashSet[Pos]` are `refinement` obligations, refuted, while the same movements at the same refined types give none (ADR 0103 rules 3 and 4, ADR 0119 rule 12)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_hash_with.una:19:32
--- expect: error U5001 at src/move_hash_with.una:20:26
+-- expect: error U5001 at src/move_hash_with.una:19:34
+-- expect: error U5001 at src/move_hash_with.una:20:28
 module move_hash_with
 
 import std.collections (HashMap, HashSet)
@@ -10,12 +10,12 @@ pub kind Pos = Int where it > 0
 
 pub kept(m: HashMap[Text, Pos], s: HashSet[Pos], k: Text, p: Pos) -> Int
 =
-  let m2: HashMap[Text, Pos] = m.with(key: k, value: p)
-  let s2: HashSet[Pos] = s.with(item: p)
+  const m2: HashMap[Text, Pos] = m.with(key: k, value: p)
+  const s2: HashSet[Pos] = s.with(item: p)
   m2.len + s2.len
 
 pub moved(m: HashMap[Text, Int], s: HashSet[Int], k: Text) -> Int
 =
-  let m2: HashMap[Text, Pos] = m.with(key: k, value: 1)
-  let s2: HashSet[Pos] = s.with(item: 1)
+  const m2: HashMap[Text, Pos] = m.with(key: k, value: 1)
+  const s2: HashSet[Pos] = s.with(item: 1)
   m2.len + s2.len

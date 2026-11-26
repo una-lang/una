@@ -16,23 +16,23 @@ import std.collections (to_hash_map, to_hash_set, to_queue, to_set, to_stack)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let xs = [4, 1, 2, 1]
-  let s = xs.to_stack()
-  let q = xs.to_queue()
-  let t = xs.to_set()
+  const xs = [4, 1, 2, 1]
+  const s = xs.to_stack()
+  const q = xs.to_queue()
+  const t = xs.to_set()
   @console.print("stack: {s} {s.len} {s.peek()}")
   @console.print("queue: {q} {q.len} {q.peek()} {q.peek_back()}")
   @console.print("set: {t} {t.len}")
-  let nothing: List[Int] = []
+  const nothing: List[Int] = []
   @console.print("empty: {nothing.to_stack()} {nothing.to_queue()} {nothing.to_set()}")
-  let falling = [5, 4, 3, 2, 1]
-  let rising = [1, 2, 3, 4]
-  let words = ["b", "a", "b"]
+  const falling = [5, 4, 3, 2, 1]
+  const rising = [1, 2, 3, 4]
+  const words = ["b", "a", "b"]
   @console.print("sorted: {falling.to_set()} {rising.to_set()} {words.to_set()}")
-  let h = xs.to_hash_set()
+  const h = xs.to_hash_set()
   @console.print("hash set: {h} {h.len} {words.to_hash_set()}")
-  let es = [Entry(key: "b", value: 1), Entry(key: "a", value: 2), Entry(key: "b", value: 4)]
-  let m = es.to_hash_map()
+  const es = [Entry(key: "b", value: 1), Entry(key: "a", value: 2), Entry(key: "b", value: 4)]
+  const m = es.to_hash_map()
   @console.print("hash map: {m} {m.len}")
-  let no_entries: List[Entry[Text, Int]] = []
+  const no_entries: List[Entry[Text, Int]] = []
   @console.print("hash empty: {nothing.to_hash_set()} {no_entries.to_hash_map()}")

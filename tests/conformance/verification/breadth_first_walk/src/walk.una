@@ -10,7 +10,7 @@ visit(edit seen: BitSet, edit waiting: Queue[Int], neighbors: List[Int], start: 
   ensures seen.size == old(seen).size and 2 * (seen.size - seen.len) + waiting.len <= 2 * (old(seen).size - old(seen).len) + old(waiting).len
 =
   if start >= 0 and start < neighbors.len
-    let n = neighbors.at(index: start)
+    const n = neighbors.at(index: start)
       if none use -1
     if n >= 0 and n < seen.size and not seen.has(item: n)
       edit seen.add(item: n)
@@ -24,10 +24,10 @@ round(edit seen: BitSet, edit waiting: Queue[Int], graph: List[List[Int]]) -> Un
   ensures 2 * (seen.size - seen.len) + waiting.len >= 0
   ensures 2 * (seen.size - seen.len) + waiting.len < 2 * (old(seen).size - old(seen).len) + old(waiting).len
 =
-  let next = edit waiting.pop()
+  const next = edit waiting.pop()
   when next
     is Some(node) ->
-      let neighbors = graph.at(index: node)
+      const neighbors = graph.at(index: node)
         if none use []
       visit(edit seen, edit waiting, neighbors: neighbors, start: 0)
     is None -> unit
@@ -36,8 +36,8 @@ round(edit seen: BitSet, edit waiting: Queue[Int], graph: List[List[Int]]) -> Un
 pub reachable(graph: List[List[Int]], start: Int) -> BitSet
   requires 0 <= start and start < graph.len
 =
-  let edit seen = empty_bit_set(size: graph.len)
-  let edit waiting: Queue[Int] = empty_queue()
+  var seen = empty_bit_set(size: graph.len)
+  var waiting: Queue[Int] = empty_queue()
   edit seen.add(item: start)
   edit waiting.push(item: start)
   round(edit seen, edit waiting, graph: graph)

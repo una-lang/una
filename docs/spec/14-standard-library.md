@@ -2,6 +2,8 @@
 
 Status: Normative, v0.1, with the additions of later editions marked by edition. The standard library is part of the Trusted zone. Everything not listed here does not exist in v0.1. This chapter covers the prelude, `std.host` and `std.testing`; the other standard modules are specified with their constructs: `std.time` and `std.drive` in `spec/26 §2` (edition `0.4`), `std.limit` in `spec/27 §10` (edition `0.4`), and `std.collections` in `spec/28 §2` (edition `0.5`, a preview).
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged: a call with effects is bound with `const` before it is given. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 ## 1. Prelude
 
 The prelude is imported into every module.

@@ -10,14 +10,14 @@ pub kind Pos = Int where it > 0
 
 pub kept(q: PriorityQueue[Pos, Pos], p: Pos) -> Int
 =
-  let edit r: PriorityQueue[Pos, Pos] = q
+  var r: PriorityQueue[Pos, Pos] = q
   edit r.push(item: p, priority: p)
-  let o = edit r.pop()
+  const o = edit r.pop()
   r.len
 
 pub moved(q: PriorityQueue[Pos, Pos], n: Int) -> Int
 =
-  let edit r: PriorityQueue[Pos, Pos] = q
+  var r: PriorityQueue[Pos, Pos] = q
   edit r.push(item: n, priority: 1)
   edit r.push(item: 1, priority: n)
   r.len

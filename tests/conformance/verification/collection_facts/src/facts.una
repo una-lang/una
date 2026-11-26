@@ -12,9 +12,9 @@ pub kind Hall = BitSet where it.size == 100
 pub push_then_pop(s: Stack[Int], x: Int) -> Bool
   ensures result
 =
-  let edit t = s
+  var t = s
   edit t.push(item: x)
-  let back = edit t.pop()
+  const back = edit t.pop()
   when back
     is Some(v) -> v == x and t == s
     is None -> false
@@ -22,9 +22,9 @@ pub push_then_pop(s: Stack[Int], x: Int) -> Bool
 pub first_push(x: Text) -> Bool
   ensures result
 =
-  let edit q: Queue[Text] = empty_queue()
+  var q: Queue[Text] = empty_queue()
   edit q.push(item: x)
-  let front = q.peek()
+  const front = q.peek()
   when front
     is Some(v) -> v == x
     is None -> false
@@ -32,7 +32,7 @@ pub first_push(x: Text) -> Bool
 pub added(s: Set[Int], x: Int, y: Int) -> Bool
   ensures result
 =
-  let edit t = s
+  var t = s
   edit t.add(item: x)
   edit t.add(item: y)
   t.has(item: x) and t.has(item: y)
@@ -41,7 +41,7 @@ pub kept(m: HashMap[Text, Int], a: Text, b: Text) -> Bool
   requires a != b
   ensures result
 =
-  let edit n = m
+  var n = m
   edit n.set(key: a, value: 1)
   edit n.remove(key: b)
   n.has(key: a)
@@ -50,7 +50,7 @@ pub kept_in_a_set(s: HashSet[Int], x: Int, y: Int) -> Bool
   requires x < y and s.has(item: x)
   ensures result
 =
-  let edit t = s
+  var t = s
   edit t.remove(item: y)
   t.has(item: x)
 
@@ -58,7 +58,7 @@ pub kept_in_a_map(m: Map[Text, Int], a: Text, b: Text) -> Bool
   requires a != b
   ensures result
 =
-  let edit n = m
+  var n = m
   edit n.set(key: a, value: 1)
   edit n.remove(key: b)
   n.has(key: a)
@@ -72,7 +72,7 @@ pub joined(a: HashSet[Int], b: HashSet[Int], x: Int) -> Bool
 pub first_member(b: BitSet) -> Bool
   ensures result
 =
-  let least = b.first()
+  const least = b.first()
   when least
     is Some(i) -> b.has(item: i)
     is None -> b.len == 0
@@ -86,8 +86,8 @@ pub front(q: Queue[Pos]) -> Int
   requires q.len > 0
   ensures result > 0
 =
-  let edit r: Queue[Pos] = q
-  let next = edit r.pop()
+  var r: Queue[Pos] = q
+  const next = edit r.pop()
   when next
     is Some(v) -> v
     is None -> 0

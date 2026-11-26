@@ -20,7 +20,7 @@ pub ranked(t: Tensor[F64]) -> F64
 
 pub resized() -> Tensor[F64]
 =
-  let g = tensor_filled(shape: [2, 3], value: 1.0)
+  const g = tensor_filled(shape: [2, 3], value: 1.0)
   g.reshape(shape: [5])
 
 pub mismatched(a: Tensor[F64], b: Tensor[F64]) -> Tensor[F64]

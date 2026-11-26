@@ -138,7 +138,7 @@ Further rules:
 - [U0101](../../../../crates/una-explain/explain/U0101.md): `together` with branches written as an expression.
 - [U0103](../../../../crates/una-explain/explain/U0103.md): `together` in edition `0.1`, where it is reserved.
 - [U2023](../../../../crates/una-explain/explain/U2023.md): a task that assigns, edits or takes a binding declared outside it.
-- [U2024](../../../../crates/una-explain/explain/U2024.md): a `together` body with a statement other than `let`, or fewer than two branches.
+- [U2024](../../../../crates/una-explain/explain/U2024.md): a `together` body with a statement other than a binding statement, or fewer than two branches.
 - [U4002](../../../../crates/una-explain/explain/U4002.md): a failure in a task under a labeled program counter.
 
 ## Edition

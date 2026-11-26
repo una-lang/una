@@ -17,14 +17,14 @@ summary(x: Matrix[F64]) -> Text = "{x.sum().to_bits()} {x.to_tensor().reshape(sh
 solved(n: Int) -> Text
   requires n >= 1
 =
-  let zero = 0.0
-  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  const zero = 0.0
+  var a = matrix_filled(rows: n, columns: n, value: zero)
   for i in 0..<n
     for j in 0..<n
-      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
-      let shift = if i == j then 2.0 else 0.0
+      const x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      const shift = if i == j then 2.0 else 0.0
       edit a.set(row: i, column: j, item: x + shift)
-  let b = matrix_filled(rows: n, columns: 1, value: 1.0)
+  const b = matrix_filled(rows: n, columns: 1, value: 1.0)
   when a.solve(rhs: b)
     is Some(x) -> summary(x)
     is None -> "None"
@@ -33,13 +33,13 @@ solved(n: Int) -> Text
 factored(n: Int, low: Int) -> Text
   requires n >= 1
 =
-  let zero = 0.0
-  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  const zero = 0.0
+  var a = matrix_filled(rows: n, columns: n, value: zero)
   for i in 0..<n
     for j in 0..<n
-      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
-      let d = if i == low then -3.0 else 2.0
-      let shift = if i == j then d else 0.0
+      const x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      const d = if i == low then -3.0 else 2.0
+      const shift = if i == j then d else 0.0
       edit a.set(row: i, column: j, item: x + shift)
   when a.cholesky()
     is Some(l) -> "Some {summary(l)}"
@@ -49,19 +49,19 @@ factored(n: Int, low: Int) -> Text
 singular(n: Int, zero_last: Bool) -> Text
   requires n >= 1
 =
-  let zero = 0.0
-  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  const zero = 0.0
+  var a = matrix_filled(rows: n, columns: n, value: zero)
   for i in 0..<n
     for j in 0..<n
-      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
-      let shift = if i == j then 2.0 else 0.0
-      let item = if zero_last and i == n - 1 then 0.0 else x + shift
+      const x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      const shift = if i == j then 2.0 else 0.0
+      const item = if zero_last and i == n - 1 then 0.0 else x + shift
       edit a.set(row: i, column: j, item: item)
-  let b = matrix_filled(rows: n, columns: 1, value: 1.0)
-  let by_lu = when a.lu()
+  const b = matrix_filled(rows: n, columns: 1, value: 1.0)
+  const by_lu = when a.lu()
     is Some(f) -> "Some"
     is None -> "None"
-  let by_solve = when a.solve(rhs: b)
+  const by_solve = when a.solve(rhs: b)
     is Some(x) -> "Some"
     is None -> "None"
   "{by_lu} {by_solve}"
@@ -70,15 +70,15 @@ singular(n: Int, zero_last: Bool) -> Text
 triangular(n: Int, lower: Bool, unit_diagonal: Bool) -> Text
   requires n >= 1
 =
-  let zero = 0.0
-  let edit a = matrix_filled(rows: n, columns: n, value: zero)
+  const zero = 0.0
+  var a = matrix_filled(rows: n, columns: n, value: zero)
   for i in 0..<n
     for j in 0..<n
-      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
-      let shift = if i == j then 2.0 else 0.0
+      const x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)
+      const shift = if i == j then 2.0 else 0.0
       edit a.set(row: i, column: j, item: x + shift)
-  let b = matrix_filled(rows: n, columns: 2, value: 1.0)
-  let x = if lower then a.solve_lower(rhs: b,
+  const b = matrix_filled(rows: n, columns: 2, value: 1.0)
+  const x = if lower then a.solve_lower(rhs: b,
     unit_diagonal: unit_diagonal
   ) else a.solve_upper(rhs: b, unit_diagonal: unit_diagonal)
   summary(x)
@@ -91,12 +91,12 @@ pub main() -> Unit
   @console.print("singular {singular(66, zero_last: true)} {singular(66, zero_last: false)}")
   @console.print("lower {triangular(70, lower: true, unit_diagonal: false)} {triangular(70, lower: true, unit_diagonal: true)}")
   @console.print("upper {triangular(70, lower: false, unit_diagonal: false)} {triangular(70, lower: false, unit_diagonal: true)}")
-  let lower: List[F64] = [0.0, 0.0, 1.0, 2.0]
-  let upper: List[F64] = [2.0, 1.0, 0.0, 0.0]
-  let zeros: List[F64] = [0.0, 1.0]
-  let ones: List[F64] = [1.0, 1.0]
-  let l = matrix(rows: 2, columns: 2, elements: lower)
-  let u = matrix(rows: 2, columns: 2, elements: upper)
-  let x = l.solve_lower(rhs: matrix(rows: 2, columns: 1, elements: zeros), unit_diagonal: false)
-  let y = u.solve_upper(rhs: matrix(rows: 2, columns: 1, elements: ones), unit_diagonal: false)
+  const lower: List[F64] = [0.0, 0.0, 1.0, 2.0]
+  const upper: List[F64] = [2.0, 1.0, 0.0, 0.0]
+  const zeros: List[F64] = [0.0, 1.0]
+  const ones: List[F64] = [1.0, 1.0]
+  const l = matrix(rows: 2, columns: 2, elements: lower)
+  const u = matrix(rows: 2, columns: 2, elements: upper)
+  const x = l.solve_lower(rhs: matrix(rows: 2, columns: 1, elements: zeros), unit_diagonal: false)
+  const y = u.solve_upper(rhs: matrix(rows: 2, columns: 1, elements: ones), unit_diagonal: false)
   @console.print("zero {x} {y}")

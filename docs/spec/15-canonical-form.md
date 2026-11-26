@@ -32,6 +32,8 @@ Tokens are separated by one space, except:
 - no space between a name and a following `(` or `[`, and none in `fn(` and `checked(`, but one space between an import's module path and its `(`;
 - no space inside a text literal outside its interpolations, and none just inside the braces of an interpolation.
 
+(v0.5, ADR 0137 rule 9.) In edition `0.5`, `una fmt` writes `const x = e`, `const x: T = e`, `var x = e` and `var x: T = e`, with one space after the keyword, around `=` and after `:`, as it writes `let` in earlier editions: `var x :Int=1` becomes `var x: Int = 1`. A file of edition `0.5` with a `let` holds U7007, and `una fmt` refuses it, as it refuses any file with a syntax error; `una fix` comes first.
+
 ## 4. One-line bodies
 
 A function without clauses whose body is a block of one plain line is written in the short form (`spec/04 §1`). The same holds for the body of a predicate or handler operation after its `=`, and of a `when` arm after its `->`. A plain line is a statement with no `with` clause and no handling clause, whose expression is not a `when` or an `if` with blocks. (v0.2, `spec/17 §3` rule 5.) Nor is it a call with an `edit` or `take` marker, which is legal only as a statement, so its block form stays. The long form stays when a comment sits between the head and the end of the body, since the formatter never moves a comment.

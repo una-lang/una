@@ -1,0 +1,21 @@
+-- test: in edition 0.5, the branches of `together` are `const` or `var` statements; a body with another statement is U2024 (ADR 0137 rule 7)
+-- spec: spec/19 §1
+-- expect: error U2024 at src/m.una:18:3
+module m
+
+pub double(x: Int) -> Int = x * 2
+
+pub f(n: Int) -> Int
+=
+  together
+    const a = double(n)
+    var b = double(n + 1)
+  b = b + 1
+  a + b
+
+pub g(n: Int) -> Int
+=
+  together
+    const a = double(n)
+    double(n)
+  a

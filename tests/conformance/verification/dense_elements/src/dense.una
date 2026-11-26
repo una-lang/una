@@ -14,7 +14,7 @@ pub written(m: Matrix[I64], i: Int, j: Int) -> Bool
   requires 0 <= i and i < m.rows and 0 <= j and j < m.columns
   ensures result
 =
-  let edit n = m
+  var n = m
   edit n.set(row: i, column: j, item: 5)
   n.get(row: i, column: j) == 5
 

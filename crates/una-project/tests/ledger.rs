@@ -20,7 +20,7 @@ fn each_entry_is_at_the_index_of_its_construct() {
         assert_eq!(entry.id as usize, index, "{}", entry.name);
         assert!(std::ptr::eq(entry.id.entry(), entry), "{}", entry.name);
     }
-    assert_eq!(Construct::Complex as usize, LEDGER.len() - 1);
+    assert_eq!(Construct::ConstVar as usize, LEDGER.len() - 1);
 }
 
 #[test]
@@ -74,12 +74,36 @@ fn the_ledger_is_ordered_and_well_formed() {
             assert!(Code::from_str(code).is_ok(), "{}: {code}", entry.name);
         }
         for release in std::iter::once(&entry.landed).chain(entry.changed) {
+            // The release that lands `const` and `var` is the one U7007 names (ADR 0137 rule
+            // 1); until it is cut, its entries are under the changelog's `Unreleased`.
+            let pending = *release == una_syntax::keywords::LET_CHANGED_IN
+                && changelog.contains("\n## Unreleased\n");
             assert!(
-                changelog.contains(&format!("\n## {release}\n")),
+                pending || changelog.contains(&format!("\n## {release}\n")),
                 "{}: {release} is no release of the changelog",
                 entry.name
             );
         }
+    }
+}
+
+#[test]
+fn const_and_var_landed_in_the_release_that_u7007_names() {
+    // ADR 0137 rules 1 and 12: the entry names `const` and `var` as reserved keywords, `let` as
+    // the changed form, and the release of U7007's message.
+    let entry = Construct::ConstVar.entry();
+    assert_eq!(entry.edition, Edition::V0_5);
+    assert_eq!(entry.reserved, &["const", "var"]);
+    assert_eq!(entry.landed, una_syntax::keywords::LET_CHANGED_IN);
+    assert!(entry.clashes.iter().any(|clash| clash.id == "0137-let"
+        && clash.program.contains("`let`")
+        && clash.diagnostic.starts_with("U7007")));
+    for word in entry.reserved {
+        assert_eq!(
+            una_syntax::Keyword::from_word_in(word, una_syntax::KeywordSet::V0_5)
+                .map(una_syntax::Keyword::as_str),
+            Some(*word)
+        );
     }
 }
 

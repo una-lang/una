@@ -1,9 +1,9 @@
 -- test: a product's scale is the sum of its operands' scales, at most 38: a product of scale 39 is U2037
 -- spec: spec/29 §16
--- expect: error U2037 at src/m.una:8:11
+-- expect: error U2037 at src/m.una:8:13
 module m
 
 pub product(x: Decimal[20], y: Decimal[19]) -> Decimal[2]
 =
-  let z = x * y
+  const z = x * y
   z.rescale(scale: 2, rounding: HalfEven)

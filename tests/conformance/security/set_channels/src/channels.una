@@ -9,14 +9,14 @@ import std.collections (Set, empty_set)
 --- A secret item into an editable set with a public top label.
 pub into_public(x: secret Int) -> Unit
 =
-  let edit s: Set[Int] = empty_set()
+  var s: Set[Int] = empty_set()
   edit s.add(item: x)
   unit
 
 --- The control: the set is declared with a secret top label.
 pub into_secret(x: secret Int) -> Unit
 =
-  let edit s: secret Set[Int] = empty_set()
+  var s: secret Set[Int] = empty_set()
   edit s.add(item: x)
   unit
 

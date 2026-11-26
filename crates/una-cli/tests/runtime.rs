@@ -1963,14 +1963,14 @@ import std.collections (Queue, Stack, empty_queue, empty_stack)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit q: Queue[Int] = empty_queue()
-  let edit s: Stack[Int] = empty_stack()
+  var q: Queue[Int] = empty_queue()
+  var s: Stack[Int] = empty_stack()
   for i in 0..<COUNT
     edit q.push(item: i)
     edit s.push(item: i)
   for i in 0..<COUNT
-    let front = edit q.pop()
-    let top = edit s.pop()
+    const front = edit q.pop()
+    const top = edit s.pop()
     unit
   @console.print(\"{q.len} {s.len}\")
 ";
@@ -2031,14 +2031,14 @@ import std.collections (Set, empty_set)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit s: Set[Int] = empty_set()
+  var s: Set[Int] = empty_set()
   for i in 0..<COUNT
     edit s.add(item: (i * 7919) mod COUNT)
-  let edit found = 0
+  var found = 0
   for i in 0..<COUNT
     if s.has(item: i)
       found = found + 1
-  let common = s.intersection(other: s.without(item: 0))
+  const common = s.intersection(other: s.without(item: 0))
   for i in 0..<COUNT
     edit s.remove(item: i)
   @console.print(\"{found} {common.len} {s.len}\")
@@ -2101,17 +2101,17 @@ import std.collections (HashMap, HashSet, empty_hash_map, empty_hash_set)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit m: HashMap[Int, Int] = empty_hash_map()
+  var m: HashMap[Int, Int] = empty_hash_map()
   for i in 0..<COUNT
     edit m.set(key: (i * 7919) mod COUNT, value: i)
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   for i in 0..<COUNT
     edit s.add(item: i)
-  let edit found = 0
+  var found = 0
   for i in 0..<COUNT
     if m.has(key: i) and s.has(item: i)
       found = found + 1
-  let common = s.intersection(other: s.without(item: 0))
+  const common = s.intersection(other: s.without(item: 0))
   for i in 0..<COUNT
     edit m.remove(key: i)
     edit s.remove(item: i)
@@ -2174,19 +2174,19 @@ import std.collections (PriorityQueue, lowest_first)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit q: PriorityQueue[Int, Int] = lowest_first()
+  var q: PriorityQueue[Int, Int] = lowest_first()
   for i in 0..<COUNT
     edit q.push(item: i, priority: (i * 7919) mod 1000)
-  let edit popped = 0
-  let edit ordered = 0
-  let edit last = 0
+  var popped = 0
+  var ordered = 0
+  var last = 0
   for i in 0..<COUNT
-    let p = q.peek_priority()
+    const p = q.peek_priority()
       if none use -1
     if p >= last
       ordered = ordered + 1
     last = p
-    let item = edit q.pop()
+    const item = edit q.pop()
     if item != None
       popped = popped + 1
   @console.print(\"{popped} {ordered} {q.len}\")
@@ -2248,16 +2248,16 @@ import std.collections (empty_bit_set)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit b = empty_bit_set(size: COUNT)
+  var b = empty_bit_set(size: COUNT)
   for i in 0..<COUNT
-    let j = (i * 7919) mod COUNT
+    const j = (i * 7919) mod COUNT
     if 0 <= j and j < b.size
       edit b.add(item: j)
-  let edit found = 0
+  var found = 0
   for i in 0..<COUNT
     if b.has(item: i)
       found = found + 1
-  let common = b.intersection(other: b.without(item: 0))
+  const common = b.intersection(other: b.without(item: 0))
   for i in 0..<COUNT
     edit b.remove(item: i)
   @console.print(\"{found} {common.len} {b.len}\")

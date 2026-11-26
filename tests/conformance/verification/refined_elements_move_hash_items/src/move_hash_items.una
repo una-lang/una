@@ -1,8 +1,8 @@
 -- test: movement hash_items: a hash map's `values()` and `get` and a hash set's `items()` of a `HashMap[Text, Int]` and a `HashSet[Int]` bound by a `let` annotated `List[Pos]` and `Option[Pos]` are `refinement` obligations, refuted, while the same movements at the same refined types give none (ADR 0103 rules 3 and 4, ADR 0119 V6)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_hash_items.una:21:23
--- expect: error U5001 at src/move_hash_items.una:22:24
--- expect: error U5001 at src/move_hash_items.una:23:23
+-- expect: error U5001 at src/move_hash_items.una:21:25
+-- expect: error U5001 at src/move_hash_items.una:22:26
+-- expect: error U5001 at src/move_hash_items.una:23:25
 module move_hash_items
 
 import std.collections (HashMap, HashSet)
@@ -11,14 +11,14 @@ pub kind Pos = Int where it > 0
 
 pub kept(m: HashMap[Text, Pos], s: HashSet[Pos], k: Text) -> Int
 =
-  let vs: List[Pos] = m.values()
-  let o: Option[Pos] = m.get(key: k)
-  let xs: List[Pos] = s.items()
+  const vs: List[Pos] = m.values()
+  const o: Option[Pos] = m.get(key: k)
+  const xs: List[Pos] = s.items()
   xs.len + vs.len
 
 pub moved(m: HashMap[Text, Int], s: HashSet[Int], k: Text) -> Int
 =
-  let vs: List[Pos] = m.values()
-  let o: Option[Pos] = m.get(key: k)
-  let xs: List[Pos] = s.items()
+  const vs: List[Pos] = m.values()
+  const o: Option[Pos] = m.get(key: k)
+  const xs: List[Pos] = s.items()
   xs.len + vs.len

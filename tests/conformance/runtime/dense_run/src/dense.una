@@ -15,42 +15,42 @@ module dense
 dot_matches(k: Int) -> Bool
   requires k >= 1
 =
-  let zero = 0.0
-  let edit xs = array_filled(length: k, value: zero)
-  let edit ys = array_filled(length: k, value: zero)
-  let edit a = matrix_filled(rows: 1, columns: k, value: zero)
-  let edit b = matrix_filled(rows: k, columns: 1, value: zero)
+  const zero = 0.0
+  var xs = array_filled(length: k, value: zero)
+  var ys = array_filled(length: k, value: zero)
+  var a = matrix_filled(rows: 1, columns: k, value: zero)
+  var b = matrix_filled(rows: k, columns: 1, value: zero)
   for i in 0..<k
-    let x = 1.0 / (i.to_f64() + 3.0)
-    let y = (i mod 7).to_f64() - 2.5
+    const x = 1.0 / (i.to_f64() + 3.0)
+    const y = (i mod 7).to_f64() - 2.5
     edit xs.set(index: i, item: x)
     edit ys.set(index: i, item: y)
     edit a.set(row: 0, column: i, item: x)
     edit b.set(row: i, column: 0, item: y)
-  let product = a.multiply(by: b)
-  let both = xs.dot(with: ys) == product.get(row: 0, column: 0)
+  const product = a.multiply(by: b)
+  const both = xs.dot(with: ys) == product.get(row: 0, column: 0)
   both and xs.dot(with: ys) == a.multiply_array(by: ys).get(index: 0)
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let a: Array[F64] = array([1.0, 2.0, 3.0])
-  let items: List[I32] = [1, 2, 3, 4, 5, 6]
-  let m = matrix(rows: 2, columns: 3, elements: items)
+  const a: Array[F64] = array([1.0, 2.0, 3.0])
+  const items: List[I32] = [1, 2, 3, 4, 5, 6]
+  const m = matrix(rows: 2, columns: 3, elements: items)
   @console.print("{a} {m}")
   @console.print("get {a.get(index: 1)} {m.get(row: 1, column: 1)} {a.at(index: 2)} {a.at(index: 3)}")
   @console.print("views {m.row(index: 1)} {m.column(index: 1)} {m.transpose()} {a.slice(from: 1, until: 3)}")
-  let view = a.slice(from: 1, until: 3)
-  let edit b = a
+  const view = a.slice(from: 1, until: 3)
+  var b = a
   edit b.set(index: 1, item: 9.0)
-  let edit v = view
+  var v = view
   edit v.set(index: 0, item: 9.0)
   @console.print("set {b} {a} {v}")
   @console.print("ops {a + a + a} {a - a} {-a} {a / 2.0}")
-  let zeros: Array[F64] = array([-0.0])
+  const zeros: Array[F64] = array([-0.0])
   @console.print("sum {zeros.sum()} {a.sum()} {m.sum_exact()}")
   @console.print("dot {dot_matches(1)} {dot_matches(63)} {dot_matches(64)} {dot_matches(65)} {dot_matches(1000)}")
-  let tiny: Array[F64] = array([1.0e-200])
-  let big: Array[F64] = array([1.7976931348623157e308, 1.7976931348623157e308])
+  const tiny: Array[F64] = array([1.0e-200])
+  const big: Array[F64] = array([1.7976931348623157e308, 1.7976931348623157e308])
   @console.print("norm {tiny.norm2()} {array([3.0, 4.0]).norm2()} {big.norm2()}")
   @console.print("equal {a == a.compact()} {a == b} {m.transpose().transpose() == m}")

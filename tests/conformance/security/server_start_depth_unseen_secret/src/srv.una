@@ -16,9 +16,9 @@ deep(n: internal Int) -> internal Int
 answer(exchange: internal Exchange, key: secret Int) -> Unit
   uses @server: HttpServer[reply]
 =
-  let d = deep(exchange.request.body.len)
-  let s = to_set([1, 2, 3])
-  let masked: secret Int = key * 2 + 1
+  const d = deep(exchange.request.body.len)
+  const s = to_set([1, 2, 3])
+  const masked: secret Int = key * 2 + 1
   @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "ok"))
     if error use unit
 
@@ -28,7 +28,7 @@ pub serve_all(key: secret Int) -> Unit
 =
   tasks at most 1000 at once
     for ever
-      let next = attempt @server.next()
+      const next = attempt @server.next()
       when next
         is Ok(exchange) ->
           start answer(exchange, key: key)

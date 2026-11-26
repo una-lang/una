@@ -1,0 +1,16 @@
+-- test: in edition 0.5, the argument of `edit` is a place rooted at a `var` binding or an `edit` parameter: `edit` of a `const` is U2019, and of a `var` is accepted (ADR 0137 rule 5)
+-- spec: spec/17 §3
+-- expect: error U2019 at src/m.una:15:13
+module m
+
+pub bump(edit n: Int) -> Unit
+=
+  n = n + 1
+
+pub f(start: Int) -> Int
+=
+  var copy = start
+  bump(edit copy)
+  const fixed = copy
+  bump(edit fixed)
+  fixed

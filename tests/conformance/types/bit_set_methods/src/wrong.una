@@ -1,20 +1,20 @@
 -- test: in edition 0.5, `add` and `remove` update a bit set written `edit b.add(...)`, as the whole expression of a statement; its items are `Int`, the other operand of a set operation is a `BitSet`, and each method takes its number of labeled arguments (ADR 0119 rule 14)
 -- spec: spec/28 §9
 -- expect: error U2020 at src/wrong.una:15:3
--- expect: error U3013 at src/wrong.una:16:16
--- expect: error U2001 at src/wrong.una:17:24
--- expect: error U2001 at src/wrong.una:18:26
--- expect: error U2001 at src/wrong.una:19:11
+-- expect: error U3013 at src/wrong.una:16:18
+-- expect: error U2001 at src/wrong.una:17:26
+-- expect: error U2001 at src/wrong.una:18:28
+-- expect: error U2001 at src/wrong.una:19:13
 module wrong
 
 import std.collections (BitSet, Set)
 
 pub wrong(b: BitSet, s: Set[Int]) -> Int
 =
-  let edit t = b
+  var t = b
   t.add(item: 1)
-  let units = [edit t.remove(item: 3)]
-  let c = b.with(item: "a")
-  let d = b.union(other: s)
-  let e = b.first(item: 1)
+  const units = [edit t.remove(item: 3)]
+  const c = b.with(item: "a")
+  const d = b.union(other: s)
+  const e = b.first(item: 1)
   t.size

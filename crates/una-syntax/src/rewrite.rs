@@ -54,7 +54,9 @@ fn advice_only(lines: &[Line<'_>], at: usize, message: &str) -> Option<&'static 
     }
     if message.contains("unexpected `(`, expected a type")
         || message.contains("unexpected `(`, expected a name")
-        || content.starts_with("let (")
+        || ["let (", "const (", "var ("]
+            .iter()
+            .any(|word| content.starts_with(word))
     {
         return Some(TUPLE);
     }
@@ -363,12 +365,17 @@ fn diverges(branch: &str) -> bool {
     })
 }
 
-/// The length of what precedes `if` on a line that opens an `if`: nothing, or `let x = `.
+/// The length of what precedes `if` on a line that opens an `if`: nothing, or `let x = `
+/// (`const x = ` or `var x = ` in edition 0.5).
 fn if_prefix(content: &str) -> Option<usize> {
     if content.starts_with("if ") {
         return Some(0);
     }
-    if content.starts_with("let ") {
+    // A binding: `let` up to edition 0.4, `const` or `var` in edition 0.5 (ADR 0137).
+    if ["let ", "const ", "var "]
+        .iter()
+        .any(|word| content.starts_with(word))
+    {
         let eq = find_word(content, "=")?;
         let after = content.get(eq + 1..)?;
         let gap = after.len() - after.trim_start().len();
@@ -744,13 +751,16 @@ fn leading_word(lines: &[Line<'_>], at: usize, decl: usize) -> Option<Candidate>
     })
 }
 
-/// An arm or branch whose body starts with `let` or `when` on its line, its block following.
+/// An arm or branch whose body starts with a binding (`let`, or `const` or `var` in edition
+/// 0.5) or `when` on its line, its block following.
 fn arm_body(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate> {
     let line = lines.get(at)?;
     let content = line.content();
     let arrow = find_words(content, "->").into_iter().find(|&a| {
         let body = content.get(a + 2..).unwrap_or("").trim_start();
-        body.starts_with("let ") || body.starts_with("when ")
+        ["let ", "const ", "var ", "when "]
+            .iter()
+            .any(|word| body.starts_with(word))
     })?;
     let head = content.get(..arrow + 2)?;
     if !(head.starts_with("is ") || head.starts_with("in ") || head.starts_with("else")) {

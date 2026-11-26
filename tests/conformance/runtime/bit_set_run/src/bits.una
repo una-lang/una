@@ -21,11 +21,11 @@ import std.collections (empty_bit_set)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let zero = empty_bit_set(size: 0)
+  const zero = empty_bit_set(size: 0)
   @console.print("zero: {zero} {zero.size} {zero.len} {zero.has(item: 0)} {zero.first()} {zero.last()} {zero.items()}")
-  let empty = empty_bit_set(size: 130)
+  const empty = empty_bit_set(size: 130)
   @console.print("empty: {empty} {empty.size} {empty.len} {empty.has(item: 0)} {empty.has(item: 129)} {empty.first()} {empty.last()} {empty.items()}")
-  let edit b = empty_bit_set(size: 130)
+  var b = empty_bit_set(size: 130)
   edit b.add(item: 129)
   edit b.add(item: 0)
   edit b.add(item: 64)
@@ -33,28 +33,28 @@ pub main() -> Unit
   edit b.add(item: 64)
   @console.print("built: {b} {b.size} {b.len} {b.first()} {b.last()} {b.items()}")
   @console.print("has: {b.has(item: 0)} {b.has(item: 1)} {b.has(item: 63)} {b.has(item: 129)} {b.has(item: -1)} {b.has(item: 130)} {b.has(item: 1000)}")
-  let edit c = b
+  var c = b
   edit c.remove(item: 63)
   edit c.remove(item: 62)
   edit c.remove(item: 130)
   edit c.remove(item: -1)
   @console.print("removed: {c} {c.len} {b}")
-  let more = b.with(item: 128)
-  let less = b.without(item: 0).without(item: 500)
+  const more = b.with(item: 128)
+  const less = b.without(item: 0).without(item: 500)
   @console.print("values: {b} {more} {less}")
-  let other = empty.with(item: 1).with(item: 64).with(item: 128)
+  const other = empty.with(item: 1).with(item: 64).with(item: 128)
   @console.print("union: {b.union(other: other)} {b.union(other: empty)} {empty.union(other: b)}")
   @console.print("intersection: {b.intersection(other: other)} {b.intersection(other: empty)} {b.intersection(other: b)}")
   @console.print("difference: {b.difference(other: other)} {b.difference(other: empty)} {empty.difference(other: b)} {b.difference(other: b)}")
   @console.print("subset: {less.is_subset(of: b)} {b.is_subset(of: less)} {empty.is_subset(of: b)} {b.is_subset(of: b)}")
-  let same = empty.with(item: 0).with(item: 63).with(item: 64).with(item: 129)
+  const same = empty.with(item: 0).with(item: 63).with(item: 64).with(item: 129)
   @console.print("equal: {b == same} {b == more} {zero == empty} {empty == empty_bit_set(size: 130)}")
-  let edit full = empty_bit_set(size: 130)
+  var full = empty_bit_set(size: 130)
   for i in 0..<130
     if 0 <= i and i < full.size
       edit full.add(item: i)
   @console.print("full: {full.len} {full.size} {full.first()} {full.last()} {full.has(item: 129)} {full.has(item: 130)}")
-  let edit drained = full
+  var drained = full
   for i in 0..<130
     edit drained.remove(item: i)
   @console.print("drained: {drained} {drained.len} {drained.size} {full.len}")

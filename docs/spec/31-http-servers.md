@@ -2,6 +2,8 @@
 
 Status: Normative, edition 0.4 preview (ADR 0123).
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 A server answers HTTP/1.1 requests through the host capability `HttpServer`, granted by address with limits. The rules of ADR 0123 join this chapter as they land, each with its tests. A program names the capability and is checked against §1, and a package's `serve` section against §7. Its operations run in both engines over the host code of §2 to §6 (`crates/una-http`), on serve threads that start before `main` (§6 rule 14). `una run` runs a program that serves and the driver of §7, and `una build` builds either into an executable that serves (§1 rule 10, §7 rule 5).
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.4` and later (`spec/13 §7`). Earlier editions do not change, and the client of `spec/24` does not change.

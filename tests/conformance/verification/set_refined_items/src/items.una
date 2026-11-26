@@ -9,12 +9,12 @@ pub kind Pos = Int where it > 0
 
 pub kept(p: Pos) -> Int
 =
-  let edit s: Set[Pos] = empty_set()
+  var s: Set[Pos] = empty_set()
   edit s.add(item: p)
   s.items().len
 
 pub moved() -> Int
 =
-  let edit s: Set[Pos] = empty_set()
+  var s: Set[Pos] = empty_set()
   edit s.add(item: 0)
   s.items().len

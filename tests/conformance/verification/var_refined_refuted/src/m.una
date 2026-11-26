@@ -1,0 +1,12 @@
+-- test: in edition 0.5, an annotated `var` keeps its written type at every assignment, as an annotated `let edit` does: assigning 0 to a `var n: Pos` gives a refuted obligation (ADR 0137 rule 4, `spec/17 §5`)
+-- spec: spec/17 §5
+-- expect: error U5001 at src/m.una:11:7
+module m
+
+pub kind Pos = Int where it > 0
+
+pub f() -> Int
+=
+  var n: Pos = 1
+  n = 0
+  n

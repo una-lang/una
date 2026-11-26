@@ -8,7 +8,7 @@ use una_diag::Code;
 
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::{Interner, Symbol};
-use crate::keywords::reserved_in;
+use crate::keywords::{BINDING_WORDS_HELP, LET_CHANGED_IN, reserved_in};
 use crate::source::{FileId, SourceFile, Span};
 use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
 
@@ -601,6 +601,14 @@ impl Lexer<'_> {
                 });
             }
         }
+        // ADR 0137 rule 1: before edition 0.5, `var x` keeps its U0103 and gains the help that
+        // names the edition of the binding words.
+        if word == "var" && self.out.keywords < KeywordSet::V0_5 && self.binding_shape(start) {
+            error.repairs.push(SyntaxRepair {
+                description: BINDING_WORDS_HELP.to_owned(),
+                edit: None,
+            });
+        }
         self.out.errors.push(error);
     }
 
@@ -621,6 +629,55 @@ impl Lexer<'_> {
         });
         error.recovered = true;
         self.out.errors.push(error);
+    }
+
+    /// U7007 for `let` in a package of edition 0.5 (ADR 0137 rule 1, ADR 0121 rule 19): the
+    /// binding words of edition 0.5 are `const` and `var`. The first repair is the exact
+    /// rewrite of rule 11, which `una fix` applies: `let edit` becomes `var`, and `let`
+    /// becomes `const`, keeping the name, the annotation and the value.
+    fn let_in_0_5(&mut self, start: usize) {
+        let span = self.span(start, self.pos);
+        let rest = self.text.get(self.pos..).unwrap_or("");
+        let after_spaces = rest.trim_start_matches(' ');
+        let spaces = rest.len() - after_spaces.len();
+        let edit = spaces > 0
+            && after_spaces.starts_with("edit")
+            && !after_spaces
+                .as_bytes()
+                .get(4)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+        let (range, word) = if edit {
+            (self.span(start, self.pos + spaces + 4), "var")
+        } else {
+            (span, "const")
+        };
+        let mut error = SyntaxError::new(
+            Code::U7007,
+            span,
+            format!(
+                "this form of edition 0.5 changed in release {LET_CHANGED_IN}: `let` is written `const`, or `var` for a binding that is reassigned"
+            ),
+        );
+        error.repairs.push(SyntaxRepair {
+            description: format!("write `{word}`"),
+            edit: Some((range, word.to_owned())),
+        });
+        error.recovered = true;
+        self.out.errors.push(error);
+    }
+
+    /// Whether the word that ends at the lexer's position starts its line, after the
+    /// indentation, and is followed by a space and a lower-case name: the shape of a binding
+    /// statement written `const x` or `var x` (ADR 0137 rule 1).
+    fn binding_shape(&self, start: usize) -> bool {
+        let before = self.text.get(..start).unwrap_or("");
+        let line = before.rsplit('\n').next().unwrap_or(before);
+        let rest = self.text.get(self.pos..).unwrap_or("");
+        line.bytes().all(|c| c == b' ')
+            && rest.starts_with(' ')
+            && rest
+                .trim_start_matches(' ')
+                .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
     }
 
     /// Whether the next token is in the module path of a `module` or `import` line: the line
@@ -1331,6 +1388,12 @@ impl Lexer<'_> {
         {
             self.example_in_0_3(start);
         }
+        // Edition 0.5: `let` is reserved, U7007 with the exact rewrite to `const` or `var` (ADR
+        // 0137 rules 1 and 11). The token stays the keyword `let`, so the parser reads the
+        // binding and its body gets its own checks.
+        if word == "let" && self.out.keywords >= KeywordSet::V0_5 {
+            self.let_in_0_5(start);
+        }
         let kind = if (word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2)
             || clause
             || deadline
@@ -1819,6 +1882,109 @@ mod tests {
             assert!(lexed.errors.is_empty(), "{name}: {:?}", lexed.errors);
             assert!(!lexed.tokens.is_empty(), "{name}");
         }
+    }
+
+    /// The errors of `text` lexed under `keywords`, as (code, start, end, repairs), each
+    /// repair as (description, edit range and replacement).
+    #[allow(clippy::type_complexity)]
+    fn lexed_errors(
+        text: &str,
+        keywords: KeywordSet,
+    ) -> Vec<(
+        Code,
+        usize,
+        usize,
+        Vec<(String, Option<(usize, usize, String)>)>,
+    )> {
+        let mut sources = crate::source::SourceDb::new();
+        let id = sources.add("m.una", text.as_bytes());
+        let mut interner = Interner::new();
+        lex_in(sources.file(id), id, &mut interner, keywords)
+            .errors
+            .into_iter()
+            .map(|error| {
+                let repairs = error
+                    .repairs
+                    .into_iter()
+                    .map(|repair| {
+                        (
+                            repair.description,
+                            repair.edit.map(|(span, text)| (span.start, span.end, text)),
+                        )
+                    })
+                    .collect();
+                (error.code, error.span.start, error.span.end, repairs)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn let_is_u7007_with_the_exact_rewrite_in_edition_0_5() {
+        // ADR 0137 rules 1 and 11: `let edit x` becomes `var x`, `let x` becomes `const x`,
+        // at the word, in blocks and at the top level.
+        let text = "module m\n\nf() -> Int\n=\n  let edit a = 1\n  let b: Int = a\n  let  edit c = b\n  let edited = c\n  edited\n\nlet top = 1\n";
+        let at = |needle: &str| text.find(needle).unwrap();
+        let message = "this form of edition 0.5 changed in release v0.5.2: `let` is written `const`, or `var` for a binding that is reassigned";
+        let errors = lexed_errors(text, KeywordSet::V0_5);
+        let expected = [
+            (at("let edit a"), at("let edit a") + 8, "var"),
+            (at("let b"), at("let b") + 3, "const"),
+            (at("let  edit c"), at("let  edit c") + 9, "var"),
+            (at("let edited"), at("let edited") + 3, "const"),
+            (at("let top"), at("let top") + 3, "const"),
+        ];
+        assert_eq!(errors.len(), expected.len(), "{errors:?}");
+        for ((code, start, end, repairs), (from, to, word)) in errors.iter().zip(expected) {
+            assert_eq!(*code, Code::U7007);
+            assert_eq!((*start, *end), (from, from + 3), "the word `let`");
+            assert_eq!(
+                repairs,
+                &vec![(format!("write `{word}`"), Some((from, to, word.to_owned())))]
+            );
+        }
+        let mut sources = crate::source::SourceDb::new();
+        let id = sources.add("m.una", text.as_bytes());
+        let mut interner = Interner::new();
+        let lexed = lex_in(sources.file(id), id, &mut interner, KeywordSet::V0_5);
+        assert!(
+            lexed
+                .errors
+                .iter()
+                .all(|e| e.message == message && e.recovered)
+        );
+        // The token stays the keyword, so the parser reads the binding.
+        assert!(
+            lexed
+                .tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::Keyword(Keyword::Let))
+        );
+        // Editions 0.2 to 0.4 keep `let` and `let edit` (edition 0.1 reserves `edit`).
+        for keywords in [KeywordSet::V0_2, KeywordSet::V0_3, KeywordSet::V0_4] {
+            assert!(lexed_errors(text, keywords).is_empty(), "{keywords:?}");
+        }
+    }
+
+    #[test]
+    fn var_gains_the_help_of_edition_0_5_before_it() {
+        // ADR 0137 rule 1: `var x` keeps U0103 in editions 0.1 to 0.4 and gains the help; a
+        // `var` that does not start a binding's line gets no help; edition 0.5 has no error.
+        let text = "module m\n\nf() -> Int\n=\n  var x = 1\n  g(var)\n";
+        for keywords in [KeywordSet::V0_1, KeywordSet::V0_2, KeywordSet::V0_4] {
+            let errors = lexed_errors(text, keywords);
+            assert_eq!(errors.len(), 2, "{keywords:?}: {errors:?}");
+            assert!(errors.iter().all(|(code, ..)| *code == Code::U0103));
+            let helps: Vec<bool> = errors
+                .iter()
+                .map(|(_, _, _, repairs)| {
+                    repairs
+                        .iter()
+                        .any(|(d, edit)| d == BINDING_WORDS_HELP && edit.is_none())
+                })
+                .collect();
+            assert_eq!(helps, [true, false], "{keywords:?}");
+        }
+        assert!(lexed_errors(text, KeywordSet::V0_5).is_empty());
     }
 
     #[test]

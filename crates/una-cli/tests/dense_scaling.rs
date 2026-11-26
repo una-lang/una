@@ -65,7 +65,7 @@ fn package(dir: &Path, source: &str) {
 /// `main` updating each element of an array of `n` by `get` and `set`, twice over.
 fn accesses(n: usize) -> String {
     format!(
-        "module main\n\npub main() -> Unit\n=\n  let zero: I64 = 0\n  let edit a = array_filled(length: {n}, value: zero)\n  for round in 0..<2\n    for i in 0..<a.len\n      let x = a.get(index: i)\n      edit a.set(index: i, item: x mod 1000 + 1)\n  unit\n"
+        "module main\n\npub main() -> Unit\n=\n  const zero: I64 = 0\n  var a = array_filled(length: {n}, value: zero)\n  for round in 0..<2\n    for i in 0..<a.len\n      const x = a.get(index: i)\n      edit a.set(index: i, item: x mod 1000 + 1)\n  unit\n"
     )
 }
 

@@ -7,12 +7,12 @@ module dense
 pub f(a: Array[I32 in 1..10]) -> I32
   requires a.len >= 2
 =
-  let d = matrix_diagonal(values: a)
-  let x = d.get(row: 0, column: 1)
+  const d = matrix_diagonal(values: a)
+  const x = d.get(row: 0, column: 1)
   100 / x
 
 pub kept(a: Array[I32 in 1..10]) -> I32
   requires a.len >= 2
 =
-  let b = a.slice(from: 0, until: 2)
+  const b = a.slice(from: 0, until: 2)
   100 / b.get(index: 1)

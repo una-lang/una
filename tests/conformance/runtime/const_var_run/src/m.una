@@ -1,0 +1,40 @@
+-- test: in edition 0.5, `const` and `var` bindings run as `let` and `let edit` do: a `var` sum over a loop, a `var` passed with `edit`, a `const` read after it, and `together` branches; both engines agree (ADR 0137 rules 2, 5 and 7)
+-- spec: spec/17 §2
+-- grant: console
+-- expect: run-output "sum: 10"
+-- expect: run-output "twice: 5"
+-- expect: run-output "together: 6 8"
+module m
+
+pub total(xs: List[Int]) -> Int
+=
+  var sum = 0
+  for x in xs
+    sum = sum + x
+  sum
+
+pub bump(edit n: Int) -> Unit
+=
+  n = n + 1
+
+pub twice(start: Int) -> Int
+=
+  var copy = start
+  bump(edit copy)
+  bump(edit copy)
+  copy
+
+pub double(x: Int) -> Int = x * 2
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const xs = [1, 2, 3, 4]
+  @console.print("sum: {total(xs)}")
+  const three: Int = 3
+  @console.print("twice: {twice(three)}")
+  together
+    const a = double(three)
+    var b = double(4)
+  b = b
+  @console.print("together: {a} {b}")

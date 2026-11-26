@@ -1,0 +1,15 @@
+-- test: in edition 0.5, any local binding can be taken: after `take` of a `const`, a use is U2017, since only a `var` is revived by an assignment; a `var` taken and assigned again is used freely (ADR 0137 rule 5)
+-- spec: spec/17 §3
+-- expect: error U2017 at src/m.una:15:3
+module m
+
+pub consume(take xs: List[Int]) -> Int = xs.len
+
+pub f() -> Int
+=
+  var v = [1, 2]
+  const a = consume(take v)
+  v = [3]
+  const c = [4, 5]
+  const b = consume(take c)
+  c.len + a + b + v.len

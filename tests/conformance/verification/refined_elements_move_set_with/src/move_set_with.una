@@ -1,6 +1,6 @@
 -- test: movement set_with: a set's `with` of a `Set[Int]` bound by a `let` annotated `Set[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4, ADR 0119 rule 7)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_set_with.una:17:22
+-- expect: error U5001 at src/move_set_with.una:17:24
 module move_set_with
 
 import std.collections (Set)
@@ -9,10 +9,10 @@ pub kind Pos = Int where it > 0
 
 pub kept(s: Set[Pos], p: Pos) -> Int
 =
-  let s2: Set[Pos] = s.with(item: p)
+  const s2: Set[Pos] = s.with(item: p)
   s2.items().len
 
 pub moved(s: Set[Int]) -> Int
 =
-  let s2: Set[Pos] = s.with(item: 1)
+  const s2: Set[Pos] = s.with(item: 1)
   s2.items().len

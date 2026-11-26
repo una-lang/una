@@ -80,15 +80,15 @@ import std.collections (HashMap, HashSet, empty_hash_map, empty_hash_set)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit m: HashMap[Text, Int] = empty_hash_map()
+  var m: HashMap[Text, Int] = empty_hash_map()
   for i in 0..<200
     edit m.set(key: \"k{i}\", value: i * i)
   for i in 0..<100
     edit m.remove(key: \"k{i * 2}\")
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   for i in 0..<300
     edit s.add(item: (i * 7919) mod 1000)
-  let t = s.intersection(other: s.without(item: 0)).union(other: s)
+  const t = s.intersection(other: s.without(item: 0)).union(other: s)
   @console.print(\"{m.keys()}\")
   @console.print(\"{m}\")
   @console.print(\"{t.items()}\")
@@ -130,7 +130,7 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   @console.print(\"before\")
-  let s: HashSet[Int] = empty_hash_set()
+  const s: HashSet[Int] = empty_hash_set()
   @console.print(\"{s.len}\")
 ";
 
@@ -145,7 +145,7 @@ pub unused() -> HashSet[Int] = empty_hash_set()
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: Set[Int] = empty_set()
+  const s: Set[Int] = empty_set()
   @console.print(\"{s.len}\")
 ";
 
@@ -208,10 +208,10 @@ import std.collections (HashSet, empty_hash_set)
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   for i in 0..<COUNT
     edit s.add(item: i)
-  let edit found = 0
+  var found = 0
   for i in 0..<COUNT
     if s.has(item: i)
       found = found + 1

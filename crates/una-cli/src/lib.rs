@@ -327,6 +327,12 @@ fn analyze_and(
             &mut diagnostics,
         );
     }
+    // ADR 0137 rule 10: the messages of a package of edition 0.5 name its binding words.
+    if manifest.edition >= una_project::Edition::V0_5 {
+        for diagnostic in &mut diagnostics {
+            una_diag::binding_words::in_edition_0_5(diagnostic);
+        }
+    }
     let analysis = Analysis {
         mounts: manifest.mounts.clone(),
         diagnostics,

@@ -1,7 +1,7 @@
 -- test: movement seq_peek: a `peek` or a `pop` of a `Queue[Int]` bound by a `let` annotated `Option[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4, ADR 0119 rule 1)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_seq_peek.una:20:24
--- expect: error U5001 at src/move_seq_peek.una:22:24
+-- expect: error U5001 at src/move_seq_peek.una:20:26
+-- expect: error U5001 at src/move_seq_peek.una:22:26
 module move_seq_peek
 
 import std.collections (Queue)
@@ -10,14 +10,14 @@ pub kind Pos = Int where it > 0
 
 pub kept(q: Queue[Pos]) -> Int
 =
-  let o: Option[Pos] = q.peek()
-  let edit r: Queue[Pos] = q
-  let p: Option[Pos] = edit r.pop_back()
+  const o: Option[Pos] = q.peek()
+  var r: Queue[Pos] = q
+  const p: Option[Pos] = edit r.pop_back()
   r.len
 
 pub moved(q: Queue[Int]) -> Int
 =
-  let o: Option[Pos] = q.peek()
-  let edit r = q
-  let p: Option[Pos] = edit r.pop_back()
+  const o: Option[Pos] = q.peek()
+  var r = q
+  const p: Option[Pos] = edit r.pop_back()
   r.len

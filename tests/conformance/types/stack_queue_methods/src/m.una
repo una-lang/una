@@ -1,8 +1,8 @@
 -- test: the methods of `Stack` and `Queue` take labeled arguments after the receiver; `push`, `pop`, `push_front` and `pop_back` update it, written `edit q.push(...)` as the whole expression of a statement or `let`, and `peek`, `peek_back` and `items` read it (ADR 0119 rules 1, 5 and 6)
 -- spec: spec/28 §5
 -- expect: error U2020 at src/m.una:35:3
--- expect: error U2020 at src/m.una:36:20
--- expect: error U3013 at src/m.una:37:15
+-- expect: error U2020 at src/m.una:36:22
+-- expect: error U3013 at src/m.una:37:17
 -- expect: error U2001 at src/m.una:38:21
 -- expect: error U2001 at src/m.una:39:3
 module m
@@ -11,30 +11,30 @@ import std.collections (Queue, Stack, empty_queue, empty_stack)
 
 pub served(names: List[Text]) -> List[Text]
 =
-  let edit line: Queue[Text] = empty_queue()
+  var line: Queue[Text] = empty_queue()
   for name in names
     edit line.push(item: name)
   edit line.push_front(item: "first")
-  let back = edit line.pop_back()
-  let front = edit line.pop()
-  let rest = line.items()
+  const back = edit line.pop_back()
+  const front = edit line.pop()
+  const rest = line.items()
   rest
 
 pub depth(pages: List[Text]) -> Int
 =
-  let edit seen: Stack[Text] = empty_stack()
+  var seen: Stack[Text] = empty_stack()
   for page in pages
     edit seen.push(item: page)
-  let top = seen.peek()
-  let popped = edit seen.pop()
+  const top = seen.peek()
+  const popped = edit seen.pop()
   seen.len
 
 pub wrong(q: Queue[Int]) -> Unit
 =
-  let edit r = q
+  var r = q
   r.push(item: 1)
-  let front = edit r.peek()
-  let empty = edit r.pop() == None
+  const front = edit r.peek()
+  const empty = edit r.pop() == None
   edit r.push(item: "x")
   edit r.push_front()
   unit

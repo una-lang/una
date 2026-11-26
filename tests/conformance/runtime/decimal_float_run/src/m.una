@@ -8,9 +8,9 @@ module m
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let not_a_number = nan()
-  let tenth = 0.1
+  const not_a_number = nan()
+  const tenth = 0.1
   @console.print("{not_a_number.to_decimal(scale: 2, rounding: HalfEven)} {tenth.to_decimal(scale: 20, rounding: TowardZero)} {tenth.to_decimal(scale: 2, rounding: HalfEven)}")
-  let price: Decimal[2] = 19.99
-  let tiny: Decimal[30] = 0.000000000000000000000000000001
+  const price: Decimal[2] = 19.99
+  const tiny: Decimal[30] = 0.000000000000000000000000000001
   @console.print("{price.to_f64()} {tiny.to_f64()}")

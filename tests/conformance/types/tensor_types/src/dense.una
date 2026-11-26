@@ -7,7 +7,7 @@ pub grid() -> Tensor[F64] = tensor_filled(shape: [2, 3, 4], value: 0.0)
 
 pub made() -> Tensor[I32]
 =
-  let items: List[I32] = [1, 2, 3, 4, 5, 6]
+  const items: List[I32] = [1, 2, 3, 4, 5, 6]
   tensor(shape: [2, 3], elements: items)
 
 pub shapes(t: Tensor[F64]) -> Int = t.rank + t.dim(axis: 0)
@@ -22,7 +22,7 @@ pub maybe(t: Tensor[F64]) -> Option[F64] = t.at(at: [0, 0, 0])
 pub written(t: Tensor[F64]) -> Tensor[F64]
   requires t.rank == 3 and t.dim(axis: 0) > 0 and t.dim(axis: 1) > 1 and t.dim(axis: 2) > 2
 =
-  let edit u = t
+  var u = t
   edit u.set(at: [0, 1, 2], item: 5.0)
   u
 
@@ -35,7 +35,7 @@ pub swapped(t: Tensor[F64]) -> Tensor[F64]
 pub flat() -> Tensor[F64]
   ensures result.rank == 1 and result.dim(axis: 0) == 24
 =
-  let g = tensor_filled(shape: [2, 3, 4], value: 1.0)
+  const g = tensor_filled(shape: [2, 3, 4], value: 1.0)
   g.reshape(shape: [24])
 
 pub summed(t: Tensor[F64]) -> F64 = t.sum()

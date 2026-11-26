@@ -13,40 +13,40 @@ module after
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit xs = [1, 2, 3]
+  var xs = [1, 2, 3]
   for i in 0..<xs.len
-    let x = xs.at(index: i).or_else(default: 0)
+    const x = xs.at(index: i).or_else(default: 0)
     edit xs.set(index: i, item: x * 10)
   @console.print("list: {xs}")
   for y in [4, 5]
     xs = xs.append(item: y)
   @console.print("grown: {xs}")
-  let edit counts: Map[Int, Int] = empty_map()
+  var counts: Map[Int, Int] = empty_map()
   for k in [2, 1, 2, 3, 2]
     edit counts.update(key: k, initial: 0, change: fn(n) -> n + 1)
   @console.print("map: {counts}")
-  let edit ys = [1, 2, 3]
-  let kept = ys
+  var ys = [1, 2, 3]
+  const kept = ys
   for i in 0..<ys.len
     edit ys.set(index: i, item: 0)
   @console.print("kept: {kept} / {ys}")
-  let edit m: Map[Int, Int] = empty_map()
+  var m: Map[Int, Int] = empty_map()
   edit m.set(key: 1, value: 1)
-  let kept_map = m
+  const kept_map = m
   for k in 2..3
     edit m.set(key: k, value: k * k)
   @console.print("kept map: {kept_map} / {m}")
-  let edit zs = [1, 2]
-  let first = fn() -> zs.at(index: 0).or_else(default: 0)
-  let size = fn() -> zs.len
+  var zs = [1, 2]
+  const first = fn() -> zs.at(index: 0).or_else(default: 0)
+  const size = fn() -> zs.len
   for z in [3, 4]
     zs = zs.append(item: z)
     edit zs.set(index: 0, item: z)
   @console.print("closure: {first()} {size()} / {zs}")
-  let edit ws = [1, 2, 3]
-  let edit seen = 0
+  var ws = [1, 2, 3]
+  var seen = 0
   for i in 0..<ws.len
-    let before = fn() -> ws.at(index: i).or_else(default: 0)
+    const before = fn() -> ws.at(index: i).or_else(default: 0)
     edit ws.set(index: i, item: 0)
     seen = seen + before()
   @console.print("closure in the body: {seen} / {ws}")

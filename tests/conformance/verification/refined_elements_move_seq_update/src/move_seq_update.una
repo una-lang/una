@@ -10,17 +10,17 @@ pub kind Pos = Int where it > 0
 
 pub kept(q: Queue[Pos], s: Stack[Pos], p: Pos) -> Int
 =
-  let edit r: Queue[Pos] = q
+  var r: Queue[Pos] = q
   edit r.push(item: p)
   edit r.push_front(item: p)
-  let edit t: Stack[Pos] = s
+  var t: Stack[Pos] = s
   edit t.push(item: p)
   r.len + t.len
 
 pub moved(q: Queue[Pos], s: Stack[Pos], n: Int) -> Int
 =
-  let edit r: Queue[Pos] = q
+  var r: Queue[Pos] = q
   edit r.push(item: n)
-  let edit t: Stack[Pos] = s
+  var t: Stack[Pos] = s
   edit t.push(item: n)
   r.len + t.len

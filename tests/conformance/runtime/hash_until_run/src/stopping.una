@@ -9,7 +9,7 @@ import std.collections (HashSet, empty_hash_set)
 --- How many distinct items `xs` holds.
 distinct(xs: List[Int]) -> Int
 =
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   for x in xs
     edit s.add(item: x)
   s.len
@@ -17,8 +17,8 @@ distinct(xs: List[Int]) -> Int
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit left: Nat = 5
-  let edit m = 0
+  var left: Nat = 5
+  var m = 0
   for until distinct([m, 2, 2]) == 1 decreases left
     if left == 0
       stop

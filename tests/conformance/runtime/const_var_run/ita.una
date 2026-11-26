@@ -1,0 +1,8 @@
+ita const_var_run
+  version 0.1.0
+  edition 0.5
+
+run
+  entry m
+  grants
+    console

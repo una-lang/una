@@ -1,14 +1,14 @@
 -- test: the loop of the shape frame over `0..m.rows`, which reaches `i == m.rows`, is refuted at `get` with its counterexample, U5001 and not U5002, although it sets float elements
 -- spec: spec/29 §17
--- expect: error U5001 at src/dense.una:12:15
+-- expect: error U5001 at src/dense.una:12:17
 -- expect: error U5001 at src/dense.una:13:7
 module dense
 
 pub doubled(m: Matrix[F64]) -> Matrix[F64]
 =
-  let edit n = m
+  var n = m
   for i in 0..n.rows
     for j in 0..<n.columns
-      let x = n.get(row: i, column: j)
+      const x = n.get(row: i, column: j)
       edit n.set(row: i, column: j, item: 2.0 * x)
   n

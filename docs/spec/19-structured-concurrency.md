@@ -34,6 +34,7 @@ let pages = together for id in ids
 1. **Branches.** Each `let` statement of a `together_stmt` is a **branch**. Its expression, with its `with` bindings and its handling clauses, is the branch's task.
 2. **`together for`** stands where a `block_expr` can: as the value of a `let` or of an assignment, or as the last line of a block. Elsewhere, as a line followed by another line of its block, it is U0101 with the message `` a `together for` must be the last line of its block or the value of a `let` or of an assignment ``. Its body is a block, as the body of a `for` loop (`spec/17 §1`), whose final expression is the value of the element's task.
 3. **Malformed bodies.** A `together` body that holds a statement other than `let`, or fewer than two `let` statements, is U2024 at `together`.
+   - (v0.5, ADR 0137 rule 7.) In edition `0.5`, each branch of a `together` statement is a binding statement, `const` or `var`, as each is `let` or `let edit` in edition `0.4`, and a `together for` stands as the value of a `const`, a `var` or an assignment. U2024's messages name the binding statements: `` the body of `together` holds only `const` or `var` statements, one per branch; call a function from a branch's `const` for more steps ``, with the related note `` not a `const` or `var` statement ``, and `` `together` needs at least two branches; with one, write a plain `const` ``.
 4. **Placement.** `together` followed by a newline is a statement. Written as an expression, as `let x = together` with branches, it is U0101 with the message `` `together` with branches is a statement; write `together for` to build a list ``.
 5. **Nesting.** A task may contain a `together` block or a `together for`, inside a called function or inside the expression of its branch.
 6. There are no task values, no detached tasks, no `race` or `select`, no timeouts and no channels. (Edition 0.4, ADR 0117.) `first of` races branches, `within` bounds an expression's time, and `tasks` and `start` run a dynamic number of tasks, all ended before their statement (`spec/27 §5` to `§7`); there are still no task values and no channels.
@@ -141,4 +142,4 @@ These codes join the registry of `spec/13 §4` with their implementation:
 | Code | Domain | Meaning |
 | --- | --- | --- |
 | U2023 | types | A binding declared outside a `together` branch assigned, or passed as `edit` or `take`, inside it |
-| U2024 | types | A `together` body with a statement other than `let`, or fewer than two branches |
+| U2024 | types | A `together` body with a statement other than a binding statement, or fewer than two branches |

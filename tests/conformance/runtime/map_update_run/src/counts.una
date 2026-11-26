@@ -18,7 +18,7 @@ update(c: Counter) -> Counter = Counter(count: c.count + 1)
 --- How often each word occurs.
 count(words: List[Text]) -> Map[Text, Int]
 =
-  let edit counts: Map[Text, Int] = empty_map()
+  var counts: Map[Text, Int] = empty_map()
   for word in words
     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
   counts
@@ -27,7 +27,7 @@ count(words: List[Text]) -> Map[Text, Int]
 capped(m: Map[Text, Int], key: Text) -> Map[Text, Int]
   fails Stop
 =
-  let edit out = m
+  var out = m
   edit out.update(key: key, initial: 0, change: fn(n) -> if n >= 2 then fail TooMany else n + 1)
     if error pass
   out
@@ -42,12 +42,12 @@ shown(r: Result[Map[Text, Int], Stop]) -> Text
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let counts = count(["to", "be", "or", "not", "to", "be"])
+  const counts = count(["to", "be", "or", "not", "to", "be"])
   @console.print("counts: {counts}")
-  let raised = attempt capped(m: counts, key: "or")
-  let added = attempt capped(m: counts, key: "new")
+  const raised = attempt capped(m: counts, key: "or")
+  const added = attempt capped(m: counts, key: "new")
   @console.print("raised: {shown(raised)} / {shown(added)}")
-  let stopped = attempt capped(m: counts, key: "to")
+  const stopped = attempt capped(m: counts, key: "to")
   @console.print("stopped: {shown(stopped)}, counts: {counts}")
-  let c = Counter(count: 1).update()
+  const c = Counter(count: 1).update()
   @console.print("counter: {c.count}")
