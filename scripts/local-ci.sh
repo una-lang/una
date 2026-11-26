@@ -88,9 +88,18 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     fi
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
     image="una-local-ci:$toolchain$suffix"
+    dockerfile=scripts/local-ci/Dockerfile
+    if [ "$mode" = --limits ]; then
+        # The limits leg runs in the release image (#2105, review M1 of #2265), against the Z3
+        # library that ships (scripts/limits.sh checks its digest against supply-chain/z3.lock,
+        # UNA_LIMITS_SHIPPED_LIBRARY) and on the glibc floor, with a target directory of its own
+        # inside the volume, so that nothing the Ubuntu image built is linked there.
+        image="una-local-ci-release:$toolchain$suffix"
+        dockerfile=scripts/local-ci/Dockerfile.release
+    fi
     echo "== building the image $image (linux/$arch)"
     docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
-        --tag "$image" scripts/local-ci || fail "the container image did not build"
+        --file "$dockerfile" --tag "$image" scripts/local-ci || fail "the container image did not build"
     # The job count of the container's build (#701). Cargo uses every CPU of the Docker VM by
     # default, and that many rustc and linker processes at once can run the VM out of memory:
     # its kernel kills the linker (signal 9) and no test runs. The build runs one job per 2 GiB
@@ -134,6 +143,9 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     if [ -n "$z3_source" ]; then
         set -- --volume "$z3_source:/z3-src/z3-source.tar.gz:ro" \
             --env UNA_Z3_SOURCE=/z3-src/z3-source.tar.gz
+    fi
+    if [ "$mode" = --limits ]; then
+        set -- "$@" --env UNA_LIMITS_SHIPPED_LIBRARY=1 --env CARGO_TARGET_DIR=/work/target/release-image
     fi
     echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo

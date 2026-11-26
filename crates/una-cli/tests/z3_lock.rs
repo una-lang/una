@@ -584,3 +584,25 @@ fn check_toolchain_accepts_the_recorded_image_and_refuses_any_drift() {
     assert_eq!(output.status.code(), Some(2));
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_release_image_installs_the_toolchain_the_lock_records() {
+    // scripts/local-ci/Dockerfile.release installs each package of the lock's toolchain table at
+    // the version the table records (#2105, review L2 of #2265), so a rebuild gives the same
+    // toolchain or fails at install, before scripts/check-toolchain.sh would refuse it.
+    let lock = read("supply-chain/z3.lock");
+    let dockerfile = read("scripts/local-ci/Dockerfile.release");
+    let installed: Vec<&str> = dockerfile
+        .lines()
+        .map(|line| line.trim().trim_end_matches('\\').trim())
+        .collect();
+    let packages = table(&lock, "toolchain.aarch64-unknown-linux-gnu");
+    assert!(!packages.is_empty());
+    for (name, version) in packages {
+        let pinned = format!("{name}-{version}");
+        assert!(
+            installed.contains(&pinned.as_str()),
+            "Dockerfile.release does not install {pinned}"
+        );
+    }
+}

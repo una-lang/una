@@ -73,7 +73,8 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # (#1926), as `"package" = "VERSION-RELEASE"` from `rpm -q` in the AlmaLinux 8 image of
 # scripts/local-ci/Dockerfile.release (#2105, almalinux:8@sha256:768bedc3..., the image built as
 # una-local-ci-release:1.98.1-arm64, image ID
-# sha256:77ab829fc9ce307f8e778ea2c89d05db6f145330584b74fb327188f47c67dcd9), recorded 2026-11-26.
+# sha256:6a7e576963361d44e6bfff160a7c632a7f45759f54782dc877143134a8a86a1a, with the packages
+# installed at these versions, review L2 of #2265), recorded 2026-11-26.
 # glibc 2.28 is the floor of install.sh; GCC 13 is gcc-toolset-13's, and libgcc (GCC 8's) is the
 # system's libgcc_s.so.1, the unwinder `una` loads. kernel-headers (the Linux headers that
 # glibc-headers includes), gcc-toolset-13-runtime (the toolset's environment) and the system's

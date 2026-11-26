@@ -1,7 +1,12 @@
-# The Linux environment of scripts/local-ci.sh --linux and --linux-arm64 and of
-# scripts/local-release.sh: the image of CI's ubuntu-24.04 runner (glibc 2.39, which the pinned
-# Z3 builds need), for linux/amd64 or linux/arm64, with the Rust toolchain that
-# rust-toolchain.toml pins. Every download is pinned by digest, but for the apt packages (below).
+# The Linux test environment of scripts/local-ci.sh --linux and --linux-arm64 and of
+# scripts/hunt-linux.sh: the image of CI's ubuntu-24.04 runner (glibc 2.39, which the pinned Lean
+# toolchain, glibc 2.29 or later, and the Z3 project's Linux executable, 2.38, need), for
+# linux/amd64 or linux/arm64, with the Rust toolchain that rust-toolchain.toml pins. Every
+# download is pinned by digest, but for the apt packages (below). It is not the image of the
+# release (#2105): the Z3 library built into the shipped `una`, `una` and the Linux archive are
+# built in scripts/local-ci/Dockerfile.release (AlmaLinux 8, glibc 2.28), where the limits leg
+# also runs; the tests here link a Z3 library built with this image's toolchain from the same
+# pinned source and recipe, whose digest the lock does not record.
 # The multi-platform index of ubuntu:24.04: its linux/amd64 image is the one pinned before #241,
 # sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b, and it has the linux/arm64 one.
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
@@ -16,11 +21,9 @@ RUN apt-get update \
 # with docs/reviews/formal-m2-replay/dumpcore.py.
 # time: the POSIX `time -p` utility, which the scaling tests run their child under to read its
 # processor time (#1656, crates/una-cli/tests/common/cpu.rs).
-# cmake, g++, make: the Z3 build of scripts/build-z3.sh (ADR 0124 rule 1), whose Linux toolchain is
-# this image's. The apt packages carry no version here: supply-chain/z3.lock records the versions
-# of the image the release was built in, and the digests of the files its linker puts into `una`,
-# and scripts/check-toolchain.sh, which scripts/release.sh runs, refuses an image that differs
-# (#1926), so a rebuild after an Ubuntu update needs a deliberate update of the lock.
+# cmake, g++, make: the Z3 build of scripts/build-z3.sh for the tests of this image. The apt
+# packages carry no version and are not checked: supply-chain/z3.lock and
+# scripts/check-toolchain.sh pin and check the release image's toolchain only (#2105).
 
 # The container runs as an unprivileged user, never as root (#1394): the solver child refuses to
 # run as root (ADR 0124 rule 7), so a root container fails every test that verifies. The user has
