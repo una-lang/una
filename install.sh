@@ -22,11 +22,11 @@
 # Nothing else is downloaded: the Z3 solver is built into `una` (ADR 0124), so no separate Z3
 # is installed and none is looked for on PATH.
 # The platform is checked before anything is downloaded. The releases are for macOS on arm64 and
-# Linux on arm64 (aarch64). The Linux `una` is a dynamic glibc executable that needs glibc 2.39 or
-# later and a 64-bit userland, so a musl system (Alpine and others), an older glibc, a system
-# whose glibc version cannot be read, a 32-bit userland on a 64-bit kernel and a system whose
-# aarch64 glibc loader does not answer are refused; so are Linux on x86_64, which this release
-# does not ship, and every other system.
+# Linux on arm64 (aarch64). The Linux `una` is a dynamic glibc executable that needs glibc 2.28
+# or later (2.39 or later for the releases 0.4.0 to 0.5.1) and a 64-bit userland, so a musl
+# system (Alpine and others), an older glibc, a system whose glibc version cannot be read, a
+# 32-bit userland on a 64-bit kernel and a system whose aarch64 glibc loader does not answer are
+# refused; so are Linux on x86_64, which this release does not ship, and every other system.
 #
 # As root, UNA_HOME must be a place that only root can change (#1938): UNA_HOME, the
 # directories the installer writes in and the files there are not symbolic links, and they are
@@ -433,9 +433,13 @@ case $platform in
 esac
 
 # On Linux, the C library, before anything is downloaded. `una` is a dynamic glibc executable
-# built on glibc 2.39 (the build image's, ADR 0124 rule 1), so it does not start on musl or on an
-# older glibc. glibc is shown, never assumed: `getconf GNU_LIBC_VERSION` must print
-# `glibc MAJOR.MINOR` at or above the floor, compared as numbers (2.4 is before 2.39). The C
+# built on the glibc of the build image (ADR 0124 rule 1), so it does not start on musl or on an
+# older glibc. That glibc is 2.28 (AlmaLinux 8, #2105), the floor below, for the releases after
+# 0.5.1; the releases 0.4.0 to 0.5.1 were built on glibc 2.39 (Ubuntu 24.04) and keep that floor,
+# so that UNA_VERSION naming one of them is refused where its `una` could not start.
+# scripts/check-release.sh reads `glibc_floor` and refuses an archive whose `una` asks for a later
+# symbol version. glibc is shown, never assumed: `getconf GNU_LIBC_VERSION` must print
+# `glibc MAJOR.MINOR` at or above the floor, compared as numbers (2.4 is before 2.28). The C
 # library is the one the running system reports and loads (#1938), never inferred from a file
 # being there: a glibc system that also has musl's loader installed (Debian's `musl` package) is
 # glibc. A musl system is refused even when getconf's answer looks like glibc's: its
@@ -444,11 +448,22 @@ esac
 # musl's own loader, /lib/ld-musl-*, only names the reason when getconf shows no glibc. The
 # userland must be 64-bit (`getconf LONG_BIT`): a 32-bit Arm userland on a 64-bit kernel reports
 # aarch64, but cannot start the aarch64 `una`.
-glibc_floor=2.39
+glibc_floor=2.28
+# The last release built on glibc 2.39, and that floor.
+glibc_239_through=0.5.1
+if awk -v v="$version" -v last="$glibc_239_through" 'BEGIN {
+    split(v, a, "."); split(last, b, ".")
+    for (i = 1; i <= 3; i++) if (a[i] + 0 != b[i] + 0) exit !(a[i] + 0 < b[i] + 0)
+    exit 0
+}'; then
+    glibc_floor_of_version=2.39
+else
+    glibc_floor_of_version=$glibc_floor
+fi
 # Where the loaders are; a test points this one line at a fake machine's.
 loaders=/lib
 if [ "${platform%% *}" = Linux ]; then
-    needs="this release's una needs glibc $glibc_floor or later; Alpine and other musl systems are not supported"
+    needs="the una of $version needs glibc $glibc_floor_of_version or later; Alpine and other musl systems are not supported"
     if ldd --version 2>&1 | grep -qi musl; then
         fail "this system's C library is musl (ldd --version); $needs"
     fi
@@ -466,7 +481,7 @@ if [ "${platform%% *}" = Linux ]; then
             fail "cannot read this system's glibc version (getconf GNU_LIBC_VERSION); $needs"
             ;;
     esac
-    awk -v have="$glibc" -v floor="$glibc_floor" 'BEGIN {
+    awk -v have="$glibc" -v floor="$glibc_floor_of_version" 'BEGIN {
         split(have, h, "."); split(floor, f, ".")
         exit !(h[1] + 0 > f[1] + 0 || (h[1] + 0 == f[1] + 0 && h[2] + 0 >= f[2] + 0))
     }' || fail "this system has glibc $glibc; $needs"

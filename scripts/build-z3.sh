@@ -152,10 +152,19 @@ build() {
     # The archive's member headers carry each object's modification time, owner and group, so
     # two builds of the same objects gave two libraries (#1277: the objects were equal byte for
     # byte, the headers' times were not). ZERO_AR_DATE=1 makes Apple's ar, ranlib and libtool
-    # write zero for all three (`ar tv` shows 0/0 and the epoch), as GNU ar's deterministic mode,
-    # the default of the Linux distributions' binutils, already does.
+    # write zero for all three (`ar tv` shows 0/0 and the epoch). GNU ar's deterministic mode does
+    # the same, and it is the default of Debian's and Ubuntu's binutils but not of every build of
+    # binutils: gcc-toolset-13's, in the AlmaLinux 8 image of scripts/local-ci/ (#2105), writes
+    # the times and owners unless asked. So with GNU ar the archive rules ask for it, with `D`,
+    # and ranlib with `-D`, whatever the default; Apple's ar is left as it was.
     ZERO_AR_DATE=1
     export ZERO_AR_DATE
+    if ar --version 2>/dev/null | head -n 1 | grep -q '^GNU ar'; then
+        set -- "$@" \
+            "-DCMAKE_CXX_ARCHIVE_CREATE=<CMAKE_AR> qcD <TARGET> <LINK_FLAGS> <OBJECTS>" \
+            "-DCMAKE_CXX_ARCHIVE_APPEND=<CMAKE_AR> qD <TARGET> <LINK_FLAGS> <OBJECTS>" \
+            "-DCMAKE_CXX_ARCHIVE_FINISH=<CMAKE_RANLIB> -D <TARGET>"
+    fi
     start=$(date +%s)
     cmake -S "$src" -B "$bld" -G "Unix Makefiles" -DCMAKE_CXX_COMPILER="$cxx" \
         -DCMAKE_CXX_FLAGS="$flags" "$@" > "$dir/configure.log" 2>&1 \
@@ -203,7 +212,11 @@ chmod 755 "$staged/bin/z3"
     echo "cxx $("$cxx" --version 2>/dev/null | head -n 1)"
     echo "cmake $(cmake --version | head -n 1)"
     echo "jobs $jobs"
-    echo "archive ZERO_AR_DATE=1"
+    if ar --version 2>/dev/null | head -n 1 | grep -q '^GNU ar'; then
+        echo "archive ZERO_AR_DATE=1, GNU ar qcD and ranlib -D"
+    else
+        echo "archive ZERO_AR_DATE=1"
+    fi
     echo "seconds $(cat "$work/one/seconds")"
     [ "$reproducible" = 1 ] && echo "reproducible yes, two cold builds, second build $(cat "$work/two/seconds") s"
     echo "built $(date -u +%Y-%m-%dT%H:%M:%SZ)"

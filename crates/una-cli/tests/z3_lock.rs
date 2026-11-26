@@ -340,7 +340,7 @@ const TOOLCHAIN_FILES: [&str; 9] = [
 
 #[test]
 fn the_lock_records_the_linux_toolchain_of_every_linux_target() {
-    // A Linux target's library was built in an image whose apt packages the Dockerfile does not
+    // A Linux target's library was built in an image whose packages the Dockerfile does not
     // pin, and its `una` embeds that image's libstdc++.a and libgcc.a, so the lock records the
     // packages' versions and those files' digests, which scripts/check-toolchain.sh checks
     // before the release builds `una` (#1926, #1958).
@@ -358,14 +358,17 @@ fn the_lock_records_the_linux_toolchain_of_every_linux_target() {
         }
         let names: Vec<&str> = packages.iter().map(|(name, _)| *name).collect();
         for needed in [
-            "binutils",
+            "gcc-toolset-13-binutils",
             "cmake",
             "make",
-            "gcc-13",
-            "g++-13",
-            "libgcc-13-dev",
-            "libstdc++-13-dev",
-            "libc6-dev",
+            "gcc-toolset-13-gcc",
+            "gcc-toolset-13-gcc-c++",
+            "gcc-toolset-13-libstdc++-devel",
+            "glibc",
+            "glibc-devel",
+            "glibc-headers",
+            "kernel-headers",
+            "gcc-toolset-13-runtime",
         ] {
             assert!(
                 names.contains(&needed),
@@ -431,7 +434,7 @@ fn the_release_checks_the_linux_toolchain_before_it_builds_una() {
 }
 
 /// Runs scripts/check-toolchain.sh for `target` in a scratch tree at `dir` with `lock` as its
-/// lock, and fakes of `dpkg-query` (the versions of `installed`, `<package> <version>` lines)
+/// lock, and fakes of `rpm` (the versions of `installed`, `<package> <version>` lines)
 /// and `cc` (`-print-file-name=<file>` names `dir`/files/<file> when it exists, else the bare
 /// name, as GCC does) first on PATH, with `files` (name, bytes) in `dir`/files.
 fn check_toolchain(
@@ -455,7 +458,7 @@ fn check_toolchain(
     for (name, bytes) in files {
         fs::write(dir.join("files").join(name), bytes).unwrap();
     }
-    let dpkg = format!(
+    let rpm = format!(
         "#!/bin/sh\nfor last; do :; done\nv=$(sed -n \"s/^$last //p\" '{}')\n[ -n \"$v\" ] || exit 1\nprintf '%s' \"$v\"\n",
         dir.join("installed").display()
     );
@@ -463,7 +466,7 @@ fn check_toolchain(
         "#!/bin/sh\nf=${{1#-print-file-name=}}\nif [ -f '{0}'/\"$f\" ]; then printf '%s\\n' '{0}'/\"$f\"; else printf '%s\\n' \"$f\"; fi\n",
         dir.join("files").display()
     );
-    for (name, body) in [("dpkg-query", dpkg), ("cc", cc)] {
+    for (name, body) in [("rpm", rpm), ("cc", cc)] {
         fs::write(dir.join("bin").join(name), body).unwrap();
         #[cfg(unix)]
         {
@@ -495,12 +498,12 @@ fn check_toolchain_accepts_the_recorded_image_and_refuses_any_drift() {
     let sha = |bytes: &[u8]| format!("{:x}", sha2::Sha256::digest(bytes));
     let lock = |version: &str, digest: &str| {
         format!(
-            "version = \"5.1.0\"\n[library]\n\"{target}\" = \"{}\"\n\n# packages\n[toolchain.{target}]\n\"g++-13\" = \"13.3.0-6ubuntu2~24.04.1\"\n\"libc6-dev\" = \"{version}\"\n\n[toolchain-files.{target}]\n\"libstdc++.a\" = \"{digest}\"\n\"Scrt1.o\" = \"{}\"\n",
+            "version = \"5.1.0\"\n[library]\n\"{target}\" = \"{}\"\n\n# packages\n[toolchain.{target}]\n\"gcc-toolset-13-gcc-c++\" = \"13.3.1-2.2.el8_10\"\n\"glibc-devel\" = \"{version}\"\n\n[toolchain-files.{target}]\n\"libstdc++.a\" = \"{digest}\"\n\"Scrt1.o\" = \"{}\"\n",
             "ab".repeat(32),
             sha(b)
         )
     };
-    let installed = "g++-13 13.3.0-6ubuntu2~24.04.1\nlibc6-dev 2.39-0ubuntu8.9\n";
+    let installed = "gcc-toolset-13-gcc-c++ 13.3.1-2.2.el8_10\nglibc-devel 2.28-251.el8_10.53\n";
     let run = |lock: &str, installed: &str, files: &[(&str, &[u8])]| {
         let output = check_toolchain(&dir, target, lock, installed, files);
         (
@@ -510,36 +513,42 @@ fn check_toolchain_accepts_the_recorded_image_and_refuses_any_drift() {
         )
     };
     let both: [(&str, &[u8]); 2] = [("libstdc++.a", a), ("Scrt1.o", b)];
-    let good = lock("2.39-0ubuntu8.9", &sha(a));
+    let good = lock("2.28-251.el8_10.53", &sha(a));
 
     // The image as recorded: every package and file is printed for the record.
     let (code, stdout, stderr) = run(&good, installed, &both);
     assert_eq!(code, Some(0), "{stderr}");
-    assert!(stdout.contains(&format!("toolchain: {target}: libc6-dev 2.39-0ubuntu8.9\n")));
+    assert!(stdout.contains(&format!(
+        "toolchain: {target}: glibc-devel 2.28-251.el8_10.53\n"
+    )));
     assert!(stdout.contains(&format!(
         "toolchain: {target}: libstdc++.a sha256 {}\n",
         sha(a)
     )));
     assert!(stdout.contains(&format!("toolchain: {target}: Scrt1.o sha256 {}\n", sha(b))));
 
-    // An Ubuntu point update of a package.
-    let (code, _, stderr) = run(&lock("2.39-0ubuntu8.10", &sha(a)), installed, &both);
+    // An AlmaLinux point update of a package.
+    let (code, _, stderr) = run(&lock("2.28-251.el8_10.54", &sha(a)), installed, &both);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        stderr.contains("the package libc6-dev is 2.39-0ubuntu8.9 installed, but supply-chain/z3.lock records 2.39-0ubuntu8.10"),
+        stderr.contains("the package glibc-devel is 2.28-251.el8_10.53 installed, but supply-chain/z3.lock records 2.28-251.el8_10.54"),
         "{stderr}"
     );
 
     // A package that the image lacks.
-    let (code, _, stderr) = run(&good, "g++-13 13.3.0-6ubuntu2~24.04.1\n", &both);
+    let (code, _, stderr) = run(&good, "gcc-toolset-13-gcc-c++ 13.3.1-2.2.el8_10\n", &both);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        stderr.contains("the package libc6-dev is not installed"),
+        stderr.contains("the package glibc-devel is not installed"),
         "{stderr}"
     );
 
     // A linked file whose bytes differ.
-    let (code, _, stderr) = run(&lock("2.39-0ubuntu8.9", &"cd".repeat(32)), installed, &both);
+    let (code, _, stderr) = run(
+        &lock("2.28-251.el8_10.53", &"cd".repeat(32)),
+        installed,
+        &both,
+    );
     assert_eq!(code, Some(2), "{stderr}");
     assert!(
         stderr.contains(&format!(

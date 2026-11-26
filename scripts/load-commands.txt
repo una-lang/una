@@ -30,6 +30,8 @@ macos command LC_CODE_SIGNATURE  # the ad hoc code signature that arm64 macOS re
 # entries fail.
 linux needed libc.so.6  # glibc, the C library of the Rust standard library (docs/foreign-code-inventory.md section 4)
 linux needed libgcc_s.so.1  # the unwinder of panics and backtraces (`_Unwind_*`)
+linux needed libpthread.so.0  # glibc's threads, a library of its own before glibc 2.34 (an empty stub since): a `una` built on the glibc 2.28 of the build image (#2105), and an executable that `una build` links on a glibc before 2.34, take pthread_* from it
+linux needed libdl.so.2  # glibc's dlsym and dladdr, a library of its own before glibc 2.34 (an empty stub since), for the same reason (#2105)
 linux needed ld-linux-x86-64.so.2  # the x86_64 dynamic loader, which provides __tls_get_addr for thread-local storage
 linux needed ld-linux-aarch64.so.1  # the aarch64 dynamic loader, for the same symbols
 linux interpreter /lib64/ld-linux-x86-64.so.2  # the x86_64 program interpreter

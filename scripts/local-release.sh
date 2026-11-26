@@ -2,7 +2,7 @@
 # Builds the release archives of TAG on this machine while GitHub Actions is unavailable (#156,
 # ADR 0035 amendment of 2026-10-02): on a clean checkout of the tag's commit, the archive of each
 # target that scripts/release-targets.txt lists and of no other (#1903), in its order: the
-# aarch64-apple-darwin archive natively, a Linux one in the container of scripts/local-ci/Dockerfile
+# aarch64-apple-darwin archive natively, a Linux one in the container of scripts/local-ci/Dockerfile.release
 # of its architecture (linux/arm64, native here, #241; linux/amd64, emulated), each with
 # scripts/release.sh and checked with scripts/check-release.sh. It writes the archives, their .sha256 files and the release
 # notes to target/local-release/TAG/, and prints the `gh release create` command that publishes
@@ -104,8 +104,11 @@ toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' "$checkout/rust-toolchain.
 linux_archive() {
     arch=$1 target=$2 suffix=$3
     echo "== $target, in the linux/$arch container, from $commit"
-    image="una-local-ci:$toolchain$suffix"
-    docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" --tag "$image" \
+    # The release image (#2105): AlmaLinux 8, glibc 2.28, the toolchain supply-chain/z3.lock
+    # records; the tests run in the Ubuntu image of scripts/local-ci/Dockerfile.
+    image="una-local-ci-release:$toolchain$suffix"
+    docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
+        --file "$root/scripts/local-ci/Dockerfile.release" --tag "$image" \
         "$root/scripts/local-ci" || fail "the container image for linux/$arch did not build"
     name="una-$version-$target.tar.gz"
     # The image runs as an unprivileged user, uid 1000 (#1394); the volumes are handed to it first.

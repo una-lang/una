@@ -347,8 +347,9 @@ The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/
 | System | Supported | What `una build` needs |
 | --- | --- | --- |
 | macOS on arm64 | Yes | Nothing: it links with the linker built into `una` |
-| Linux on arm64, glibc 2.39 or later (Ubuntu 24.04, for example) | Yes | A C compiler available as `cc`, such as gcc or clang with the C library's development files |
-| Linux with an older glibc (Ubuntu 22.04, Debian 12) | No | |
+| Linux on arm64, glibc 2.28 or later, from the release after 0.5.1 (tested on Ubuntu 22.04, Debian 12 and AlmaLinux 8; Ubuntu 20.04, Debian 10 and 11 and RHEL 8 and later by the glibc symbol versions `una` needs) | Yes | A C compiler available as `cc`, such as gcc or clang with the C library's development files |
+| Linux on arm64 with 0.4.0 to 0.5.1 | Yes, with glibc 2.39 or later (Ubuntu 24.04, for example) | The same |
+| Linux with an older glibc (before 2.28) | No | |
 | Linux with musl, such as Alpine | No | |
 | Linux on x86-64 | No | |
 | Windows | No | |
