@@ -1,0 +1,7 @@
+module text
+
+pub twice(word: Text) -> Text
+=
+  let both = word
+  both = "{both}{word}"
+  both

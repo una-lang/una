@@ -86,6 +86,15 @@ pub struct Dependency {
     pub registry: Option<RegistryOrigin>,
 }
 
+impl Dependency {
+    /// The edition its `ita.una` names, under which its modules are lexed, parsed and formatted
+    /// (ADR 0122 rules 48 and 49); `None` when it has no manifest.
+    pub fn edition(&self, sources: &SourceDb) -> Option<Edition> {
+        let manifest = self.manifest?;
+        Some(parse_ita_manifest(sources.file(manifest).text()).0.edition)
+    }
+}
+
 /// Where a mounted registry release comes from (ADR 0122 rules 16 and 58).
 #[derive(Clone, Debug)]
 pub struct RegistryOrigin {

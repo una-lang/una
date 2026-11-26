@@ -80,10 +80,14 @@ impl Workspace for CliWorkspace {
         let (manifest, _) = crate::package::project(&package);
         let mut interner = una_syntax::Interner::new();
         let keywords = keyword_set(manifest.edition);
-        check_files(&package.sources, &package.modules, &mut interner, keywords)
-            .into_iter()
-            .find(|checked| checked.id == id)
-            .and_then(|checked| checked.canonical)
+        check_files(
+            &package.sources,
+            &crate::with_keywords(&package.modules, keywords),
+            &mut interner,
+        )
+        .into_iter()
+        .find(|checked| checked.id == id)
+        .and_then(|checked| checked.canonical)
     }
 }
 

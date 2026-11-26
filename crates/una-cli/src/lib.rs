@@ -211,17 +211,18 @@ fn analyze_and(
     }
     let mut interner = Interner::new();
     let mut trees = Vec::new();
-    let keywords = keyword_set(manifest.edition);
     // ADR 0096 C: the poisoned names of each module with broken declarations, and those
     // declarations.
     let mut poison = std::collections::BTreeMap::new();
     let mut broken_files = std::collections::BTreeMap::new();
     // The program's modules: the root's, then those of each mounted dependency (ADR 0122
     // rule 48). A dependency that is not mounted is never checked as part of the program.
-    let modules: Vec<FileId> = package
+    // Each module is read under its own package's edition (rules 48 and 49): a dependency of
+    // an earlier edition keeps its keywords, as `let` in edition 0.4 under a root of 0.5.
+    let editions: Vec<(FileId, una_project::Edition)> = package
         .modules
         .iter()
-        .copied()
+        .map(|&id| (id, manifest.edition))
         .chain(
             package
                 .dependencies
@@ -232,10 +233,19 @@ fn analyze_and(
                         .iter()
                         .any(|mount| mount.src == format!("{}/src/", dependency.dir))
                 })
-                .flat_map(|dependency| dependency.modules.iter().copied()),
+                .flat_map(|dependency| {
+                    let edition = dependency
+                        .edition(&package.sources)
+                        .unwrap_or(manifest.edition);
+                    dependency.modules.iter().map(move |&id| (id, edition))
+                }),
         )
         .collect();
-    for checked in check_files(&package.sources, &modules, &mut interner, keywords) {
+    let keyed: Vec<(FileId, KeywordSet)> = editions
+        .iter()
+        .map(|&(id, edition)| (id, keyword_set(edition)))
+        .collect();
+    for checked in check_files(&package.sources, &keyed, &mut interner) {
         // A module is broken as a whole only when its header is (ADR 0096 rule 7).
         let whole = checked.broken.as_ref().is_some_and(|broken| broken.whole);
         diagnostics.extend(checked.syntax);
@@ -321,16 +331,24 @@ fn analyze_and(
     if !broken_files.is_empty() {
         withhold_dependents(
             &package.sources,
-            &modules,
+            &keyed,
             &manifest,
             &broken_files,
             &mut diagnostics,
         );
     }
-    // ADR 0137 rule 10: the messages of a package of edition 0.5 name its binding words.
+    // ADR 0137 rule 10: the messages of a package of edition 0.5 name its binding words; a
+    // diagnostic in a module of a dependency of an earlier edition keeps that edition's words.
     if manifest.edition >= una_project::Edition::V0_5 {
+        let earlier: std::collections::BTreeSet<&str> = editions
+            .iter()
+            .filter(|(_, edition)| *edition < una_project::Edition::V0_5)
+            .map(|(id, _)| package.sources.file(*id).path())
+            .collect();
         for diagnostic in &mut diagnostics {
-            una_diag::binding_words::in_edition_0_5(diagnostic);
+            if !earlier.contains(diagnostic.primary.file.as_str()) {
+                una_diag::binding_words::in_edition_0_5(diagnostic);
+            }
         }
     }
     let analysis = Analysis {
@@ -475,19 +493,20 @@ fn locks(
 /// reach a broken one.
 fn withhold_dependents(
     sources: &SourceDb,
-    modules: &[FileId],
+    keyed: &[(FileId, KeywordSet)],
     manifest: &una_project::Manifest,
     broken_files: &std::collections::BTreeMap<FileId, recovery::BrokenFile>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let none = std::collections::BTreeSet::new();
-    let clean: Vec<(FileId, Vec<una_syntax::Declaration>)> = modules
+    let modules: Vec<FileId> = keyed.iter().map(|(id, _)| *id).collect();
+    let clean: Vec<(FileId, Vec<una_syntax::Declaration>)> = keyed
         .iter()
-        .filter(|id| !broken_files.contains_key(id))
-        .map(|&id| {
+        .filter(|(id, _)| !broken_files.contains_key(id))
+        .map(|&(id, keywords)| {
             (
                 id,
-                una_syntax::declarations_in(sources.file(id).text(), keyword_set(manifest.edition)),
+                una_syntax::declarations_in(sources.file(id).text(), keywords),
             )
         })
         .collect();
@@ -522,7 +541,7 @@ fn withhold_dependents(
         })
         .collect();
     let mut texts = Vec::new();
-    for &id in modules {
+    for &id in &modules {
         let (declarations, broken) = match broken_files.get(&id) {
             Some(file) => (file.declarations.as_slice(), &file.broken),
             None => match clean.iter().find(|(clean_id, _)| *clean_id == id) {
@@ -578,20 +597,19 @@ struct Partial {
 /// every such file declares (ADR 0020 rule 6).
 fn check_files(
     sources: &SourceDb,
-    modules: &[FileId],
+    modules: &[(FileId, KeywordSet)],
     interner: &mut Interner,
-    keywords: KeywordSet,
 ) -> Vec<FileCheck> {
     let mut lexed: Vec<Lexed> = modules
         .iter()
-        .map(|&id| lex_in(sources.file(id), id, interner, keywords))
+        .map(|&(id, keywords)| lex_in(sources.file(id), id, interner, keywords))
         .collect();
     // A word renamed in one module is renamed alike in every module that names it (#125).
     una_syntax::rename_across(&mut lexed, interner);
     let parsed: Vec<Parsed> = modules
         .iter()
         .zip(lexed)
-        .map(|(&id, lexed)| {
+        .map(|(&(id, _), lexed)| {
             let parsed = parse(&lexed, id, interner);
             // An error the parser reads past keeps its declaration (ADR 0105 rule 3).
             let errors = lexed
@@ -617,6 +635,8 @@ fn check_files(
         let (broken, partial) = if syntax.is_empty() {
             (None, None)
         } else {
+            // The file's own keyword set, as its lexer read it.
+            let keywords = lexed.keywords;
             let text = sources.file(id).text();
             let broken = recovery::BrokenFile::new(text, &errors, keywords);
             tree.decls.retain(|decl| !broken.in_broken(decl.span.start));
@@ -1829,9 +1849,10 @@ fn fmt_command(
     let sources = &package.sources;
     let (manifest, _) = package::project(&package);
     let keywords = keyword_set(manifest.edition);
+    let modules = with_keywords(&package.modules, keywords);
     let checks = on_large_stack(|| {
         let mut interner = Interner::new();
-        check_files(sources, &package.modules, &mut interner, keywords)
+        check_files(sources, &modules, &mut interner)
     });
     let mut diagnostics = Vec::new();
     for checked in checks {
@@ -2038,6 +2059,11 @@ fn use_color(choice: ColorChoice, is_terminal: bool) -> bool {
         ColorChoice::Auto => is_terminal,
         ColorChoice::Always => true,
     }
+}
+
+/// `modules`, each read with `keywords`: the modules of one package, under its edition.
+fn with_keywords(modules: &[FileId], keywords: KeywordSet) -> Vec<(FileId, KeywordSet)> {
+    modules.iter().map(|&id| (id, keywords)).collect()
 }
 
 /// The keywords of a package's edition (`spec/01 §5`, `spec/17 §9`).

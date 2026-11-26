@@ -35,7 +35,12 @@ const LIST_PATTERN: &str = "Una has no list patterns: test `xs.len == 0`, or mat
 const TUPLE: &str = "Una has no tuples: declare a record kind with named fields";
 
 /// The description of a shape that has no exact rewrite (ADR 0096 rule 3): Una's form only.
-fn advice_only(lines: &[Line<'_>], at: usize, message: &str) -> Option<&'static str> {
+fn advice_only(
+    lines: &[Line<'_>],
+    at: usize,
+    message: &str,
+    words: &[&str],
+) -> Option<&'static str> {
     let content = lines.get(at)?.content();
     let previous = (0..at)
         .rev()
@@ -54,13 +59,23 @@ fn advice_only(lines: &[Line<'_>], at: usize, message: &str) -> Option<&'static 
     }
     if message.contains("unexpected `(`, expected a type")
         || message.contains("unexpected `(`, expected a name")
-        || ["let (", "const (", "var ("]
+        || words
             .iter()
-            .any(|word| content.starts_with(word))
+            .any(|word| content.starts_with(&format!("{word} (")))
     {
         return Some(TUPLE);
     }
     None
+}
+
+/// The words that begin a binding statement under `keywords`: `let` up to edition 0.4, and
+/// `const` and `var` in edition 0.5, where `let` is U7007 (ADR 0137 rules 1 and 2).
+fn binding_words(keywords: KeywordSet) -> &'static [&'static str] {
+    if keywords >= KeywordSet::V0_5 {
+        &["let", "const", "var"]
+    } else {
+        &["let"]
+    }
 }
 
 /// A line of the text: where it starts, its text without the line break, and its indentation.
@@ -335,7 +350,7 @@ struct Candidate {
 /// The `if` whose foreign layout covers line `at`: `if c then` at the end of a line, `then` or
 /// `else` at the start of one, `if c then x else` at the end of a line, or `if c then x` with no
 /// `else`. Rewritten as an `if` with blocks.
-fn if_construct(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate> {
+fn if_construct(lines: &[Line<'_>], at: usize, end: usize, words: &[&str]) -> Option<Candidate> {
     let mut k = at + 1;
     while k > 0 {
         k -= 1;
@@ -343,7 +358,7 @@ fn if_construct(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate> 
         if line.blank() || line.indent > lines.get(at)?.indent {
             continue;
         }
-        if let Some(candidate) = if_at(lines, k, end)
+        if let Some(candidate) = if_at(lines, k, end, words)
             && candidate.from <= at
             && at < candidate.to
         {
@@ -367,15 +382,16 @@ fn diverges(branch: &str) -> bool {
 
 /// The length of what precedes `if` on a line that opens an `if`: nothing, or `let x = `
 /// (`const x = ` or `var x = ` in edition 0.5).
-fn if_prefix(content: &str) -> Option<usize> {
+fn if_prefix(content: &str, words: &[&str]) -> Option<usize> {
     if content.starts_with("if ") {
         return Some(0);
     }
     // A binding: `let` up to edition 0.4, `const` or `var` in edition 0.5 (ADR 0137).
-    if ["let ", "const ", "var "]
-        .iter()
-        .any(|word| content.starts_with(word))
-    {
+    if words.iter().any(|word| {
+        content
+            .strip_prefix(word)
+            .is_some_and(|rest| rest.starts_with(' '))
+    }) {
         let eq = find_word(content, "=")?;
         let after = content.get(eq + 1..)?;
         let gap = after.len() - after.trim_start().len();
@@ -386,11 +402,11 @@ fn if_prefix(content: &str) -> Option<usize> {
     None
 }
 
-fn if_at(lines: &[Line<'_>], k: usize, end: usize) -> Option<Candidate> {
+fn if_at(lines: &[Line<'_>], k: usize, end: usize, words: &[&str]) -> Option<Candidate> {
     let line = lines.get(k)?;
     let ind = line.indent;
     let content = line.content();
-    let prefix = if_prefix(content)?;
+    let prefix = if_prefix(content, words)?;
     let after_if = content.get(prefix + 3..)?;
     let (condition, then_part, mut next, else_indent) = match find_word(after_if, "then") {
         Some(t) => {
@@ -753,14 +769,16 @@ fn leading_word(lines: &[Line<'_>], at: usize, decl: usize) -> Option<Candidate>
 
 /// An arm or branch whose body starts with a binding (`let`, or `const` or `var` in edition
 /// 0.5) or `when` on its line, its block following.
-fn arm_body(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate> {
+fn arm_body(lines: &[Line<'_>], at: usize, end: usize, words: &[&str]) -> Option<Candidate> {
     let line = lines.get(at)?;
     let content = line.content();
     let arrow = find_words(content, "->").into_iter().find(|&a| {
         let body = content.get(a + 2..).unwrap_or("").trim_start();
-        ["let ", "const ", "var ", "when "]
-            .iter()
-            .any(|word| body.starts_with(word))
+        body.starts_with("when ")
+            || words.iter().any(|word| {
+                body.strip_prefix(word)
+                    .is_some_and(|rest| rest.starts_with(' '))
+            })
     })?;
     let head = content.get(..arrow + 2)?;
     if !(head.starts_with("is ") || head.starts_with("in ") || head.starts_with("else")) {
@@ -840,6 +858,7 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
     let Some(lines) = lines_of(text) else {
         return;
     };
+    let words = binding_words(keywords);
     // Read once, when the first error needs it.
     let mut starts: Option<Vec<usize>> = None;
     for error in errors.iter_mut() {
@@ -865,12 +884,12 @@ pub(crate) fn attach(text: &str, file: FileId, keywords: KeywordSet, errors: &mu
             header_equals(&lines, at, decl, decl_end),
             leading_word(&lines, at, decl),
             one_line_when(&lines, at, decl_end),
-            if_construct(&lines, at, decl_end),
-            arm_body(&lines, at, decl_end),
+            if_construct(&lines, at, decl_end, words),
+            arm_body(&lines, at, decl_end, words),
         ];
         let Some(candidate) = candidates.into_iter().flatten().next() else {
             if error.repairs.is_empty()
-                && let Some(description) = advice_only(&lines, at, &error.message)
+                && let Some(description) = advice_only(&lines, at, &error.message, words)
             {
                 error.repairs.push(SyntaxRepair {
                     description: description.to_owned(),

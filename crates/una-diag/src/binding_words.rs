@@ -10,7 +10,11 @@ use crate::{Code, Diagnostic};
 
 /// The phrases of ADR 0137 rule 10 that are not a one-to-one rename, in edition `0.4` words
 /// and in edition `0.5` words. They are replaced before the backticked forms.
-const PHRASES: [(&str, &str); 4] = [
+const PHRASES: [(&str, &str); 5] = [
+    (
+        "a block cannot end with `let`",
+        "a block cannot end with a `const` or `var`",
+    ),
     (
         "holds only `let` statements, one per branch",
         "holds only `const` or `var` statements, one per branch",
@@ -121,6 +125,10 @@ mod tests {
                 "the body of `together` holds only `const` or `var` statements, one per branch; call a function from a branch's `const` for more steps",
             ),
             ("not a `let`", "not a `const` or `var` statement"),
+            (
+                "a block cannot end with `let`; its last line is its value",
+                "a block cannot end with a `const` or `var`; its last line is its value",
+            ),
             (
                 "`together` needs at least two `let` branches; with one, write a plain `let`",
                 "`together` needs at least two branches; with one, write a plain `const`",

@@ -1,0 +1,13 @@
+-- test: a package of edition 0.5 may depend on a package of edition 0.4, which is read under its own edition: its `let` and `let edit` bindings check, with no U7007, while the root binds with `const` and `var` (ADR 0122 rules 48 and 49, ADR 0137 rule 12)
+-- spec: spec/30 §3
+-- expect: ok
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  var line = "hello"
+  line = twice(line)
+  const done = line
+  done

@@ -1914,3 +1914,38 @@ fn differs_by(
         "{name}: {more_edition} differs from {less_edition} by more than the listed diagnostics"
     );
 }
+
+/// A dependency of edition 0.4 under a root of edition 0.5 is read under its own edition (ADR
+/// 0122 rules 48 and 49): its `let` bindings check, and its diagnostics keep the words of edition
+/// 0.4 (ADR 0137 rule 10, review of #2258, H1).
+#[test]
+fn a_dependency_of_edition_0_4_keeps_its_words_under_a_root_of_edition_0_5() {
+    for (case, expected) in [
+        ("project/ita_path_dep_0_4_in_0_5", None),
+        (
+            "project/ita_path_dep_0_4_in_0_5_error",
+            Some(
+                "`both` is not editable; declare it `let edit both`, or the parameter `edit both`",
+            ),
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(["--json", "check", "."])
+            .current_dir(conformance().join(case))
+            .output()
+            .unwrap();
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let messages: Vec<&str> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap())
+            .collect();
+        match expected {
+            None => assert!(messages.is_empty(), "{case}: {messages:?}"),
+            Some(message) => assert_eq!(messages, [message], "{case}"),
+        }
+    }
+}

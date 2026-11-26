@@ -562,7 +562,11 @@ fn format_modules(
     let keywords = keyword_set(manifest.edition);
     let checks = on_large_stack(|| {
         let mut interner = Interner::new();
-        check_files(&package.sources, &package.modules, &mut interner, keywords)
+        check_files(
+            &package.sources,
+            &crate::with_keywords(&package.modules, keywords),
+            &mut interner,
+        )
     });
     let mut formatted = Vec::new();
     for checked in checks {
