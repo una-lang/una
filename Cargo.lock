@@ -1327,7 +1327,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "una-check"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "pretty_assertions",
  "una-core",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "una-cli"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cap",
  "clap",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "una-codegen"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "una-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "una-diag",
  "una-syntax",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "una-crypto"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "curve25519-dalek",
  "ring",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "una-diag"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ariadne",
  "insta",
@@ -1416,14 +1416,14 @@ dependencies = [
 
 [[package]]
 name = "una-explain"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "una-diag",
 ]
 
 [[package]]
 name = "una-fmt"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "pretty_assertions",
  "una-diag",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "una-hash"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "getrandom 0.4.3",
  "una-hash",
@@ -1440,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "una-http"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "getrandom 0.4.3",
  "rcgen",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "una-interp"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "una-itaty"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ed25519-dalek",
  "pretty_assertions",
@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "una-link"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "object",
  "sha2",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "una-lsp"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "pretty_assertions",
  "serde_json",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "una-project"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ed25519-dalek",
  "pretty_assertions",
@@ -1516,14 +1516,14 @@ dependencies = [
 
 [[package]]
 name = "una-report"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "una-diag",
 ]
 
 [[package]]
 name = "una-rt"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cap",
  "serde_json",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "una-syntax"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "indexmap",
  "insta",
@@ -1547,18 +1547,18 @@ dependencies = [
 
 [[package]]
 name = "una-sys"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "una-test-cases"
-version = "0.5.1"
+version = "0.5.2"
 
 [[package]]
 name = "una-verify"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "insta",
  "pretty_assertions",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "una-z3"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "sha2",
  "una-sys",
