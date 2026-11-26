@@ -589,7 +589,8 @@ pub main() -> Unit
 fn hover_on_a_module_constant_shows_its_type_and_value_and_goes_to_it() {
     // ADR 0126 rule 11: in edition 0.5, the hover of a reference to a constant shows its
     // declared type and its value, and the definition is its declaration.
-    let text = "module app\n\npub const max_items: Int = 10 * 100\n\npub limit() -> Int = max_items\n";
+    let text =
+        "module app\n\npub const max_items: Int = 10 * 100\n\npub limit() -> Int = max_items\n";
     let dir = package_in("constant-hover", "0.5", text);
     let file = dir.join("src/app.una");
     let mut session = Session::start(None);
@@ -611,7 +612,11 @@ fn hover_on_a_module_constant_shows_its_type_and_value_and_goes_to_it() {
             "position": position(4, 22),
         }),
     );
-    assert_eq!(definition["range"]["start"], json!({ "line": 2, "character": 10 }), "{definition}");
+    assert_eq!(
+        definition["range"]["start"],
+        json!({ "line": 2, "character": 10 }),
+        "{definition}"
+    );
     session.finish();
 }
 

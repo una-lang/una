@@ -118,7 +118,12 @@ pub fn std_items() -> Vec<Item> {
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
         let id = sources.add("std.time", text.as_bytes());
-        let lexed = lex_in(sources.file(id), id, &mut interner, una_syntax::KeywordSet::V0_5);
+        let lexed = lex_in(
+            sources.file(id),
+            id,
+            &mut interner,
+            una_syntax::KeywordSet::V0_5,
+        );
         let tree: File = parse(&lexed, id, &interner).file;
         for decl in &tree.decls {
             let DeclKind::Const(constant) = &decl.kind else {
@@ -136,7 +141,12 @@ pub fn std_items() -> Vec<Item> {
             };
             let declaration = span_text(text, decl.span);
             for edition in Edition::ALL.into_iter().filter(|e| *e >= Edition::V0_4) {
-                add(&mut item, edition.name(), declaration.clone(), docs(decl, text));
+                add(
+                    &mut item,
+                    edition.name(),
+                    declaration.clone(),
+                    docs(decl, text),
+                );
             }
             items.push(item);
         }
