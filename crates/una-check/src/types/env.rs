@@ -65,6 +65,8 @@ pub(crate) enum Entity {
         value: i64,
         unit: usize,
     },
+    /// A module constant, edition 0.5 (ADR 0126): an index of `constants`.
+    Const(usize),
 }
 
 /// The built-in types (`spec/03 §1`).
@@ -316,6 +318,17 @@ pub(crate) struct CapDef<'a> {
     pub(crate) ast: &'a CapabilityDecl,
 }
 
+/// A module constant, edition 0.5 (ADR 0126): its declaration, its declared type once the
+/// signatures are lowered, and its value once [`super::constants`] has evaluated it.
+#[derive(Clone, Debug)]
+pub(crate) struct ConstDef<'a> {
+    pub(crate) module: usize,
+    pub(crate) name: &'a str,
+    pub(crate) ast: &'a una_syntax::ast::ConstDecl,
+    /// The declared type (ADR 0126 rule 6).
+    pub(crate) declared: Declared,
+}
+
 /// A handler.
 #[derive(Clone, Debug)]
 pub(crate) struct HandlerDef<'a> {
@@ -366,6 +379,8 @@ pub(crate) struct Env<'a> {
     pub(crate) aliases: Vec<AliasDef<'a>>,
     /// The units of measure of every module (ADR 0104).
     pub(crate) units: Vec<UnitDef<'a>>,
+    /// The module constants of every module, edition 0.5 (ADR 0126).
+    pub(crate) constants: Vec<ConstDef<'a>>,
     pub(crate) functions: Vec<FnDef<'a>>,
     pub(crate) capabilities: Vec<CapDef<'a>>,
     pub(crate) handlers: Vec<HandlerDef<'a>>,
@@ -600,6 +615,7 @@ impl<'a> Env<'a> {
             kinds: Vec::new(),
             aliases: Vec::new(),
             units: Vec::new(),
+            constants: Vec::new(),
             functions: Vec::new(),
             capabilities: Vec::new(),
             handlers: Vec::new(),
@@ -941,11 +957,22 @@ impl<'a> Env<'a> {
                     });
                     Some((name(&measure.name), Entity::Unit(self.units.len() - 1)))
                 }
+                DeclKind::Const(constant) => {
+                    self.constants.push(ConstDef {
+                        module: index,
+                        name: name(&constant.name),
+                        ast: constant,
+                        declared: Declared::error(),
+                    });
+                    Some((name(&constant.name), Entity::Const(self.constants.len() - 1)))
+                }
                 DeclKind::Requirement(_) | DeclKind::Example(_) => None,
             };
             if let Some((text, entity)) = entity {
                 let space = match entity {
-                    Entity::Function(_) | Entity::Handler(_) => &mut module.lower,
+                    Entity::Function(_) | Entity::Handler(_) | Entity::Const(_) => {
+                        &mut module.lower
+                    }
                     _ => &mut module.upper,
                 };
                 space.entry(text).or_insert(entity);
@@ -1066,6 +1093,7 @@ impl<'a> Env<'a> {
                     // `millisecond`, `second` and `minute` are built-in names of `std.time`, of
                     // type `Int of Millisecond` (ADR 0116 rule 0, amended 2026-10-19).
                     if time
+                        && self.edition < una_project::Edition::V0_5
                         && let Some(&(_, value)) =
                             prelude::STD_TIME_CONSTANTS.iter().find(|(c, _)| *c == name)
                         && let Some(&Entity::Unit(unit)) = target.upper.get("Millisecond")
@@ -1491,6 +1519,16 @@ impl<'a> Env<'a> {
         }
         for id in 0..self.functions.len() {
             self.function_signature(id, report);
+        }
+        // ADR 0126 rule 6: the declared type of each module constant.
+        for id in 0..self.constants.len() {
+            let Some((module, ast)) = self.constants.get(id).map(|c| (c.module, c.ast)) else {
+                continue;
+            };
+            let declared = self.lower_type(module, &ast.ty, &[], report);
+            if let Some(def) = self.constants.get_mut(id) {
+                def.declared = declared;
+            }
         }
         self.no_function_to_f64(report);
         self.no_function_to_decimal(report);
@@ -2727,7 +2765,7 @@ impl<'a> Env<'a> {
             Some(Entity::Unit(_)) => {
                 format!("`{name}` is a unit, not a type; write `Int of {name}`")
             }
-            Some(Entity::Constant { .. }) => return Declared::error(),
+            Some(Entity::Constant { .. } | Entity::Const(_)) => return Declared::error(),
             // Unknown names are U1001, reported by M3.
             None => return Declared::unknown(),
             Some(Entity::Function(_) | Entity::Handler(_)) => return Declared::error(),

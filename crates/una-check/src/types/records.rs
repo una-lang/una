@@ -86,6 +86,9 @@ pub(crate) enum Res {
     /// A built-in constant of `std.time`, elaborated to its value (ADR 0116 rule 0, amended
     /// 2026-10-19).
     Constant(i64),
+    /// A module constant, edition 0.5 (ADR 0126 rule 8): an index of the environment's
+    /// `constants`, elaborated to its value.
+    Const(usize),
     /// `m.rows`, `m.columns`, `t.rank` or `f.size` of a dense value (`spec/29 §17`, ADR 0120
     /// rules 33 and 38).
     Shape(una_core::ShapeFun),

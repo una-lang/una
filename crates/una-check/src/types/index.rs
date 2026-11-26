@@ -104,6 +104,12 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
                 .get(*id)
                 .filter(|h| h.module < env.prelude)
                 .map(|h| h.ast.name.span),
+            // A module constant goes to its declaration (ADR 0126 rule 11).
+            Res::Const(id) => env
+                .constants
+                .get(*id)
+                .filter(|c| c.module < env.prelude)
+                .map(|c| c.ast.name.span),
             Res::Value
             | Res::Len
             | Res::IntMethod(_)

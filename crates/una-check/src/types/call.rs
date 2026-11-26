@@ -2523,7 +2523,9 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Unit(_)) => {
                 format!("`{name}` is a unit, not a constructor; a value takes it with `measured()`")
             }
-            Some(Entity::Constant { .. }) => format!("`{name}` is a constant, not a constructor"),
+            Some(Entity::Constant { .. } | Entity::Const(_)) => {
+                format!("`{name}` is a constant, not a constructor")
+            }
             Some(Entity::Function(_) | Entity::Handler(_)) => {
                 self.unchecked(args);
                 return Ty::error();

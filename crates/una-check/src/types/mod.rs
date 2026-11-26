@@ -21,6 +21,7 @@ mod check;
 mod collections;
 mod complex;
 mod conditions;
+mod constants;
 mod crossing;
 mod dead;
 mod decimal;
@@ -181,6 +182,13 @@ fn testing_source(edition: Edition) -> String {
 /// `std.time` (`spec/26 §2`), edition 0.4, as Una source.
 const TIME: &str = include_str!("../std/time.una");
 
+/// `std.time` in edition 0.5: its constants `millisecond`, `second` and `minute` are declared
+/// in Una (ADR 0126 rule 12), not built in.
+const TIME_0_5: &str = concat!(
+    include_str!("../std/time.una"),
+    include_str!("../std/time_0_5.una")
+);
+
 /// `std.drive` (`spec/26 §2`), edition 0.4, as Una source.
 const DRIVE: &str = include_str!("../std/drive.una");
 
@@ -321,7 +329,9 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     } else {
         (PRELUDE.to_owned(), KeywordSet::V0_1)
     };
-    let later = if edition >= Edition::V0_4 {
+    let later = if edition >= Edition::V0_5 {
+        vec![("std.time", TIME_0_5), ("std.drive", DRIVE)]
+    } else if edition >= Edition::V0_4 {
         vec![("std.time", TIME), ("std.drive", DRIVE)]
     } else {
         Vec::new()
@@ -905,7 +915,34 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 module,
             );
         }
+        // ADR 0126 rule 12: the constants of the standard modules (`std.time`'s).
+        let ids: Vec<usize> = (0..env.constants.len())
+            .filter(|id| env.constants.get(*id).is_some_and(|c| c.module >= env.prelude))
+            .collect();
+        findings.standard_constants =
+            constants::evaluate(
+            &env,
+            &standard_findings.records,
+            &ids,
+            &standard_findings.refused_constants,
+            &mut scratch,
+            false,
+        );
         findings.standard_records = standard_findings.records;
+    }
+    // ADR 0126 rules 4 and 5: the package's constants, evaluated once, in dependency order.
+    {
+        let ids: Vec<usize> = (0..env.constants.len())
+            .filter(|id| {
+                env.constants
+                    .get(*id)
+                    .is_some_and(|c| c.module < env.prelude && env.reports(c.module))
+            })
+            .collect();
+        let refused = std::mem::take(&mut findings.refused_constants);
+        findings.constants =
+            constants::evaluate(&env, &findings.records, &ids, &refused, &mut report, true);
+        findings.refused_constants = refused;
     }
     authority::testing_installs(&findings, &mut report, env.edition);
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
@@ -1213,6 +1250,12 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
 /// What checking the bodies finds besides diagnostics.
 #[derive(Default)]
 pub(crate) struct Findings {
+    /// The module constants of the package evaluated at check time, edition 0.5 (ADR 0126).
+    pub(crate) constants: constants::Evaluated,
+    /// The same for the constants of the standard modules, whose spans are kept apart.
+    pub(crate) standard_constants: constants::Evaluated,
+    /// The module constants whose check reported a diagnostic: they are not evaluated.
+    pub(crate) refused_constants: std::collections::BTreeSet<usize>,
     /// Pending obligations: kind, primary span and the span of the declared type.
     pub(crate) obligations: Vec<(ObligationKind, Span, Option<Span>)>,
     /// The `Int` literals of a `systems` package outside the tagged range, each an `overflow`

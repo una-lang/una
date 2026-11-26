@@ -673,6 +673,15 @@ impl<'a> Checker<'_, 'a, '_> {
                     None => Ty::Int,
                 }
             }
+            // A module constant (ADR 0126 rules 6 and 8): its declared type, refinements at the
+            // top as for any annotated binder, elaborated to its value.
+            Some(Entity::Const(id)) => {
+                self.resolved(ident.span, Res::Const(id));
+                match self.env.constants.get(id) {
+                    Some(def) => self.env.top_refined(&def.declared),
+                    None => Ty::error(),
+                }
+            }
             // An unknown name is U1001, reported by M3.
             _ => {
                 self.vars.mark_unknown();
@@ -946,7 +955,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U2001,
                 format!("`{name}` is a unit, not a value; a value takes it with `measured()`"),
             ),
-            Entity::Function(_) | Entity::Handler(_) | Entity::Constant { .. } => {
+            Entity::Function(_) | Entity::Handler(_) | Entity::Constant { .. } | Entity::Const(_) => {
                 return Ty::error();
             }
         };

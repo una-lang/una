@@ -159,6 +159,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U1008 | names | Module path does not match file path |
 | U1009 | names | Reserved module name |
 | U1010 | names | A module whose first path segment is a dependency's local name |
+| U1011 | names | A constant depends on itself, directly or through other constants |
 | U2001 | types | Type mismatch |
 | U2002 | types | Unknown or ill-formed type |
 | U2003 | types | Wrong number of type arguments |
@@ -198,6 +199,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2038 | types | A tensor shape, index, permutation or axis out of place |
 | U2039 | types | A `map`, `zip_map` or `update` in a function with `simd required` whose lambda cannot be vectorized for a listed target |
 | U2040 | types | A statement after `stop` or `skip` in the same block, which never runs |
+| U2041 | types | The value of a constant is not a constant expression, divides by zero, does not fit its type or exceeds the size caps, or its type holds a function type |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |
