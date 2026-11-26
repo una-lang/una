@@ -13,7 +13,7 @@ import std.collections (HashMap, HashSet, Queue, Set)
 pub aliased(m: HashMap[Text, Int], a: Text, b: Text) -> Bool
   ensures result
 =
-  let edit n = m
+  var n = m
   edit n.set(key: a, value: 1)
   edit n.remove(key: b)
   n.has(key: a)
@@ -21,7 +21,7 @@ pub aliased(m: HashMap[Text, Int], a: Text, b: Text) -> Bool
 pub aliased_item(s: Set[Int], x: Int, y: Int) -> Bool
   ensures result
 =
-  let edit t = s
+  var t = s
   edit t.add(item: x)
   edit t.remove(item: y)
   t.has(item: x)
@@ -29,7 +29,7 @@ pub aliased_item(s: Set[Int], x: Int, y: Int) -> Bool
 pub aliased_in_a_map(m: Map[Text, Int], a: Text, b: Text) -> Bool
   ensures result
 =
-  let edit n = m
+  var n = m
   edit n.set(key: a, value: 1)
   edit n.remove(key: b)
   n.has(key: a)
@@ -48,6 +48,6 @@ pub next_in_front(q: Queue[Int]) -> Bool
   requires q.len > 1
   ensures result
 =
-  let edit r = q
-  let first = edit r.pop()
+  var r = q
+  const first = edit r.pop()
   r.peek() == first

@@ -1491,7 +1491,11 @@ fn edition_0_4_advises_edition_0_5_for_the_moved_syntax() {
         repairs_in(simd, KeywordSet::V0_3),
         vec![(reserved, vec![rename]); 2]
     );
-    assert_eq!(repairs_in(simd, KeywordSet::V0_5), vec![]);
+    // Edition 0.5 binds with `const` (ADR 0137).
+    assert_eq!(
+        repairs_in(&simd.replace("let ", "const "), KeywordSet::V0_5),
+        vec![]
+    );
     // Controls (review of #1758): in edition 0.4 another reserved word keeps exactly its
     // rename, and an integer argument of another type keeps no repair.
     assert_eq!(
@@ -1545,4 +1549,35 @@ fn edition_0_4_advises_edition_0_5_for_the_moved_syntax() {
         assert_eq!(repairs_in(&call, KeywordSet::V0_3), vec![(message, vec![])]);
         assert_eq!(repairs_in(&call, KeywordSet::V0_5), vec![]);
     }
+}
+
+#[test]
+fn tuple_advice_names_const_and_var_only_in_edition_0_5() {
+    // ADR 0137 rule 1, review of #2258 (L2): before edition 0.5 a line that starts with
+    // `const (` or `var (` gets only the diagnostic of its edition and the help of rule 1, never
+    // the ADR 0096 advice for a `let` line; in edition 0.5 a `const (` line gets that advice.
+    let help = "`const` and `var` are keywords of edition 0.5";
+    for keywords in [KeywordSet::V0_2, KeywordSet::V0_4] {
+        for line in ["const (a, b) = g()", "var (a, b) = g()"] {
+            let found = repairs_in(&format!("f() -> Int\n=\n  {line}\n  a\n"), keywords);
+            for (message, repairs) in &found {
+                for (description, _) in repairs {
+                    assert!(
+                        description == help || description.starts_with("rename"),
+                        "{keywords:?} {line}: {message}: {description}"
+                    );
+                }
+            }
+        }
+    }
+    let tuple = repairs_in(
+        "f() -> Int\n=\n  const (a, b) = g()\n  a\n",
+        KeywordSet::V0_5,
+    );
+    let with_let = repairs_in("f() -> Int\n=\n  let (a, b) = g()\n  a\n", KeywordSet::V0_4);
+    assert_eq!(
+        tuple.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
+        with_let.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
+        "{tuple:?} {with_let:?}"
+    );
 }

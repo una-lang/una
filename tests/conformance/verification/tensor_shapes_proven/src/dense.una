@@ -18,14 +18,14 @@ pub rank_eight(a: Tensor[I8 in 0..10], b: Tensor[I8 in 0..10]) -> Tensor[I8]
 pub reshaped() -> Tensor[F64]
   ensures result.rank == 2 and result.dim(axis: 0) == 3 and result.dim(axis: 1) == 8
 =
-  let t = tensor_filled(shape: [2, 3, 4], value: 0.0)
+  const t = tensor_filled(shape: [2, 3, 4], value: 0.0)
   t.reshape(shape: [3, 8])
 
 pub cleared(t: Tensor[F64]) -> Tensor[F64]
   requires t.rank == 2
   ensures result.rank == 2 and result.dim(axis: 0) == t.dim(axis: 0)
 =
-  let edit u = t
+  var u = t
   for i in 0..<u.dim(axis: 0)
     for j in 0..<u.dim(axis: 1)
       edit u.set(at: [i, j], item: 0.0)

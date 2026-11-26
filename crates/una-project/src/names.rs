@@ -72,6 +72,7 @@ pub fn reserved_names() -> impl Iterator<Item = &'static str> {
         .iter()
         .chain(Keyword::EDITION_0_2.iter())
         .chain(Keyword::EDITION_0_3.iter())
+        .chain(Keyword::EDITION_0_5.iter())
         .map(|keyword| keyword.as_str())
         .chain(RESERVED_FOR_LATER.iter().map(|(word, _)| *word))
         .chain(RESERVED_IN_0_2.iter().map(|(word, _)| *word))

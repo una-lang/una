@@ -1,0 +1,10 @@
+-- test: in edition 0.5, the canonical form writes a binding statement with one space after `const` or `var`, around `=` and after `:`, so `var x :Int=1` is U7001 (ADR 0137 rule 9)
+-- spec: spec/15 §3
+-- expect: error U7001 at src/m.una:9:1
+module m
+
+pub f() -> Int
+=
+  const a: Int = 1
+  var x :Int=a
+  x

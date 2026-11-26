@@ -7,7 +7,7 @@ module groups
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit groups: Map[Text, List[Text]] = empty_map()
+  var groups: Map[Text, List[Text]] = empty_map()
   edit groups.update(key: "fruit", initial: [], change: fn(xs) -> xs.append(item: "apple"))
   edit groups.update(key: "leaf", initial: [], change: fn(xs) -> xs.append(item: "kale"))
   edit groups.update(key: "fruit", initial: [], change: fn(xs) -> xs.append(item: "fig"))

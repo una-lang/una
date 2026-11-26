@@ -16,31 +16,31 @@ show(xs: List[F32]) -> Text = "{xs}"
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let a: F32 = 0.1
-  let b: F32 = 0.2
-  let once: F32 = 1.000000059604644776327862400740697910706
+  const a: F32 = 0.1
+  const b: F32 = 0.2
+  const once: F32 = 1.000000059604644776327862400740697910706
   @console.print("literal {a.to_bits()} {a} {a + b} {a + b == 0.3} {once} {a.to_f64()}")
-  let e: F32 = 1.1920929e-7
-  let x = 1.0 + e
-  let y = (1.0 - e) * (e / 2.0)
-  let wide = x.to_f64().fma(times: y.to_f64(), plus: x.to_f64())
+  const e: F32 = 1.1920929e-7
+  const x = 1.0 + e
+  const y = (1.0 - e) * (e / 2.0)
+  const wide = x.to_f64().fma(times: y.to_f64(), plus: x.to_f64())
   @console.print("fma {x.fma(times: y, plus: x)} {wide.to_f32()}")
-  let big: F32 = 16777216.0
-  let half: F32 = 0.5
+  const big: F32 = 16777216.0
+  const half: F32 = 0.5
   @console.print("convert {16777217.to_f32()} {16777219.to_f32()} {1.0e39.to_f32()} {0.1.to_f32() == a} {big.to_int_exact()} {half.to_int_exact()}")
-  let zero: F32 = 0.0
-  let nz = -zero
-  let inf = infinity().to_f32()
-  let nan32 = nan().to_f32()
+  const zero: F32 = 0.0
+  const nz = -zero
+  const inf = infinity().to_f32()
+  const nan32 = nan().to_f32()
   @console.print("special {zero / zero} {1.0 / zero} {1.0 / nz} {(zero / zero).to_bits()} {nz < zero} {nz == zero} {nan32 == zero / zero}")
-  let xs: List[F32] = [nan32, 1.0, zero, -inf, nz, inf, -1.0]
+  const xs: List[F32] = [nan32, 1.0, zero, -inf, nz, inf, -1.0]
   @console.print("sorted {show(sort(xs))}")
-  let m0 = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg")
-  let m = m0.with(key: nan32, value: "nan").with(key: zero / zero, value: "nan again")
+  const m0 = empty_map().with(key: zero, value: "pos").with(key: nz, value: "neg")
+  const m = m0.with(key: nan32, value: "nan").with(key: zero / zero, value: "nan again")
   @console.print("map {m.len} {m.keys()}")
-  let p = attempt parse_f32("0.1")
-  let q = attempt parse_f32("1e39")
-  let r = attempt parse_f32("1.")
-  let s = attempt parse_f32("3.4028235677973366e38")
+  const p = attempt parse_f32("0.1")
+  const q = attempt parse_f32("1e39")
+  const r = attempt parse_f32("1.")
+  const s = attempt parse_f32("3.4028235677973366e38")
   @console.print("parse {p} {q} {r} {s} {f32_from_bits(bits: 1.to_u32())}")
   @console.print("render {show([1.0e-45, 3.4028235e38, 1.0e-7, 16777216.0, 0.1, -2.5])}")

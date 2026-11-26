@@ -10,14 +10,14 @@ module dense
 
 pub item(a: Array[F64], v: secret F64) -> Array[F64]
 =
-  let edit b = a
+  var b = a
   edit b.set(index: 0, item: v)
   b
 
 pub branch(a: Array[F64], s: secret Bool) -> Array[F64]
   requires a.len > 0
 =
-  let edit b = a
+  var b = a
   if s
     edit b.scale(by: 2.0)
   b
@@ -36,7 +36,7 @@ pub bounds(a: Array[F64], s: secret Int) -> Unit
 pub product(c: Matrix[F64], a: secret Matrix[F64], b: Matrix[F64]) -> Matrix[F64]
   requires c.rows == a.rows and a.columns == b.rows and b.columns == c.columns
 =
-  let edit out = c
+  var out = c
   edit out.add_product(of: a, and: b)
   out
 

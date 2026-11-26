@@ -102,7 +102,7 @@ fn run_seconds(dir: &Path, source: &str) -> f64 {
 fn accesses(n: usize) -> String {
     let rows = n / 100;
     format!(
-        "module main\n\npub main() -> Unit\n=\n  let zero: I64 = 0\n  let edit t = tensor_filled(shape: [{rows}, 10, 10], value: zero)\n  for round in 0..<2\n    for i in 0..<t.dim(axis: 0)\n      for j in 0..<t.dim(axis: 1)\n        for k in 0..<t.dim(axis: 2)\n          let x = t.get(at: [i, j, k])\n          edit t.set(at: [i, j, k], item: x mod 1000 + 1)\n  unit\n"
+        "module main\n\npub main() -> Unit\n=\n  const zero: I64 = 0\n  var t = tensor_filled(shape: [{rows}, 10, 10], value: zero)\n  for round in 0..<2\n    for i in 0..<t.dim(axis: 0)\n      for j in 0..<t.dim(axis: 1)\n        for k in 0..<t.dim(axis: 2)\n          const x = t.get(at: [i, j, k])\n          edit t.set(at: [i, j, k], item: x mod 1000 + 1)\n  unit\n"
     )
 }
 
@@ -123,7 +123,7 @@ fn tensor_get_and_set_in_a_loop_cost_the_same_per_access_at_any_size() {
 /// factorization, O(2n³/3), and two triangular solves, O(n²).
 fn solve(n: usize) -> String {
     format!(
-        "module main\n\npub main() -> Unit\n=\n  let n = {n}\n  let zero = 0.0\n  let edit a = matrix_filled(rows: n, columns: n, value: zero)\n  for i in 0..<a.rows\n    for j in 0..<a.columns\n      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)\n      let d = if i == j then 2.0 else 0.0\n      edit a.set(row: i, column: j, item: x + d)\n  let b = matrix_filled(rows: n, columns: 1, value: 1.0)\n  let solved = a.solve(rhs: b)\n  unit\n"
+        "module main\n\npub main() -> Unit\n=\n  const n = {n}\n  const zero = 0.0\n  var a = matrix_filled(rows: n, columns: n, value: zero)\n  for i in 0..<a.rows\n    for j in 0..<a.columns\n      const x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)\n      const d = if i == j then 2.0 else 0.0\n      edit a.set(row: i, column: j, item: x + d)\n  const b = matrix_filled(rows: n, columns: 1, value: 1.0)\n  const solved = a.solve(rhs: b)\n  unit\n"
     )
 }
 
@@ -148,7 +148,7 @@ fn solve_grows_as_the_cube_of_the_size() {
 /// by the blocked kernels (ADR 0120 rule 53).
 fn product_and_cholesky(n: usize) -> String {
     format!(
-        "module main\n\npub main() -> Unit\n=\n  let n = {n}\n  let zero = 0.0\n  let edit a = matrix_filled(rows: n, columns: n, value: zero)\n  for i in 0..<a.rows\n    for j in 0..<a.columns\n      let x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)\n      let d = if i == j then 2.0 else 0.0\n      edit a.set(row: i, column: j, item: x + d)\n  let c = a.multiply(by: a)\n  let l = c.cholesky()\n  unit\n"
+        "module main\n\npub main() -> Unit\n=\n  const n = {n}\n  const zero = 0.0\n  var a = matrix_filled(rows: n, columns: n, value: zero)\n  for i in 0..<a.rows\n    for j in 0..<a.columns\n      const x = 1.0 / (i.to_f64() + j.to_f64() + 1.0)\n      const d = if i == j then 2.0 else 0.0\n      edit a.set(row: i, column: j, item: x + d)\n  const c = a.multiply(by: a)\n  const l = c.cholesky()\n  unit\n"
     )
 }
 

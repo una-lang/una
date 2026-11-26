@@ -2128,7 +2128,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | U4001 to U4008 (no U4006) | security: flows, implicit flows, sinks, policies, categories, interpolation in a pattern |
 | U5001 to U5003 | verification: refuted, unknown, solver missing |
 | U6001, U6003 to U6009 (no U6008) | runtime: `main` failed, call depth or memory limit exceeded, header values, UTF-8, the floating-point environment, a host stop, no random bytes for keyed hashing |
-| U7001 to U7005, U7008 to U7015 | project: formatting, `una.toml`, escape budget, lock, trusted modules, `ita.una`, `ita.lock`, verification of packages, resolution, audits, executable layout |
+| U7001 to U7005, U7007 to U7015 | project: formatting, `una.toml`, escape budget, lock, trusted modules, forms a preview changed, `ita.una`, `ita.lock`, verification of packages, resolution, audits, executable layout |
 | U8001 | internal compiler error (always a bug) |
 
 **Codes of edition `0.2`**
@@ -2142,7 +2142,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | U2021 | a function with `edit` or `take` parameters used as a value |
 | U2022 | an integer literal does not fit its type |
 | U2023 | a binding declared outside a `together` task assigned, or passed as `edit` or `take`, inside it |
-| U2024 | a `together` body with a statement other than `let`, or fewer than two branches |
+| U2024 | a `together` body with a statement other than a binding statement, or fewer than two branches |
 | U2025 | a type argument does not satisfy the constraint of its parameter |
 | U2026 | an operation on a type parameter that its constraint does not allow |
 | U2027 | an unknown constraint name |

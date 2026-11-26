@@ -2,6 +2,8 @@
 
 Status: Normative, v0.1.
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged: in particular, a capability reference MUST NOT be bound with `const` or `var` (U3005), and the result of an operation is bound with `const` before it is given. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 ## 1. Model
 
 - A **capability** is unforgeable authority over something outside the program. Code refers to it as `@name`.

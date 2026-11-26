@@ -1,6 +1,6 @@
 -- test: movement seq_items: the `items()` of a `Stack[Int]` bound by a `let` annotated `List[Pos]` is a `refinement` obligation, refuted, while the same movement at the same refined type gives none (ADR 0103 rules 3 and 4, ADR 0119 rule 1)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_seq_items.una:17:23
+-- expect: error U5001 at src/move_seq_items.una:17:25
 module move_seq_items
 
 import std.collections (Stack)
@@ -9,10 +9,10 @@ pub kind Pos = Int where it > 0
 
 pub kept(s: Stack[Pos]) -> Int
 =
-  let ps: List[Pos] = s.items()
+  const ps: List[Pos] = s.items()
   ps.len
 
 pub moved(s: Stack[Int]) -> Int
 =
-  let ps: List[Pos] = s.items()
+  const ps: List[Pos] = s.items()
   ps.len

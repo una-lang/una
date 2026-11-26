@@ -9,14 +9,14 @@ import std.collections (PriorityQueue, lowest_first)
 --- A secret priority into an editable queue with a public top label.
 pub into_public(x: secret Int) -> Unit
 =
-  let edit q: PriorityQueue[Text, Int] = lowest_first()
+  var q: PriorityQueue[Text, Int] = lowest_first()
   edit q.push(item: "a", priority: x)
   unit
 
 --- The control: the priority type is secret, so the queue's top label is too.
 pub into_secret(x: secret Int) -> Unit
 =
-  let edit q: PriorityQueue[Text, secret Int] = lowest_first()
+  var q: PriorityQueue[Text, secret Int] = lowest_first()
   edit q.push(item: "a", priority: x)
   unit
 
@@ -24,14 +24,14 @@ pub into_secret(x: secret Int) -> Unit
 pub popped(q: PriorityQueue[Text, secret Int]) -> Unit
   uses @console: Console[print]
 =
-  let edit r = q
-  let next = edit r.pop()
+  var r = q
+  const next = edit r.pop()
   @console.print("{next}")
 
 --- The control: public priorities.
 pub popped_public(q: PriorityQueue[Text, Int]) -> Unit
   uses @console: Console[print]
 =
-  let edit r = q
-  let next = edit r.pop()
+  var r = q
+  const next = edit r.pop()
   @console.print("{next}")

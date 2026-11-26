@@ -79,11 +79,14 @@ pub enum Construct {
     F32,
     /// `Complex[F64]` and `Complex[F32]`.
     Complex,
+    // Edition 0.5, ADR 0137 (`spec/02 §6`, `spec/17 §2`).
+    /// The binding words `const` and `var`, in place of `let` and `let edit`.
+    ConstVar,
 }
 
 impl Construct {
     /// The number of constructs, the length of [`LEDGER`].
-    pub const COUNT: usize = Construct::Complex as usize + 1;
+    pub const COUNT: usize = Construct::ConstVar as usize + 1;
 
     /// The construct's ledger entry: O(1).
     #[allow(clippy::indexing_slicing)]
@@ -971,6 +974,37 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
         trust: NO_TRUST,
         unsettled: &[],
         landed: "v0.4.0",
+        changed: &[],
+    },
+    Entry {
+        id: Construct::ConstVar,
+        name: "const and var",
+        edition: Edition::V0_5,
+        record: "ADR 0137",
+        spec: "spec/02 §6",
+        reserved: &["const", "var"],
+        contextual: &[],
+        prelude: &[],
+        methods: &[],
+        modules: &[],
+        variants: &[],
+        manifest: &[],
+        codes: &[],
+        clashes: &[
+            Clash {
+                id: "0137-let",
+                program: "a binding written `let` or `let edit`",
+                diagnostic: "U7007, the form edition 0.5 changed, with the exact rewrite to `const` or `var`",
+            },
+            Clash {
+                id: "0137-const-name",
+                program: "`const` as a name",
+                diagnostic: "U0101",
+            },
+        ],
+        trust: NO_TRUST,
+        unsettled: &[],
+        landed: una_syntax::keywords::LET_CHANGED_IN,
         changed: &[],
     },
 ];

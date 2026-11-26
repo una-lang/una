@@ -866,7 +866,8 @@ pub enum ForSource {
 /// `"let" [ "edit" ] lower_ident [ ":" type ] "=" ( handled | block_expr )`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetStmt {
-    /// Whether the binding is declared `let edit`, from edition 0.2 (`spec/17 §2`).
+    /// Whether the binding is declared `let edit`, from edition 0.2 (`spec/17 §2`), or `var`
+    /// in edition 0.5 (ADR 0137 rule 2).
     pub editable: bool,
     /// The bound name.
     pub name: Ident,

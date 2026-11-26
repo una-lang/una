@@ -1,0 +1,22 @@
+-- test: in edition 0.4, `const x = 1` keeps U0101 and `var x = 1` keeps U0103, each with the help that `const` and `var` are keywords of edition 0.5, and `let` bindings check as before (ADR 0137 rule 1)
+-- spec: spec/01 §5
+-- expect: error U0101 at src/m.una:9:9
+-- expect: error U0103 at src/m.una:14:3
+module m
+
+pub f() -> Int
+=
+  const x = 1
+  x
+
+pub g() -> Int
+=
+  var y = 1
+  y
+
+pub h() -> Int
+=
+  let edit z = 1
+  z = z + 1
+  let w = z
+  w

@@ -6,7 +6,7 @@ module dense
 
 pub place(a: Array[Int], i: secret Int) -> Array[Int]
 =
-  let edit b = a
+  var b = a
   edit b.set(index: i, item: 0)
   b
 

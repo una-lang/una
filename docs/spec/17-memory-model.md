@@ -10,6 +10,8 @@ Una has mutable value semantics. Values are immutable, and there are no referenc
 - A single file has the default settings, and so edition `0.1`.
 - The benchmark baseline stays on edition `0.1`.
 
+(v0.5, ADR 0137.) **Edition `0.5` writes the binding forms `const` and `var`.** `const x = e` is the plain `let x = e` of edition `0.4` and `var x = e` its `let edit x = e`, with the same typing, desugaring (§4), verification (§5), information flow (§6) and run-time behavior (§7). Every rule of this chapter that names a plain `let` holds of a `const` binding in edition `0.5`, and every rule that names a `let edit` binding holds of a `var` binding. `edit` and `take` stay the markers of parameters, arguments and method receivers, with the meaning of §3; they no longer appear in a binding statement. `let` is U7007 in edition `0.5` (`spec/01 §5`).
+
 ## 1. Syntax
 
 These productions extend `spec/02`.
@@ -35,6 +37,14 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
 - A block whose last element is an `assign_stmt` also gets `unit` as its final expression, as in a `Unit` function that ends by updating an `edit` parameter.
 - `for` is already a keyword (`handler h for K`).
 
+(v0.5, ADR 0137 rule 2.) In edition `0.5`, the binding statement is
+
+```ebnf
+let_stmt        = ( "const" | "var" ) lower_ident [ ":" type ] "=" ( handled | block_expr ) ;
+```
+
+where `var` is the editable form; `const edit x` and `var edit x` are U0101.
+
 ## 2. Places and editable bindings
 
 1. An **editable binding** is a binding introduced by `let edit`, or a parameter declared `edit`.
@@ -42,6 +52,7 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
 3. **Assignment.** `p = e` rebinds the place `p` to the value of `e`.
    - `p` MUST be rooted at an editable binding (U2019). A plain `let`, a parameter without `edit`, and a binding captured by a lambda are not editable.
    - There are no compound assignment operators and no assignment to list elements: elements change through `set` (§7).
+   - (v0.5, ADR 0137 rule 4.) In edition `0.5`, an editable binding is a `var` binding or a parameter declared `edit`, and a place is rooted at one. An assignment to a `const` binding, to a parameter without `edit`, to a loop variable, to a pattern binding, to a lambda parameter, to a binding captured by a lambda, or to a module constant is U2019, whose message reads `` `x` is not editable; declare it `var x`, or the parameter `edit x` ``. Pattern bindings, loop variables, lambda parameters and handler parameters are introduced without a keyword and behave as `const` bindings (rule 6).
 4. **Fixed type.** An editable binding keeps its declared type at every rebind, refinement and label included (§5, §6). Without an annotation, its type is the type of its initial value without its refinement: `let edit n = p` with `p: Pos` gives `n` the type `Int`. An annotation, as in `let edit n: Pos = p`, makes the refinement an invariant. (v0.3, ADR 0103.) Without an annotation it also drops every refinement of a nested position, as `let edit xs = [p]` is a `List[Int]`; an annotation, as `let edit out: List[Pos] = []`, keeps them, and so does the invariant of a loop that updates it (§5 rule 3). (v0.3, ADR 0075.) Without an annotation, every label position the initial value leaves undetermined, at any depth, is a label variable: the top of each position of its type that is still an unsolved type variable when the binding is made, such as the key and value of `empty_map()`, the element of `[]` or the value of `None`, and every label position inside the type that variable comes to stand for. A label variable is the least label above every label that flows into its position (§6 rule 1). The other positions keep the labels the initial value gives them, the binding's top label included. Such a position whose type holds a function type is U4001: the binding needs an annotation.
 
 ## 3. Parameter conventions
@@ -56,6 +67,7 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
    - A binding taken in one branch of an `if` or a `when` counts as taken after the construct.
    - A binding taken in a loop body is taken in every iteration after the first, which is U2017. A binding taken in a loop body is therefore assigned before the end of the body, or is declared inside it.
 4. **Exclusivity.** In one call, an `edit p` argument together with any other use of the root binding of `p`, in the same call or as another `edit` or `take` argument, is U2018. This holds even for disjoint fields: `f(edit r.x, y: r.y)` is U2018.
+   - (v0.5, ADR 0137 rule 5.) In edition `0.5`, the argument of `edit` is a place rooted at a `var` binding or an `edit` parameter; one rooted elsewhere is U2019. Any local binding can be taken, a `const`, a `var` or a parameter; only a `var` can be assigned, so only a `var` is revived, and a binding taken in a loop body is assigned before the end of the body, which needs a `var`, or is declared inside the body. A module constant is not a local binding (ADR 0126 rule 13): `f(take origin)` is U2020.
 5. **One effect per line.** A call with an `edit` or `take` argument is the whole `line_expr` of a statement or a `let` (U3013, `spec/02 §8`). As for any call, a statement call of a non-`Unit` type is U2011, so its result is bound with `let`.
    - A lambda body is not a statement, so a call with a marker there is U3013.
    - **Known limit of v0.2.** A `do` line of an example is not a statement either, and it has no editable binding, so a call with a marker there is U3013. An example exercises a convention through a function that takes a plain argument and edits a local copy, as in `let edit copy = n`, `bump(edit copy)`, `copy`.
@@ -160,6 +172,8 @@ It is written `edit xs.set(index: i, item: v)`. Graphs and cyclic structures use
 | `while`, `loop` | not a keyword in Una; use `for` or recursion |
 
 (v0.2, ADR 0065.) `together` also becomes a keyword, with the rows of `spec/19 §9`.
+
+(v0.5, ADR 0137 rule 1.) In edition `0.5`, `const` and `var` are keywords, so the row of `var` is removed; `let` is reserved and is U7007 (`spec/01 §5`). Every other row is that of edition `0.4`.
 
 ## 10. Diagnostic codes
 

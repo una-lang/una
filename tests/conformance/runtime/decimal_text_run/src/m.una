@@ -13,7 +13,7 @@ parsed(t: Text) -> Result[Decimal[2], ParseError] = attempt parse_decimal(t, sca
 
 json(t: Text) -> Option[Decimal[1]]
 =
-  let parsed = attempt parse_json(t)
+  const parsed = attempt parse_json(t)
   when parsed
     is Ok(j) -> as_decimal(j, scale: 1)
     is Err(e) -> None
@@ -21,25 +21,25 @@ json(t: Text) -> Option[Decimal[1]]
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let bad = ["", "-", "+1", "01", "1.", "1e5", "1.005", "1.2.3"]
-  let good = ["12.5", "-0.05", "7", "1.230000", "-0"]
+  const bad = ["", "-", "+1", "01", "1.", "1e5", "1.005", "1.2.3"]
+  const good = ["12.5", "-0.05", "7", "1.230000", "-0"]
   @console.print("{map(bad, each: parsed)}")
   @console.print("{map(good, each: parsed)}")
-  let d1 = "9999999999"
-  let d2 = "{d1}{d1}{d1}{d1}{d1}{d1}{d1}{d1}"
-  let d3 = "{d2}{d2}{d2}{d2}{d2}{d2}{d2}{d2}"
-  let long = "{d3}{d3}{d3}{d3}{d3}{d3}{d3}{d3}"
-  let x: Decimal[2] = -12.50
-  let back = "{x}"
+  const d1 = "9999999999"
+  const d2 = "{d1}{d1}{d1}{d1}{d1}{d1}{d1}{d1}"
+  const d3 = "{d2}{d2}{d2}{d2}{d2}{d2}{d2}{d2}"
+  const long = "{d3}{d3}{d3}{d3}{d3}{d3}{d3}{d3}"
+  const x: Decimal[2] = -12.50
+  const back = "{x}"
   @console.print("{parsed(long)} {parsed(back) == Ok(x)}")
-  let n = Number(7)
-  let one = "1.5e0"
-  let huge = "1e1000000000"
-  let fine = "0.125"
+  const n = Number(7)
+  const one = "1.5e0"
+  const huge = "1e1000000000"
+  const fine = "0.125"
   @console.print("{as_decimal(n, scale: 2)} {json(one)} {json(huge)} {json(fine)}")
-  let whole: Decimal[0] = 42.0
+  const whole: Decimal[0] = 42.0
   @console.print("{json_decimal(whole)} {json_decimal(x)}")
-  let zero: Decimal[2] = 0.00
-  let names: Map[Decimal[2], Text] = empty_map()
-  let prices = names.with(key: x, value: "low").with(key: zero, value: "zero")
+  const zero: Decimal[2] = 0.00
+  const names: Map[Decimal[2], Text] = empty_map()
+  const prices = names.with(key: x, value: "low").with(key: zero, value: "zero")
   @console.print("{prices.keys()}")

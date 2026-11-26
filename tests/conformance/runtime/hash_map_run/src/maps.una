@@ -26,7 +26,7 @@ pub kind Point
 --- How often each word occurs, in the order the words first appear.
 count(words: List[Text]) -> HashMap[Text, Int]
 =
-  let edit counts: HashMap[Text, Int] = empty_hash_map()
+  var counts: HashMap[Text, Int] = empty_hash_map()
   for word in words
     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
   counts
@@ -35,7 +35,7 @@ count(words: List[Text]) -> HashMap[Text, Int]
 capped(m: HashMap[Text, Int], key: Text) -> HashMap[Text, Int]
   fails Stop
 =
-  let edit out = m
+  var out = m
   edit out.update(key: key, initial: 0, change: fn(n) -> if n >= 2 then fail TooMany else n + 1)
     if error pass
   out
@@ -50,37 +50,37 @@ shown(r: Result[HashMap[Text, Int], Stop]) -> Text
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let empty: HashMap[Text, Int] = empty_hash_map()
-  let a = "a"
+  const empty: HashMap[Text, Int] = empty_hash_map()
+  const a = "a"
   @console.print("empty: {empty} {empty.len} {empty.has(key: a)} {empty.get(key: a)} {empty.keys()} {empty.values()} {empty.entries()} {empty.without(key: a)}")
-  let counts = count(["to", "be", "or", "not", "to", "be"])
+  const counts = count(["to", "be", "or", "not", "to", "be"])
   @console.print("counts: {counts} {counts.len}")
-  let be = "be"
-  let missing = "is"
-  let to = "to"
+  const be = "be"
+  const missing = "is"
+  const to = "to"
   @console.print("read: {counts.has(key: be)} {counts.has(key: missing)} {counts.get(key: to)} {counts.get(key: missing)}")
   @console.print("listed: {counts.keys()} {counts.values()}")
   @console.print("entries: {counts.entries()}")
-  let edit order = counts
+  var order = counts
   edit order.set(key: "to", value: 7)
   edit order.remove(key: "or")
   edit order.remove(key: "is")
   edit order.set(key: "or", value: 5)
   @console.print("order: {order} {order.len}")
-  let more = counts.with(key: "a", value: 9)
-  let less = counts.without(key: "be")
+  const more = counts.with(key: "a", value: 9)
+  const less = counts.without(key: "be")
   @console.print("values: {counts} {more} {less}")
-  let edit copy = counts
+  var copy = counts
   edit copy.set(key: "is", value: 3)
   @console.print("kept: {counts} {copy}")
-  let raised = attempt capped(m: counts, key: "or")
-  let added = attempt capped(m: counts, key: "new")
+  const raised = attempt capped(m: counts, key: "or")
+  const added = attempt capped(m: counts, key: "new")
   @console.print("raised: {shown(raised)} / {shown(added)}")
-  let stopped = attempt capped(m: counts, key: "to")
+  const stopped = attempt capped(m: counts, key: "to")
   @console.print("stopped: {shown(stopped)}, counts: {counts}")
-  let reordered = count(["not", "or", "be", "be", "to", "to"])
+  const reordered = count(["not", "or", "be", "be", "to", "to"])
   @console.print("same: {counts.same_entries(as: reordered)} {counts.same_entries(as: more)} {counts.same_entries(as: order)} {empty.same_entries(as: empty_hash_map())}")
-  let edit points: HashMap[Point, Text] = empty_hash_map()
+  var points: HashMap[Point, Text] = empty_hash_map()
   edit points.set(key: Point(x: 0, y: 0), value: "origin")
   edit points.set(key: Point(x: 1, y: 2), value: "a")
   edit points.set(key: Point(x: 1, y: 2), value: "b")

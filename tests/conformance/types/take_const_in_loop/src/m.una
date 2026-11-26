@@ -1,0 +1,20 @@
+-- test: in edition 0.5, a `const` declared outside a loop and taken in its body is U2017, since it cannot be assigned before the end of the body; a `var` assigned again in the body is accepted (ADR 0137 rule 5)
+-- spec: spec/17 §3
+-- expect: error U2017 at src/m.una:13:31
+module m
+
+pub consume(take xs: List[Int]) -> Int = xs.len
+
+pub f(ns: List[Int]) -> Int
+=
+  const fixed = [1]
+  var total = 0
+  for n in ns
+    const used = consume(take fixed)
+    total = total + used + n
+  var moving = [2]
+  for n in ns
+    const moved = consume(take moving)
+    total = total + moved + n
+    moving = [n]
+  total

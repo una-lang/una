@@ -1,17 +1,17 @@
 -- test: a dense method that updates its receiver is written with `edit`, as a whole statement, and a method that reads it is not
 -- spec: spec/29 §17
 -- expect: error U2020 at src/dense.una:10:3
--- expect: error U2020 at src/dense.una:16:16
+-- expect: error U2020 at src/dense.una:16:18
 module dense
 
 pub unmarked(m: Matrix[F64]) -> Matrix[F64]
 =
-  let edit n = m
+  var n = m
   n.set(row: 0, column: 0, item: 1.0)
   n
 
 pub marked(a: Array[F64]) -> F64
 =
-  let edit b = a
-  let s = edit b.sum()
+  var b = a
+  const s = edit b.sum()
   s

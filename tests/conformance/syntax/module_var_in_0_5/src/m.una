@@ -1,0 +1,8 @@
+-- test: in edition 0.5, a module declares no `var`: a `var` at the top level is U0101, since a module has no mutable state (ADR 0137 rule 3)
+-- spec: spec/02 §6
+-- expect: error U0101 at src/m.una:8:1
+module m
+
+pub one() -> Int = 1
+
+var counter = 0

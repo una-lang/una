@@ -1,10 +1,10 @@
 -- test: in edition 0.5, `push`, `pop` and `pop_ranked` update a priority queue written `edit q.push(...)`, as the whole expression of a statement or `let`, each method takes its number of labeled arguments of their types, a priority queue has no `==`, and its priority type must satisfy `Ord` where it is written, here a record (ADR 0119 rules 2, 11 and 13)
 -- spec: spec/28 §8
 -- expect: error U2020 at src/wrong.una:20:3
--- expect: error U3013 at src/wrong.una:21:16
--- expect: error U2001 at src/wrong.una:22:11
+-- expect: error U3013 at src/wrong.una:21:18
+-- expect: error U2001 at src/wrong.una:22:13
 -- expect: error U2001 at src/wrong.una:23:36
--- expect: error U2001 at src/wrong.una:24:14
+-- expect: error U2001 at src/wrong.una:24:16
 -- expect: error U2025 at src/wrong.una:27:16
 module wrong
 
@@ -16,12 +16,12 @@ pub kind Point
 
 pub wrong(q: PriorityQueue[Text, Int]) -> Int
 =
-  let edit r = q
+  var r = q
   r.push(item: "a", priority: 1)
-  let units = [edit r.push(item: "b", priority: 2)]
-  let p = r.peek_priority(by: 1)
+  const units = [edit r.push(item: "b", priority: 2)]
+  const p = r.peek_priority(by: 1)
   edit r.push(item: "c", priority: "high")
-  let same = q == r
+  const same = q == r
   r.len
 
 pub points(ps: PriorityQueue[Text, Point]) -> Int = ps.len

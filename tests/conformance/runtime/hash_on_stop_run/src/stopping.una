@@ -10,7 +10,7 @@ import std.collections (HashSet, empty_hash_set)
 --- How many distinct items `xs` holds.
 distinct(xs: List[Int]) -> Int
 =
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   for x in xs
     edit s.add(item: x)
   s.len
@@ -19,7 +19,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let edit n = 0
+  var n = 0
   for ever
     stop when n == 3
     n = n + 1

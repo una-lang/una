@@ -2,6 +2,8 @@
 
 Status: Normative, v0.1.
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged: an annotated `let` as a subsumption point, and the named `let`s of a counterexample, are annotated and named `const` and `var` bindings. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 ## 1. Tiers in v0.1
 
 | Tier | Checks | Solver | Command |

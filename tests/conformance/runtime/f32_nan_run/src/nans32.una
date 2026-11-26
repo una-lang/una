@@ -13,23 +13,25 @@ pub kind Cell
 
 made(i: Int) -> F32
 =
-  let zero: F32 = 0.0
-  let one: F32 = 1.0
-  let inf = infinity().to_f32()
-  let fused = inf.fma(times: zero, plus: one)
+  const zero: F32 = 0.0
+  const one: F32 = 1.0
+  const inf = infinity().to_f32()
+  const fused = inf.fma(times: zero, plus: one)
   if i == 0 then zero / zero else if i == 1 then one.rem(by: zero) else if i == 2 then inf.rem(by: one) else if i == 3 then fused else (-one).sqrt()
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let xs = [made(0), made(1), made(2), made(3), made(4)]
+  const xs = [made(0), made(1), made(2), made(3), made(4)]
   @console.print("bits {made(0).to_bits()} {made(1).to_bits()} {made(2).to_bits()} {made(3).to_bits()} {made(4).to_bits()} {(-made(0)).to_bits()} {nan().to_f32().to_bits()} {f32_from_bits(bits: 4294967295.to_u32()).to_bits()}")
-  let same = xs.fold(initial: true, step: fn(ok: Bool, x: F32) -> ok and x == nan().to_f32())
+  const same = xs.fold(initial: true, step: fn(ok: Bool, x: F32) -> ok and x == nan().to_f32())
   @console.print("list {same} {xs.map(each: fn(x: F32) -> x.to_bits())}")
   @console.print("record {Cell(value: made(0)) == Cell(value: nan().to_f32())} {Cell(value: made(4)) == Cell(value: -made(3))}")
-  let m = xs.fold(initial: empty_map(), step: fn(acc, x) -> acc.with(key: x, value: x.to_bits()))
+  const m = xs.fold(initial: empty_map(), step: fn(acc, x) -> acc.with(key: x, value: x.to_bits()))
   @console.print("map {m.len} {m.keys()}")
-  let forked = together for i in [0, 1, 2, 3, 4]
+  const forked = together for i in [0, 1, 2, 3, 4]
     made(i)
-  let joined = forked.fold(initial: true, step: fn(ok: Bool, x: F32) -> ok and x == nan().to_f32())
+  const joined = forked.fold(initial: true,
+    step: fn(ok: Bool, x: F32) -> ok and x == nan().to_f32()
+  )
   @console.print("tasks {forked.map(each: fn(x: F32) -> x.to_bits())} {joined}")

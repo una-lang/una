@@ -110,9 +110,21 @@ pub const RESERVED_IN_0_4: [(&str, &str); 4] = [
     ),
 ];
 
+/// The release that makes `let` U7007 in edition 0.5 (ADR 0137 rule 1): the `<version>` of the
+/// message, and the release the edition ledger says landed `const` and `var`.
+pub const LET_CHANGED_IN: &str = "v0.5.2";
+
+/// The help that a binding written with `const` or `var` gains in editions 0.1 to 0.4, where
+/// it keeps its diagnostic, U0101 or U0103 (ADR 0137 rule 1).
+pub const BINDING_WORDS_HELP: &str = "`const` and `var` are keywords of edition 0.5";
+
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved. From
-/// edition 0.5, `simd` is not reserved (ADR 0120 rule 1, moved to edition 0.5 by ADR 0139).
+/// edition 0.5, `simd` is not reserved (ADR 0120 rule 1, moved to edition 0.5 by ADR 0139),
+/// and `var` is a keyword (ADR 0137 rule 1).
 pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
+    if set >= KeywordSet::V0_5 && word == "var" {
+        return None;
+    }
     if set >= KeywordSet::V0_4
         && let Some((_, message)) = RESERVED_IN_0_4
             .iter()

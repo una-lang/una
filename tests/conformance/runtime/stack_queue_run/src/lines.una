@@ -17,46 +17,46 @@ import std.collections (Queue, Stack, empty_queue, empty_stack)
 history() -> Unit
   uses @console: Console[print]
 =
-  let edit pages: Stack[Text] = empty_stack()
-  let nothing = edit pages.pop()
+  var pages: Stack[Text] = empty_stack()
+  const nothing = edit pages.pop()
   @console.print("empty stack: {pages} {pages.len} {pages.peek()} {nothing}")
   edit pages.push(item: "home")
   edit pages.push(item: "news")
   edit pages.push(item: "sports")
-  let saved = pages
-  let back = edit pages.pop()
+  const saved = pages
+  const back = edit pages.pop()
   @console.print("stack: {pages} items {pages.items()} len {pages.len} top {pages.peek()} popped {back} saved {saved}")
-  let unequal = pages == saved
+  const unequal = pages == saved
   edit pages.push(item: "sports")
-  let equal = pages == saved
+  const equal = pages == saved
   @console.print("stack equal: {unequal} {equal}")
 
 --- A line served at both ends.
 line() -> Unit
   uses @console: Console[print]
 =
-  let edit waiting: Queue[Int] = empty_queue()
-  let none_front = edit waiting.pop()
-  let none_back = edit waiting.pop_back()
+  var waiting: Queue[Int] = empty_queue()
+  const none_front = edit waiting.pop()
+  const none_back = edit waiting.pop_back()
   @console.print("empty queue: {waiting} {waiting.len} {waiting.peek()} {waiting.peek_back()} {none_front} {none_back}")
   edit waiting.push(item: 1)
   edit waiting.push(item: 2)
   edit waiting.push(item: 3)
   edit waiting.push_front(item: 0)
-  let copy = waiting
+  const copy = waiting
   @console.print("queue: {waiting} items {waiting.items()} len {waiting.len} front {waiting.peek()} back {waiting.peek_back()}")
-  let first = edit waiting.pop()
-  let last = edit waiting.pop_back()
+  const first = edit waiting.pop()
+  const last = edit waiting.pop_back()
   @console.print("popped: {first} {last}, now {waiting}, copy {copy}")
-  let edit other: Queue[Int] = empty_queue()
+  var other: Queue[Int] = empty_queue()
   edit other.push(item: 1)
   edit other.push(item: 2)
-  let same = waiting == other
-  let differs = waiting == copy
+  const same = waiting == other
+  const differs = waiting == copy
   @console.print("queue equal: {same} {differs}")
-  let a = edit waiting.pop()
-  let b = edit waiting.pop()
-  let c = edit waiting.pop()
+  const a = edit waiting.pop()
+  const b = edit waiting.pop()
+  const c = edit waiting.pop()
   @console.print("drained: {a} {b} {c} {waiting} {waiting.len}")
 
 pub main() -> Unit

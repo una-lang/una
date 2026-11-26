@@ -30,39 +30,39 @@ score(r: Option[Ranked[Int, Int]]) -> Int
 triage() -> Unit
   uses @console: Console[print]
 =
-  let edit waiting: PriorityQueue[Text, Int] = lowest_first()
-  let nothing = edit waiting.pop()
-  let no_rank = edit waiting.pop_ranked()
+  var waiting: PriorityQueue[Text, Int] = lowest_first()
+  const nothing = edit waiting.pop()
+  const no_rank = edit waiting.pop_ranked()
   @console.print("empty: {waiting} {waiting.len} {waiting.peek()} {waiting.peek_priority()} {waiting.items()} {nothing} {shown(no_rank)}")
   edit waiting.push(item: "sprained ankle", priority: 3)
   edit waiting.push(item: "chest pain", priority: 1)
   edit waiting.push(item: "fever", priority: 3)
   edit waiting.push(item: "cut", priority: 2)
   edit waiting.push(item: "cough", priority: 3)
-  let saved = waiting
+  const saved = waiting
   @console.print("lowest: {waiting} len {waiting.len} next {waiting.peek()} at {waiting.peek_priority()}")
-  let first = edit waiting.pop()
-  let second = edit waiting.pop_ranked()
+  const first = edit waiting.pop()
+  const second = edit waiting.pop_ranked()
   @console.print("popped: {first} {shown(second)}, now {waiting.items()}, saved {saved}")
-  let a = edit waiting.pop()
-  let b = edit waiting.pop()
-  let c = edit waiting.pop()
-  let d = edit waiting.pop()
+  const a = edit waiting.pop()
+  const b = edit waiting.pop()
+  const c = edit waiting.pop()
+  const d = edit waiting.pop()
   @console.print("drained: {a} {b} {c} {d} {waiting} {waiting.len}")
 
 --- Jobs, the greatest priority first, with ties in push order.
 jobs() -> Unit
   uses @console: Console[print]
 =
-  let edit jobs: PriorityQueue[Int, Int] = highest_first()
+  var jobs: PriorityQueue[Int, Int] = highest_first()
   for i in 0..<6
     edit jobs.push(item: i, priority: i mod 3)
   @console.print("highest: {jobs} len {jobs.len} next {jobs.peek()} at {jobs.peek_priority()}")
-  let edit copy = jobs
+  var copy = jobs
   edit copy.push(item: 9, priority: 5)
-  let top = edit copy.pop_ranked()
+  const top = edit copy.pop_ranked()
   @console.print("copy: {copy.items()} top {score(top)} jobs {jobs}")
-  let edit words: PriorityQueue[Int, Text] = lowest_first()
+  var words: PriorityQueue[Int, Text] = lowest_first()
   edit words.push(item: 1, priority: "pear")
   edit words.push(item: 2, priority: "apple")
   edit words.push(item: 3, priority: "fig")

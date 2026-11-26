@@ -618,6 +618,13 @@ const EXPECTED_DIFFERENCES_0_5: &[Difference04] = &[
             ("U1001", "src/m.una:19:26"),
         ],
     },
+    // ADR 0137 rule 1 (`spec/01 §5`): `const` and `var` are keywords of edition 0.5, so the
+    // bindings edition 0.4 refuses are accepted there.
+    Difference04 {
+        case: "syntax/const_var_in_0_4",
+        added: &[],
+        removed: &[("U0101", "src/m.una:9:9"), ("U0103", "src/m.una:14:3")],
+    },
     // ADR 0120 rule 1 (`spec/01 §5`): `simd` is reserved before edition 0.5 and an identifier
     // from it.
     Difference04 {
@@ -1002,13 +1009,24 @@ fn ita_check_as(
         .map(|line| format!("{line}\n"))
         .collect();
     std::fs::write(&manifest, replaced).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .env_remove("UNA_PROOF_KEY")
-        .args(["--json", "check", "."])
-        .current_dir(work)
-        .output()
-        .unwrap();
+    let check = || {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(["--json", "check", "."])
+            .current_dir(work)
+            .output()
+            .unwrap()
+    };
+    // ADR 0137: a package moves to edition 0.5 with the rewrite of its `let`s to `const` and
+    // `var`, the exact repairs of their U7007, which `una fix` applies; the positions of the
+    // check after the rewrite are mapped back to the package as written.
+    let moved = if edition == ITA_EDITION_0_5 {
+        binding_words_of_0_5(work, &check())
+    } else {
+        Moved::default()
+    };
+    let output = check();
     std::fs::remove_dir_all(work).unwrap();
     assert!(
         matches!(output.status.code(), Some(0 | 1)) && output.stdout.starts_with(DOCUMENT),
@@ -1019,7 +1037,130 @@ fn ita_check_as(
         String::from_utf8_lossy(&output.stderr)
     );
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
-    (output.status.code(), sites(&document))
+    // A rewrite that lengthens a line may take it past the canonical width: `una fix` formats
+    // it after the rewrite, so the U7001 of a rewritten line is the move's, not the edition's.
+    let all = sites(&document);
+    let sites: Vec<(String, String)> = all
+        .iter()
+        .filter(|(code, at)| !(code == "U7001" && moved.rewrote(at)))
+        .map(|(code, at)| (code.clone(), moved.back(at)))
+        .collect();
+    // Without those, a package with no other diagnostic checks.
+    let status = if sites.is_empty() && sites.len() < all.len() {
+        Some(0)
+    } else {
+        output.status.code()
+    };
+    (status, sites)
+}
+
+/// The edition line of `ita.una` that moves a package to edition `0.5`.
+const ITA_EDITION_0_5: &str = "  edition 0.5";
+
+/// A replaced range of a line: its start column, its end column and the replacement's length.
+type Rewrite = (u64, u64, u64);
+
+/// The rewrites of a package moved to edition `0.5`: each replaced range, by file and line.
+#[derive(Default)]
+struct Moved {
+    edits: std::collections::BTreeMap<(String, u64), Vec<Rewrite>>,
+}
+
+impl Moved {
+    /// Whether the line of `at`, a `file:line:col`, holds a rewrite.
+    fn rewrote(&self, at: &str) -> bool {
+        let mut parts = at.rsplitn(3, ':');
+        let (Some(_), Some(line), Some(file)) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        line.parse::<u64>()
+            .is_ok_and(|line| self.edits.contains_key(&(file.to_owned(), line)))
+    }
+
+    /// The `file:line:col` of the package as written for `at`, a position after the rewrites.
+    fn back(&self, at: &str) -> String {
+        let mut parts = at.rsplitn(3, ':');
+        let (Some(col), Some(line), Some(file)) = (parts.next(), parts.next(), parts.next()) else {
+            return at.to_owned();
+        };
+        let (Ok(col), Ok(line)) = (col.parse::<u64>(), line.parse::<u64>()) else {
+            return at.to_owned();
+        };
+        let Some(edits) = self.edits.get(&(file.to_owned(), line)) else {
+            return at.to_owned();
+        };
+        let mut shift: i64 = 0;
+        for &(start, end, written) in edits {
+            let new_start = (start as i64 + shift) as u64;
+            let new_end = new_start + written;
+            if col < new_end {
+                if col >= new_start {
+                    return format!("{file}:{line}:{start}");
+                }
+                break;
+            }
+            shift += written as i64 - (end - start) as i64;
+        }
+        format!("{file}:{line}:{}", (col as i64 - shift) as u64)
+    }
+}
+
+/// Applies, in the package at `work`, the first repair of each U7007 of `output`, a check of
+/// it, and returns where the rewrites are.
+fn binding_words_of_0_5(work: &Path, output: &std::process::Output) -> Moved {
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut moved = Moved::default();
+    for diagnostic in document["diagnostics"].as_array().unwrap() {
+        if diagnostic["code"] != "U7007" {
+            continue;
+        }
+        let edit = &diagnostic["repairs"][0]["edit"];
+        let file = edit["file"].as_str().unwrap().to_owned();
+        let line = edit["start"]["line"].as_u64().unwrap();
+        assert_eq!(edit["end"]["line"].as_u64(), Some(line), "{edit}");
+        let replacement = edit["replacement"].as_str().unwrap();
+        moved.edits.entry((file, line)).or_default().push((
+            edit["start"]["col"].as_u64().unwrap(),
+            edit["end"]["col"].as_u64().unwrap(),
+            replacement.chars().count() as u64,
+        ));
+    }
+    moved
+        .edits
+        .values_mut()
+        .for_each(|edits| edits.sort_unstable());
+    let mut by_file: std::collections::BTreeMap<&str, Vec<(u64, u64, u64, String)>> =
+        std::collections::BTreeMap::new();
+    for diagnostic in document["diagnostics"].as_array().unwrap() {
+        if diagnostic["code"] == "U7007" {
+            let edit = &diagnostic["repairs"][0]["edit"];
+            by_file
+                .entry(edit["file"].as_str().unwrap())
+                .or_default()
+                .push((
+                    edit["start"]["line"].as_u64().unwrap(),
+                    edit["start"]["col"].as_u64().unwrap(),
+                    edit["end"]["col"].as_u64().unwrap(),
+                    edit["replacement"].as_str().unwrap().to_owned(),
+                ));
+        }
+    }
+    for (file, mut edits) in by_file {
+        // From the last edit back, so that each edit's columns are those of the file as read.
+        edits.sort_unstable();
+        edits.reverse();
+        let path = work.join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+        for (line, start, end, replacement) in edits {
+            let chars: Vec<char> = lines[line as usize - 1].chars().collect();
+            let before: String = chars[..start as usize - 1].iter().collect();
+            let after: String = chars[end as usize - 1..].iter().collect();
+            lines[line as usize - 1] = format!("{before}{replacement}{after}");
+        }
+        std::fs::write(&path, lines.join("\n")).unwrap();
+    }
+    moved
 }
 
 /// Every edition `0.4` package of the conformance suite, checked as edition `0.5`, reports the
@@ -1027,8 +1168,11 @@ fn ita_check_as(
 /// packages of `EXPECTED_DIFFERENCES_0_5`, each of which gains exactly its `added` diagnostics
 /// and loses exactly its `removed` ones: edition `0.5` accepts every package that edition `0.4`
 /// accepts, and moving a package to edition `0.5` changes nothing else (ADR 0139 rules 6 and 8).
-/// Messages may differ, as a message that lists what an edition has does. Linear in the
-/// packages, each checked twice.
+/// The move rewrites the package's `let`s to `const` and `var` by the exact repairs of their
+/// U7007 (ADR 0137 rules 11 and 12, the equivalence of its Conformance), and the positions are
+/// compared in the package as written. Messages may differ, as a message that lists what an
+/// edition has does, or names its binding words. Linear in the packages, each checked three
+/// times.
 #[test]
 fn every_edition_0_4_package_checks_the_same_in_edition_0_5() {
     let root = conformance();
@@ -1078,7 +1222,7 @@ fn every_edition_0_4_package_checks_the_same_in_edition_0_5() {
                             let (status_0_4, mut before) =
                                 ita_check_as(package, &work, ITA_EDITION_0_4);
                             let (status_0_5, mut after) =
-                                ita_check_as(package, &work, "  edition 0.5");
+                                ita_check_as(package, &work, ITA_EDITION_0_5);
                             let mut missing = Vec::new();
                             for (list, wanted, which) in [
                                 (&mut after, added, "added"),
@@ -1769,4 +1913,39 @@ fn differs_by(
         &more, less,
         "{name}: {more_edition} differs from {less_edition} by more than the listed diagnostics"
     );
+}
+
+/// A dependency of edition 0.4 under a root of edition 0.5 is read under its own edition (ADR
+/// 0122 rules 48 and 49): its `let` bindings check, and its diagnostics keep the words of edition
+/// 0.4 (ADR 0137 rule 10, review of #2258, H1).
+#[test]
+fn a_dependency_of_edition_0_4_keeps_its_words_under_a_root_of_edition_0_5() {
+    for (case, expected) in [
+        ("project/ita_path_dep_0_4_in_0_5", None),
+        (
+            "project/ita_path_dep_0_4_in_0_5_error",
+            Some(
+                "`both` is not editable; declare it `let edit both`, or the parameter `edit both`",
+            ),
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(["--json", "check", "."])
+            .current_dir(conformance().join(case))
+            .output()
+            .unwrap();
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let messages: Vec<&str> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap())
+            .collect();
+        match expected {
+            None => assert!(messages.is_empty(), "{case}: {messages:?}"),
+            Some(message) => assert_eq!(messages, [message], "{case}"),
+        }
+    }
 }

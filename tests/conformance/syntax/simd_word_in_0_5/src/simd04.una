@@ -7,5 +7,5 @@ pub simd(lanes: Int) -> Int = lanes * 2
 
 pub lanes() -> Int
 =
-  let simd = 4
+  const simd = 4
   simd * 2

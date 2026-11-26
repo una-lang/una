@@ -1,0 +1,15 @@
+-- test: in edition 0.5, a binding statement is `const` or `var` without `edit`: `const edit x` and `var edit x` are U0101 (ADR 0137 rule 2)
+-- spec: spec/02 §6
+-- expect: error U0101 at src/m.una:9:9
+-- expect: error U0101 at src/m.una:14:7
+module m
+
+pub f() -> Int
+=
+  const edit x = 1
+  x
+
+pub g() -> Int
+=
+  var edit y = 1
+  y

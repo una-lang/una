@@ -43,7 +43,7 @@ Una is a verification-first programming language for software that AI agents wri
 - printing of structured values;
 - importable standard modules;
 - editions 0.1 and 0.2, and edition 0.3 as a preview: it has every rule of 0.2, conditions on the operations a function may perform, locked contracts of public functions, the first part of module boundaries, and errors for failure handling on code that cannot fail; later releases add the rest of its designs, so they may reject a package that this one accepts;
-- edition 0.4 as a preview, the edition of release R0.4 (below), and edition 0.5, the edition of this release R0.5, as an early preview, without module constants or `const` and `var` yet;
+- edition 0.4 as a preview, the edition of release R0.4 (below), and edition 0.5, the edition of this release R0.5, as an early preview, with `const` and `var` (ADR 0137) and without module constants yet;
 - archives for macOS on arm64 and Linux on arm64 with glibc 2.39 or later, each listed with its digest in the validation record `docs/validation/0.5.1.md`; Linux on x86-64 and Windows are not targets of v0.5.1.
 
 Releases, compiler versions and editions follow one number (ADR 0139): increment R0.N.k of release R0.N ships `una` v0.N.k, the first being R0.N.0 (amendment of 2026-11-20), and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of ADR 0121, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is kept by the maintainers.

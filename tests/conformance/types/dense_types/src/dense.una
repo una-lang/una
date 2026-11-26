@@ -14,7 +14,7 @@ pub points() -> Array[Point] = array_filled(length: 2, value: Point(x: 1, y: 2))
 pub small(n: Int) -> Matrix[I32]
   requires n >= 0
 =
-  let zero: I32 = 0
+  const zero: I32 = 0
   matrix_filled(rows: n, columns: n, value: zero)
 
 pub grid() -> Matrix[F64] = matrix(rows: 2, columns: 2, elements: [1.0, 2.0, 3.0, 4.0])

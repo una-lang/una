@@ -6,5 +6,5 @@ module m
 pub show(x: secret Decimal[2], y: Decimal[2]) -> Unit
   uses @console: Console[print]
 =
-  let z = (x * y).rescale(scale: 2, rounding: HalfEven) + y
+  const z = (x * y).rescale(scale: 2, rounding: HalfEven) + y
   @console.print("{z}")

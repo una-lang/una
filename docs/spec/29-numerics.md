@@ -2,6 +2,8 @@
 
 Status: Normative, v0.3 preview (ADR 0114; the chapter of the numeric foundation, ADR 0121 rule 20); §16 to §19 edition 0.5 preview (ADR 0120, and its amendment of 2026-11-06: ADR 0139 moved them from edition `0.4`).
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 This chapter holds the numeric types beyond the integers of `spec/03` and `spec/18`. It opens with `F64`, IEEE 754 binary64, the rules of ADR 0114; the other types of the numeric foundation (ADR 0120) join it in later sections: the dense values `Array[T]` and `Matrix[T]` of edition `0.5` are §17, `F32` and the finite kinds §18, and the complex types `Complex[F64]` and `Complex[F32]` §19.
 
 **Editions.** The rules of §1 to §15 apply only to packages of edition `0.3` (`spec/13 §7`) and later, and those of §16 to §19 only to packages of edition `0.5`. Edition `0.4` has §1 to §15 and none of §16 to §19; `spec/13 §7` lists what it reports for them, and which of those diagnostics advise edition `0.5`. In editions `0.1` and `0.2`, `F64` is an ordinary name, `1.0` keeps its error (U0101), `to_f64` resolves as any function name does, and the prelude has none of the functions of §3 rule 9.

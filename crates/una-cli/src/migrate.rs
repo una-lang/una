@@ -282,7 +282,11 @@ fn canonical_form(
 ) -> BTreeMap<FileId, String> {
     let checks = crate::on_large_stack(|| {
         let mut interner = Interner::new();
-        crate::check_files(&draft.sources, &draft.modules, &mut interner, keywords)
+        crate::check_files(
+            &draft.sources,
+            &crate::with_keywords(&draft.modules, keywords),
+            &mut interner,
+        )
     });
     // `migrated` adds the modules of `old` in order, so the ids correspond by position.
     let ids: BTreeMap<FileId, FileId> = draft

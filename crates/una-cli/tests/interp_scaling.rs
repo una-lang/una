@@ -173,7 +173,7 @@ fn a_closure_costs_what_it_reads_not_what_is_in_scope() {
 /// `main` that adds `n` amounts of `Decimal[2]` in a loop, as a ledger sums its lines.
 fn decimal_sum(n: usize) -> String {
     format!(
-        "module main\n\npub main() -> Unit\n=\n  let price: Decimal[2] = 19.99\n  let edit total: Decimal[2] = 0.00\n  for i in 0..<{n}\n    total = total + price\n  unit\n"
+        "module main\n\npub main() -> Unit\n=\n  const price: Decimal[2] = 19.99\n  var total: Decimal[2] = 0.00\n  for i in 0..<{n}\n    total = total + price\n  unit\n"
     )
 }
 

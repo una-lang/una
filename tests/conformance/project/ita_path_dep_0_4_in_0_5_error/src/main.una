@@ -1,0 +1,11 @@
+-- test: a diagnostic in a dependency of edition 0.4 under a root of edition 0.5 is its edition's: assigning a plain `let` is U2019 in the dependency, whose message names `let edit` (ADR 0122 rule 49, ADR 0137 rule 10)
+-- spec: spec/30 §3
+-- expect: error U2019 at deps/util/src/text.una:6:3
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  const line = twice("hello")
+  line

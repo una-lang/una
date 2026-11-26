@@ -25,7 +25,7 @@ pub empty() -> Box[List[Pos]] = Box(v: [])
 
 pub annotated() -> Int
 =
-  let b: Box[List[Pos]] = Box(v: [3, 4])
+  const b: Box[List[Pos]] = Box(v: [3, 4])
   b.v.len
 
 pub size(b: Box[List[Pos]]) -> Int = b.v.len
@@ -43,7 +43,7 @@ pub beside(m: HashMap[Int, Pos]) -> M[Pos] = M(m: m, xs: [3])
 pub read() -> Int
   ensures result > 0
 =
-  let b = make()
+  const b = make()
   when first(b.v)
     is Some(x) -> x
     is None -> 1

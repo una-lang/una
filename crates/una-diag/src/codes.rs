@@ -150,7 +150,7 @@ pub enum Code {
     U2022,
     /// A binding declared outside a `together` branch assigned, or passed as `edit` or `take`, inside it.
     U2023,
-    /// A `together` body with a statement other than `let`, or fewer than two branches.
+    /// A `together` body with a statement other than a binding statement, or fewer than two branches.
     U2024,
     /// A type argument does not satisfy the constraint of its parameter.
     U2025,
@@ -297,6 +297,8 @@ pub enum Code {
     U7004,
     /// Trusted module not declared in both header and `una.toml`.
     U7005,
+    /// A form of a preview edition that a release changed or removed (ADR 0121 rule 19).
+    U7007,
     /// Invalid `ita.una` or `itaty.una`.
     U7008,
     /// Missing, invalid or inconsistent `ita.lock`.
@@ -324,7 +326,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 122] = [
+    pub const ALL: [Code; 123] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -437,6 +439,7 @@ impl Code {
         Code::U7003,
         Code::U7004,
         Code::U7005,
+        Code::U7007,
         Code::U7008,
         Code::U7009,
         Code::U7010,
@@ -684,7 +687,7 @@ impl Code {
             Code::U2024 => &Entry {
                 code: "U2024",
                 domain: Domain::Types,
-                meaning: "A `together` body with a statement other than `let`, or fewer than two branches",
+                meaning: "A `together` body with a statement other than a binding statement, or fewer than two branches",
             },
             Code::U2025 => &Entry {
                 code: "U2025",
@@ -1025,6 +1028,11 @@ impl Code {
                 code: "U7005",
                 domain: Domain::Project,
                 meaning: "Trusted module not declared in both header and `una.toml`",
+            },
+            Code::U7007 => &Entry {
+                code: "U7007",
+                domain: Domain::Project,
+                meaning: "A form of a preview edition that a release changed or removed",
             },
             Code::U7008 => &Entry {
                 code: "U7008",

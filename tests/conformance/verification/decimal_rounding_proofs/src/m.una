@@ -6,173 +6,173 @@ module m
 pub halfeven_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: HalfEven) == 4.0
 
 pub halfeven_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfEven) == -4.0
 
 pub halfeven_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: HalfEven) == -4.0
 
 pub halfeven_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfEven) == 4.0
 
 pub halfawayfromzero_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: HalfAwayFromZero) == 4.0
 
 pub halfawayfromzero_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfAwayFromZero) == -4.0
 
 pub halfawayfromzero_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: HalfAwayFromZero) == -4.0
 
 pub halfawayfromzero_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfAwayFromZero) == 4.0
 
 pub halftowardzero_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: HalfTowardZero) == 3.0
 
 pub halftowardzero_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfTowardZero) == -3.0
 
 pub halftowardzero_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: HalfTowardZero) == -3.0
 
 pub halftowardzero_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfTowardZero) == 3.0
 
 pub towardzero_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: TowardZero) == 3.0
 
 pub towardzero_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: TowardZero) == -3.0
 
 pub towardzero_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: TowardZero) == -3.0
 
 pub towardzero_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: TowardZero) == 3.0
 
 pub awayfromzero_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: AwayFromZero) == 4.0
 
 pub awayfromzero_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: AwayFromZero) == -4.0
 
 pub awayfromzero_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: AwayFromZero) == -4.0
 
 pub awayfromzero_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: AwayFromZero) == 4.0
 
 pub towardpositive_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: TowardPositive) == 4.0
 
 pub towardpositive_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: TowardPositive) == -3.0
 
 pub towardpositive_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: TowardPositive) == -3.0
 
 pub towardpositive_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: TowardPositive) == 4.0
 
 pub towardnegative_pp() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: 2.0, scale: 0, rounding: TowardNegative) == 3.0
 
 pub towardnegative_pn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: TowardNegative) == -4.0
 
 pub towardnegative_np() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: 2.0, scale: 0, rounding: TowardNegative) == -4.0
 
 pub towardnegative_nn() -> Bool
   ensures result
 =
-  let n: Decimal[0] = -7.0
+  const n: Decimal[0] = -7.0
   n.divide(by: -2.0, scale: 0, rounding: TowardNegative) == 3.0
 
 pub wrong() -> Bool
   ensures result
 =
-  let n: Decimal[0] = 7.0
+  const n: Decimal[0] = 7.0
   n.divide(by: -2.0, scale: 0, rounding: HalfEven) == -3.0

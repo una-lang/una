@@ -1,6 +1,6 @@
 -- test: the finite kinds of the prelude: a branch on `is_finite()` proves a value into `Finite64` and `Finite32`, and the sum of two `Finite64` values is refuted into `Finite64`, since `MAX + MAX` is an infinity
 -- spec: spec/29 §18
--- expect: error U5001 at src/m.una:16:21
+-- expect: error U5001 at src/m.una:16:23
 module m
 
 doubled(x: Finite64) -> F64 = x * 2.0
@@ -13,5 +13,5 @@ pub guarded32(x: F32) -> F32 = if x.is_finite() then kept(x) else 0.0
 
 pub sum(a: Finite64, b: Finite64) -> F64
 =
-  let s: Finite64 = a + b
+  const s: Finite64 = a + b
   s

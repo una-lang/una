@@ -132,6 +132,10 @@ pub enum Keyword {
     Together,
     /// `test`, from edition 0.3: the keyword of the test declaration (`spec/08 §2`, ADR 0105).
     Test,
+    /// `const`, from edition 0.5: an immutable binding (`spec/02 §6`, ADR 0137 rule 1).
+    Const,
+    /// `var`, from edition 0.5: a binding that can be assigned (`spec/17 §2`, ADR 0137 rule 1).
+    Var,
 }
 
 impl Keyword {
@@ -263,6 +267,8 @@ impl Keyword {
             Keyword::Old => "old",
             Keyword::Together => "together",
             Keyword::Test => "test",
+            Keyword::Const => "const",
+            Keyword::Var => "var",
         }
     }
 
@@ -347,6 +353,11 @@ impl Keyword {
     /// rule 2): `test`, the keyword of the test declaration.
     pub const EDITION_0_3: [Keyword; 1] = [Keyword::Test];
 
+    /// The keywords that edition 0.5 adds to those of edition 0.4 (`spec/01 §5`, ADR 0137 rule
+    /// 1): `const` and `var`, the binding words. `let` stays a keyword token there, so that the
+    /// parser reads the binding, and the lexer reports each one with U7007 and its rewrite.
+    pub const EDITION_0_5: [Keyword; 2] = [Keyword::Const, Keyword::Var];
+
     /// The keywords of [`Keyword::ALL`] that edition 0.4 removes: `example`, an identifier there
     /// (ADR 0105, amendment of 2026-11-05).
     pub const REMOVED_IN_0_4: [Keyword; 1] = [Keyword::Example];
@@ -375,6 +386,15 @@ impl Keyword {
                     })
                     .flatten()
             })
+            .or_else(|| {
+                (set >= KeywordSet::V0_5)
+                    .then(|| {
+                        Keyword::EDITION_0_5
+                            .into_iter()
+                            .find(|keyword| keyword.as_str() == word)
+                    })
+                    .flatten()
+            })
     }
 }
 
@@ -396,7 +416,8 @@ pub enum KeywordSet {
     V0_4,
     /// Edition 0.5: the keywords of edition 0.4, with `simd` no longer reserved and `with` and
     /// `and` argument labels of the dense methods (ADR 0120 rule 1, which ADR 0139 rule 6
-    /// moves here from edition 0.4).
+    /// moves here from edition 0.4); `const` and `var` keywords, and `let` reserved with U7007
+    /// (ADR 0137 rule 1).
     V0_5,
 }
 
@@ -574,6 +595,7 @@ mod tests {
             .iter()
             .chain(&Keyword::EDITION_0_2)
             .chain(&Keyword::EDITION_0_3)
+            .chain(&Keyword::EDITION_0_5)
         {
             let text = keyword.as_str();
             words.push(text.to_owned());
@@ -589,9 +611,41 @@ mod tests {
         for keyword in Keyword::ALL {
             assert_eq!(Keyword::from_word(keyword.as_str()), Some(keyword));
         }
-        for keyword in Keyword::EDITION_0_2.iter().chain(&Keyword::EDITION_0_3) {
+        for keyword in Keyword::EDITION_0_2
+            .iter()
+            .chain(&Keyword::EDITION_0_3)
+            .chain(&Keyword::EDITION_0_5)
+        {
             assert_eq!(Keyword::from_word(keyword.as_str()), None, "{keyword:?}");
         }
+    }
+
+    #[test]
+    fn const_and_var_are_keywords_of_edition_0_5_only() {
+        // ADR 0137 rule 1: `const` and `var` are keywords in edition 0.5, and `let` stays the
+        // keyword token the lexer reports with U7007; in editions 0.1 to 0.4 nothing changes.
+        for set in [
+            KeywordSet::V0_1,
+            KeywordSet::V0_2,
+            KeywordSet::V0_3,
+            KeywordSet::V0_4,
+        ] {
+            assert_eq!(Keyword::from_word_in("const", set), None);
+            assert_eq!(Keyword::from_word_in("var", set), None);
+            assert_eq!(Keyword::from_word_in("let", set), Some(Keyword::Let));
+        }
+        assert_eq!(
+            Keyword::from_word_in("const", KeywordSet::V0_5),
+            Some(Keyword::Const)
+        );
+        assert_eq!(
+            Keyword::from_word_in("var", KeywordSet::V0_5),
+            Some(Keyword::Var)
+        );
+        assert_eq!(
+            Keyword::from_word_in("let", KeywordSet::V0_5),
+            Some(Keyword::Let)
+        );
     }
 
     #[test]

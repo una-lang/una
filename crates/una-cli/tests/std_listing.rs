@@ -30,6 +30,9 @@ use una_cli::{
 };
 use una_project::Edition;
 
+#[path = "common/binding_words.rs"]
+mod binding_words;
+
 /// The repository root.
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -251,11 +254,14 @@ fn probe(dir: &Path, item: &Item, edition: Edition) {
     };
     fs::create_dir_all(dir.join("src")).unwrap();
     write_manifest(dir, edition);
-    fs::write(
-        dir.join("src/probe.una"),
-        format!("module probe\n\n{import}{body}"),
-    )
-    .unwrap();
+    // Edition 0.5 binds with `const` (ADR 0137).
+    let source = format!("module probe\n\n{import}{body}");
+    let source = if edition >= Edition::V0_5 {
+        binding_words::of_0_5(&source)
+    } else {
+        source
+    };
+    fs::write(dir.join("src/probe.una"), source).unwrap();
 }
 
 #[test]
@@ -468,6 +474,12 @@ fn each_builtin_signature_checks_in_exactly_its_editions_and_a_wrong_call_does_n
             for edition in Edition::ALL {
                 for negative in [false, true] {
                     let source = builtin_probe(&b, fixed, negative);
+                    // Edition 0.5 binds with `const` and `var` (ADR 0137).
+                    let source = if edition >= Edition::V0_5 {
+                        binding_words::of_0_5(&source)
+                    } else {
+                        source
+                    };
                     let dir = scratch.join(format!("{probes}"));
                     probes += 1;
                     fs::create_dir_all(dir.join("src")).unwrap();

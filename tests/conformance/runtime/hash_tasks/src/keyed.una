@@ -17,7 +17,7 @@ show(label: Text, m: HashMap[Text, Int]) -> Unit
 count(words: List[Text]) -> Unit
   uses @console: Console[print]
 =
-  let edit counts: HashMap[Text, Int] = empty_hash_map()
+  var counts: HashMap[Text, Int] = empty_hash_map()
   for word in words
     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
   show("started", m: counts)
@@ -26,7 +26,7 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   tasks
-    let edit block: HashMap[Text, Int] = empty_hash_map()
+    var block: HashMap[Text, Int] = empty_hash_map()
     edit block.set(key: "c", value: 3)
     start show("block", m: block)
     start count(["a", "b", "b"])

@@ -12,6 +12,6 @@ pub bad(c: Matrix[F64 of Meter * Second], a: Matrix[F64 of Meter],
 ) -> Matrix[F64 of Meter * Second]
   requires c.rows == a.rows and a.columns == b.rows and b.columns == c.columns
 =
-  let edit d = c
+  var d = c
   edit d.add_product(of: a, and: b)
   d

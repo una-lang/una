@@ -2,6 +2,8 @@
 
 Status: Normative, v0.2 (ADR 0057).
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 `Int` stays an unbounded mathematical integer everywhere (ADR 0004). Fixed-width integer types exist for the places where an exact width matters, such as bytes, protocols and hashing. Their overflow is a proof obligation, never a silent wrap.
 
 **Editions.** The rules of this chapter apply only to packages of edition `0.2` and later (`spec/13 §7`, ADR 0056). In edition `0.1`, `I8` to `U64` are ordinary names.

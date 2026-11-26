@@ -17,7 +17,7 @@ pub kind Wide
 --- `s` with every item of `xs` added, through a type parameter.
 pub fill[T: Eq](s: HashSet[T], xs: List[T]) -> HashSet[T]
 =
-  let edit out = s
+  var out = s
   for x in xs
     edit out.add(item: x)
   out
@@ -28,39 +28,39 @@ pub pair[T](x: T, y: T) -> List[T] = [x, y]
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit bools: HashSet[Bool] = empty_hash_set()
+  var bools: HashSet[Bool] = empty_hash_set()
   edit bools.add(item: false)
-  let bools2 = fill(s: bools, xs: [true, false, true])
+  const bools2 = fill(s: bools, xs: [true, false, true])
   @console.print("bools: {bools2} {bools2.len}")
-  let edit ints: HashSet[Int] = empty_hash_set()
+  var ints: HashSet[Int] = empty_hash_set()
   edit ints.add(item: 0)
   edit ints.add(item: 1)
-  let ints2 = fill(s: ints, xs: [1, 0])
+  const ints2 = fill(s: ints, xs: [1, 0])
   @console.print("ints: {ints2} {ints2.len}")
-  let big: U64 = 9223372036854775808
-  let top: U64 = 18446744073709551615
-  let edit wide: HashSet[U64] = empty_hash_set()
+  const big: U64 = 9223372036854775808
+  const top: U64 = 18446744073709551615
+  var wide: HashSet[U64] = empty_hash_set()
   edit wide.add(item: big)
   edit wide.add(item: top)
-  let generic = fill(s: wide, xs: [top, big])
-  let edit fields = wide
+  const generic = fill(s: wide, xs: [top, big])
+  var fields = wide
   edit fields.add(item: Wide(value: big).value)
   edit fields.add(item: Wide(value: top).value)
   @console.print("wide: {wide.len} {generic.len} {fields.len} {fields}")
-  let half = 4611686018427387904
-  let promoted = fill(s: empty_hash_set(),
+  const half = 4611686018427387904
+  const promoted = fill(s: empty_hash_set(),
     xs: [half, half * 2, 9223372036854775808, 2305843009213693952 * 2]
   )
   @console.print("promoted: {promoted.len}")
-  let one: U8 = 1
-  let two: U8 = 2
-  let written: List[U8] = [one, two]
-  let edit bytes: HashSet[List[U8]] = empty_hash_set()
+  const one: U8 = 1
+  const two: U8 = 2
+  const written: List[U8] = [one, two]
+  var bytes: HashSet[List[U8]] = empty_hash_set()
   edit bytes.add(item: written)
   edit bytes.add(item: pair(x: one, y: two))
   @console.print("bytes: {bytes} {bytes.len}")
-  let zero = 0.0
-  let edit floats: HashSet[F64] = empty_hash_set()
+  const zero = 0.0
+  var floats: HashSet[F64] = empty_hash_set()
   edit floats.add(item: zero)
   edit floats.add(item: -zero)
   edit floats.add(item: nan())

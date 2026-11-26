@@ -1,15 +1,15 @@
 -- test: a trusted function that computes new elements, such as `matrix_diagonal`, is not a function value: its result would carry the refinement of the element type for elements it made, so it is U2001 where it is named, in an annotated binding and as an argument; a lambda that calls it is accepted (ADR 0120 S4, spec/29 §17)
 -- spec: spec/29 §17
--- expect: error U2001 at src/dense.una:9:60
+-- expect: error U2001 at src/dense.una:9:62
 -- expect: error U2001 at src/dense.una:17:65
 module dense
 
 pub named(a: Array[I32 in 1..10]) -> I32
 =
-  let g: fn(Array[I32 in 1..10]) -> Matrix[I32 in 1..10] = matrix_diagonal
-  let d = g(a)
+  const g: fn(Array[I32 in 1..10]) -> Matrix[I32 in 1..10] = matrix_diagonal
+  const d = g(a)
   if d.rows > 1 and d.columns > 1
-    let x = d.get(row: 0, column: 1)
+    const x = d.get(row: 0, column: 1)
     100 / x
   else
     1

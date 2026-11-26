@@ -10,16 +10,16 @@ pub kind Pos = Int where it > 0
 
 pub kept(p: Pos, k: Text) -> Int
 =
-  let edit m: HashMap[Text, Pos] = empty_hash_map()
+  var m: HashMap[Text, Pos] = empty_hash_map()
   edit m.set(key: k, value: p)
-  let edit s: HashSet[Pos] = empty_hash_set()
+  var s: HashSet[Pos] = empty_hash_set()
   edit s.add(item: p)
   m.len + s.len
 
 pub moved(k: Text) -> Int
 =
-  let edit m: HashMap[Text, Pos] = empty_hash_map()
+  var m: HashMap[Text, Pos] = empty_hash_map()
   edit m.set(key: k, value: 0)
-  let edit s: HashSet[Pos] = empty_hash_set()
+  var s: HashSet[Pos] = empty_hash_set()
   edit s.add(item: 0)
   m.len + s.len

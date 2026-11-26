@@ -2,15 +2,15 @@
 -- spec: spec/29 §17
 -- grant: console
 -- expect: run-output "starting"
--- expect: error U6003 at src/dense.una:15:14
+-- expect: error U6003 at src/dense.una:15:16
 module dense
 
 pub main() -> Unit
   uses @console: Console[print]
 =
   @console.print("starting")
-  let edit big = 1
+  var big = 1
   for i in 0..<1200
     big = big * 10
-  let wide = array_filled(length: 10000000, value: big)
+  const wide = array_filled(length: 10000000, value: big)
   @console.print("length {wide.len}")

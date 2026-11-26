@@ -24,7 +24,7 @@ pub kind Point
 --- The set of the items of `xs`, each once, in the order of first occurrence.
 of(xs: List[Int]) -> HashSet[Int]
 =
-  let edit s: HashSet[Int] = empty_hash_set()
+  var s: HashSet[Int] = empty_hash_set()
   for x in xs
     edit s.add(item: x)
   s
@@ -32,37 +32,37 @@ of(xs: List[Int]) -> HashSet[Int]
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let empty: HashSet[Int] = empty_hash_set()
+  const empty: HashSet[Int] = empty_hash_set()
   @console.print("empty: {empty} {empty.len} {empty.has(item: 1)} {empty.items()} {empty.without(item: 1)}")
-  let fib = of([5, 3, 8, 1, 2, 3, 5, 1])
+  const fib = of([5, 3, 8, 1, 2, 3, 5, 1])
   @console.print("built: {fib} {fib.len} {fib.has(item: 3)} {fib.has(item: 4)} {fib.items()}")
-  let edit grown = fib
+  var grown = fib
   edit grown.remove(item: 3)
   edit grown.remove(item: 4)
   edit grown.add(item: 13)
   edit grown.add(item: 1)
   edit grown.add(item: 3)
   @console.print("updated: {grown} {grown.len} {grown.has(item: 3)} {grown.has(item: 13)}")
-  let more = fib.with(item: 21)
-  let less = fib.without(item: 1)
+  const more = fib.with(item: 21)
+  const less = fib.without(item: 1)
   @console.print("values: {fib} {more} {less}")
-  let edit copy = fib
+  var copy = fib
   edit copy.add(item: 34)
   @console.print("kept: {fib} {copy}")
-  let evens = of([6, 4, 2, 8])
+  const evens = of([6, 4, 2, 8])
   @console.print("union: {fib.union(other: of([6, 2, 4]))} {fib.union(other: empty)} {empty.union(other: fib)}")
   @console.print("intersection: {fib.intersection(other: of([2, 8, 5, 13]))} {fib.intersection(other: evens)} {fib.intersection(other: empty)} {empty.intersection(other: fib)}")
   @console.print("difference: {fib.difference(other: evens.union(other: of([5])))} {evens.difference(other: fib)} {fib.difference(other: empty)} {empty.difference(other: fib)}")
   @console.print("subset: {of([1, 8]).is_subset(of: fib)} {evens.is_subset(of: fib)} {empty.is_subset(of: fib)} {fib.is_subset(of: fib)} {fib.is_subset(of: of([1, 8]))}")
   @console.print("same: {fib.same_items(as: of([1, 2, 3, 5, 8]))} {fib.same_items(as: more)} {empty.same_items(as: of([]))}")
-  let none_yet: List[Text] = []
-  let edit lists: HashSet[List[Text]] = empty_hash_set()
+  const none_yet: List[Text] = []
+  var lists: HashSet[List[Text]] = empty_hash_set()
   edit lists.add(item: ["a"])
   edit lists.add(item: ["a", "b"])
   edit lists.add(item: none_yet)
   edit lists.add(item: ["a"])
   @console.print("lists: {lists} {lists.len} {lists.has(item: none_yet)}")
-  let edit points: HashSet[Point] = empty_hash_set()
+  var points: HashSet[Point] = empty_hash_set()
   edit points.add(item: Point(x: 0, y: 0))
   edit points.add(item: Point(x: 3, y: 4))
   edit points.add(item: Point(x: 0, y: 0))

@@ -18,19 +18,19 @@ pub compare(price: Decimal[2],
 pub methods(x: Decimal[2], y: Decimal[2]) -> Decimal[2]
   requires y != 0.00
 =
-  let wide = x.widen(scale: 4)
-  let narrow = wide.rescale(scale: 2, rounding: HalfEven)
-  let q = x.divide(by: y, scale: 2, rounding: TowardZero)
-  let r = x.remainder(by: y, scale: 0)
-  let n = x.to_int(rounding: HalfAwayFromZero) + x.coefficient()
+  const wide = x.widen(scale: 4)
+  const narrow = wide.rescale(scale: 2, rounding: HalfEven)
+  const q = x.divide(by: y, scale: 2, rounding: TowardZero)
+  const r = x.remainder(by: y, scale: 0)
+  const n = x.to_int(rounding: HalfAwayFromZero) + x.coefficient()
   narrow + q + r + n.to_decimal() + x.abs() - -x
 
 pub functions(t: Text, j: Json) -> Result[Decimal[3], ParseError]
 =
-  let parsed = attempt parse_decimal(t, scale: 3)
-  let json = as_decimal(j, scale: 3)
-  let price: Decimal[2] = 19.99
-  let back = json_decimal(price)
+  const parsed = attempt parse_decimal(t, scale: 3)
+  const json = as_decimal(j, scale: 3)
+  const price: Decimal[2] = 19.99
+  const back = json_decimal(price)
   parsed
 
 pub index(prices: Map[Decimal[2], Text], x: Decimal[2]) -> Bool = prices.has(key: x)

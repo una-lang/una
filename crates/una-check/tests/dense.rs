@@ -149,7 +149,7 @@ fn every_dense_contract_keeps_each_of_its_clauses() {
 fn a_function_that_computes_elements_keeps_no_refinement_in_its_result() {
     // Review of #1048, C1: `matrix_diagonal` places `+0` off the diagonal, so over a refined
     // element type its result is over the base; a view keeps the refinement.
-    let source = "module m\n\npub f(a: Array[I32 in 1..10]) -> I32\n  requires a.len >= 2\n=\n  let d = matrix_diagonal(values: a)\n  let x = d.get(row: 0, column: 1)\n  100 / x\n";
+    let source = "module m\n\npub f(a: Array[I32 in 1..10]) -> I32\n  requires a.len >= 2\n=\n  const d = matrix_diagonal(values: a)\n  const x = d.get(row: 0, column: 1)\n  100 / x\n";
     let (names, types) = run("0.5", source);
     assert!(names.is_empty() && types.diagnostics.is_empty());
     // Core's own text, which writes a refined type as `{base | refinements}` (review of #1048,
@@ -164,7 +164,7 @@ fn tensor_methods_take_the_function_of_their_rank() {
     // A list literal of r elements selects the prelude function of rank r, and its elements
     // are the arguments (`spec/29 §17`): the call in Core is to that function, with as many
     // index arguments as the literal has.
-    let source = "module m\n\npub f(t: Tensor[F64]) -> F64\n  requires t.rank == 3 and t.dim(axis: 0) > 1 and t.dim(axis: 1) > 2 and t.dim(axis: 2) > 3\n=\n  t.get(at: [1, 2, 3])\n\npub g() -> Tensor[I8]\n=\n  let zero: I8 = 0\n  tensor_filled(shape: [2, 2], value: zero)\n";
+    let source = "module m\n\npub f(t: Tensor[F64]) -> F64\n  requires t.rank == 3 and t.dim(axis: 0) > 1 and t.dim(axis: 1) > 2 and t.dim(axis: 2) > 3\n=\n  t.get(at: [1, 2, 3])\n\npub g() -> Tensor[I8]\n=\n  const zero: I8 = 0\n  tensor_filled(shape: [2, 2], value: zero)\n";
     let (names, types) = run("0.5", source);
     assert!(names.is_empty(), "{names:?}");
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
@@ -227,10 +227,10 @@ fn checking_dense_operators_is_linear_in_the_program() {
     // stays within a fixed ratio as the program grows tenfold (O(n)).
     let program = |n: usize| {
         let mut source = String::from(
-            "module m\n\npub f(a: Array[F64], b: Array[F64]) -> Array[F64]\n  requires a.len == b.len\n=\n  let x0 = a + b\n",
+            "module m\n\npub f(a: Array[F64], b: Array[F64]) -> Array[F64]\n  requires a.len == b.len\n=\n  const x0 = a + b\n",
         );
         for i in 1..n {
-            source.push_str(&format!("  let x{i} = x{} - b + 2.0 * a\n", i - 1));
+            source.push_str(&format!("  const x{i} = x{} - b + 2.0 * a\n", i - 1));
         }
         source.push_str(&format!("  x{}\n", n - 1));
         source
@@ -305,7 +305,8 @@ fn map_update_in_edition_0_4_is_u1001_with_the_advice_of_edition_0_5() {
             );
         }
     }
-    let (names, types) = run("0.5", source);
+    // Edition 0.5 binds with `var` (ADR 0137).
+    let (names, types) = run("0.5", &source.replace("let edit ", "var "));
     assert!(
         names.is_empty() && types.diagnostics.is_empty(),
         "{:?}",

@@ -39,7 +39,45 @@ pub fn parse(lexed: &Lexed, file: FileId, interner: &Interner) -> Parsed {
     let mut parsed = parse_plain(lexed, file, interner);
     // The exact rewrites of foreign syntax (ADR 0096 A).
     crate::rewrite::attach(&lexed.text, file, lexed.keywords, &mut parsed.errors);
+    if lexed.keywords < KeywordSet::V0_5 {
+        binding_words_help(&lexed.text, &mut parsed.errors);
+    }
     parsed
+}
+
+/// ADR 0137 rule 1: before edition 0.5, a U0101 on a line that starts with `const` and a
+/// lower-case name keeps its diagnostic and gains the help that names the edition of the
+/// binding words. (`var` there is U0103, whose help the lexer adds.) O(1) per error after the
+/// line is found, O(length of the line).
+fn binding_words_help(text: &str, errors: &mut [SyntaxError]) {
+    for error in errors.iter_mut() {
+        if error.code != Code::U0101 {
+            continue;
+        }
+        let at = error.span.start.min(text.len());
+        let start = text
+            .get(..at)
+            .and_then(|t| t.rfind('\n'))
+            .map_or(0, |i| i + 1);
+        let line = text.get(start..).unwrap_or("");
+        let line = line.split('\n').next().unwrap_or(line);
+        let content = line.trim_start_matches(' ');
+        let binding = content.strip_prefix("const ").is_some_and(|rest| {
+            rest.trim_start_matches(' ')
+                .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        });
+        if binding
+            && !error
+                .repairs
+                .iter()
+                .any(|repair| repair.description == crate::keywords::BINDING_WORDS_HELP)
+        {
+            error.repairs.push(SyntaxRepair {
+                description: crate::keywords::BINDING_WORDS_HELP.to_owned(),
+                edit: None,
+            });
+        }
+    }
 }
 
 /// [`parse`] without the rewrites of ADR 0096, which check their candidates with it.
@@ -53,7 +91,13 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
             .tokens
             .last()
             .map_or(Span::at(file, 0), |token| token.span),
-        lexical: lexed.errors.iter().map(|error| error.span.start).collect(),
+        // U7007 of `let` in edition 0.5 explains no parse error: the binding parses.
+        lexical: lexed
+            .errors
+            .iter()
+            .filter(|error| error.code != Code::U7007)
+            .map(|error| error.span.start)
+            .collect(),
         pos: 0,
         depth: 0,
         last_end: None,
@@ -994,11 +1038,12 @@ impl<'a> Parser<'a> {
         Some(renames)
     }
 
-    /// Whether the token at `at` is the name of a `let` (or `let edit`) binding.
+    /// Whether the token at `at` is the name of a binding statement: `let` or `let edit`, or
+    /// `const` or `var` in edition 0.5.
     fn binds_at(&self, at: usize) -> bool {
         let before = |back: usize| at.checked_sub(back).and_then(|i| self.tokens.get(i));
         match before(1).map(|t| &t.kind) {
-            Some(TokenKind::Keyword(Keyword::Let)) => true,
+            Some(TokenKind::Keyword(Keyword::Let | Keyword::Const | Keyword::Var)) => true,
             Some(TokenKind::Keyword(Keyword::Edit)) => {
                 matches!(
                     before(2).map(|t| &t.kind),
@@ -1276,6 +1321,14 @@ impl<'a> Parser<'a> {
                 self.measure_decl(public)?
             }
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_) => self.function_decl(public)?,
+            // Edition 0.5: a module has no mutable state (ADR 0137 rule 3).
+            TokenKind::Keyword(Keyword::Var) => {
+                let span = self.span();
+                return self.fail(
+                    span,
+                    "a module declares no `var`; a module value is a `const`",
+                );
+            }
             _ if public => {
                 return Err(self.unexpected(
                     "a kind, predicate, function, capability, handler or policy after `pub`",
@@ -2381,7 +2434,9 @@ impl<'a> Parser<'a> {
 
     fn statement(&mut self) -> Parse<Stmt> {
         match self.peek() {
-            TokenKind::Keyword(Keyword::Let) => Ok(Stmt::Let(Box::new(self.let_stmt()?))),
+            TokenKind::Keyword(Keyword::Let | Keyword::Const | Keyword::Var) => {
+                Ok(Stmt::Let(Box::new(self.let_stmt()?)))
+            }
             TokenKind::Keyword(Keyword::When) => {
                 Ok(Stmt::BlockExpr(BlockExpr::When(self.when_expr()?)))
             }
@@ -2708,9 +2763,32 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A binding statement: `let` or `let edit` up to edition 0.4, `const` or `var` in edition
+    /// 0.5 (`spec/02 §6`, ADR 0137 rule 2). The lexer reports a `let` of edition 0.5 (U7007),
+    /// and the parser reads it as in edition 0.4.
     fn let_stmt(&mut self) -> Parse<LetStmt> {
+        let word = self.peek().clone();
         let start = self.advance();
-        let editable = self.eat_keyword(Keyword::Edit);
+        let editable = match word {
+            TokenKind::Keyword(Keyword::Const | Keyword::Var) => {
+                if self.at_keyword(Keyword::Edit) {
+                    let span = self.span();
+                    let written = if word == TokenKind::Keyword(Keyword::Var) {
+                        "var"
+                    } else {
+                        "const"
+                    };
+                    return self.fail(
+                        span,
+                        format!(
+                            "a binding is `const` or `var`, without `edit`: write `var` for a binding that is reassigned, not `{written} edit`; `edit` marks parameters and arguments"
+                        ),
+                    );
+                }
+                word == TokenKind::Keyword(Keyword::Var)
+            }
+            _ => self.eat_keyword(Keyword::Edit),
+        };
         let name = self.binding_name("a name", Binding::Let)?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.ty()?)
@@ -3842,4 +3920,67 @@ enum Binding {
     Pattern,
     /// A loop variable.
     Loop,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Body, DeclKind, Stmt};
+    use crate::source::SourceDb;
+
+    fn parsed(text: &str, keywords: KeywordSet) -> (Lexed, Parsed) {
+        let mut sources = SourceDb::new();
+        let id = sources.add("m.una", text.as_bytes());
+        let mut interner = Interner::new();
+        let lexed = crate::lexer::lex_in(sources.file(id), id, &mut interner, keywords);
+        let parsed = parse(&lexed, id, &interner);
+        (lexed, parsed)
+    }
+
+    #[test]
+    fn const_and_var_are_the_binding_statements_of_edition_0_5() {
+        // ADR 0137 rule 2: `const x = e` is the `let x = e` of edition 0.4, and `var x = e` its
+        // `let edit x = e`; the tree is the same.
+        let text = "module m\n\nf() -> Int\n=\n  const a = 1\n  var b: Int = a\n  b\n";
+        let (lexed, parsed) = parsed(text, KeywordSet::V0_5);
+        assert!(lexed.errors.is_empty(), "{:?}", lexed.errors);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let DeclKind::Function(function) = &parsed.file.decls[0].kind else {
+            panic!("a function");
+        };
+        let Body::Block(block) = &function.body else {
+            panic!("a block");
+        };
+        let editable: Vec<(bool, bool)> = block
+            .stmts
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Stmt::Let(binding) => Some((binding.editable, binding.ty.is_some())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(editable, [(false, false), (true, true)]);
+    }
+
+    #[test]
+    fn const_gains_the_help_of_edition_0_5_before_it() {
+        // ADR 0137 rule 1: in editions 0.1 to 0.4, `const x = 1` keeps its U0101 and gains the
+        // help; another U0101 does not.
+        let text = "module m\n\nf() -> Int\n=\n  const x = 1\n  x\n\ng() -> Int\n=\n  1 +\n";
+        for keywords in [KeywordSet::V0_1, KeywordSet::V0_3, KeywordSet::V0_4] {
+            let (_, parsed) = parsed(text, keywords);
+            let helped: Vec<bool> = parsed
+                .errors
+                .iter()
+                .map(|error| {
+                    error
+                        .repairs
+                        .iter()
+                        .any(|r| r.description == crate::keywords::BINDING_WORDS_HELP)
+                })
+                .collect();
+            assert_eq!(helped, [true, false], "{keywords:?}: {:?}", parsed.errors);
+            assert!(parsed.errors.iter().all(|e| e.code == Code::U0101));
+        }
+    }
 }

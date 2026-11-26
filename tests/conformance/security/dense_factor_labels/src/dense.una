@@ -7,7 +7,7 @@ module dense
 pub place(t: Tensor[I64], i: secret Int) -> Tensor[I64]
   requires t.rank == 2 and 0 <= i and i < t.dim(axis: 0) and t.dim(axis: 1) > 0
 =
-  let edit u = t
+  var u = t
   edit u.set(at: [i, 0], item: 0)
   u
 

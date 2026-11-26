@@ -17,32 +17,32 @@ pub literal_first(x: F32) -> F32 = 0.1 + x * 2.5
 
 pub methods(x: F32, y: F32) -> F32
 =
-  let s = x.abs().sqrt() + x.fma(times: y, plus: 1.0) + x.rem(by: y)
-  let r = x.floor() + x.ceil() + x.trunc() + x.round_half_even() + x.round_half_away()
-  let c = x.clamp(lo: 0.5, hi: 1.5)
+  const s = x.abs().sqrt() + x.fma(times: y, plus: 1.0) + x.rem(by: y)
+  const r = x.floor() + x.ceil() + x.trunc() + x.round_half_even() + x.round_half_away()
+  const c = x.clamp(lo: 0.5, hi: 1.5)
   s + r + x.copy_sign(from: y) + x.ieee_min(other: y) + x.ieee_max(other: y) + c
 
 pub tests(x: F32, y: F32) -> Bool
 =
-  let ieee = x.ieee_eq(other: y) or x.ieee_lt(other: 0.5) or x.is_nan() or x.is_finite() or x.is_zero()
+  const ieee = x.ieee_eq(other: y) or x.ieee_lt(other: 0.5) or x.is_nan() or x.is_finite() or x.is_zero()
   ieee or x == y or x < y or x >= 1.5 or 0.25 < x
 
 pub conversions(n: Int, b: U8, x: F32, d: F64) -> Option[Int]
 =
-  let f = n.to_f32() + b.to_f32() + d.to_f32()
-  let wide: F64 = x.to_f64() + d
-  let bits: U32 = x.to_bits()
-  let back = f32_from_bits(bits: bits)
+  const f = n.to_f32() + b.to_f32() + d.to_f32()
+  const wide: F64 = x.to_f64() + d
+  const bits: U32 = x.to_bits()
+  const back = f32_from_bits(bits: bits)
   (f + back + wide.to_f32()).floor().to_int_exact()
 
 pub specials() -> List[F32] = [nan().to_f32(), infinity().to_f32(), -infinity().to_f32()]
 
 pub keyed(xs: List[F32]) -> Map[F32, Text]
 =
-  let sorted = sort(xs)
-  let low: F32 = 1.0
-  let three: F32 = 3.0
-  let high = max(low, b: three)
+  const sorted = sort(xs)
+  const low: F32 = 1.0
+  const three: F32 = 3.0
+  const high = max(low, b: three)
   empty_map().with(key: low, value: "low {high} {contains(sorted, item: high)}")
 
 pub heavier(a: Sample, b: Sample) -> Bool = a.value > b.value or a == b

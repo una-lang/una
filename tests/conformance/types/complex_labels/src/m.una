@@ -7,11 +7,11 @@ module m
 pub built(x: secret F64, y: F64) -> Unit
   uses @console: Console[print]
 =
-  let z = complex(re: y, im: x) * complex(re: 1.0, im: 0.0)
+  const z = complex(re: y, im: x) * complex(re: 1.0, im: 0.0)
   @console.print("{z.re}")
 
 pub scaled(x: secret F32, y: F32) -> Unit
   uses @console: Console[print]
 =
-  let z = complex(re: y, im: y).scale(by: x)
+  const z = complex(re: y, im: y).scale(by: x)
   @console.print("{z}")

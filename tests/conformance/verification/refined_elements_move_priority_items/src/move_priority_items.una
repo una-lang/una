@@ -1,8 +1,8 @@
 -- test: movement priority_items: a priority queue's `items()`, `peek()` and `peek_priority()` of a `PriorityQueue[Int, Int]` bound by a `let` annotated `List[Pos]` and `Option[Pos]` are `refinement` obligations, refuted, while the same movements at the same refined types give none (ADR 0103 rules 3 and 4, ADR 0119 V6)
 -- spec: spec/12 §3
--- expect: error U5001 at src/move_priority_items.una:21:23
--- expect: error U5001 at src/move_priority_items.una:22:24
--- expect: error U5001 at src/move_priority_items.una:23:24
+-- expect: error U5001 at src/move_priority_items.una:21:25
+-- expect: error U5001 at src/move_priority_items.una:22:26
+-- expect: error U5001 at src/move_priority_items.una:23:26
 module move_priority_items
 
 import std.collections (PriorityQueue)
@@ -11,14 +11,14 @@ pub kind Pos = Int where it > 0
 
 pub kept(q: PriorityQueue[Pos, Pos]) -> Int
 =
-  let xs: List[Pos] = q.items()
-  let o: Option[Pos] = q.peek()
-  let p: Option[Pos] = q.peek_priority()
+  const xs: List[Pos] = q.items()
+  const o: Option[Pos] = q.peek()
+  const p: Option[Pos] = q.peek_priority()
   xs.len
 
 pub moved(q: PriorityQueue[Int, Int]) -> Int
 =
-  let ys: List[Pos] = q.items()
-  let u: Option[Pos] = q.peek()
-  let v: Option[Pos] = q.peek_priority()
+  const ys: List[Pos] = q.items()
+  const u: Option[Pos] = q.peek()
+  const v: Option[Pos] = q.peek_priority()
   ys.len

@@ -11,7 +11,7 @@ import std.collections (BitSet, empty_bit_set)
 
 pub proven(i: Int) -> Bool
 =
-  let edit b = empty_bit_set(size: 100)
+  var b = empty_bit_set(size: 100)
   edit b.add(item: 12)
   edit b.add(item: 99)
   edit b.add(item: 0)
@@ -22,7 +22,7 @@ pub proven(i: Int) -> Bool
 
 pub refuted_high() -> Bool
 =
-  let edit b = empty_bit_set(size: 100)
+  var b = empty_bit_set(size: 100)
   edit b.add(item: 100)
   b.has(item: 100)
 
@@ -37,8 +37,8 @@ pub sizes() -> BitSet = empty_bit_set(size: 8).union(other: empty_bit_set(size: 
 
 pub same_size() -> Bool
 =
-  let a = empty_bit_set(size: 8).with(item: 1)
-  let c = empty_bit_set(size: 8).with(item: 7)
+  const a = empty_bit_set(size: 8).with(item: 1)
+  const c = empty_bit_set(size: 8).with(item: 7)
   a.union(other: c).is_subset(of: a.intersection(other: c).difference(other: a))
 
 pub negative() -> BitSet = empty_bit_set(size: -1)

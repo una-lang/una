@@ -2,12 +2,12 @@
 -- spec: spec/29 §17
 -- grant: console
 -- expect: run-output "starting"
--- expect: error U6003 at src/dense.una:12:13
+-- expect: error U6003 at src/dense.una:12:15
 module dense
 
 pub main() -> Unit
   uses @console: Console[print]
 =
   @console.print("starting")
-  let big = tensor_filled(shape: [100000, 100000], value: 0.0)
+  const big = tensor_filled(shape: [100000, 100000], value: 0.0)
   @console.print("rank {big.rank}")

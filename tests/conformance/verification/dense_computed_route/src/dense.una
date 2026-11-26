@@ -1,6 +1,6 @@
 -- test: a type variable solved to a refined element type after a call of a function that computes new elements does not carry the refinement into the call's result: the binding of the result gets a refinement obligation that the call's facts cannot prove, and the division by an element of it is not proven, so the program is refused, never accepted on a false fact (review of the first step, route 2)
 -- spec: spec/29 §17
--- expect: error U5001 at src/dense.una:12:28
+-- expect: error U5001 at src/dense.una:12:30
 -- expect: error U5002 at src/dense.una:15:5
 module dense
 
@@ -9,9 +9,9 @@ pub pair[A, B](f: fn(A) -> B, g: fn(Int) -> A) -> B = f(g(0))
 pub routed(a: Array[I32 in 1..10]) -> I32
   requires a.len >= 2
 =
-  let d = pair(f: fn(v) -> matrix_diagonal(values: v), g: fn(n) -> a)
+  const d = pair(f: fn(v) -> matrix_diagonal(values: v), g: fn(n) -> a)
   if d.rows > 1 and d.columns > 1
-    let x = d.get(row: 0, column: 1)
+    const x = d.get(row: 0, column: 1)
     100 / x
   else
     1

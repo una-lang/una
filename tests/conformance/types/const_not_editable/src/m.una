@@ -1,0 +1,12 @@
+-- test: in edition 0.5, a `const` binding cannot be assigned (U2019), and a `var` binding can, with the same rules as `let` and `let edit` in edition 0.4 (ADR 0137 rules 2 and 4)
+-- spec: spec/17 §2
+-- expect: error U2019 at src/m.una:11:3
+module m
+
+pub f() -> Int
+=
+  var v = 1
+  v = 2
+  const c = v
+  c = 3
+  c

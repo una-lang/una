@@ -1,32 +1,32 @@
 -- test: the scale of `parse_decimal` and `as_decimal` is a literal from 0 to 38 at the parameter `scale`, however the argument binds it: a punned or labeled variable, a negative or an out-of-range scale is U2037, so no run-time value sets a scale
 -- spec: spec/29 §16
--- expect: error U2037 at src/m.una:13:41
--- expect: error U2037 at src/m.una:18:48
--- expect: error U2037 at src/m.una:23:48
+-- expect: error U2037 at src/m.una:13:43
+-- expect: error U2037 at src/m.una:18:50
+-- expect: error U2037 at src/m.una:23:50
 -- expect: error U2037 at src/m.una:26:54
--- expect: error U2037 at src/m.una:31:40
+-- expect: error U2037 at src/m.una:31:42
 module m
 
 pub punned(t: Text) -> Bool
 =
-  let scale = 2
-  let parsed = attempt parse_decimal(t, scale)
+  const scale = 2
+  const parsed = attempt parse_decimal(t, scale)
   parsed.is_ok()
 
 pub labeled(t: Text, s: Int) -> Bool
 =
-  let parsed = attempt parse_decimal(t, scale: s)
+  const parsed = attempt parse_decimal(t, scale: s)
   parsed.is_ok()
 
 pub wide(t: Text) -> Bool
 =
-  let parsed = attempt parse_decimal(t, scale: 39)
+  const parsed = attempt parse_decimal(t, scale: 39)
   parsed.is_ok()
 
 pub negative(j: Json) -> Bool = as_decimal(j, scale: -1).is_some()
 
 pub method(t: Text) -> Bool
 =
-  let scale = 2
-  let parsed = attempt t.parse_decimal(scale)
+  const scale = 2
+  const parsed = attempt t.parse_decimal(scale)
   parsed.is_ok()

@@ -9,6 +9,6 @@ pub measure Second
 
 pub bad(a: Array[F64 of Meter], t: F64 of Second) -> Array[F64 of Meter]
 =
-  let edit b = a
+  var b = a
   edit b.scale(by: t)
   b

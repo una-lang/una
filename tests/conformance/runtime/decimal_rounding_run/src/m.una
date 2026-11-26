@@ -12,7 +12,7 @@ module m
 
 d(t: Text) -> Decimal[2]
 =
-  let parsed = attempt parse_decimal(t, scale: 2)
+  const parsed = attempt parse_decimal(t, scale: 2)
   when parsed
     is Ok(x) -> x
     is Err(e) -> 0.00
@@ -20,31 +20,31 @@ d(t: Text) -> Decimal[2]
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let halfeven = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const halfeven = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: HalfEven))
   @console.print("{halfeven}")
-  let halfawayfromzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const halfawayfromzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: HalfAwayFromZero))
   @console.print("{halfawayfromzero}")
-  let halftowardzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const halftowardzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: HalfTowardZero))
   @console.print("{halftowardzero}")
-  let towardzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const towardzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: TowardZero))
   @console.print("{towardzero}")
-  let awayfromzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const awayfromzero = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: AwayFromZero))
   @console.print("{awayfromzero}")
-  let towardpositive = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const towardpositive = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: TowardPositive))
   @console.print("{towardpositive}")
-  let towardnegative = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
+  const towardnegative = map([d("2.25"), d("2.35"), d("-2.25"), d("-2.35"), d("2.21"), d("-2.29"),
       d("2.20")
     ], each: fn(x) -> x.rescale(scale: 1, rounding: TowardNegative))
   @console.print("{towardnegative}")

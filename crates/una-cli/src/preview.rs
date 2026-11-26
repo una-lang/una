@@ -88,7 +88,7 @@ pub(crate) fn counted_in(construct: Construct) -> &'static str {
         | Construct::Drive => "Core IR, imports and project files",
         Construct::MapUpdate => "the checker",
         Construct::Diverges => "the syntax tree",
-        Construct::SimdName | Construct::ArgumentLabels => "the tokens",
+        Construct::SimdName | Construct::ArgumentLabels | Construct::ConstVar => "the tokens",
         Construct::GrantLimits
         | Construct::ItaManifest
         | Construct::ItaLock
@@ -215,7 +215,8 @@ fn syntax(file: &una_syntax::ast::File, interner: &Interner, sites: &mut Sites) 
     }
 }
 
-/// The words of a root module: `simd` as a name, and `with:` and `and:` as labels.
+/// The words of a root module: `simd` as a name, `with:` and `and:` as labels, and the
+/// binding words `const` and `var`.
 fn tokens(package: &Package, id: FileId, edition: una_project::Edition, sites: &mut Sites) {
     let mut interner = Interner::new();
     let lexed = una_syntax::lex_in(
@@ -232,6 +233,10 @@ fn tokens(package: &Package, id: FileId, edition: una_project::Edition, sites: &
                 if word == simd && edition.has_collections_and_numerics() =>
             {
                 sites.add(Construct::SimdName, token.span);
+            }
+            // ADR 0137: each binding written `const` or `var`.
+            TokenKind::Keyword(Keyword::Const | Keyword::Var) => {
+                sites.add(Construct::ConstVar, token.span);
             }
             TokenKind::Keyword(Keyword::With | Keyword::And)
                 if tokens

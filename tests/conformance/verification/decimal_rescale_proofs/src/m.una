@@ -6,218 +6,218 @@ module m
 pub halfeven_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: HalfEven) == 2.2
 
 pub halfeven_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: HalfEven) == -2.2
 
 pub halfeven_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: HalfEven) == 2.4
 
 pub halfeven_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: HalfEven) == 2.2
 
 pub halfeven_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: HalfEven) == -2.3
 
 pub halfawayfromzero_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: HalfAwayFromZero) == 2.3
 
 pub halfawayfromzero_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: HalfAwayFromZero) == -2.3
 
 pub halfawayfromzero_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: HalfAwayFromZero) == 2.4
 
 pub halfawayfromzero_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: HalfAwayFromZero) == 2.2
 
 pub halfawayfromzero_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: HalfAwayFromZero) == -2.3
 
 pub halftowardzero_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: HalfTowardZero) == 2.2
 
 pub halftowardzero_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: HalfTowardZero) == -2.2
 
 pub halftowardzero_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: HalfTowardZero) == 2.3
 
 pub halftowardzero_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: HalfTowardZero) == 2.2
 
 pub halftowardzero_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: HalfTowardZero) == -2.3
 
 pub towardzero_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: TowardZero) == 2.2
 
 pub towardzero_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: TowardZero) == -2.2
 
 pub towardzero_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: TowardZero) == 2.3
 
 pub towardzero_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: TowardZero) == 2.2
 
 pub towardzero_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: TowardZero) == -2.2
 
 pub awayfromzero_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: AwayFromZero) == 2.3
 
 pub awayfromzero_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: AwayFromZero) == -2.3
 
 pub awayfromzero_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: AwayFromZero) == 2.4
 
 pub awayfromzero_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: AwayFromZero) == 2.3
 
 pub awayfromzero_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: AwayFromZero) == -2.3
 
 pub towardpositive_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: TowardPositive) == 2.3
 
 pub towardpositive_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: TowardPositive) == -2.2
 
 pub towardpositive_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: TowardPositive) == 2.4
 
 pub towardpositive_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: TowardPositive) == 2.3
 
 pub towardpositive_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: TowardPositive) == -2.2
 
 pub towardnegative_2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: TowardNegative) == 2.2
 
 pub towardnegative_n2_25() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.25
+  const x: Decimal[2] = -2.25
   x.rescale(scale: 1, rounding: TowardNegative) == -2.3
 
 pub towardnegative_2_35() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.35
+  const x: Decimal[2] = 2.35
   x.rescale(scale: 1, rounding: TowardNegative) == 2.3
 
 pub towardnegative_2_21() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.21
+  const x: Decimal[2] = 2.21
   x.rescale(scale: 1, rounding: TowardNegative) == 2.2
 
 pub towardnegative_n2_29() -> Bool
   ensures result
 =
-  let x: Decimal[2] = -2.29
+  const x: Decimal[2] = -2.29
   x.rescale(scale: 1, rounding: TowardNegative) == -2.3
 
 pub identity(x: Decimal[2]) -> Bool
   ensures result
 =
-  let q = x.divide(by: 3.00, scale: 0, rounding: TowardZero)
-  let r = x.remainder(by: 3.00, scale: 0)
+  const q = x.divide(by: 3.00, scale: 0, rounding: TowardZero)
+  const r = x.remainder(by: 3.00, scale: 0)
   x == 3.00 * q + r
 
 pub sign(x: Decimal[2]) -> Bool
@@ -229,5 +229,5 @@ pub sign(x: Decimal[2]) -> Bool
 pub wrong() -> Bool
   ensures result
 =
-  let x: Decimal[2] = 2.25
+  const x: Decimal[2] = 2.25
   x.rescale(scale: 1, rounding: HalfEven) == 2.3

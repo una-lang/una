@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod binding_words;
 mod codes;
 mod diagnostic;
 mod human;

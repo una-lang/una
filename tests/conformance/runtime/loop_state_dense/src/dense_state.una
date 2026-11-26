@@ -12,38 +12,38 @@ import std.collections (Set, empty_set)
 --- `a` with each element doubled.
 doubled(a: Array[F64]) -> Array[F64]
 =
-  let edit out = a
+  var out = a
   for i in 0..<out.len
-    let x = out.get(index: i)
+    const x = out.get(index: i)
     edit out.set(index: i, item: x * 2.0)
   out
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let zero = 0.0
-  let edit a = array_filled(length: 3, value: zero)
-  let kept = a
-  let first = fn() -> a.at(index: 0)
+  const zero = 0.0
+  var a = array_filled(length: 3, value: zero)
+  const kept = a
+  const first = fn() -> a.at(index: 0)
   for i in 0..<a.len
     edit a.set(index: i, item: i.to_f64() + 1.0)
   @console.print("array: {a} / {kept} / {first()}")
-  let edit m = matrix_filled(rows: 2, columns: 2, value: zero)
-  let before = m
+  var m = matrix_filled(rows: 2, columns: 2, value: zero)
+  const before = m
   for r in 0..<m.rows
     for c in 0..<m.columns
-      let v = r * 2 + c
+      const v = r * 2 + c
       edit m.set(row: r, column: c, item: v.to_f64())
   @console.print("matrix: {m} / {before}")
-  let edit s: Set[Int] = empty_set()
+  var s: Set[Int] = empty_set()
   edit s.add(item: 5)
-  let kept_set = s
+  const kept_set = s
   for x in [3, 1, 3]
     edit s.add(item: x)
   for x in [5]
     edit s.remove(item: x)
   @console.print("set: {s} / {kept_set}")
-  let sample: Array[F64] = array([1.0, 2.0, 3.0])
-  let twice = doubled(sample)
-  let again = doubled(sample)
+  const sample: Array[F64] = array([1.0, 2.0, 3.0])
+  const twice = doubled(sample)
+  const again = doubled(sample)
   @console.print("doubled: {twice} {again} / {sample}")

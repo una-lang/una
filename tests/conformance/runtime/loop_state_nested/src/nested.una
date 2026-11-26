@@ -14,10 +14,10 @@ module nested
 --- `xs` with `rounds` added to each item, one at a time, by two levels of loops.
 raised(xs: List[Int], rounds: Int) -> List[Int]
 =
-  let edit out = xs
+  var out = xs
   for r in 0..<rounds
     for i in 0..<out.len
-      let x = out.at(index: i).or_else(default: 0)
+      const x = out.at(index: i).or_else(default: 0)
       edit out.set(index: i, item: x + 1)
   out
 
@@ -25,62 +25,62 @@ raised(xs: List[Int], rounds: Int) -> List[Int]
 --- state, then another raises each item by one.
 layered(xs: List[Int], depth: Int) -> List[Int]
 =
-  let edit out = xs
+  var out = xs
   for level in 0..<depth
     out = layered(out, depth: level)
   for i in 0..<out.len
-    let x = out.at(index: i).or_else(default: 0)
+    const x = out.at(index: i).or_else(default: 0)
     edit out.set(index: i, item: x + 1)
   out
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let edit grid = [0, 0, 0]
+  var grid = [0, 0, 0]
   for r in 0..<2
     for i in 0..<grid.len
-      let x = grid.at(index: i).or_else(default: 0)
+      const x = grid.at(index: i).or_else(default: 0)
       edit grid.set(index: i, item: x + i + r)
   @console.print("nested: {grid}")
-  let edit pairs: Map[Int, Int] = empty_map()
+  var pairs: Map[Int, Int] = empty_map()
   for a in [1, 2]
     for b in [10, 20]
       edit pairs.update(key: a * b, initial: 0, change: fn(n) -> n + a)
   @console.print("nested map: {pairs}")
-  let edit doubling = [1, 2]
-  let edit firsts = 0
+  var doubling = [1, 2]
+  var firsts = 0
   for r in 0..<3
-    let snapshot = doubling
+    const snapshot = doubling
     for i in 0..<doubling.len
-      let x = doubling.at(index: i).or_else(default: 0)
+      const x = doubling.at(index: i).or_else(default: 0)
       edit doubling.set(index: i, item: x * 2)
     firsts = firsts + snapshot.at(index: 0).or_else(default: 0)
   @console.print("snapshots: {firsts} / {doubling}")
-  let edit row = [1, 2, 3]
+  var row = [1, 2, 3]
   for i in 0..<row.len
-    let x = row.at(index: i).or_else(default: 0)
+    const x = row.at(index: i).or_else(default: 0)
     edit row.set(index: i, item: x + 1)
   for i in 0..<row.len
-    let x = row.at(index: i).or_else(default: 0)
+    const x = row.at(index: i).or_else(default: 0)
     edit row.set(index: i, item: x * 3)
   @console.print("in a row: {row}")
-  let edit col = [1, 2, 3]
-  let first_copy = col
+  var col = [1, 2, 3]
+  const first_copy = col
   for i in 0..<col.len
-    let x = col.at(index: i).or_else(default: 0)
+    const x = col.at(index: i).or_else(default: 0)
     edit col.set(index: i, item: x + 1)
-  let second_copy = col
+  const second_copy = col
   for i in 0..<col.len
-    let x = col.at(index: i).or_else(default: 0)
+    const x = col.at(index: i).or_else(default: 0)
     edit col.set(index: i, item: x * 3)
   @console.print("copies: {first_copy} {second_copy} {col}")
-  let base = [1, 2, 3]
-  let once = raised(base, rounds: 2)
-  let twice = raised(base, rounds: 2)
+  const base = [1, 2, 3]
+  const once = raised(base, rounds: 2)
+  const twice = raised(base, rounds: 2)
   @console.print("again: {once} {twice} / {base}")
-  let more = raised(once, rounds: 1)
+  const more = raised(once, rounds: 1)
   @console.print("moved: {more}")
-  let start = [0, 10]
-  let deep_once = layered(start, depth: 3)
-  let deep_twice = layered(start, depth: 3)
+  const start = [0, 10]
+  const deep_once = layered(start, depth: 3)
+  const deep_twice = layered(start, depth: 3)
   @console.print("re-entered: {deep_once} {deep_twice} / {start}")

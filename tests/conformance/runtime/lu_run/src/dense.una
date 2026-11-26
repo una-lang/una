@@ -11,22 +11,22 @@ module dense
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let xs: List[F64] = [4.0, 3.0, 6.0, 3.0]
-  let a = matrix(rows: 2, columns: 2, elements: xs)
-  let rhs: List[F64] = [3.0, 3.0]
-  let b = matrix(rows: 2, columns: 1, elements: rhs)
-  let shown = when a.lu()
+  const xs: List[F64] = [4.0, 3.0, 6.0, 3.0]
+  const a = matrix(rows: 2, columns: 2, elements: xs)
+  const rhs: List[F64] = [3.0, 3.0]
+  const b = matrix(rows: 2, columns: 1, elements: rhs)
+  const shown = when a.lu()
     is Some(f) -> "lu {f} {f.size} {f.pivots()} {f.factors()} {f.solve(rhs: b)} {f.factors().solve_lower(rhs: b, unit_diagonal: true)} {f == f}"
     is None -> "singular"
   @console.print(shown)
-  let v: Array[F64] = array(rhs)
-  let flat: List[F64] = [1.0, 2.0, 2.0, 4.0]
-  let s = matrix(rows: 2, columns: 2, elements: flat)
+  const v: Array[F64] = array(rhs)
+  const flat: List[F64] = [1.0, 2.0, 2.0, 4.0]
+  const s = matrix(rows: 2, columns: 2, elements: flat)
   @console.print("solve {a.solve_array(rhs: v)} {a.solve(rhs: b)} {s.lu()} {s.solve(rhs: b)}")
-  let odd: List[F64] = [nan(), 1.0, 1.0, 1.0]
+  const odd: List[F64] = [nan(), 1.0, 1.0, 1.0]
   @console.print("nan {matrix(rows: 2, columns: 2, elements: odd).lu()}")
-  let spd: List[F64] = [4.0, 2.0, 2.0, 3.0]
-  let bad: List[F64] = [1.0, 2.0, 2.0, 1.0]
+  const spd: List[F64] = [4.0, 2.0, 2.0, 3.0]
+  const bad: List[F64] = [1.0, 2.0, 2.0, 1.0]
   @console.print("cholesky {matrix(rows: 2, columns: 2, elements: spd).cholesky()} {matrix(rows: 2, columns: 2, elements: bad).cholesky()}")
-  let upper: List[F64] = [2.0, 1.0, 0.0, 4.0]
+  const upper: List[F64] = [2.0, 1.0, 0.0, 4.0]
   @console.print("upper {matrix(rows: 2, columns: 2, elements: upper).solve_upper(rhs: b, unit_diagonal: false)}")

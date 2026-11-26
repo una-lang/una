@@ -202,7 +202,7 @@ import std.collections (Stack, empty_stack)
 
 pub pages() -> Stack[Text]
 =
-  let edit pages: Stack[Text] = empty_stack()
+  var pages: Stack[Text] = empty_stack()
   edit pages.push(item: \"home\")
   pages
 ";
@@ -211,7 +211,7 @@ const MAP_UPDATE: &str = "module m
 
 pub counts() -> Map[Text, Int]
 =
-  let edit counts: Map[Text, Int] = empty_map()
+  var counts: Map[Text, Int] = empty_map()
   edit counts.update(key: \"a\", initial: 0, change: fn(n) -> n + 1)
   counts
 ";
@@ -396,6 +396,12 @@ const CASES: &[Case] = &[
         edition: "0.5",
         sections: "",
         module: "module m\n\npub make(re: F64, im: F64) -> Complex[F64] = complex(re, im)\n",
+    },
+    Case {
+        construct: "const and var",
+        edition: "0.5",
+        sections: "",
+        module: "module m\n\npub double(x: Int) -> Int\n=\n  var y = x\n  y = y + x\n  y\n",
     },
 ];
 

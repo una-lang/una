@@ -2,6 +2,8 @@
 
 Status: Normative, v0.1.
 
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+
 Errors are values. There are no exceptions, no panics and no implicit propagation: every failure is declared in a header and handled at the line where it can occur.
 
 ## 1. Error kinds

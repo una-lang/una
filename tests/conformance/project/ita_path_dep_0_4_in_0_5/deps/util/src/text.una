@@ -1,0 +1,8 @@
+module text
+
+pub twice(word: Text) -> Text
+=
+  let edit both = word
+  both = "{both}{word}"
+  let joined = both
+  joined

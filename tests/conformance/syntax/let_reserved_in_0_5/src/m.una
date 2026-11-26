@@ -1,0 +1,17 @@
+-- test: in edition 0.5, `let` is reserved: each `let`, `let edit` and top-level `let` is U7007 at the word, with the exact rewrite to `const` or `var`; module constants are not in this release, so the top-level `let` is U0101 too (ADR 0137 rule 1)
+-- spec: spec/01 §5
+-- expect: error U7007 at src/m.una:11:3
+-- expect: error U7007 at src/m.una:12:3
+-- expect: error U7007 at src/m.una:17:1
+-- expect: error U0101 at src/m.una:17:1
+module m
+
+pub total(xs: List[Int]) -> Int
+=
+  let edit sum = 0
+  let k = 2
+  for x in xs
+    sum = sum + x * k
+  sum
+
+let limit = 3
