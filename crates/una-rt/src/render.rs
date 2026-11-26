@@ -103,6 +103,10 @@ pub struct Failure {
     pub driven: Option<String>,
 }
 
+/// What U6001 says of a value whose text does not fit the run's memory budget (`spec/11 §7`,
+/// #1223): it is named rather than written, as the interpreter names it.
+pub const OVER_BUDGET: &str = "<a value whose text exceeds the memory budget>";
+
 /// The types the program renders, by index.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Types(pub Vec<Shape>);
@@ -136,26 +140,30 @@ impl Types {
 
     /// The failure `word`, of the kind at `ty`, as U6001 shows it: its variant, and its fields
     /// that are `public`.
-    pub fn shown(&self, ty: usize, word: i64) -> Option<String> {
+    /// A field whose text does not fit the memory budget is named, [`OVER_BUDGET`], as the
+    /// interpreter names it (`spec/11 §7`, #1223).
+    pub fn shown(&self, ty: usize, word: i64) -> String {
         let Some(variant) = self.variant(ty, word) else {
-            return Some("?".to_owned());
+            return "?".to_owned();
         };
-        let fields: Option<Vec<String>> = variant
+        let fields: Vec<String> = variant
             .fields
             .iter()
             .enumerate()
             .filter(|(_, field)| field.shown)
             .map(|(index, field)| {
                 let value = field_word(word, index);
-                Some(format!("{}: {}", field.name, self.render(field.ty, value)?))
+                let text = self
+                    .render(field.ty, value)
+                    .unwrap_or_else(|| OVER_BUDGET.to_owned());
+                format!("{}: {}", field.name, text)
             })
             .collect();
-        let fields = fields?;
-        Some(if fields.is_empty() {
+        if fields.is_empty() {
             variant.name.clone()
         } else {
             format!("{}({})", variant.name, fields.join(", "))
-        })
+        }
     }
 
     /// `word`, a value of the type at `ty`, in its Una form, or `<redacted:level>` when
@@ -169,52 +177,11 @@ impl Types {
     }
 
     /// The Una form of `word`, a value of the type at `ty`, with the fields labeled above
-    /// `public` redacted, as traces and diagnostics show it. `None` for a value that holds an
-    /// `Int` of more than `MAX_INT_DIGITS` digits, which is never written (`spec/11 §7`,
-    /// #923): the caller aborts the run with U6003.
+    /// `public` redacted, as traces and diagnostics show it. An `Int` of any size is written,
+    /// in O(M(d) log d) for its d digits, once the run has room for its text ([`int_written`]):
+    /// `None` when it has not, and the caller aborts the run with U6003 (`spec/11 §7`, #1223).
     pub fn render(&self, ty: usize, word: i64) -> Option<String> {
         render(&self.0, ty, word, true, &[], None)
-    }
-
-    /// Whether a value of the type at `ty`, written in a trace with its fields labeled above
-    /// `public` redacted, can hold an `Int`: only such a value can make [`Types::render`]
-    /// refuse it (`spec/11 §7`). A run that records no trace still checks the values an event
-    /// would show, and needs to write only those that can (#1550). It over-approximates: a
-    /// `true` only means the value is written to decide. O(types reachable from `ty`).
-    pub fn writes_int(&self, ty: usize) -> bool {
-        let mut seen = std::collections::BTreeSet::new();
-        let mut pending = vec![ty];
-        while let Some(ty) = pending.pop() {
-            if !seen.insert(ty) {
-                continue;
-            }
-            match self.0.get(ty) {
-                Some(Shape::Int) => return true,
-                Some(
-                    Shape::List(item)
-                    | Shape::Seq(item)
-                    | Shape::Set(item)
-                    | Shape::HashSet(item)
-                    | Shape::Dense(item),
-                ) => pending.push(*item),
-                Some(Shape::Map(key, value) | Shape::HashMap(key, value)) => {
-                    pending.extend([*key, *value]);
-                }
-                // A field labeled above `public` is written `<redacted:level>`, unless it is
-                // `unit`, which holds no `Int` either.
-                Some(Shape::Data(variants)) => pending.extend(
-                    variants
-                        .iter()
-                        .flat_map(|variant| &variant.fields)
-                        .filter(|field| field.redacted.is_none())
-                        .map(|field| field.ty),
-                ),
-                // A type parameter is written `?` in a trace, which passes no descriptors; the
-                // other shapes write no `Int` of unbounded digits.
-                _ => {}
-            }
-        }
-        false
     }
 
     /// `word` in an event of the host's `HttpServer`: `<redacted:level>` when `redacted` names a
@@ -276,7 +243,7 @@ fn render(
     while let Some(task) = tasks.pop() {
         let (ty, word, params) = match task {
             Task::Text(text) => {
-                out.push_str(&text);
+                put(&mut out, &text)?;
                 continue;
             }
             Task::Value(ty, word, params) => (ty, word, params),
@@ -284,30 +251,34 @@ fn render(
         // The parts of a list or a variant, in order; pushed in reverse onto the stack.
         let mut parts = Vec::new();
         match types.get(ty) {
-            Some(Shape::Int) => out.push_str(&una_core::int_text(&values::int_value(word))?),
-            Some(Shape::Decimal(scale)) => {
-                out.push_str(&una_core::decimal::render(&values::int_value(word), *scale))
-            }
-            Some(Shape::Bool) => out.push_str(if word != 0 { "true" } else { "false" }),
-            Some(Shape::Text) => out.push_str(&una_core::quote(&values::text_value(word))),
-            Some(Shape::Unit) => out.push_str("unit"),
+            Some(Shape::Int) => put(&mut out, &int_written(word)?)?,
+            Some(Shape::Decimal(scale)) => put(
+                &mut out,
+                &decimal_written(&values::int_value(word), *scale)?,
+            )?,
+            Some(Shape::Bool) => put(&mut out, if word != 0 { "true" } else { "false" })?,
+            Some(Shape::Text) => put(&mut out, &una_core::quote(&values::text_value(word)))?,
+            Some(Shape::Unit) => put(&mut out, "unit")?,
             // Interpolation writes no bytes of a hash (ADR 0068, amendment of 2026-10-06).
             Some(Shape::F64) => {
-                out.push_str(&una_core::float::render(values::f64_value(word)));
+                put(&mut out, &una_core::float::render(values::f64_value(word)))?;
             }
             Some(Shape::F32) => {
-                out.push_str(&una_core::float32::render(values::f32_value(word)));
+                put(
+                    &mut out,
+                    &una_core::float32::render(values::f32_value(word)),
+                )?;
             }
-            Some(Shape::Hashed) if !redact => out.push_str("<hashed>"),
+            Some(Shape::Hashed) if !redact => put(&mut out, "<hashed>")?,
             Some(Shape::Hashed) => {
-                out.push_str("hashed:");
-                out.push_str(&una_interp::hex(&values::bytes(word)));
+                put(&mut out, "hashed:")?;
+                put(&mut out, &una_interp::hex(&values::bytes(word)))?;
             }
-            Some(Shape::Fn) => out.push_str("<function>"),
+            Some(Shape::Fn) => put(&mut out, "<function>")?,
             // Nothing of a reply right is ever written (ADR 0123 rule 1).
-            Some(Shape::Right) => out.push_str("<reply-right>"),
+            Some(Shape::Right) => put(&mut out, "<reply-right>")?,
             Some(Shape::List(item)) => {
-                out.push('[');
+                put(&mut out, "[")?;
                 for index in 0..values::count(word) {
                     if index > 0 {
                         parts.push(Task::Text(", ".to_owned()));
@@ -324,7 +295,7 @@ fn render(
             // as lists; a set ascending, in braces (`spec/28 §4`).
             Some(Shape::Seq(item) | Shape::Set(item)) => {
                 let set = matches!(types.get(ty), Some(Shape::Set(_)));
-                out.push(if set { '{' } else { '[' });
+                put(&mut out, if set { "{" } else { "[" })?;
                 for (index, word) in values::collection_words(word).into_iter().enumerate() {
                     if index > 0 {
                         parts.push(Task::Text(", ".to_owned()));
@@ -339,11 +310,11 @@ fn render(
                     .iter()
                     .map(ToString::to_string)
                     .collect();
-                out.push_str(&format!("{{{}}}", members.join(", ")));
+                put(&mut out, &format!("{{{}}}", members.join(", ")))?;
             }
             // `{k: v, ...}` and `{a, b}` in insertion order, `{}` when empty (ADR 0119 rule 10).
             Some(Shape::HashMap(key, value)) => {
-                out.push('{');
+                put(&mut out, "{")?;
                 for (index, (k, v)) in values::hash_entries(word).into_iter().enumerate() {
                     if index > 0 {
                         parts.push(Task::Text(", ".to_owned()));
@@ -355,7 +326,7 @@ fn render(
                 parts.push(Task::Text("}".to_owned()));
             }
             Some(Shape::HashSet(item)) => {
-                out.push('{');
+                put(&mut out, "{")?;
                 for (index, (k, _)) in values::hash_entries(word).into_iter().enumerate() {
                     if index > 0 {
                         parts.push(Task::Text(", ".to_owned()));
@@ -366,7 +337,7 @@ fn render(
             }
             // `{k: v, ...}` in key order, `{}` when empty.
             Some(Shape::Map(key, value)) => {
-                out.push('{');
+                put(&mut out, "{")?;
                 for (index, (k, v)) in values::map_words(word).into_iter().enumerate() {
                     if index > 0 {
                         parts.push(Task::Text(", ".to_owned()));
@@ -382,7 +353,7 @@ fn render(
             // it, its elements in row-major order (rule 41), as the interpreter renders it.
             Some(Shape::Dense(element)) => {
                 let Some(dense) = values::dense::parts(word) else {
-                    out.push('?');
+                    put(&mut out, "?")?;
                     continue;
                 };
                 let layout = dense.layout;
@@ -390,20 +361,21 @@ fn render(
                 match (layout.kind, shape) {
                     (values::dense::DenseKind::Lu, _) => {
                         let size = shape.get(1).copied().unwrap_or(0);
-                        out.push_str(&format!("<lu size {size}>"));
+                        put(&mut out, &format!("<lu size {size}>"))?;
                         continue;
                     }
-                    (values::dense::DenseKind::Matrix, [rows, columns]) => out.push_str(&format!(
-                        "matrix(rows: {rows}, columns: {columns}, elements: ["
-                    )),
+                    (values::dense::DenseKind::Matrix, [rows, columns]) => put(
+                        &mut out,
+                        &format!("matrix(rows: {rows}, columns: {columns}, elements: ["),
+                    )?,
                     (values::dense::DenseKind::Tensor, shape) => {
                         let lengths: Vec<String> = shape.iter().map(ToString::to_string).collect();
-                        out.push_str(&format!(
-                            "tensor(shape: [{}], elements: [",
-                            lengths.join(", ")
-                        ));
+                        put(
+                            &mut out,
+                            &format!("tensor(shape: [{}], elements: [", lengths.join(", ")),
+                        )?;
                     }
-                    _ => out.push_str("array(["),
+                    _ => put(&mut out, "array([")?,
                 }
                 for (index, item) in dense.elements.into_iter().enumerate() {
                     if index > 0 {
@@ -423,12 +395,12 @@ fn render(
                     .ok()
                     .and_then(|tag| variants.get(tag));
                 let Some(variant) = variant else {
-                    out.push('?');
+                    put(&mut out, "?")?;
                     continue;
                 };
-                out.push_str(&variant.name);
+                put(&mut out, &variant.name)?;
                 if !variant.fields.is_empty() {
-                    out.push('(');
+                    put(&mut out, "(")?;
                     // One field is shown bare, several with their names.
                     let named = variant.fields.len() > 1;
                     // In an event of the host's `HttpServer`, the fields of its kinds that the
@@ -484,28 +456,83 @@ fn render(
                     .and_then(|desc| crate::generic::shape_of(*desc))
                 {
                     Some(crate::generic::Written::Int) => {
-                        out.push_str(&una_core::int_text(&values::int_value(word))?);
+                        put(&mut out, &int_written(word)?)?;
                     }
                     Some(crate::generic::Written::Text) => {
-                        out.push_str(&una_core::quote(&values::text_value(word)));
+                        put(&mut out, &una_core::quote(&values::text_value(word)))?;
                     }
                     Some(crate::generic::Written::F64) => {
-                        out.push_str(&una_core::float::render(values::f64_value(word)));
+                        put(&mut out, &una_core::float::render(values::f64_value(word)))?;
                     }
                     Some(crate::generic::Written::F32) => {
-                        out.push_str(&una_core::float32::render(values::f32_value(word)));
+                        put(
+                            &mut out,
+                            &una_core::float32::render(values::f32_value(word)),
+                        )?;
                     }
                     Some(crate::generic::Written::Typed(ty, inner)) => {
                         parts.push(Task::Value(ty, word, std::rc::Rc::new(inner)));
                     }
-                    None => out.push('?'),
+                    None => put(&mut out, "?")?,
                 }
             }
-            Some(Shape::Other) | None => out.push('?'),
+            Some(Shape::Other) | None => put(&mut out, "?")?,
         }
         tasks.extend(parts.into_iter().rev());
     }
     Some(out)
+}
+
+/// Appends `piece` to `out`, which first grows, when it must, within the memory budget: a
+/// growth to at least [`una_core::INT_TEXT_RESERVED_FROM`] bytes reserves the new buffer and
+/// the piece against the budget (`spec/11 §7`, #1223), so a text built of many small parts is
+/// checked as it grows, at O(1) amortized per part. `None` when they do not fit: the caller
+/// aborts the run with U6003.
+fn put(out: &mut String, piece: &str) -> Option<()> {
+    let need = out.len().saturating_add(piece.len());
+    if need > out.capacity() {
+        let grown = need.max(out.capacity().saturating_mul(2));
+        let held = grown.saturating_add(piece.len());
+        let reserved = if held >= una_core::INT_TEXT_RESERVED_FROM {
+            Some(crate::runtime::try_reserve(held)?)
+        } else {
+            None
+        };
+        out.reserve_exact(grown - out.len());
+        drop(reserved);
+    }
+    out.push_str(piece);
+    Some(())
+}
+
+/// The decimal text of the `Int` `word`, once the run has room for it: a large one first
+/// reserves the bytes its text and the conversion's temporaries hold, known from its bit length
+/// in O(1), against the memory budget (`spec/11 §7`, #1223). `None` when they do not fit: the
+/// caller aborts the run with U6003, and no conversion starts, so a write never passes the
+/// allocator's hard ceiling.
+pub(crate) fn int_written(word: i64) -> Option<String> {
+    written_within(&values::int_value(word), |n| n.to_string())
+}
+
+/// The text of a `Decimal` of coefficient `c` at `scale`, once the run has room for it, as for
+/// an `Int` of that coefficient ([`int_written`]).
+pub(crate) fn decimal_written(c: &una_core::bigint::BigInt, scale: u8) -> Option<String> {
+    written_within(c, |c| una_core::decimal::render(c, scale))
+}
+
+/// `write(n)`, the text of `n` or of a value with `n` as coefficient, with the bytes of
+/// [`una_core::int_text_room`] reserved while it converts.
+fn written_within(
+    n: &una_core::bigint::BigInt,
+    write: impl FnOnce(&una_core::bigint::BigInt) -> String,
+) -> Option<String> {
+    let reserved = match una_core::int_text_room(n) {
+        Some(bytes) => Some(crate::runtime::try_reserve(bytes)?),
+        None => None,
+    };
+    let text = write(n);
+    drop(reserved);
+    Some(text)
 }
 
 fn field_word(word: i64, index: usize) -> i64 {
@@ -583,48 +610,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_type_that_writes_an_int_in_a_trace_can_be_refused() {
-        // #1550: 0 Text, 1 Int, 2 List[Int], 3 a record whose one `Int` field is redacted, 4 a
-        // recursive kind that reaches an `Int` through itself, 5 a map of texts, 6 a kind
-        // whose redacted field is `unit` and whose other field is the record 3.
-        let field = |ty: usize, redacted: Option<&str>| Field {
-            name: "f".to_owned(),
-            ty,
-            redacted: redacted.map(str::to_owned),
-            shown: redacted.is_none(),
-        };
-        let variant = |fields: Vec<Field>| Variant {
-            name: "V".to_owned(),
-            fields,
-            server: None,
-        };
-        let types = Types(vec![
-            Shape::Text,
-            Shape::Int,
-            Shape::List(1),
-            Shape::Data(vec![variant(vec![
-                field(0, None),
-                field(1, Some("secret")),
-            ])]),
-            Shape::Data(vec![
-                variant(vec![]),
-                variant(vec![field(4, None), field(2, None)]),
-            ]),
-            Shape::Map(0, 0),
-            Shape::Data(vec![variant(vec![
-                field(7, Some("internal")),
-                field(3, None),
-            ])]),
-            Shape::Unit,
-        ]);
-        let writes: Vec<bool> = (0..8).map(|ty| types.writes_int(ty)).collect();
-        assert_eq!(
-            writes,
-            [false, true, true, false, true, false, false, false]
-        );
-    }
-
-    #[test]
     fn a_failure_shows_its_public_fields_and_redacts_labeled_ones_inside() {
         // kind Stop = | Halt(reason: Text, code: secret Int, inner: Option[Pair])
         // kind Pair: name: Text, pin: secret Int
@@ -658,7 +643,7 @@ mod tests {
         values::push(halt, 8485);
         values::push(halt, some);
         assert_eq!(
-            types.shown(0, halt).unwrap(),
+            types.shown(0, halt),
             r#"Halt(reason: "maintenance", inner: Some(Pair(name: "ana", pin: <redacted:secret>)))"#
         );
         assert_eq!(
@@ -673,10 +658,7 @@ mod tests {
         values::push(none, values::text_word("x".to_owned()));
         values::push(none, 1);
         values::push(none, 3);
-        assert_eq!(
-            types.shown(0, none).unwrap(),
-            r#"Halt(reason: "x", inner: None)"#
-        );
+        assert_eq!(types.shown(0, none), r#"Halt(reason: "x", inner: None)"#);
         assert_eq!(types.variant_name(0, none), "Halt");
     }
 

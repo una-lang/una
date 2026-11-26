@@ -178,17 +178,22 @@ pub(crate) enum NoTree {
     NotJson,
     /// The run is over its memory budget.
     OverBudget,
-    /// A `Number` holds an `Int` of more than `MAX_INT_DIGITS` digits, which is never written
-    /// (`spec/11 §7`, #923).
-    IntTooLong,
 }
 
 /// The tree of a `Json` value, asking `within` every [`json::CHECK_EVERY`] values whether the
-/// run is within its memory budget.
-pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Result<Tree, NoTree> {
+/// run is within its memory budget, and `room` before a large `Int` is written.
+pub(crate) fn tree(
+    value: &Value<'_>,
+    within: &mut dyn FnMut() -> bool,
+    room: crate::machine::Room<'_>,
+) -> Result<Tree, NoTree> {
     let mut stack: Vec<Walking<'_, '_>> = Vec::new();
     let mut pending = Some(value);
     let mut ticks = 0;
+    // The bytes of text copied into the tree since the last check, of numbers, strings and keys:
+    // every 64 KiB of them is a check too, so many mid-size numbers and strings cannot pass the hard ceiling between two
+    // checks of values (`spec/11 §7`, `spec/23 §3` rule 6, #1223).
+    let mut copied = 0usize;
     loop {
         let mut done = None;
         if let Some(value) = pending.take() {
@@ -206,8 +211,12 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
             done = match (data.ctor.index, field) {
                 (NULL, _) => Some(Tree::Null),
                 (BOOLEAN, Some(Value::Bool(b))) => Some(Tree::Bool(*b)),
+                // A large `Int` is written once its text fits the budget (`spec/11 §7`).
                 (NUMBER, Some(Value::Int(n))) => {
-                    Some(Tree::Int(una_core::int_text(n).ok_or(NoTree::IntTooLong)?))
+                    if una_core::int_text_room(n).is_some_and(|bytes| !room(bytes)) {
+                        return Err(NoTree::OverBudget);
+                    }
+                    Some(Tree::Int(n.to_string()))
                 }
                 (DECIMAL, Some(Value::Text(t))) => Some(Tree::Decimal(t.to_string())),
                 (STR, Some(Value::Text(t))) => Some(Tree::Str(t.to_string())),
@@ -231,6 +240,15 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
         }
         loop {
             if let Some(tree) = done.take() {
+                if let Tree::Int(text) | Tree::Decimal(text) | Tree::Str(text) = &tree {
+                    copied = copied.saturating_add(text.len());
+                    if copied >= una_core::INT_TEXT_RESERVED_FROM {
+                        copied = 0;
+                        if !within() {
+                            return Err(NoTree::OverBudget);
+                        }
+                    }
+                }
                 match stack.last_mut() {
                     None => return Ok(tree),
                     Some(Walking::Array(_, out)) => out.push(tree),
@@ -252,6 +270,16 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
             };
             match next {
                 Some((key, item)) => {
+                    // A key's text is copied too, and counted with the others.
+                    if let Some(key) = &key {
+                        copied = copied.saturating_add(key.len());
+                        if copied >= una_core::INT_TEXT_RESERVED_FROM {
+                            copied = 0;
+                            if !within() {
+                                return Err(NoTree::OverBudget);
+                            }
+                        }
+                    }
                     if let (Some(key), Some(Walking::Object(_, _, slot))) = (key, stack.last_mut())
                     {
                         *slot = Some(key);

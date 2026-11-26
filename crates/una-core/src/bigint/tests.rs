@@ -733,3 +733,35 @@ fn text_conversion_is_subquadratic() {
         })
     });
 }
+
+#[test]
+fn writing_an_int_past_the_bound_of_parsing_is_subquadratic() {
+    // #1223: an `Int` of any size is written as text (`spec/11 §7`), through `Display`, as
+    // both engines write it. From 256 limbs, about 4,900 digits, just past the 4,300 that
+    // parsing reads, to 16,384 limbs, about 315,000 digits: repeated division would grow 4x per
+    // doubling, the divide and conquer grows as M(n) log n, about 3.3x here.
+    let mut rng = Rng(0x2468_ACE0_1357_9BDF);
+    let sizes = [256, 512, 1024, 2048, 4096, 8192, 16384];
+    let values: Vec<BigInt> = sizes
+        .iter()
+        .map(|&n| {
+            let limbs: Vec<u64> = (0..n).map(|_| rng.next()).collect();
+            BigInt::from_biguint(Sign::Minus, BigUint::from_limbs(limbs))
+        })
+        .collect();
+    let mut i = 0;
+    assert_doubling("writing", &sizes, 3.6, |n| {
+        let value = &values[i];
+        i += 1;
+        let mut text = String::new();
+        let counted = steps(|| text = value.to_string());
+        // The sign and every digit: 19.27 digits per limb, the top limb nearly full.
+        let digits = text.len() - 1;
+        assert!(text.starts_with('-'), "{n} limbs");
+        assert!(
+            digits as f64 > (n as f64 - 1.0) * 19.26 && digits as f64 <= n as f64 * 19.27,
+            "{n} limbs: {digits} digits"
+        );
+        counted
+    });
+}

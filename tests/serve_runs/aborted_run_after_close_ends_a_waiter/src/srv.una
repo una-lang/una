@@ -1,19 +1,20 @@
 module srv
 
+import std.collections (empty_bit_set)
 import std.host (Exchange, HttpServer, Reply, ServeError)
 
 --- Counts.
 busy(n: Int) -> Int
 =
-  let edit total = 0
+  var total = 0
   for i in 1..n
     total = total + 1
   total
 
---- An integer of more than 4300 digits.
+--- A large integer, built by a count of check points.
 huge() -> Int
 =
-  let edit big = 1
+  var big = 1
   for i in 1..2000
     big = big * 1000
   big
@@ -22,10 +23,10 @@ huge() -> Int
 holder() -> Unit
   uses @server: HttpServer[next, reply]
 =
-  let got = attempt @server.next()
+  const got = attempt @server.next()
   when got
     is Ok(exchange) ->
-      let again = attempt @server.next()
+      const again = attempt @server.next()
       when again
         is Ok(other) -> unit
         is Err(failure) -> unit
@@ -35,13 +36,13 @@ holder() -> Unit
 bomber() -> Unit
   uses @server: HttpServer[next, reply, close]
 =
-  let got = attempt @server.next()
+  const got = attempt @server.next()
   when got
     is Ok(exchange) ->
-      let n = busy(2000)
-      let big = huge()
+      const n = busy(2000)
+      const big = huge()
       @server.close()
-      let shown = "{big}"
+      const bits = empty_bit_set(size: 18446744073709551616)
       unit
     is Err(failure) -> unit
 

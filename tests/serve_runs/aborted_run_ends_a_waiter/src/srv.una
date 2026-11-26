@@ -1,12 +1,13 @@
 module srv
 
+import std.collections (empty_bit_set)
 import std.host (Exchange, HttpServer, Reply, ServeError)
 
 --- Serves one request: whether `next` gave one.
 serve_once(name: Text) -> Bool
   uses @server: HttpServer[next, reply]
 =
-  let got = attempt @server.next()
+  const got = attempt @server.next()
   when got
     is Ok(exchange) ->
       @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: name))
@@ -19,7 +20,7 @@ looper() -> Unit
   uses @server: HttpServer[next, reply]
 =
   for round in 1..100
-    let served = serve_once("looper")
+    const served = serve_once("looper")
     if not served
       stop
 
@@ -27,24 +28,25 @@ looper() -> Unit
 waiter(name: Text) -> Unit
   uses @server: HttpServer[next, reply]
 =
-  let served = serve_once(name)
+  const served = serve_once(name)
   unit
 
 --- Counts.
 busy(n: Int) -> Int
 =
-  let edit total = 0
+  var total = 0
   for i in 1..n
     total = total + 1
   total
 
---- Aborts the run: an integer of more than 4300 digits written as text.
+--- Aborts the run after a count: a bit set of 2^64 bits is past every memory budget, so
+--- `empty_bit_set` aborts with U6003 before it allocates (`spec/28 §9` rule 5).
 bomb() -> Unit
 =
-  let edit big = 1
+  var big = 1
   for i in 1..2000
     big = big * 1000
-  let shown = "{big}"
+  const bits = empty_bit_set(size: 18446744073709551616)
   unit
 
 --- A task aborts the run at 0 ms while others wait in `next`: each `next` ends with the run,

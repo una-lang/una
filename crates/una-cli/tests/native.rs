@@ -10123,33 +10123,361 @@ fn policy_2214_a_public_release_in_started_tasks_is_alike_across_secrets_in_both
     }
 }
 
-/// The line of a U6003 that names its position: `  at <file>:<line>:<col>` natively, and the
-/// primary position of the interpreter's diagnostic, written the same way.
-fn abort_position(native_stderr: &[u8]) -> Option<String> {
-    String::from_utf8_lossy(native_stderr)
-        .lines()
-        .find_map(|line| line.strip_prefix("  at ").map(str::to_owned))
+/// A program that builds 7^(2^22), an `Int` of 1.47 MB (3,544,599 digits), prints `built`,
+/// then writes it at line 28 by `WRITE`.
+const OVER_BUDGET: &str = "module big
+
+capability Sink
+  op put(x: Int) -> Unit
+
+capability Source
+  op get() -> Int
+
+handler keep() for Sink
+  op put(x) = unit
+
+handler make() for Source
+  op get() = squarings(7, k: 22)
+
+--- `b` squared `k` times.
+squarings(b: Int, k: Int) -> Int
+=
+  var n = b
+  for i in 0..<k
+    n = n * n
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const t = squarings(7, k: 22)
+  @console.print(\"built\")
+  WRITE
+  @console.print(\"written\")
+";
+
+/// The cases of [`OVER_BUDGET`]: a name, the write, and the column of the write's position.
+const OVER_BUDGET_WRITES: [(&str, &str, u32); 5] = [
+    ("interp", "const s = \"{t}\"", 15),
+    ("json", "const j = Number(t).to_json()", 13),
+    ("arg", "@k.put(t) with @k = keep()", 3),
+    ("result", "const g = @s.get() with @s = make()", 13),
+    ("decimal", "const s = \"{t.to_decimal()}\"", 15),
+];
+
+/// The package of the case `case` of [`OVER_BUDGET`], with the write `write`.
+fn over_budget_package(case: &str, write: &str) -> (PathBuf, String) {
+    let name = format!("i1223over{case}");
+    let source = OVER_BUDGET.replace("WRITE", write);
+    let dir = ita_package(
+        &name,
+        "\nrun\n  entry big\n  grants\n    console\n",
+        &[("src/big.una", &source)],
+    );
+    (dir, name)
 }
 
-/// The position of the interpreter's diagnostic `code` in the document of `una --json run`.
-fn document_position(document: &Value, code: &str) -> Option<String> {
-    document["diagnostics"]
-        .as_array()?
-        .iter()
-        .find(|diagnostic| diagnostic["code"] == code)
-        .map(|diagnostic| {
-            let primary = &diagnostic["primary"];
-            format!(
-                "{}:{}:{}",
-                primary["file"].as_str().unwrap_or(""),
-                primary["start"]["line"],
-                primary["start"]["col"]
-            )
-        })
+#[test]
+fn a_write_whose_text_does_not_fit_the_budget_is_u6003_in_both_engines_never_a_crash() {
+    // #1223, reviews 1 (M1) and 2 (M1, M3) of #2257 (`spec/11 §7`): a write of an `Int`, or of a
+    // `Decimal` by its coefficient, first reserves the bytes of its text and of the conversion,
+    // from its bit length, against the memory budget. At 12 MiB the text of this 1.47 MB
+    // integer does not fit (about 17 MB), so the run ends with U6003 at the write, exit 1, in
+    // both engines, where the conversion used to pass the hard ceiling of twice the budget and
+    // end the process (exit 134). With `--trace` the two engines write the same trace, each to
+    // its own file (`spec/16 §5`): an argument that does not fit leaves no event, a result
+    // leaves its event `aborted`. At the default budget the same program writes it.
+    runtime();
+    for (case, write, column) in OVER_BUDGET_WRITES {
+        let (dir, name) = over_budget_package(case, write);
+        let at = format!("src/big.una:28:{column}");
+        let traces = [dir.join("interpreted.json"), dir.join("native.json")];
+        let [mut run, _] = engines(
+            &dir,
+            &name,
+            &["--max-memory", "12", "--trace", traces[0].to_str().unwrap()],
+        );
+        let [_, mut native] = engines(
+            &dir,
+            &name,
+            &["--max-memory", "12", "--trace", traces[1].to_str().unwrap()],
+        );
+        let run = run.output().unwrap();
+        let native = native.output().unwrap();
+        for (engine, output) in [("una run", &run), ("native", &native)] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{case} {engine}: {stderr}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "built\n",
+                "{case} {engine}"
+            );
+            assert!(
+                stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 12 MiB"),
+                "{case} {engine}: {stderr}"
+            );
+            assert!(stderr.contains(&at), "{case} {engine}: {stderr}");
+        }
+        // Both traces are closed JSON arrays, and the same.
+        let [interpreted, compiled]: [Value; 2] = traces
+            .clone()
+            .map(|path| serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap());
+        assert_eq!(timeless(interpreted.clone()), timeless(compiled), "{case}");
+        let ops: Vec<String> = interpreted
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{}:{}", e["op"], e["outcome"]["kind"]))
+            .collect();
+        let expected: &[&str] = match case {
+            "result" => &["\"print\":\"ok\"", "\"get\":\"aborted\""],
+            _ => &["\"print\":\"ok\""],
+        };
+        assert_eq!(ops, expected, "{case}: {interpreted}");
+        // Within the default budget the same write is made.
+        let [mut run, mut native] = engines(&dir, &name, &[]);
+        for (engine, output) in [
+            ("una run", run.output().unwrap()),
+            ("native", native.output().unwrap()),
+        ] {
+            assert_eq!(output.status.code(), Some(0), "{case} {engine}: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "built\nwritten\n",
+                "{case} {engine}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
-/// A task of a `together` block whose operation's argument is too long for text: the task
-/// stops before the operation, whose handler would print, and before its next line.
+#[test]
+fn a_text_of_many_small_parts_grows_within_the_budget_natively() {
+    // #1223, review 2 of #2257 (M3): the text of a list of 20,000 references to one integer of
+    // 6,924 digits, each below the reservation's threshold, is checked as it grows, its buffer
+    // reserved at each doubling, O(1) amortized per part: at 12 MiB the native executable ends
+    // with U6003 at the write instead of passing the hard ceiling (exit 134). The interpreter,
+    // whose list holds more, aborts earlier, at the loop that builds it, as memory allows.
+    runtime();
+    let source = "module big
+
+--- `b` squared `k` times.
+squarings(b: Int, k: Int) -> Int
+=
+  var n = b
+  for i in 0..<k
+    n = n * n
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const t = squarings(7, k: 13)
+  var xs: List[Int] = []
+  for i in 0..<20000
+    xs = xs.append(item: t)
+  @console.print(\"built\")
+  const s = \"{xs}\"
+  @console.print(\"{s.len}\")
+";
+    let dir = ita_package(
+        "i1223parts",
+        "\nrun\n  entry big\n  grants\n    console\n",
+        &[("src/big.una", source)],
+    );
+    let [_, mut native] = engines(&dir, "i1223parts", &["--max-memory", "12"]);
+    let native = native.output().unwrap();
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert_eq!(native.status.code(), Some(1), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "built\n");
+    assert!(
+        stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 12 MiB"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("src/big.una:19:15"), "{stderr}");
+    let [_, mut native] = engines(&dir, "i1223parts", &["--max-memory", "400"]);
+    let native = native.output().unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        "built\n138520000\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn to_json_of_many_mid_size_values_is_u6003_in_both_engines_never_a_crash() {
+    // #1223, reviews 3 (M1) and 4 (M1, L1) of #2257, `spec/23 §3` rule 6: `to_json` checks the
+    // budget every 4096 values and, since #1223, every 64 KiB of the text of numbers, strings
+    // and keys it copies or writes. Each case holds little (references to one value) and makes
+    // a large JSON text: 4,095 `Number`s of 6,924 digits each (below the reservation's
+    // threshold one by one), 4,095 `Str`s of one such text, or 2,000 objects under one key of
+    // 55,392 characters. At 14 MiB both engines print `built` and end with U6003 at the call
+    // of `to_json`, where the copies between two checks of values used to pass the hard ceiling
+    // (exit 134). With room, both write it.
+    runtime();
+    for (case, prep, count, length) in [
+        (
+            "number",
+            ["const u = 0", "const v = 0", "const o = Number(t)"],
+            4095,
+            "28357876",
+        ),
+        (
+            "str",
+            ["const u = \"{t}\"", "const v = 0", "const o = Str(u)"],
+            4095,
+            "28366066",
+        ),
+        (
+            "key",
+            [
+                "const u = \"{t}{t}{t}{t}{t}{t}{t}{t}\"",
+                "const v: Map[Text, Json] = empty_map()",
+                "const o = Object(v.with(key: u, value: Null))",
+            ],
+            2000,
+            "110804001",
+        ),
+    ] {
+        let [p0, p1, p2] = prep;
+        let source = format!(
+            "module big
+
+--- `b` squared `k` times.
+squarings(b: Int, k: Int) -> Int
+=
+  var n = b
+  for i in 0..<k
+    n = n * n
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const t = squarings(7, k: 13)
+  {p0}
+  {p1}
+  {p2}
+  var xs: List[Json] = []
+  for i in 0..<{count}
+    xs = xs.append(item: o)
+  @console.print(\"built\")
+  const s = Array(xs).to_json()
+  @console.print(\"{{s.len}}\")
+"
+        );
+        let name = format!("i1223json{case}");
+        let dir = ita_package(
+            &name,
+            "\nrun\n  entry big\n  grants\n    console\n",
+            &[("src/big.una", &source)],
+        );
+        let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "14"]);
+        for (engine, output) in [
+            ("una run", run.output().unwrap()),
+            ("native", native.output().unwrap()),
+        ] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{case} {engine}: {stderr}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "built\n",
+                "{case} {engine}: {stderr}"
+            );
+            assert!(
+                stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 14 MiB"),
+                "{case} {engine}: {stderr}"
+            );
+            assert!(
+                stderr.contains("src/big.una:22:13"),
+                "{case} {engine}: {stderr}"
+            );
+        }
+        let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "1024"]);
+        for (engine, output) in [
+            ("una run", run.output().unwrap()),
+            ("native", native.output().unwrap()),
+        ] {
+            assert_eq!(output.status.code(), Some(0), "{case} {engine}: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("built\n{length}\n"),
+                "{case} {engine}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn u6001_names_a_field_whose_text_does_not_fit_alike_in_both_engines() {
+    // #1223, review 2 of #2257 (L1): a failure of `main` whose field does not fit the budget is
+    // named field by field, the same in both engines (`spec/11 §7`, `spec/16 §5`).
+    runtime();
+    let source = "module big
+
+pub kind Stop = | Blocked(reason: Text, code: Int)
+
+--- `b` squared `k` times.
+squarings(b: Int, k: Int) -> Int
+=
+  var n = b
+  for i in 0..<k
+    n = n * n
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Stop
+=
+  const t = squarings(7, k: 22)
+  @console.print(\"built\")
+  fail Blocked(reason: \"maintenance\", code: t)
+";
+    let dir = ita_package(
+        "i1223fail",
+        "\nrun\n  entry big\n  grants\n    console\n",
+        &[("src/big.una", source)],
+    );
+    let expected = "[U6001] Error: `main` failed with `Blocked(reason: \"maintenance\", code: <a value whose text exceeds the memory budget>)`";
+    let [mut run, mut native] = engines(&dir, "i1223fail", &["--max-memory", "12"]);
+    for (engine, output) in [
+        ("una run", run.output().unwrap()),
+        ("native", native.output().unwrap()),
+    ] {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{engine}: {stderr}");
+        assert_eq!(stderr.lines().next(), Some(expected), "{engine}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_event_that_is_not_recorded_reserves_no_text_so_native_runs_on_without_a_trace() {
+    // #1223, review 2 of #2257 (L2), `spec/11 §7`, `spec/16 §5`: the values of an operation's
+    // event are written, and their text reserved against the budget, only when the run records
+    // the event. `una run` and a native executable with `--trace` record it, so an argument
+    // that does not fit aborts them with U6003; a native executable without `--trace` writes
+    // nothing there and runs on. The engines are compared with `--trace` on both sides.
+    runtime();
+    let (dir, name) = over_budget_package("untraced", "@k.put(t) with @k = keep()");
+    let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "12"]);
+    let run = run.output().unwrap();
+    assert_eq!(run.status.code(), Some(1), "una run: {run:?}");
+    let native = native.output().unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "built\nwritten\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A task of a `together` block whose operation's argument has more digits than parsing
+/// reads: the operation runs, its handler prints, and so does every task's next line.
 const INT_TEXT_TASK: &str = "module big
 
 capability Sink
@@ -10190,15 +10518,17 @@ pub main() -> Unit
   @console.print(\"done\")
 ";
 
+/// The text of ten to the 4300, which has one digit more than parsing reads (`spec/22 §4`).
+fn ten_to_4300() -> String {
+    format!("1{}", "0".repeat(4300))
+}
+
 #[test]
-fn an_integer_too_long_for_text_at_an_operation_aborts_alike_with_or_without_a_trace() {
-    // `spec/11 §7`, #1550: an argument or a result of an operation that holds an `Int` of more
-    // than 4300 digits aborts the run with U6003 at the operation in both engines, whether or
-    // not the executable records a trace (`--trace`, `spec/16 §3` rule 4). The output, the exit
-    // status, the position and, with `--trace`, the whole trace are the interpreter's: an
-    // argument aborts before the operation starts, which writes no event and whose handler
-    // does not run; a result leaves the operation's event `aborted`. Without a trace the
-    // native run used to go on past the operation and exit 0.
+fn an_integer_past_the_bound_of_parsing_at_an_operation_is_written_alike_with_or_without_a_trace() {
+    // `spec/11 §7`, #1223: an argument or a result of an operation that holds an `Int` of more
+    // than 4300 digits is written in full in its event, in both engines, and the run goes on,
+    // whether or not the executable records a trace (`--trace`, `spec/16 §3` rule 4). The
+    // output, the exit status and, with `--trace`, the whole trace are the interpreter's.
     runtime();
     for case in ["int_text_op_argument", "int_text_op_result"] {
         let source = binding_words::of_0_5(
@@ -10207,41 +10537,42 @@ fn an_integer_too_long_for_text_at_an_operation_aborts_alike_with_or_without_a_t
             )
             .unwrap(),
         );
-        let name = format!("i1550{}", case.trim_start_matches("int_text_op_"));
+        let name = format!("i1223{}", case.trim_start_matches("int_text_op_"));
         let dir = ita_package(
             &name,
             "\nrun\n  entry big\n  grants\n    console\n",
             &[("src/big.una", &source)],
         );
         let run = una(&dir, &["--json", "run"]);
-        assert_eq!(run.status.code(), Some(1), "{case}: {run:?}");
+        assert_eq!(run.status.code(), Some(0), "{case}: {run:?}");
         let document: Value = serde_json::from_slice(&run.stdout).unwrap();
-        assert_eq!(document["status"], "aborted", "{case}: {document}");
+        assert_eq!(document["status"], "ok", "{case}: {document}");
         let expected: String = document["output"]
             .as_array()
             .unwrap()
             .iter()
             .map(|line| format!("{}\n", line.as_str().unwrap()))
             .collect();
-        let position = document_position(&document, "U6003");
-        assert!(position.is_some(), "{case}: {document}");
+        assert!(
+            expected.ends_with("\n") && expected.contains("4300"),
+            "{case}: {expected}"
+        );
         let [_, mut plain] = engines(&dir, &name, &[]);
         let plain = plain.output().unwrap();
         let trace = dir.join("trace.json");
         let [_, mut traced] = engines(&dir, &name, &["--trace", trace.to_str().unwrap()]);
         let traced = traced.output().unwrap();
         for (how, native) in [("without --trace", &plain), ("with --trace", &traced)] {
-            assert_eq!(native.status.code(), Some(1), "{case} {how}: {native:?}");
+            assert_eq!(
+                native.status.code(),
+                Some(0),
+                "{case} {how}: {}",
+                String::from_utf8_lossy(&native.stderr)
+            );
             assert_eq!(
                 String::from_utf8_lossy(&native.stdout),
                 expected,
                 "{case} {how}"
-            );
-            assert_eq!(
-                abort_position(&native.stderr),
-                position,
-                "{case} {how}: {}",
-                String::from_utf8_lossy(&native.stderr)
             );
         }
         let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
@@ -10250,50 +10581,33 @@ fn an_integer_too_long_for_text_at_an_operation_aborts_alike_with_or_without_a_t
             timeless(document["trace"].clone()),
             "{case}"
         );
-        let last = events
-            .as_array()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|event| event["capability"] != "Console");
-        let large =
-            |event: &Value| event["args"]["exp"] == "4300" || event["args"]["note"] == "4300";
-        match case {
-            // The operation that would show the integer has no event.
-            "int_text_op_argument" => {
-                assert!(last.is_some_and(|event| !large(event)), "{case}: {events}")
-            }
-            _ => assert!(
-                last.is_some_and(|event| large(event) && event["outcome"]["kind"] == "aborted"),
-                "{case}: {events}"
-            ),
-        }
+        assert!(
+            events.to_string().contains(&ten_to_4300()),
+            "{case}: {events}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
-fn an_argument_too_long_for_text_stops_a_task_before_its_operation_with_or_without_a_trace() {
-    // `spec/11 §7`, `spec/19 §8`, #1550: in a task, the argument's abort stops the task before
-    // the operation, so its handler does not print and the task's next line is not printed; the
-    // run ends with U6003 at the operation, as in the interpreter, with a trace or without one.
-    // The other tasks run concurrently natively, so only the lines of the stopped task and the
-    // operation's event are compared.
+fn an_argument_past_the_bound_of_parsing_lets_a_task_run_its_operation_with_or_without_a_trace() {
+    // `spec/11 §7`, `spec/19 §8`, #1223: in a task, an argument of more than 4300 digits is
+    // written in the operation's event and the task goes on, with a trace or without one, in
+    // both engines. The other tasks run concurrently natively, so the lines are compared as a
+    // set and the operation's event alone.
     runtime();
     let dir = ita_package(
-        "i1550task",
+        "i1223task",
         "\nrun\n  entry big\n  grants\n    console\n",
         &[("src/big.una", INT_TEXT_TASK)],
     );
     let run = una(&dir, &["--json", "run"]);
     let document: Value = serde_json::from_slice(&run.stdout).unwrap();
-    assert_eq!(run.status.code(), Some(1), "{document}");
-    let position = document_position(&document, "U6003");
-    assert!(position.is_some(), "{document}");
+    assert_eq!(run.status.code(), Some(0), "{document}");
     let trace = dir.join("trace.json");
-    let [_, mut plain] = engines(&dir, "i1550task", &[]);
+    let [_, mut plain] = engines(&dir, "i1223task", &[]);
     let plain = plain.output().unwrap();
-    let [_, mut traced] = engines(&dir, "i1550task", &["--trace", trace.to_str().unwrap()]);
+    let [_, mut traced] = engines(&dir, "i1223task", &["--trace", trace.to_str().unwrap()]);
     let traced = traced.output().unwrap();
     let interpreted = document["output"]
         .as_array()
@@ -10301,6 +10615,12 @@ fn an_argument_too_long_for_text_stops_a_task_before_its_operation_with_or_witho
         .iter()
         .map(|line| format!("{}\n", line.as_str().unwrap()))
         .collect::<String>();
+    let lines = |stdout: &str| {
+        let mut lines: Vec<String> = stdout.lines().map(str::to_owned).collect();
+        lines.sort();
+        lines
+    };
+    let expected = lines("before\nkept one\nafter 0\nafter 1\nafter 2\ndone\n");
     for (how, stdout, code) in [
         ("interpreter", interpreted, run.status.code()),
         (
@@ -10314,19 +10634,10 @@ fn an_argument_too_long_for_text_stops_a_task_before_its_operation_with_or_witho
             traced.status.code(),
         ),
     ] {
-        assert_eq!(code, Some(1), "{how}: {stdout}");
+        assert_eq!(code, Some(0), "{how}: {stdout}");
         assert!(stdout.starts_with("before\n"), "{how}: {stdout}");
-        assert!(!stdout.contains("kept"), "{how}: {stdout}");
-        assert!(!stdout.contains("after 1"), "{how}: {stdout}");
-        assert!(!stdout.contains("done"), "{how}: {stdout}");
-    }
-    for (how, native) in [("without --trace", &plain), ("with --trace", &traced)] {
-        assert_eq!(
-            abort_position(&native.stderr),
-            position,
-            "{how}: {}",
-            String::from_utf8_lossy(&native.stderr)
-        );
+        assert!(stdout.ends_with("done\n"), "{how}: {stdout}");
+        assert_eq!(lines(&stdout), expected, "{how}");
     }
     for (how, events) in [
         ("interpreter", document["trace"].clone()),
@@ -10335,13 +10646,18 @@ fn an_argument_too_long_for_text_stops_a_task_before_its_operation_with_or_witho
             serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap(),
         ),
     ] {
-        let puts = events
+        let puts: Vec<&Value> = events
             .as_array()
             .unwrap()
             .iter()
             .filter(|event| event["capability"] == "Sink")
-            .count();
-        assert_eq!(puts, 0, "{how}: {events}");
+            .collect();
+        assert_eq!(puts.len(), 1, "{how}: {events}");
+        assert_eq!(puts[0]["outcome"]["kind"], "ok", "{how}: {events}");
+        assert!(
+            puts[0].to_string().contains(&ten_to_4300()),
+            "{how}: {events}"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

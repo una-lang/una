@@ -1,14 +1,16 @@
 module srv
 
+import std.collections (empty_bit_set)
 import std.host (Exchange, HttpServer, Reply, ServeError)
 
---- Aborts the run: an integer of more than 4300 digits written as text.
+--- Aborts the run after a count: a bit set of 2^64 bits is past every memory budget, so
+--- `empty_bit_set` aborts with U6003 before it allocates (`spec/28 §9` rule 5).
 bomb() -> Unit
 =
-  let edit big = 1
+  var big = 1
   for i in 1..2000
     big = big * 1000
-  let shown = "{big}"
+  const bits = empty_bit_set(size: 18446744073709551616)
   unit
 
 --- Answers `one`, then aborts holding `two`.
@@ -24,9 +26,9 @@ answer_one(one: internal Exchange, two: internal Exchange) -> Unit
 pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
 =
-  let first = attempt @server.next()
-  let second = attempt @server.next()
-  let answered = when first
+  const first = attempt @server.next()
+  const second = attempt @server.next()
+  const answered = when first
     is Ok(one) ->
       when second
         is Ok(two) -> answer_one(one, two)

@@ -604,56 +604,13 @@ pub fn limit_acquire(_site: i64, instance: i64) -> i64 {
     }
 }
 
-/// The slot [`event`] gives an operation that a run without a trace performs, outside quiet
-/// code: no event is recorded, but [`event_arg`] and [`event_end`] still write its values as
-/// the event would show them, and an `Int` too long for text aborts the run at the operation
-/// as with `--trace` and in the interpreter, so whether the run aborts never depends on whether
-/// it records a trace (`spec/11 §7`, #1550). [`UNRECORDED_SERVER`] for an operation of the
-/// host's `HttpServer`, whose values are written in the reduced form of ADR 0123 rule 1.
-pub const UNRECORDED: i64 = -2;
-
-/// [`UNRECORDED`] for an operation of the host's `HttpServer`.
-pub const UNRECORDED_SERVER: i64 = -3;
-
-/// Where an operation's values go: the event at a slot of the trace, or no event (`UNRECORDED`).
-#[derive(Clone, Copy)]
-enum Slot {
-    /// The event at this position of the trace.
-    Recorded(usize),
-    /// No event, its values checked only; `server` for the host's `HttpServer`.
-    Unrecorded { server: bool },
-}
-
-impl Slot {
-    /// The slot of the word [`event`] gave: `None` for an operation that has no event and whose
-    /// values are not written, one of quiet code (-1).
-    fn of(slot: i64) -> Option<Slot> {
-        match slot {
-            UNRECORDED => Some(Slot::Unrecorded { server: false }),
-            UNRECORDED_SERVER => Some(Slot::Unrecorded { server: true }),
-            _ => usize::try_from(slot).ok().map(Slot::Recorded),
-        }
-    }
-
-    /// Whether the operation is one of the host's `HttpServer`, whose values are written in the
-    /// reduced form of ADR 0123 rule 1.
-    fn server(self, state: &crate::runtime::State, op: &OpSite) -> bool {
-        match self {
-            Slot::Recorded(slot) => server_event(state, op, slot),
-            Slot::Unrecorded { server } => server,
-        }
-    }
-}
-
 /// Starts the event of operation `site` on `instance`, when the run records a trace: its
-/// position in the trace. Its outcome is `Aborted` until [`event_end`]. A run that records no
-/// trace gets [`UNRECORDED`] or [`UNRECORDED_SERVER`] instead, and its values are checked as
-/// the event would write them (#1550). An operation performed in quiet code has none, and takes
-/// no `seq`, so neither the number of events nor the `seq` of a later one shows whether it ran
-/// (S-42, #1515, `spec/26 §6` rule 4); code quiet by a timing floor alone keeps it (`spec/27 §5`
-/// rule 7). An instance that quiet code installed, `with:<h>#q`, starts none either: it is in
-/// scope only in quiet code (#1544), as in the interpreter. Those give -1, and their values are
-/// not written, with a trace or without one.
+/// position in the trace, or -1. Its outcome is `Aborted` until [`event_end`]. An operation
+/// performed in quiet code has none, and takes no `seq`, so neither the number of events nor
+/// the `seq` of a later one shows whether it ran (S-42, #1515, `spec/26 §6` rule 4); code
+/// quiet by a timing floor alone keeps it (`spec/27 §5` rule 7). An instance that quiet code
+/// installed, `with:<h>#q`, starts none either: it is in scope only in quiet code (#1544), as
+/// in the interpreter.
 pub fn event(site: i64, instance: i64) -> i64 {
     if with_state(|state| state.hushed > 0).unwrap_or(false) {
         return -1;
@@ -664,14 +621,6 @@ pub fn event(site: i64, instance: i64) -> i64 {
     }
     with_state(|state| {
         let op = usize::try_from(site).ok().and_then(|s| state.ops.get(s))?;
-        if state.trace.is_none() {
-            let server = op.capability == "HttpServer" && id == "host:HttpServer";
-            return Some(if server {
-                UNRECORDED_SERVER
-            } else {
-                UNRECORDED
-            });
-        }
         let (capability, name) = (op.capability.clone(), op.op.clone());
         let task = state.path.clone();
         let trace = state.trace.as_mut()?;
@@ -705,46 +654,39 @@ fn server_event(state: &crate::runtime::State, op: &OpSite, slot: usize) -> bool
             .is_some_and(|event| event.instance == "host:HttpServer")
 }
 
-/// Records argument `index` of the event at `slot`, of operation `site`, or, for an
-/// [`UNRECORDED`] slot, writes it as the event would and drops the text.
+/// Records argument `index` of the event at `slot`, of operation `site`.
 pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
-    let (Ok(site), Some(slot), Ok(index)) = (
+    let (Ok(site), Ok(slot), Ok(index)) = (
         usize::try_from(site),
-        Slot::of(slot),
+        usize::try_from(slot),
         usize::try_from(index),
     ) else {
         return;
     };
-    // An argument that holds an integer too long for text aborts the run at the operation
-    // (`spec/11 §7`, #923), before it starts: the operation has no event and takes no `seq`, as
-    // in the interpreter (#1550).
+    // An argument whose text does not fit the memory budget aborts the run at the operation,
+    // before it starts, and leaves no event (`spec/11 §7`, #1223): `Lowerer::op` stops the
+    // task before it.
     let trace = crate::serve::trace();
-    let too_long = with_state(|state| {
-        // A task that an earlier argument stopped writes no more of them: the operation does
-        // not start (`Lowerer::op` stops the task before it).
+    let over = with_state(|state| {
+        // A task that an earlier argument stopped writes no more of them.
         if state.stopped.is_some() {
             return false;
         }
         let Some(op) = state.ops.get(site) else {
             return false;
         };
+        let name = op
+            .params
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| format!("arg{index}"));
         // ADR 0123 rule 1 (`spec/31 §1` rule 7): the values of the events of the host's
         // `HttpServer` are redacted by their labels, as every event's are, and are written in
         // the reduced form whatever their labels, under the run's trace key, as in the
         // interpreter. Without the run's engine every argument is written as an `internal`
         // value is, redacted, failing closed.
-        let server = slot.server(state, op);
-        let trace = server.then_some(trace).flatten();
-        // Without a trace the text is dropped, so a value that can hold no `Int` need not be
-        // written: it cannot abort. With the redaction of labels lifted (the toolchain's tests
-        // only) every value is written.
-        if let (Slot::Unrecorded { .. }, Some(arg)) = (slot, op.args.get(index))
-            && !matches!(trace, Some((_, true)))
-            && !state.types.writes_int(arg.ty)
-        {
-            return false;
-        }
-        let shown = match (op.args.get(index), trace) {
+        let server = server_event(state, op, slot);
+        let shown = match (op.args.get(index), server.then_some(trace).flatten()) {
             // The toolchain's tests only: the reduced form without the labels' redaction.
             (Some(arg), Some((key, true))) => state.types.server_written(arg.ty, value, &key),
             (Some(arg), Some((key, false))) => {
@@ -759,14 +701,11 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             (Some(arg), None) => state.types.redacted(arg.ty, value, arg.redacted.as_deref()),
             (None, _) => Some("?".to_owned()),
         };
-        let Slot::Recorded(slot) = slot else {
-            return shown.is_none();
-        };
         let Some(shown) = shown else {
-            // The event was the last one pushed, and nothing was written since: it goes, and
-            // no longer holds the trace open. Nothing pushes an event between `event` and the
-            // operation's arguments; were a later change to, the event would stay `aborted`
-            // and hold a streaming trace open, so a debug build stops there.
+            // The operation does not start, so it has no event and takes no `seq`, as in the
+            // interpreter, which writes the arguments before it makes the event (`spec/16 §5`).
+            // The event was the last one pushed and nothing was written since: it goes, and no
+            // longer holds the trace open.
             debug_assert!(
                 state
                     .trace
@@ -783,44 +722,36 @@ pub fn event_arg(site: i64, slot: i64, index: i64, value: i64) {
             }
             return true;
         };
-        let name = op
-            .params
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| format!("arg{index}"));
         if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
             event.args.push((name, shown));
         }
         false
     })
     .unwrap_or(false);
-    if too_long {
-        op_text_abort(site);
+    if over {
+        op_over_budget(site);
     }
 }
 
-/// Aborts the run, or stops its task, with U6003 for an integer too long for text, at the
-/// position of operation `site` (`spec/11 §7`, #923), as the interpreter reports it.
-fn op_text_abort(site: usize) {
+/// Aborts the run, or stops its task, with U6003 at the position of operation `site`: a value
+/// of its event does not fit the memory budget (`spec/11 §7`, #1223), as the interpreter
+/// reports it.
+fn op_over_budget(site: usize) {
     let at = with_state(|state| state.ops.get(site).and_then(|op| op.site)).flatten();
-    crate::runtime::int_text_abort(at.and_then(|at| i64::try_from(at).ok()).unwrap_or(i64::MAX));
+    crate::runtime::refuse(at.unwrap_or(usize::MAX), None);
 }
 
 /// Ends the event at `slot`, of operation `site`, with its value, or its failure when `failed`
 /// is 1. A task that stopped at or in the operation (`failed` 2) leaves the event as it was,
 /// `aborted`, unless the operation was interrupted while it waited, which ends it
-/// `interrupted` (ADR 0117 rules 4 and 10). An [`UNRECORDED`] slot has no event: its value or
-/// failure is written as the event would show it and dropped (#1550).
+/// `interrupted` (ADR 0117 rules 4 and 10).
 pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     let interrupted =
         failed == 2 && with_state(|state| std::mem::take(&mut state.interrupted)).unwrap_or(false);
-    let (Ok(site), Some(slot)) = (usize::try_from(site), Slot::of(slot)) else {
+    let (Ok(site), Ok(slot)) = (usize::try_from(site), usize::try_from(slot)) else {
         return;
     };
     end_event(site, slot, value, (failed, interrupted));
-    if let Slot::Unrecorded { .. } = slot {
-        return;
-    }
     // The event is complete: a streaming task writes what it holds once no other is open.
     with_state(|state| {
         state.open_events = state.open_events.saturating_sub(1);
@@ -829,82 +760,64 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
 }
 
 /// Fills in the outcome of the event at `slot`, of operation `site`, by how it ended.
-fn end_event(site: usize, slot: Slot, value: i64, (failed, interrupted): (i64, bool)) {
+fn end_event(site: usize, slot: usize, value: i64, (failed, interrupted): (i64, bool)) {
     if interrupted {
-        if let Slot::Recorded(slot) = slot {
-            with_state(|state| {
-                if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
-                    event.outcome = EventOutcome::Interrupted;
-                }
-            });
-        }
+        with_state(|state| {
+            if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
+                event.outcome = EventOutcome::Interrupted;
+            }
+        });
         return;
     }
     if failed == 2 {
         return;
     }
-    // An outcome that holds an integer too long for text aborts the run at the operation
-    // (`spec/11 §7`, #923), its event left `aborted`.
+    // An outcome whose text does not fit the memory budget aborts the run at the operation,
+    // its event left `aborted` (`spec/11 §7`, #1223).
     let trace = crate::serve::trace();
-    let too_long = with_state(|state| {
+    let over = with_state(|state| {
         let Some(op) = state.ops.get(site) else {
             return false;
         };
         // The outcome of an event of the host's `HttpServer`, in the reduced form of ADR 0123
         // rule 1, as its arguments are.
-        let trace = trace.filter(|_| slot.server(state, op));
+        let trace = trace.filter(|_| server_event(state, op, slot));
         let revealed = matches!(trace, Some((_, true)));
-        // Without a trace the text is dropped, so an outcome that can hold no `Int` need not
-        // be written: it cannot abort (#1550).
-        let unrecorded = matches!(slot, Slot::Unrecorded { .. }) && !revealed;
-        let written = |ty: usize| !unrecorded || state.types.writes_int(ty);
         // S-45 (#1552): an outcome labeled above `public` is written as `redacted`, from the
-        // site's static level alone; no text is built from the value, so it raises no abort.
+        // site's static level alone; no text is built from the value.
         let outcome = if let Some(level) = op.outcome.as_ref().filter(|_| !revealed) {
             Some(EventOutcome::Redacted(level.clone()))
         } else if failed == 0 {
-            if written(op.result.ty) {
-                match trace {
-                    Some((key, true)) => state.types.server_written(op.result.ty, value, &key),
-                    Some((key, false)) => state.types.server_redacted(
-                        op.result.ty,
-                        value,
-                        op.result.redacted.as_deref(),
-                        &key,
-                    ),
-                    None => {
-                        state
-                            .types
-                            .redacted(op.result.ty, value, op.result.redacted.as_deref())
-                    }
-                }
-                .map(EventOutcome::Ok)
-            } else {
-                Some(EventOutcome::Ok(String::new()))
+            match trace {
+                Some((key, true)) => state.types.server_written(op.result.ty, value, &key),
+                Some((key, false)) => state.types.server_redacted(
+                    op.result.ty,
+                    value,
+                    op.result.redacted.as_deref(),
+                    &key,
+                ),
+                None => state
+                    .types
+                    .redacted(op.result.ty, value, op.result.redacted.as_deref()),
             }
+            .map(EventOutcome::Ok)
         } else {
             let ty = op.error.unwrap_or(usize::MAX);
-            if written(ty) {
-                let variant = state.types.variant_name(ty, value);
-                state
-                    .types
-                    .render(ty, value)
-                    .map(|value| EventOutcome::Fail { variant, value })
-            } else {
-                Some(EventOutcome::Ok(String::new()))
-            }
+            let variant = state.types.variant_name(ty, value);
+            state
+                .types
+                .render(ty, value)
+                .map(|value| EventOutcome::Fail { variant, value })
         };
-        let too_long = outcome.is_none();
-        if let Slot::Recorded(slot) = slot
-            && let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot))
-        {
+        let over = outcome.is_none();
+        if let Some(event) = state.trace.as_mut().and_then(|trace| trace.get_mut(slot)) {
             event.outcome = outcome.unwrap_or(EventOutcome::Aborted);
         }
-        too_long
+        over
     })
     .unwrap_or(false);
-    if too_long {
-        op_text_abort(site);
+    if over {
+        op_over_budget(site);
     }
 }
 

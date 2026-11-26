@@ -1,21 +1,35 @@
--- test: an `Int` of more than 4300 digits is never written as text: interpolating it aborts the run with U6003 at the interpolation, after the output so far, in both engines (spec/11 §7, #923)
+-- test: an `Int` of more than 4300 digits, the bound of parsing, is written as text in full by interpolation and `to_json`, by divide and conquer, in both engines (spec/11 §7, #1223)
 -- spec: spec/11 §7
 -- grant: console
 -- expect: run-output "built"
--- expect: error U6003 at src/big.una:21:20
+-- expect: run-output "text 31269 584809521 true"
+-- expect: run-output "json 31269"
+-- expect: run-output "ten 32769 11"
 module big
 
---- Ten to the `exp`, built by a loop of multiplications: cheap to build, quadratic to write.
-power(exp: Int) -> Int
+--- `b` squared `k` times: b^(2^k), by products of growing size.
+squarings(b: Int, k: Int) -> Int
 =
-  let edit n = 1
-  for i in 1..exp
-    n = n * 10
+  let edit n = b
+  for i in 0..<k
+    n = n * n
   n
+
+--- The Euclidean remainder of `a` by `b`, 0 for a zero divisor.
+rest(a: Int, b: Int) -> Int = if b == 0 then 0 else a mod b
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let n = power(4300)
+  -- 3^65536 has 31269 digits, past the 4300 that a text may write for parsing.
+  let t = squarings(3, k: 16)
   @console.print("built")
-  @console.print("{n}")
+  let written = "{t}"
+  let tail = "780383109121"
+  @console.print("text {written.len} {rest(t, b: 1000000007)} {written.ends_with(suffix: tail)}")
+  @console.print("json {Number(t).to_json().len}")
+  -- 10^32768 + 1: every digit between the two ones is a zero.
+  let ten = "{squarings(10, k: 15) + 1}"
+  let zero = "0"
+  let nothing = ""
+  @console.print("ten {ten.len} {ten.replace(pattern: zero, by: nothing)}")

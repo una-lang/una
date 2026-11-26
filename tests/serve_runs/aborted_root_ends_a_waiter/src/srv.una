@@ -1,25 +1,27 @@
 module srv
 
+import std.collections (empty_bit_set)
 import std.host (Exchange, HttpServer, Reply, ServeError)
 
 --- Waits for one request and answers it.
 waiter() -> Unit
   uses @server: HttpServer[next, reply]
 =
-  let got = attempt @server.next()
+  const got = attempt @server.next()
   when got
     is Ok(exchange) ->
       @server.reply(to: exchange.right, reply: Reply(status: 200, headers: [], body: "waiter"))
         if error use unit
     is Err(failure) -> unit
 
---- Aborts the run: an integer of more than 4300 digits written as text.
+--- Aborts the run after a count: a bit set of 2^64 bits is past every memory budget, so
+--- `empty_bit_set` aborts with U6003 before it allocates (`spec/28 §9` rule 5).
 bomb() -> Unit
 =
-  let edit big = 1
+  var big = 1
   for i in 1..2000
     big = big * 1000
-  let shown = "{big}"
+  const bits = empty_bit_set(size: 18446744073709551616)
   unit
 
 --- The root takes a request, then aborts inside a `tasks` statement while its task waits in
@@ -29,8 +31,8 @@ bomb() -> Unit
 pub main() -> Unit
   uses @server: HttpServer[next, reply, close]
 =
-  let first = attempt @server.next()
-  let ended = when first
+  const first = attempt @server.next()
+  const ended = when first
     is Ok(one) ->
       tasks
         start waiter()

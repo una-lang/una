@@ -1,6 +1,6 @@
 ita aborted_run_ends_two_waiters
   version 0.1.0
-  edition 0.4
+  edition 0.5
 
 run
   entry srv

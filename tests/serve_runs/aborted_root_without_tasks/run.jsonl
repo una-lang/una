@@ -1,4 +1,4 @@
-{"completion":{"aborted":"IntText { span: Some(Span { file: FileId(2), start: 236, end: 239 }) }"},"output":[]}
+{"completion":{"aborted":"Memory { span: Span { file: FileId(2), start: 367, end: 408 }, limit: 18446744073709551615 }"},"output":[]}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":1}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"redacted","level":"internal"},"seq":2}
 {"args":{"reply":"Reply(status: <redacted:internal>, headers: <redacted:internal>, body: <redacted:internal>)","to":"<redacted:internal>"},"capability":"HttpServer","instance":"host:HttpServer","op":"reply","outcome":{"kind":"redacted","level":"internal"},"seq":3}

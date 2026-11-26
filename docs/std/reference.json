@@ -2923,7 +2923,7 @@
     "prelude quote_json"
    ],
    "cost": {
-    "time": "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+    "time": "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(M(d) log d)",
     "source": "spec/23 §6",
     "terms": [
      {
@@ -2932,7 +2932,11 @@
      },
      {
       "symbol": "d",
-      "meaning": "the number of digits of a `Number`, which parsing bounds by 4300 but a program may make larger"
+      "meaning": "the number of digits of a `Number`, which parsing bounds by 4300 but writing does not: a program may make it larger, and its text is then written in full"
+     },
+     {
+      "symbol": "M",
+      "meaning": "M(d) is the cost of a product of two integers of d digits"
      }
     ]
    },
