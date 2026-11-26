@@ -25,9 +25,11 @@ Fixed-width integers require overflow obligations everywhere and a bitvector or 
 
 The arbitrary precision of `Int` is Una's own big integer, `una_core::bigint`, in place of the `num-bigint` crate the Decision names, in the interpreter and in the native runtime alike. The semantics do not change: `Int` is unbounded, `div` and `mod` are Euclidean, and every operation the language uses gives the same result bit for bit as before, checked against `num-bigint` on random operands before the switch. The algorithms and their costs are in `docs/plan/1093-bigint-design.md`.
 
-## Amendment (2026-11-26, Proposed, #1223): writing an `Int` has no digit bound
+## Amendment (2026-11-26, #1223): writing an `Int` has no digit bound
 
-Proposed; the Owner accepts or refuses it. It changes the rule of #923 (2026-10-27) in `spec/11 §7`, the sentence of ADR 0073 rule F3 that writing stays O(d²), and the reason given for the reading bound of #914; it changes no other decision of this record or of ADR 0073 and ADR 0120.
+- Status: Accepted (2026-11-26), by the Owner's decision, for v0.5.2, on condition that the adversarial review of the pull request passes.
+
+It changes the rule of #923 (2026-10-27) in `spec/11 §7`, the sentence of ADR 0073 rule F3 that writing stays O(d²), and the reason given for the reading bound of #914; it changes no other decision of this record or of ADR 0073 and ADR 0120.
 
 **Context.** #923 refused to write an `Int` of more than 4300 digits as text: with `num-bigint`, converting d digits took O(d²), and a few multiplications build an integer of millions of digits, so the run aborted with U6003 instead. #1550 then made that abort the same with and without a trace. Una's own big integer (the amendment above) converts in subquadratic time, which is what the rule of the best average complexity asks for in place of a cap.
 

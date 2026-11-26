@@ -74,7 +74,7 @@ Every allocation goes through the global allocator, which `una` and `una-rt` wra
 
 ## 6. The 4,300-digit bound
 
-The bound of `MAX_INT_DIGITS` on writing and parsing an integer as text (`spec/11 §7`, `spec/14 §1`, `spec/22 §4`, `spec/23 §3`, #914, #923) is part of the specification and stays exactly as it is. The conversions are now subquadratic beyond it; lifting or raising it, with the spec, the conformance cases of #923 and U6003, is #1223. (2026-11-26, #1223, ADR 0004 amendment of that date, Proposed: the bound on writing is lifted and the bound on reading kept.) Inside the bound, writing takes the divide-and-conquer path from 32 limbs (617 digits) and reading stays on Horner's rule. Writing an `Int` in decimal elsewhere (`fake_hash`'s seed, finding #1342 of ADR 0132) gets the same subquadratic conversion.
+The bound of `MAX_INT_DIGITS` on writing and parsing an integer as text (`spec/11 §7`, `spec/14 §1`, `spec/22 §4`, `spec/23 §3`, #914, #923) is part of the specification and stays exactly as it is. The conversions are now subquadratic beyond it; lifting or raising it, with the spec, the conformance cases of #923 and U6003, is #1223. (2026-11-26, #1223, ADR 0004 amendment of that date, accepted: the bound on writing is lifted and the bound on reading kept.) Inside the bound, writing takes the divide-and-conquer path from 32 limbs (617 digits) and reading stays on Horner's rule. Writing an `Int` in decimal elsewhere (`fake_hash`'s seed, finding #1342 of ADR 0132) gets the same subquadratic conversion.
 
 ## 7. Tests
 
