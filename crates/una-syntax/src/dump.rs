@@ -333,6 +333,15 @@ impl Dumper<'_> {
                 }
                 items
             }
+            DeclKind::Const(constant) => {
+                let mut items = vec![atom("const"), atom(self.name(&constant.name))];
+                if constant.public {
+                    items.insert(1, atom("pub"));
+                }
+                items.push(self.ty(&constant.ty));
+                items.push(self.expr(&constant.value));
+                items
+            }
         };
         let docs = decl.docs.iter().map(|comment| {
             let text = self

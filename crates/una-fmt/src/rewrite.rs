@@ -490,6 +490,7 @@ impl Collector<'_> {
                 }
             }
             DeclKind::Measure(_) => {}
+            DeclKind::Const(constant) => self.expr(&constant.value),
         }
     }
 

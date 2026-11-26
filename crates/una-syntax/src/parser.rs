@@ -6,7 +6,7 @@ use una_diag::Code;
 
 use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
-    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch, EverStmt,
+    CapType, CapabilityDecl, Clause, ClauseKind, ConstDecl, Convention, Decl, DeclKind, ElseBranch, EverStmt,
     ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FirstOf, FnTypeClause,
     ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
@@ -1321,6 +1321,19 @@ impl<'a> Parser<'a> {
                 self.measure_decl(public)?
             }
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_) => self.function_decl(public)?,
+            // Edition 0.5: a module constant (ADR 0126 rule 1). `let` there has its U7007 from
+            // the lexer, with the rewrite to `const`, and is read the same way.
+            TokenKind::Keyword(Keyword::Const) => self.constant_decl(public)?,
+            TokenKind::Keyword(Keyword::Let) if self.keywords >= KeywordSet::V0_5 => {
+                if matches!(self.peek_at(1), TokenKind::Keyword(Keyword::Edit)) {
+                    let span = self.span();
+                    return self.fail(
+                        span,
+                        "a module declares no `var`; a module value is a `const`",
+                    );
+                }
+                self.constant_decl(public)?
+            }
             // Edition 0.5: a module has no mutable state (ADR 0137 rule 3).
             TokenKind::Keyword(Keyword::Var) => {
                 let span = self.span();
@@ -2208,6 +2221,34 @@ impl<'a> Parser<'a> {
         };
         self.expect_line_end()?;
         Ok(DeclKind::Measure(MeasureDecl { public, name, unit }))
+    }
+
+    /// `[ "pub" ] "const" lower_ident ":" type "=" line_expr NEWLINE`, edition 0.5 (ADR 0126
+    /// rule 1). The type is required: without it, U0101 at `=`.
+    fn constant_decl(&mut self, public: bool) -> Parse<DeclKind> {
+        self.advance();
+        let name = self.binding_name("a constant's name", Binding::Let)?;
+        if matches!(self.peek(), TokenKind::Eq) {
+            let span = self.span();
+            let written = self.interner.resolve(name.name).to_owned();
+            return self.fail(
+                span,
+                format!(
+                    "a module constant writes its type: `const {written}: Type = value` (ADR 0126 rule 1)"
+                ),
+            );
+        }
+        self.expect(&TokenKind::Colon, "`:` and the constant's type")?;
+        let ty = self.ty()?;
+        self.expect(&TokenKind::Eq, "`=` and the constant's value")?;
+        let value = self.line_expr()?;
+        self.expect_line_end()?;
+        Ok(DeclKind::Const(ConstDecl {
+            public,
+            name,
+            ty,
+            value,
+        }))
     }
 
     /// `unit_expr = unit_term { ( "*" | "/" ) unit_term }`, left to right (ADR 0104 rule 2).

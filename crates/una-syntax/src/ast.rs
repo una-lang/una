@@ -92,6 +92,23 @@ pub enum DeclKind {
     Example(ExampleDecl),
     /// `measure`, edition 0.3 (ADR 0104 rule 1).
     Measure(MeasureDecl),
+    /// A module constant, `[pub] const name: type = value`, edition 0.5 (ADR 0126 rule 1).
+    Const(ConstDecl),
+}
+
+/// `constant_decl = [ "pub" ] "const" lower_ident ":" type "=" line_expr NEWLINE`, edition 0.5
+/// (ADR 0126 rule 1): a name bound, for the module, to a value the compiler computes at check
+/// time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstDecl {
+    /// Whether the constant is `pub`.
+    pub public: bool,
+    /// The constant's name.
+    pub name: Ident,
+    /// Its declared type, which the declaration MUST write.
+    pub ty: Type,
+    /// Its value, a constant expression (ADR 0126 rule 3).
+    pub value: Expr,
 }
 
 /// `[ "pub" ] "measure" upper_ident [ "=" unit_expr ]`, edition 0.3 (ADR 0104 rule 1): a base

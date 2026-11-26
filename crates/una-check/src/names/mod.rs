@@ -184,6 +184,9 @@ enum What {
     /// A unit of measure, edition 0.3 (ADR 0104 rule 1): in the upper namespace with kinds,
     /// so a unit and a kind of the same name clash (U1002).
     Measure,
+    /// A module constant, edition 0.5 (ADR 0126 rule 2): in the lower namespace with
+    /// functions, so a constant and a function of the same name clash (U1002).
+    Constant,
 }
 
 impl What {
@@ -197,6 +200,7 @@ impl What {
             What::Handler => "handler",
             What::Policy => "policy",
             What::Measure => "unit",
+            What::Constant => "constant",
         }
     }
 }
@@ -513,6 +517,16 @@ impl<'p, 'a> Checker<'p, 'a> {
                         &measure.name,
                         What::Measure,
                         measure.public,
+                        start,
+                        Vec::new(),
+                    );
+                }
+                DeclKind::Const(constant) => {
+                    self.declare(
+                        &mut table,
+                        &constant.name,
+                        What::Constant,
+                        constant.public,
                         start,
                         Vec::new(),
                     );
