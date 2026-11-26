@@ -77,17 +77,32 @@ fn repository_file(path: &str) -> String {
 
 #[test]
 fn the_linux_image_runs_as_an_unprivileged_user() {
-    let dockerfile = repository_file("scripts/local-ci/Dockerfile");
-    let users: Vec<&str> = dockerfile
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("USER "))
-        .collect();
-    assert_eq!(users.last().copied(), Some("1000:1000"), "{users:?}");
+    // The image of the tests and the release image that builds the Linux archive (#2105).
+    for file in [
+        "scripts/local-ci/Dockerfile",
+        "scripts/local-ci/Dockerfile.release",
+    ] {
+        let dockerfile = repository_file(file);
+        let users: Vec<&str> = dockerfile
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("USER "))
+            .collect();
+        assert_eq!(
+            users.last().copied(),
+            Some("1000:1000"),
+            "{file}: {users:?}"
+        );
+    }
     // The unprivileged run of scripts/local-ci.sh names the user itself too.
     let local_ci = repository_file("scripts/local-ci.sh");
     let run = local_ci.find("\"$image\" scripts/local-ci.sh").unwrap();
     let start = local_ci[..run].rfind("docker run").unwrap();
     assert!(local_ci[start..run].contains("--user 1000:1000"));
+    let pack = local_ci
+        .find("\"$release_image\" scripts/local-ci.sh --release-pack")
+        .unwrap();
+    let start = local_ci[..pack].rfind("docker run").unwrap();
+    assert!(local_ci[start..pack].contains("--user 1000:1000"));
     for script in [
         "scripts/local-ci.sh",
         "scripts/hunt-linux.sh",

@@ -1,0 +1,96 @@
+# The image that builds the Linux release archive (#2105): the Z3 library built into `una`
+# (scripts/build-z3.sh), `una` itself (scripts/release.sh) and the archive's check
+# (scripts/check-release.sh), for linux/arm64 (and linux/amd64), with the Rust toolchain that
+# rust-toolchain.toml pins. scripts/local-release.sh builds the archive here, and
+# scripts/local-ci.sh --linux-arm64 and --linux pack and check one here after their tests,
+# which run in the Ubuntu 24.04 image of scripts/local-ci/Dockerfile. Every download is pinned
+# by digest, but for the dnf packages (below).
+#
+# The base is AlmaLinux 8, whose glibc 2.28 is the glibc floor of the Linux `una`: the loader
+# of a glibc refuses an executable that names a later symbol version than its own, and an
+# executable linked here can name none later than the image's, so the archive built here runs on
+# glibc 2.28 and later. The compiler is GCC 13, as in the Ubuntu image (13.3.0), from
+# AlmaLinux's gcc-toolset-13 (13.3.1), whose libstdc++.a and libgcc.a are the complete static
+# archives that `una` links (-static-libstdc++ -static-libgcc). AlmaLinux 8 is maintained until
+# 2029. The tests, the formal track and the hunt stay in the Ubuntu image: the pinned Lean
+# toolchain (its clang and libLLVM) needs glibc 2.29 and the Z3 project's Linux executable 2.38.
+# The multi-platform index of almalinux:8, with its linux/amd64 and linux/arm64 images.
+FROM almalinux:8@sha256:768bedc30fe0a536adb0a65d2eddb7caad364e514fbddd0ae9e026975f590342
+
+# The toolchain packages are installed at the exact versions supply-chain/z3.lock records in its
+# [toolchain.aarch64-unknown-linux-gnu] table (review L2 of #2265): a rebuild of the image gives
+# the same toolchain, or fails here when a version is no longer served, never later at the
+# release build. A test keeps the two lists equal (crates/una-cli/tests/z3_lock.rs).
+RUN dnf install --assumeyes --setopt=install_weak_deps=False \
+        cmake-3.26.5-2.el8 \
+        make-4.2.1-11.el8 \
+        gcc-toolset-13-gcc-13.3.1-2.2.el8_10 \
+        gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
+        gcc-toolset-13-libstdc++-devel-13.3.1-2.2.el8_10 \
+        gcc-toolset-13-binutils-2.40-21.el8 \
+        gcc-toolset-13-runtime-13.0-2.el8 \
+        libgcc-8.5.0-31.el8_10.alma.1 \
+        libstdc++-8.5.0-31.el8_10.alma.1 \
+        binutils-2.30-128.el8_10 \
+        glibc-2.28-251.el8_10.53 \
+        glibc-devel-2.28-251.el8_10.53 \
+        glibc-headers-2.28-251.el8_10.53 \
+        kernel-headers-4.18.0-553.189.1.el8_10 \
+        git python3.12 time unzip diffutils perl-Digest-SHA which \
+    && alternatives --set python3 /usr/bin/python3.12 \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf \
+    && git config --system --add safe.directory '*'
+# gcc-toolset-13 lives under /opt/rh/gcc-toolset-13/root and is first on PATH (below), so `cc`,
+# `c++`, `ld`, `objdump` and `strip` are GCC 13's and binutils 2.40's.
+# git: scripts/build-z3.sh applies the recipe's patch with it, and the checkout is mounted with
+# another owner than the container's user, hence the safe directory.
+# diffutils, perl-Digest-SHA (`shasum`) and which: tools the release scripts call (`cmp`,
+# `shasum -a 256`, `which`). python3 (3.12): Z3's build generates sources with it. time and
+# unzip: kept as in the Ubuntu image, for the scripts that the archive's check runs.
+# cmake, gcc-toolset-13, make: the Z3 build of scripts/build-z3.sh (ADR 0124 rule 1), whose Linux
+# toolchain is this image's. The packages carry no version here: supply-chain/z3.lock records the
+# versions of the image the release was built in (`rpm -q`), and the digests of the files its
+# linker puts into `una`, and scripts/check-toolchain.sh, which scripts/release.sh runs, refuses
+# an image that differs (#1926), so a rebuild after an AlmaLinux update needs a deliberate update
+# of the lock.
+
+# The container runs as an unprivileged user, never as root (#1394): the solver child refuses to
+# run as root (ADR 0124 rule 7), so a root container fails every test that verifies. The user has
+# a fixed uid and gid, 1000, and
+# owns the toolchain's directories and the mount points of the volumes that scripts/local-ci.sh,
+# scripts/local-release.sh mount, so that a new volume starts owned by
+# it; a volume that a root container made before is handed over once by
+# scripts/container-volumes.sh, which those scripts run first.
+RUN groupadd --gid 1000 una \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/una --shell /bin/sh una \
+    && mkdir -p /opt/cargo/registry /opt/rustup /opt/z3 /opt/z3-cache /opt/lean /work/target \
+    && chown -R 1000:1000 /opt/cargo /opt/rustup /opt/z3 /opt/z3-cache /opt/lean /work
+USER 1000:1000
+ENV HOME=/home/una
+
+# The musl targets that rust-toolchain.toml lists (ADR 0124 step 4) are installed with the
+# toolchain, so that no container run downloads them.
+# rustup-init for the image's architecture (TARGETARCH, which `docker build --platform` sets),
+# checked against the digest that static.rust-lang.org publishes with it.
+ARG RUSTUP_VERSION=1.29.1
+ARG TARGETARCH
+ARG TOOLCHAIN
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/rh/gcc-toolset-13/root/usr/bin:/opt/cargo/bin:/opt/z3/bin:$PATH
+RUN case "$TARGETARCH" in \
+        amd64) host=x86_64-unknown-linux-gnu \
+            sha256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 ;; \
+        arm64) host=aarch64-unknown-linux-gnu \
+            sha256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;; \
+        *) echo "no rustup-init pinned for $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl --fail --location --silent --show-error --retry 3 --output /tmp/rustup-init \
+        "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$host/rustup-init" \
+    && echo "$sha256  /tmp/rustup-init" | sha256sum --check \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal \
+        --default-toolchain "$TOOLCHAIN" --component clippy --component rustfmt \
+        --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl \
+    && rm /tmp/rustup-init
+
+WORKDIR /work

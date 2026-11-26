@@ -1,8 +1,8 @@
 //! The glibc floor of the shipped Linux `una` (#2105): `scripts/glibc-floor.sh` reads the highest
 //! `GLIBC_` symbol version an executable asks the loader for and refuses one above the floor,
 //! shown here on listings a stand-in `objdump` prints; `scripts/check-release.sh` runs it with
-//! the floor of `install.sh`, which is the glibc of the image the archive is built in (2.39
-//! today; the check is what lets a later recipe lower it and keep it).
+//! the floor of `install.sh`, which is the glibc of the image the archive is built in (2.28,
+//! AlmaLinux 8's; 2.39, Ubuntu 24.04's, through 0.5.1), and the check is what keeps it there.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -196,7 +196,7 @@ fn the_release_check_reads_the_floor_of_the_installer_and_the_image_has_that_gli
         check.contains("scripts/glibc-floor.sh \"$glibc_floor\" \"$tmp/install-one/out/hello\"")
     );
     let lock = read("supply-chain/z3.lock");
-    for package in ["libc6", "libc6-dev"] {
+    for package in ["glibc", "glibc-devel", "glibc-headers"] {
         let version = lock
             .lines()
             .find_map(|line| line.strip_prefix(&format!("\"{package}\" = \"")))

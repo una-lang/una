@@ -1077,9 +1077,12 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null |
     echo
     # The strip that removed the debug sections of each runtime built into una (#1359), as
     # scripts/release.sh printed it in the release gate's log: its version and its binary's digest.
+    # GNU strip prints `GNU strip (GNU Binutils for Ubuntu) 2.42` on Ubuntu and
+    # `GNU strip version 2.40-21.el8` from AlmaLinux 8's gcc-toolset-13 (#2105); each form is
+    # matched exactly, and scripts/release-summary.py's STRIP_ROW takes the same two.
     echo "## Runtime strip"
     echo
-    strips=$(release_log_lines strip '(xcrun strip -S \((Xcode [0-9.]+ build [0-9A-Za-z]+|Command Line Tools [0-9.]+)\)|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D), sha256 [0-9a-f]{64}')
+    strips=$(release_log_lines strip '(xcrun strip -S \((Xcode [0-9.]+ build [0-9A-Za-z]+|Command Line Tools [0-9.]+)\)|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D|GNU strip version [0-9]+\.[0-9]+(\.[0-9]+)?-[0-9]+(\.[0-9]+)*\.el[0-9]+(_[0-9]+)* --strip-debug -D), sha256 [0-9a-f]{64}')
     if [ -z "$strips" ]; then
         echo "None: the release gate did not run or did not record the strip tool."
     else

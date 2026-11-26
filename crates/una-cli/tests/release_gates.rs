@@ -635,6 +635,35 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         assert_eq!(code, Some(1), "{other:?}");
         assert!(written.is_empty(), "{other:?}");
     }
+    // AlmaLinux 8's gcc-toolset-13 strip prints `GNU strip version 2.40-21.el8` (#2105): that
+    // form is copied as it is, and the same form with free text in its version is refused.
+    let el8 = record.replace(
+        "GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D",
+        "GNU strip version 2.40-21.el8 --strip-debug -D",
+    );
+    assert_ne!(el8, record);
+    let (code, written) = summary(&dir, "9.9.9", &el8, None);
+    assert_eq!(code, Some(0));
+    assert!(
+        written.contains(&format!(
+            "- x86_64-unknown-linux-gnu: GNU strip version 2.40-21.el8 --strip-debug -D, sha256 {}\n",
+            "e".repeat(64)
+        )),
+        "{written}"
+    );
+    for near in [
+        "GNU strip version 2.40-21.el8 on a named host --strip-debug -D",
+        "GNU strip version 2.40 --strip-debug -D",
+        "GNU strip version /home/someone/strip --strip-debug -D",
+    ] {
+        let forged = record.replace(
+            "GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D",
+            near,
+        );
+        let (code, written) = summary(&dir, "9.9.9", &forged, None);
+        assert_eq!(code, Some(1), "{near}");
+        assert!(written.is_empty(), "{near}");
+    }
     // A summary that matches the privacy pattern is not written.
     let (code, written) = summary(&dir, "9.9.9", &record, Some("darwin"));
     assert_eq!(code, Some(1));
@@ -2282,6 +2311,14 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
         format!(
             "strip: {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}"
         ),
+        // The version line of AlmaLinux 8's gcc-toolset-13 strip (#2105), and a line of that
+        // form with free text in it, which is out of shape.
+        format!(
+            "strip: x86_64-unknown-linux-gnu: GNU strip version 2.40-21.el8 --strip-debug -D, sha256 {digest}"
+        ),
+        format!(
+            "strip: x86_64-unknown-linux-gnu: GNU strip version 2.40 on a named host --strip-debug -D, sha256 {digest}"
+        ),
         format!("toolchain: {linux}: libstdc++-13-dev 13.3.0-6ubuntu2~24.04"),
         format!("toolchain: {linux}: libgcc.a sha256 {digest}"),
         format!("musl: {linux}: rcrt1.o sha256 {digest}"),
@@ -2329,7 +2366,7 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
     assert_eq!(output.status.code(), Some(3), "{record}");
     let expected = [
         format!(
-            "## Runtime strip\n\n- aarch64-apple-darwin: xcrun strip -S (Command Line Tools 26.6.0), sha256 {digest}\n- {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}\n- Not copied: 1 of the 3 lines of logs/release.log that start with `strip: ` are out of shape\n\n"
+            "## Runtime strip\n\n- aarch64-apple-darwin: xcrun strip -S (Command Line Tools 26.6.0), sha256 {digest}\n- {linux}: GNU strip (GNU Binutils for Ubuntu) 2.42 --strip-debug -D, sha256 {digest}\n- x86_64-unknown-linux-gnu: GNU strip version 2.40-21.el8 --strip-debug -D, sha256 {digest}\n- Not copied: 2 of the 5 lines of logs/release.log that start with `strip: ` are out of shape\n\n"
         ),
         format!(
             "## Linux toolchain\n\n- {linux}: libgcc.a sha256 {digest}\n- {linux}: libstdc++-13-dev 13.3.0-6ubuntu2~24.04\n- Not copied: 1 of the 3 lines of logs/release.log that start with `toolchain: ` are out of shape\n\n"

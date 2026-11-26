@@ -55,47 +55,54 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # with ZERO_AR_DATE=1, #1277). The digests before it differed only in the archive's member
 # headers: the objects were byte for byte equal.
 "aarch64-apple-darwin" = "4fcda925f158098beb0edb0650cd98caa0b66215c387f6d165ccf39bd33f0baa"
-# aarch64-unknown-linux-gnu: c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, cmake version 3.28.3,
-# GNU ar (GNU Binutils for Ubuntu) 2.42, glibc 2.39, in the linux/arm64 image of
-# scripts/local-ci/Dockerfile (ubuntu:24.04@sha256:534baea6...) as uid 1000, built 2026-11-11
-# from the tarball, checked by its digest, given with scripts/build-z3.sh --source; shown
-# reproducible by three cold builds with equal digests: scripts/build-z3.sh --reproducible in
-# one fresh cache volume, and one more build in another fresh volume and container. GNU ar's
-# deterministic mode, the distribution's default, writes zero owners and times in the member
-# headers with no flag of ours (#1901). Reproducible in that image: its apt packages are not
-# pinned by the Dockerfile, so the versions it had are recorded in the table
-# toolchain.aarch64-unknown-linux-gnu below, which scripts/release.sh checks (#1926).
-"aarch64-unknown-linux-gnu" = "0ddec1a9cf5f01e23c96c4c98ad8b6dc7a787f0ecc4ecb975cfb2bf7200e11f7"
+# aarch64-unknown-linux-gnu: c++ (GCC) 13.3.1 20240611 (Red Hat 13.3.1-2) of gcc-toolset-13,
+# cmake version 3.26.5, GNU ar version 2.40-21.el8, glibc 2.28, in the linux/arm64 image of
+# scripts/local-ci/Dockerfile.release (almalinux:8@sha256:768bedc3...) as uid 1000, built 2026-11-26
+# (#2105), downloaded from the mirror and checked by its digest; shown reproducible by two cold
+# builds with equal digests (scripts/build-z3.sh --reproducible, in one fresh cache volume),
+# and one more in another fresh volume and container. gcc-toolset's ar does not default to
+# deterministic mode, so scripts/build-z3.sh asks GNU ar for it (`qcD`, `ranlib -D`): the member
+# headers carry zero owners and times. Reproducible in that image: its packages are not pinned
+# by the Dockerfile, so the versions it had are recorded in the table
+# toolchain.aarch64-unknown-linux-gnu below, which scripts/release.sh checks (#1926). The
+# library of 0.4.0 to 0.5.1, built in the Ubuntu 24.04 image (GCC 13.3.0, glibc 2.39), was
+# 0ddec1a9cf5f01e23c96c4c98ad8b6dc7a787f0ecc4ecb975cfb2bf7200e11f7.
+"aarch64-unknown-linux-gnu" = "08fdb9fdbec4d6cb83faa6e881403695555fae2a23973f45a23a6154dc004b02"
 
-# The Debian packages of the Linux image that built the library above and that links the release
-# `una` (#1926), as `"package" = "version"` from `dpkg-query -W` in the image
-# una-local-ci:1.98.1-arm64 (image ID
-# sha256:9df416abe4a0980d58da44e93da60a782991f0b60577ea94de89075a43b4876d), recorded 2026-11-11;
-# libc6 and libc6-dev refreshed 2026-11-15 (#2028) after an Ubuntu update, from the rebuilt image of
-# the same tag (image ID sha256:4cd984ff32f31e3645c6312ed524b5d575cc0094de19f381a1df1ccb582d2563),
-# which installs 2.39-0ubuntu8.12; every other package and every file digest below is unchanged.
+# The packages of the Linux image that built the library above and that links the release `una`
+# (#1926), as `"package" = "VERSION-RELEASE"` from `rpm -q` in the AlmaLinux 8 image of
+# scripts/local-ci/Dockerfile.release (#2105, almalinux:8@sha256:768bedc3..., the image built as
+# una-local-ci-release:1.98.1-arm64, image ID
+# sha256:b5b5c673b32638b2b792a7574bad34c065d8f7d04d519cc3e23508e52f79ddad, with the packages
+# installed at these versions, review L2 of #2265), recorded 2026-11-26.
+# glibc 2.28 is the floor of install.sh; GCC 13 is gcc-toolset-13's, and libgcc (GCC 8's) is the
+# system's libgcc_s.so.1, the unwinder `una` loads. kernel-headers (the Linux headers that
+# glibc-headers includes), gcc-toolset-13-runtime (the toolset's environment) and the system's
+# binutils 2.30 and libstdc++ (GCC 8's, which the image's cmake and the standalone z3 load; the
+# toolset's ld, as and strip come first) are listed so that a drift in any of them is refused
+# too (review L4 of #2259); no annobin plugin is installed. Before #2105 the table held the Debian
+# packages of the Ubuntu 24.04 image (glibc 2.39, GCC 13.3.0), which built 0.4.0 to 0.5.1.
 # The Dockerfile pins its base by digest but installs these with no version, so a rebuild of the
-# image after an Ubuntu update may give others: scripts/release.sh then refuses to build, through
-# scripts/check-toolchain.sh (exit 2), when an installed version differs from this table or a
-# package is missing, and a new image needs a deliberate update of this table, and a new
+# image after an AlmaLinux update may give others: scripts/release.sh then refuses to build,
+# through scripts/check-toolchain.sh (exit 2), when an installed version differs from this table
+# or a package is missing, and a new image needs a deliberate update of this table, and a new
 # [library] line when the library's digest changes. The table names no target triple, so the
 # [library] reader of scripts/release.sh never matches it.
 [toolchain.aarch64-unknown-linux-gnu]
-"binutils" = "2.42-4ubuntu2.10"
-"binutils-aarch64-linux-gnu" = "2.42-4ubuntu2.10"
-"libbinutils" = "2.42-4ubuntu2.10"
-"cmake" = "3.28.3-1build7"
-"make" = "4.3-4.1build2"
-"gcc" = "4:13.2.0-7ubuntu1"
-"g++" = "4:13.2.0-7ubuntu1"
-"cpp-13" = "13.3.0-6ubuntu2~24.04.1"
-"gcc-13" = "13.3.0-6ubuntu2~24.04.1"
-"g++-13" = "13.3.0-6ubuntu2~24.04.1"
-"libgcc-13-dev" = "13.3.0-6ubuntu2~24.04.1"
-"libstdc++-13-dev" = "13.3.0-6ubuntu2~24.04.1"
-"libgcc-s1" = "14.2.0-4ubuntu2~24.04.1"
-"libc6" = "2.39-0ubuntu8.12"
-"libc6-dev" = "2.39-0ubuntu8.12"
+"gcc-toolset-13-binutils" = "2.40-21.el8"
+"cmake" = "3.26.5-2.el8"
+"make" = "4.2.1-11.el8"
+"gcc-toolset-13-gcc" = "13.3.1-2.2.el8_10"
+"gcc-toolset-13-gcc-c++" = "13.3.1-2.2.el8_10"
+"gcc-toolset-13-libstdc++-devel" = "13.3.1-2.2.el8_10"
+"libgcc" = "8.5.0-31.el8_10.alma.1"
+"glibc" = "2.28-251.el8_10.53"
+"glibc-devel" = "2.28-251.el8_10.53"
+"glibc-headers" = "2.28-251.el8_10.53"
+"kernel-headers" = "4.18.0-553.189.1.el8_10"
+"gcc-toolset-13-runtime" = "13.0-2.el8"
+"binutils" = "2.30-128.el8_10"
+"libstdc++" = "8.5.0-31.el8_10.alma.1"
 
 # The files of those packages that the linker copies, whole or the members it needs, into the
 # release `una` on this target (#1958, review L2 of #1957), with their SHA-256: GNU's C++ runtime
@@ -107,12 +114,12 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # that is missing or whose digest differs; it prints a line
 # `toolchain: <target>: <file> sha256 <digest>` for each.
 [toolchain-files.aarch64-unknown-linux-gnu]
-"libstdc++.a" = "9704d2aa1d2231e3c66e730a34fc75de02393c10125565b67d933d93b6937a42"
-"libgcc.a" = "4bc354241987926aa0489ba1d925e8b10356556323307944f08209f370a28ad6"
-"libgcc_eh.a" = "ba85797b21e8eb241afccce977b0b2ca607a9764e3ae15bb966415824a8ee8a4"
-"crtbeginS.o" = "2d0881b2018ca7b1c7a7af19ef91b9f42739d8f51c214f0faf22a2dc49c4c002"
-"crtendS.o" = "3da9c42040eca63e3432014ee4b0a98a24ea1f7c4a33e1b40c2b02cc7a15c208"
-"Scrt1.o" = "d03fc7a1a0b7cdbc1fb0a5c25425d3e1d2971a193c52f0ccdc40049234b7daae"
-"crti.o" = "93bb05d2d87f3464fd89a70d26d8ed29f0797e4b97a60786a2724a7e3ffbeba5"
-"crtn.o" = "1c741c1f9499461b6f1e531e21fc5f86a216cc5d0c49d18bdcf97d7d922342d5"
-"libc_nonshared.a" = "7a0595e07a7542493525a2fe4947272ab1840509d86d480ed6d239447c06d1ac"
+"libstdc++.a" = "6f2da446d016ae882a595cb55de85b54a8e05d6b180f344252ba097df501228f"
+"libgcc.a" = "9519d58f77baf4800cc42c4881a8f54d22d433cc446eb39dc800c73289740273"
+"libgcc_eh.a" = "0e00c4711828a7c9ecd3a0f7f266e4ee150accd96a40a9f11784a50e194bb7d6"
+"crtbeginS.o" = "79e6b2b2d1034059406a1648204b386e643abb6e78bdacaac72eade5ba509766"
+"crtendS.o" = "b8f6d2f1529ea0d7b5f4653111c77718d8cafb189c0ab8155ba8e36ebf3218c1"
+"Scrt1.o" = "7ae0bdc5f06b430d9421b407fd32abebafecc5ea8812aadef96ee4f04797d916"
+"crti.o" = "004ad70051266e5cc3b05f3ecd8a9f388ce7da43da93bf5a42d8615257c91a3b"
+"crtn.o" = "3ab3d63108b001267444acfec36b1eef6de25413c2e5a2cbdce74087f2b947de"
+"libc_nonshared.a" = "593f08119e728225e83a0aa7d96bf1ba3906bbb80d023bc13ad132ca8d71a9ce"

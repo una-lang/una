@@ -8,7 +8,8 @@
 #             and a stand-in validation summary that lists its digest (no signing key is read or
 #             needed: the installer checks the digest the summary lists, nothing else)
 #   refuse    install.sh refuses, before any download, a musl system (Alpine) and a glibc older
-#             than 2.39 (Ubuntu 22.04, glibc 2.35), and installs nothing
+#             than the floor (Debian 9, glibc 2.24, below 2.28, and below 2.39 for 0.4.0 to
+#             0.5.1), and installs nothing
 #   loop      una --version; una check --tier 1, una test and una run on every package under
 #             examples/; examples/health served under una run (GET /health is 200, exit 0 at
 #             SIGTERM)
@@ -28,7 +29,13 @@
 # in its target volume, target/release-archives/). The installer installs 0.4.0 and later only,
 # so an archive of an earlier version is packed again under UNA_SMOKE_VERSION (default 0.4.0):
 # only the name of its top directory changes, and the smoke checks that the installed una is
-# byte for byte the archive's.
+# byte for byte the archive's. UNA_SMOKE_VERSION, when set, also renames an archive of a later
+# version: an archive of `main` carries the last release's version and is served as the next
+# one, for the installer to apply that release's glibc floor (#2105).
+#
+# UNA_SMOKE_DISTRO picks the system of the install, loop, no-cc, cc, root and seccomp cases
+# (#2105): ubuntu-24.04 (the default), ubuntu-22.04 (glibc 2.35), debian-12 (glibc 2.36) or
+# almalinux-8 (glibc 2.28, the floor and the build image's base), each pinned by digest below.
 #
 # Usage: scripts/linux-archive-smoke.sh ARCHIVE OUT
 #   ARCHIVE  una-<version>-aarch64-unknown-linux-gnu.tar.gz, with its .sha256 beside it
@@ -36,7 +43,7 @@
 # Prints one line per item, `<case> PASS|FAIL|NOTE <what>`, also in OUT/results.txt, and exits
 # 1 when any item failed. Needs Docker with linux/arm64 (native on an arm64 Mac: set
 # DOCKER_CONTEXT as the other container scripts do). It builds two images from the pinned
-# ubuntu:24.04 of scripts/local-ci/Dockerfile (curl; and curl, gcc, libc6-dev, binutils,
+# system of UNA_SMOKE_DISTRO (curl; and curl, gcc, the C library's development files, binutils,
 # strace), which needs the network once; every smoke container runs with --network none. It
 # creates no Docker volume.
 #
@@ -45,6 +52,10 @@ set -eu
 
 ubuntu=ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 ubuntu_old=ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
+debian12=debian:12@sha256:1d04200c2ece1d4d75a2a6f8e11ebce7d86a2ae28b34bb2c9cbb3ee9f4953e75
+almalinux8=almalinux:8@sha256:768bedc30fe0a536adb0a65d2eddb7caad364e514fbddd0ae9e026975f590342
+# Below every floor: glibc 2.24.
+glibc_old=debian:9@sha256:c5c5200ff1e9c73ffbf188b4a67eb1c91531b644856b4aefe86a58d2f0cb05be
 alpine=alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 target=aarch64-unknown-linux-gnu
 
@@ -341,7 +352,15 @@ archive_sha=$(digest "$archive")
 version=${UNA_SMOKE_VERSION:-0.4.0}
 case $archive_version in
     0.[0-3].*) ;;
-    *) version=$archive_version ;;
+    *) [ -n "${UNA_SMOKE_VERSION:-}" ] || version=$archive_version ;;
+esac
+distro=${UNA_SMOKE_DISTRO:-ubuntu-24.04}
+case $distro in
+    ubuntu-24.04) system=$ubuntu packages=apt ;;
+    ubuntu-22.04) system=$ubuntu_old packages=apt ;;
+    debian-12) system=$debian12 packages=apt ;;
+    almalinux-8) system=$almalinux8 packages=dnf ;;
+    *) fail "UNA_SMOKE_DISTRO is ubuntu-24.04, ubuntu-22.04, debian-12 or almalinux-8, not $distro" ;;
 esac
 
 mkdir -p "$out/mirror/releases/v$version" "$out/mirror/records/v$version/docs/validation"
@@ -352,7 +371,7 @@ results=$out/results.txt
 echo "$version" > "$mirror/version"
 cp "$archive" "$archive.sha256" "$out/"
 
-# The images: the pinned Ubuntu of the release build, with curl (no C compiler), and with gcc.
+# The images: the pinned system of UNA_SMOKE_DISTRO, with curl (no C compiler), and with gcc.
 build_image() {
     tag=$1
     file=$2
@@ -360,28 +379,50 @@ build_image() {
         || fail "the image $tag did not build"
     docker image inspect --format "$tag {{.Id}}" "$tag" >> "$out/images.txt"
 }
-cat > "$out/Dockerfile.base" << EOF
-FROM $ubuntu
+if [ "$packages" = apt ]; then
+    cat > "$out/Dockerfile.base" << EOF
+FROM $system
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 EOF
+else
+    # AlmaLinux's base image has curl; the cases compare files with cmp (diffutils).
+    cat > "$out/Dockerfile.base" << EOF
+FROM $system
+RUN dnf install --assumeyes --setopt=install_weak_deps=False diffutils tar gzip && dnf clean all
+EOF
+fi
 base_tag=una-linux-smoke-base:$(digest "$out/Dockerfile.base" | cut -c1-12)
 : > "$out/images.txt"
 build_image "$base_tag" "$out/Dockerfile.base"
-cat > "$out/Dockerfile.cc" << EOF
+if [ "$packages" = apt ]; then
+    cat > "$out/Dockerfile.cc" << EOF
 FROM $base_tag
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     gcc libc6-dev binutils strace && rm -rf /var/lib/apt/lists/*
 EOF
+else
+    cat > "$out/Dockerfile.cc" << EOF
+FROM $base_tag
+RUN dnf install --assumeyes --setopt=install_weak_deps=False gcc glibc-devel binutils strace \
+    && dnf clean all
+EOF
+fi
 cc_tag=una-linux-smoke-cc:$(digest "$out/Dockerfile.cc" | cut -c1-12)
 build_image "$cc_tag" "$out/Dockerfile.cc"
-for image in "$ubuntu_old" "$alpine"; do
+for image in "$glibc_old" "$alpine"; do
     docker image inspect "$image" > /dev/null 2>&1 || docker pull --platform linux/arm64 "$image" > /dev/null \
         || fail "cannot pull $image"
     echo "$image" >> "$out/images.txt"
 done
-docker run --rm --network none --platform linux/arm64 "$cc_tag" \
-    dpkg-query -W libc6 curl gcc libc6-dev binutils strace > "$out/packages.txt"
+echo "distro $distro $system" >> "$out/images.txt"
+if [ "$packages" = apt ]; then
+    docker run --rm --network none --platform linux/arm64 "$cc_tag" \
+        dpkg-query -W libc6 curl gcc libc6-dev binutils strace > "$out/packages.txt"
+else
+    docker run --rm --network none --platform linux/arm64 "$cc_tag" \
+        rpm -q glibc curl gcc glibc-devel binutils strace > "$out/packages.txt"
+fi
 
 # The archive the mirror serves: the archive itself, or, for a version the installer refuses,
 # the same files under the top directory una-$version-$target, packed in the base image.
@@ -443,7 +484,7 @@ run_case() {
     [ "$code" = 0 ] || echo "$case FAIL the container exited $code" | tee -a "$results"
 }
 run_case refuse-musl "$alpine" 1000:1000 "this system's C library is musl"
-run_case refuse-glibc "$ubuntu_old" 1000:1000 "this system has glibc 2.35"
+run_case refuse-glibc "$glibc_old" 1000:1000 "this system has glibc 2.24"
 run_case loop "$base_tag" 1000:1000
 run_case cc "$cc_tag" 1000:1000
 run_case root "$base_tag" 0:0

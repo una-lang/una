@@ -1,9 +1,9 @@
 #!/bin/sh
 # Checks the Linux toolchain that links the release `una` against supply-chain/z3.lock (#1926,
-# #1958): every Debian package of the lock's [toolchain.TARGET] table must be installed with the
-# version it records (`dpkg-query -W`), and every file of its [toolchain-files.TARGET] table,
+# #1958): every package of the lock's [toolchain.TARGET] table must be installed with the
+# version it records (`rpm -q`, as VERSION-RELEASE; the image is AlmaLinux 8's, #2105), and every file of its [toolchain-files.TARGET] table,
 # found where `cc` takes it (`cc -print-file-name=<file>`; `cc` is the driver that links `una`),
-# must have the SHA-256 it records. scripts/local-ci/Dockerfile installs the packages with no
+# must have the SHA-256 it records. scripts/local-ci/Dockerfile.release installs the packages with no
 # version, so a rebuilt image is refused here until the lock is updated deliberately. A missing
 # table, package or file, or another version or digest, exits 2 with the reason on stderr; on
 # success each package and file is printed on a line `toolchain: TARGET: <package> <version>`
@@ -39,13 +39,13 @@ sha256_of() {
     fi
 }
 
-command -v dpkg-query >/dev/null 2>&1 \
-    || { echo "error: dpkg-query is missing; a Linux release builds in the image of scripts/local-ci/Dockerfile, whose packages supply-chain/z3.lock records" >&2; exit 2; }
+command -v rpm >/dev/null 2>&1 \
+    || { echo "error: rpm is missing; a Linux release builds in the image of scripts/local-ci/Dockerfile.release, whose packages supply-chain/z3.lock records" >&2; exit 2; }
 packages=$(sed -n '/^\[toolchain\.'"$target"'\]$/,/^\[/s/^"\([^"]*\)" *= *"\([^"]*\)"$/\1 \2/p' "$lock")
 [ -n "$packages" ] \
     || { echo "error: supply-chain/z3.lock records no [toolchain.$target] package versions" >&2; exit 2; }
 printf '%s\n' "$packages" | while read -r package pinned; do
-    installed=$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null) || installed=
+    installed=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}' "$package" 2>/dev/null) || installed=
     [ "$installed" = "$pinned" ] \
         || { echo "error: the package $package is ${installed:-not installed}${installed:+ installed}, but supply-chain/z3.lock records $pinned for $target; a new image updates the [toolchain.$target] table deliberately" >&2; exit 2; }
     echo "toolchain: $target: $package $installed"

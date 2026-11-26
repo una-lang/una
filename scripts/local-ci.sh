@@ -88,9 +88,18 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     fi
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
     image="una-local-ci:$toolchain$suffix"
+    dockerfile=scripts/local-ci/Dockerfile
+    if [ "$mode" = --limits ]; then
+        # The limits leg runs in the release image (#2105, review M1 of #2265), against the Z3
+        # library that ships (scripts/limits.sh checks its digest against supply-chain/z3.lock,
+        # UNA_LIMITS_SHIPPED_LIBRARY) and on the glibc floor, with a target directory of its own
+        # inside the volume, so that nothing the Ubuntu image built is linked there.
+        image="una-local-ci-release:$toolchain$suffix"
+        dockerfile=scripts/local-ci/Dockerfile.release
+    fi
     echo "== building the image $image (linux/$arch)"
     docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
-        --tag "$image" scripts/local-ci || fail "the container image did not build"
+        --file "$dockerfile" --tag "$image" scripts/local-ci || fail "the container image did not build"
     # The job count of the container's build (#701). Cargo uses every CPU of the Docker VM by
     # default, and that many rustc and linker processes at once can run the VM out of memory:
     # its kernel kills the linker (signal 9) and no test runs. The build runs one job per 2 GiB
@@ -135,6 +144,9 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         set -- --volume "$z3_source:/z3-src/z3-source.tar.gz:ro" \
             --env UNA_Z3_SOURCE=/z3-src/z3-source.tar.gz
     fi
+    if [ "$mode" = --limits ]; then
+        set -- "$@" --env UNA_LIMITS_SHIPPED_LIBRARY=1 --env CARGO_TARGET_DIR=/work/target/release-image
+    fi
     echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
     # registry and Z3 are volumes, which keep the container's builds apart from the host's. The
@@ -162,10 +174,49 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
         --env UNA_LOCAL_CI_ADVISORIES_ON_HOST=1 \
         --env UNA_LOCAL_CI_DOC_LINKS_ON_HOST=1 \
+        --env UNA_LOCAL_CI_PACK_IN_RELEASE_IMAGE=1 \
         --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
         "$image" scripts/local-ci.sh $mode || fail "the Linux run failed; its output is above"
+    if [ -z "$mode" ]; then
+        # The release archive (#2105): packed and checked in the release image of
+        # scripts/local-ci/Dockerfile.release (AlmaLinux 8, glibc 2.28), whose toolchain
+        # supply-chain/z3.lock records, with the same target volume, registry and Z3 library
+        # cache; the library of the lock is built there once into the cache when it is missing.
+        release_image="una-local-ci-release:$toolchain$suffix"
+        echo "== building the release image $release_image (linux/$arch)"
+        docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
+            --file scripts/local-ci/Dockerfile.release --tag "$release_image" scripts/local-ci \
+            || fail "the release image did not build"
+        scripts/container-volumes.sh "linux/$arch" "$release_image" \
+            "$volume:/work/target" \
+            una-local-ci-registry:/opt/cargo/registry \
+            "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
+            || fail "handing the release container's volumes to its user"
+        echo "== packing and checking the release archive of $target in $release_image"
+        docker run --rm --platform "linux/$arch" \
+            --user 1000:1000 \
+            --volume "$root:/work" \
+            --volume "$volume:/work/target" \
+            --volume una-local-ci-registry:/opt/cargo/registry \
+            --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
+            --env UNA_Z3_CACHE=/opt/z3-cache \
+            "$@" \
+            --env "UNA_LOCAL_CI_SERIAL=$serial" \
+            --env "UNA_RELEASE_CHECK_RETRY=$retry" \
+            --env "CARGO_BUILD_JOBS=$jobs" \
+            --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
+            "$release_image" scripts/local-ci.sh --release-pack \
+            || fail "the release archive in the release image; its output is above"
+    fi
     echo "local CI: PASS ($target${mode:+, $mode}, in the container)"
     exit 0
+fi
+release_pack=""
+if [ "$*" = --release-pack ] && [ -f /.dockerenv ]; then
+    # The second container of a Linux leg (#2105), in the release image: the archive's steps
+    # below and nothing else.
+    release_pack=1
+    shift
 fi
 if [ "$#" -ne 0 ]; then
     echo "usage: scripts/local-ci.sh [--linux | --linux-arm64] [--limits]" >&2
@@ -186,6 +237,28 @@ step() {
     echo "== $name"
     "$@" || fail "$name"
 }
+pack() {
+    step "Pack the release archive of $target" scripts/release.sh "$target"
+    # The release `una` just packed, and examples/hello that it links, ask the dynamic loader
+    # only for what scripts/load-commands.txt lists (#1103).
+    step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
+    # Under emulation the check runs the packed `una` with one verifier thread, as the serial
+    # tests do (#286): a `una run` that starts several solver processes from many threads at once
+    # can deadlock inside the translator (#1133). The check's own time limits and single retry
+    # are a second guard.
+    if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
+        step "Check the release archive of $target" env RAYON_NUM_THREADS=1 scripts/check-release.sh "$target"
+    else
+        step "Check the release archive of $target" scripts/check-release.sh "$target"
+    fi
+}
+if [ -n "$release_pack" ]; then
+    # The release `una` is built by scripts/release.sh, which unsets UNA_Z3_LIB and takes the
+    # library by the lock's digest from the same cache, where the step above put it.
+    pack
+    echo "local CI: PASS ($target, the release archive, in the release image)"
+    exit 0
+fi
 # Every released section of CHANGELOG.md is the one its tag published (#645): an entry that a
 # rebase carried under a released heading fails here, before it merges. The run's evidence never
 # skips it: UNA_SKIP_RELEASED_SECTIONS from the caller is dropped, and only the container, whose
@@ -284,18 +357,16 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
-step "Pack the release archive of $target" scripts/release.sh "$target"
-# The release `una` just packed, and examples/hello that it links, ask the dynamic loader only
-# for what scripts/load-commands.txt lists (#1103).
 step "Load commands (canaries)" scripts/load-commands-test.sh
-step "Load commands" scripts/load-commands.sh "$root/target/release-remapped/release/una"
-# Under emulation the check runs the packed `una` with one verifier thread, as the serial tests do
-# (#286): a `una run` that starts several solver processes from many threads at once can deadlock
-# inside the translator (#1133). The check's own time limits and single retry are a second guard.
-if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
-    step "Check the release archive of $target" env RAYON_NUM_THREADS=1 scripts/check-release.sh "$target"
+# On Linux the archive is packed and checked in the release image (scripts/local-ci/
+# Dockerfile.release, glibc 2.28, #2105), whose toolchain supply-chain/z3.lock records, in a
+# second container that the host starts after this one, with the same target volume; this
+# container, in the Ubuntu image of the tests, says so and packs nothing.
+if [ -n "${UNA_LOCAL_CI_PACK_IN_RELEASE_IMAGE:-}" ] && [ -f /.dockerenv ]; then
+    echo "== Pack and check the release archive of $target"
+    echo "in the release image, in the next container"
 else
-    step "Check the release archive of $target" scripts/check-release.sh "$target"
+    pack
 fi
 # In a container, the most memory the run used, which sizes the job count (#701).
 if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then

@@ -1,7 +1,8 @@
 //! `install.sh` (#240): it installs only what the release's validation summary vouches for, and
 //! its pins follow the repository. It downloads nothing but the archive: the solver is built
 //! into `una` (ADR 0124). It offers exactly the shipped targets, and on Linux it refuses musl and
-//! a glibc below 2.39 before anything is downloaded (#1904), reads the C library from the running
+//! a glibc below the floor (2.28, and 2.39 for the releases 0.4.0 to 0.5.1, #2105) before anything
+//! is downloaded (#1904), reads the C library from the running
 //! system, refuses a 32-bit userland, and as root writes only where only root can (#1938), shown
 //! here on fake machines. The full
 //! installation is tested by hand in a clean container and a clean `HOME` (docs/release-gates.md).
@@ -1425,6 +1426,22 @@ fn the_installer_refuses_a_version_before_0_4_0_comparing_numbers_not_text() {
         if let Some(target) = target() {
             release(&dir, target, version, "PASS (every gate)", None);
             let output = install(&dir, version, &[]);
+            // On a Linux host below glibc 2.39, 0.4.0 passes the version check and is then
+            // refused by the glibc floor of the releases 0.4.0 to 0.5.1 (#2105), as the Linux
+            // legs' AlmaLinux 8 image (glibc 2.28) shows; the floor's own test is
+            // the_releases_built_on_glibc_2_39_keep_that_floor.
+            if version == "0.4.0"
+                && output.status.code() == Some(1)
+                && stderr(&output).contains("the una of 0.4.0 needs glibc 2.39 or later")
+            {
+                assert!(
+                    !stderr(&output).contains("0.4.0 and later"),
+                    "{}",
+                    stderr(&output)
+                );
+                assert!(!home.exists(), "{version}");
+                continue;
+            }
             assert_eq!(
                 output.status.code(),
                 Some(0),
@@ -1762,8 +1779,8 @@ fn every_shipped_target_installs_on_its_machine_with_its_notes() {
 
 #[test]
 fn linux_without_a_glibc_at_the_floor_is_refused_before_anything_is_downloaded() {
-    // The Linux `una` is a dynamic glibc executable built on glibc 2.39 (#1904): musl, an older
-    // glibc and a glibc whose version cannot be read are refused, and nothing is downloaded,
+    // The Linux `una` is a dynamic glibc executable built on glibc 2.28 (#1904, #2105): musl, an
+    // older glibc and a glibc whose version cannot be read are refused, and nothing is downloaded,
     // though a valid release for the machine is there to download. Each case runs as `uname -m`
     // says `aarch64` and as it says `arm64` (#1938).
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-glibc");
@@ -1810,9 +1827,9 @@ fn linux_without_a_glibc_at_the_floor_is_refused_before_anything_is_downloaded()
             None,
             "cannot read this system's glibc version",
         ),
-        // Below the floor, compared as numbers: 2.4 is before 2.39, though not as text.
-        (Some("glibc 2.38"), None, "this system has glibc 2.38"),
-        (Some("glibc 2.35"), None, "this system has glibc 2.35"),
+        // Below the floor, compared as numbers: 2.4 is before 2.28, though not as text.
+        (Some("glibc 2.27"), None, "this system has glibc 2.27"),
+        (Some("glibc 2.17"), None, "this system has glibc 2.17"),
         (Some("glibc 2.4"), None, "this system has glibc 2.4"),
         (Some("glibc 1.99"), None, "this system has glibc 1.99"),
     ];
@@ -1832,7 +1849,7 @@ fn linux_without_a_glibc_at_the_floor_is_refused_before_anything_is_downloaded()
         assert!(stderr(&output).contains(why), "{case}: {}", stderr(&output));
         assert!(
             stderr(&output).contains(
-                "needs glibc 2.39 or later; Alpine and other musl systems are not supported"
+                "the una of 9.9.4 needs glibc 2.28 or later; Alpine and other musl systems are not supported"
             ),
             "{case}: {}",
             stderr(&output)
@@ -1842,6 +1859,10 @@ fn linux_without_a_glibc_at_the_floor_is_refused_before_anything_is_downloaded()
     }
     // At the floor and above, compared as numbers: installed.
     for (getconf, arch) in [
+        "glibc 2.28",
+        "glibc 2.31",
+        "glibc 2.35",
+        "glibc 2.36",
         "glibc 2.39",
         "glibc 2.40",
         "glibc 2.100",
@@ -1865,6 +1886,63 @@ fn linux_without_a_glibc_at_the_floor_is_refused_before_anything_is_downloaded()
         );
         assert!(!fetched.is_empty(), "{arch} {getconf}");
         std::fs::remove_dir_all(&home).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_releases_built_on_glibc_2_39_keep_that_floor() {
+    // 0.4.0 to 0.5.1 were built on glibc 2.39 (Ubuntu 24.04); the releases after 0.5.1 on 2.28
+    // (#2105). UNA_VERSION naming one of the earlier ones is refused on a glibc below 2.39,
+    // where its `una` could not start, and nothing is downloaded; the versions are compared as
+    // numbers, so 0.5.10 and 0.10.0 are after 0.5.1.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-glibc-239");
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home/.una");
+    let target = "aarch64-unknown-linux-gnu";
+    for (version, floor) in [
+        ("0.4.0", "2.39"),
+        ("0.4.9", "2.39"),
+        ("0.5.0", "2.39"),
+        ("0.5.1", "2.39"),
+        ("0.5.2", "2.28"),
+        ("0.5.10", "2.28"),
+        ("0.6.0", "2.28"),
+        ("0.10.0", "2.28"),
+        ("1.0.0", "2.28"),
+    ] {
+        release(&dir, target, version, "PASS (every gate)", None);
+        for arch in ["aarch64", "arm64"] {
+            let host = Host {
+                arch,
+                getconf: Some("glibc 2.35"),
+                ..GLIBC_239
+            };
+            let (output, fetched) = install_on(&dir, version, &host);
+            let case = format!("{version} {arch}");
+            if floor == "2.39" {
+                assert_eq!(output.status.code(), Some(1), "{case}: {}", stderr(&output));
+                assert!(
+                    stderr(&output).contains(&format!(
+                        "this system has glibc 2.35; the una of {version} needs glibc 2.39 or later"
+                    )),
+                    "{case}: {}",
+                    stderr(&output)
+                );
+                assert!(fetched.is_empty(), "{case}: {fetched:?}");
+                assert!(!home.exists(), "{case}");
+            } else {
+                assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+                assert!(!fetched.is_empty(), "{case}");
+                std::fs::remove_dir_all(&home).unwrap();
+            }
+            // At 2.39 every one of them installs.
+            let host = Host { arch, ..GLIBC_239 };
+            let (output, fetched) = install_on(&dir, version, &host);
+            assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+            assert!(!fetched.is_empty(), "{case}");
+            std::fs::remove_dir_all(&home).unwrap();
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1972,7 +2050,7 @@ fn the_c_library_is_the_one_the_system_runs_not_a_file_beside_it() {
         "PASS (every gate)",
         None,
     );
-    let needs = "needs glibc 2.39 or later; Alpine and other musl systems are not supported";
+    let needs = "needs glibc 2.28 or later; Alpine and other musl systems are not supported";
     for arch in ["aarch64", "arm64"] {
         let host = Host {
             arch,

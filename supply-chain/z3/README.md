@@ -38,8 +38,9 @@ a readable diff, never a modified archive.
 
 ## The toolchain
 
-On Linux, the C++ compiler, CMake and linker of the image of `scripts/local-ci/` (g++, cmake and
-make from the pinned Ubuntu 24.04); on macOS, Apple clang of the Xcode version that the release
+On Linux, the C++ compiler, CMake and linker of the release image of `scripts/local-ci/` (`Dockerfile.release`: GCC 13 and
+binutils 2.40 of gcc-toolset-13, cmake and make from the pinned AlmaLinux 8, glibc 2.28, #2105;
+Ubuntu 24.04 before, through 0.5.1); on macOS, Apple clang of the Xcode version that the release
 record names. Each version is written into the build record and the validation summary. The macOS
 version is recorded, not pinned, so a third party with another Xcode may not reproduce the bytes.
 `libstdc++` and `libgcc` are linked statically into `una` on Linux at `una`'s own link, not here.

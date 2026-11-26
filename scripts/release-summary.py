@@ -62,11 +62,15 @@ DEPS_DB = re.compile(
 DEPS_NONE = "None: the deps gate did not run or did not fetch the advisory database."
 # The strip of each embedded runtime (#1359), as scripts/release.sh prints it: on macOS the Xcode
 # toolchain's, named by its Xcode release or Command Line Tools version; on Linux GNU strip's
-# version line; each with the SHA-256 of the strip binary.
+# version line, in Ubuntu's form (`GNU strip (GNU Binutils for Ubuntu) 2.42`) or AlmaLinux 8's
+# gcc-toolset form (`GNU strip version 2.40-21.el8`, #2105); each with the SHA-256 of the strip
+# binary.
 STRIP_ROW = re.compile(
     r"- ([a-z0-9_]+(?:-[a-z0-9_]+)*): "
     r"(xcrun strip -S \((?:Xcode [0-9.]+ build [0-9A-Za-z]+|Command Line Tools [0-9.]+)\)"
-    r"|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D), sha256 [0-9a-f]{64}"
+    r"|GNU strip \([A-Za-z0-9 .]+\) [0-9][0-9.]* --strip-debug -D"
+    r"|GNU strip version [0-9]+\.[0-9]+(?:\.[0-9]+)?-[0-9]+(?:\.[0-9]+)*\.el[0-9]+(?:_[0-9]+)* --strip-debug -D)"
+    r", sha256 [0-9a-f]{64}"
 )
 STRIP_NONE = "None: the release gate did not run or did not record the strip tool."
 # Every character but "\n" at which str.splitlines() ends a line.
