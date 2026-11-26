@@ -87,7 +87,21 @@ impl<'a> Checker<'_, 'a, '_> {
             return;
         };
         let mark = self.report.count();
+        let pending = self.findings.obligations.len();
         self.constant_checks(decl, &def);
+        // ADR 0126 rules 5 and 6: the value is evaluated at check time, where a fixed-width
+        // value that does not fit and a division by zero are U2041, and Core IR holds the
+        // folded literal, so no `overflow` or `division` obligation exists at run time: the
+        // typing of the value records none of them as pending (#1632, main red after #2261).
+        let value = decl.value.span;
+        let recorded = self.findings.obligations.split_off(pending);
+        self.findings
+            .obligations
+            .extend(recorded.into_iter().filter(|(kind, span, _)| {
+                let inside =
+                    span.file == value.file && value.start <= span.start && span.end <= value.end;
+                !(inside && matches!(kind, ObligationKind::Overflow | ObligationKind::Division))
+            }));
         // ADR 0126 rule 6: a value that does not fit its fixed-width type is U2041, which the
         // evaluation reports, not the U2022 of a literal.
         let found: Vec<una_diag::Diagnostic> = self.report.diagnostics.split_off(mark);
