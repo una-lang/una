@@ -157,6 +157,7 @@ The constructs of editions `0.4` and `0.5` are the entries of the compiler's edi
 | `0.5` | `with: and and: labels` | ADR 0120 | none |
 | `0.5` | `F32` | ADR 0120 | none |
 | `0.5` | `Complex` | ADR 0120 | none |
+| `0.5` | `module constants` | ADR 0126 | none |
 | `0.5` | `const and var` | ADR 0137 | none |
 
 ## Normative source

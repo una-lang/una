@@ -20,7 +20,7 @@ fn each_entry_is_at_the_index_of_its_construct() {
         assert_eq!(entry.id as usize, index, "{}", entry.name);
         assert!(std::ptr::eq(entry.id.entry(), entry), "{}", entry.name);
     }
-    assert_eq!(Construct::ModuleConstants as usize, LEDGER.len() - 1);
+    assert_eq!(Construct::ConstVar as usize, LEDGER.len() - 1);
 }
 
 #[test]

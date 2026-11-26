@@ -1,6 +1,6 @@
 -- test: a `pub` constant imported by name resolves, and one without `pub` imported is U1004 (ADR 0126 rule 2)
 -- spec: spec/10 §11
--- expect: error U1004 at src/a.una:5:7
+-- expect: error U1004 at src/b.una:6:11
 module b
 
 import a (hidden, max_items)
