@@ -1,0 +1,55 @@
+-- test: a program that computes with constants gives the output of the literals in both engines: integers, `F64`, decimals, texts, Booleans, records, variants and lists, across modules (ADR 0126 rule 8)
+-- spec: spec/11 §2
+-- expect: run-output "7 -5 2 1 3.5 2.00 true plain Point(x: 2, y: 3) Circle(3) [Point(x: 2, y: 3), Point(x: 1, y: 1)] 2"
+-- expect: run-output "inf 1000"
+-- expect: run-output "2 Point(x: 12, y: 3) Point(x: 2, y: 3) [Point(x: 2, y: 3), Point(x: 1, y: 1)]"
+module m
+
+import limits (max_items)
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub kind Shape = Dot | Circle(radius: Int)
+
+pub const a: Int = 3 + 4
+
+pub const b: Int = -9 / 2
+
+pub const c: Int = -9 mod 2 + 1
+
+pub const d: Int = (a - b) / 11
+
+pub const e: F64 = 1.5 + 2.0
+
+pub const f: Decimal[2] = 1.25 + 0.75
+
+pub const g: Bool = a > b and not false
+
+pub const h: Text = "plain"
+
+pub const p: Point = Point(x: 2, y: 3)
+
+pub const s: Shape = Circle(radius: 3)
+
+pub const ps: List[Point] = [p, Point(x: 1, y: 1)]
+
+pub const huge: F64 = 1.0 / 0.0
+
+pub consume(take xs: List[Point]) -> Int = xs.len
+
+pub shift(edit q: Point) -> Unit
+=
+  q = Point(x: q.x + 10, y: q.y)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{a} {b} {c} {d} {e} {f} {g} {h} {p} {s} {ps} {ps.len}")
+  @console.print("{huge} {max_items}")
+  const taken = ps
+  const n = consume(take taken)
+  var moved = p
+  shift(edit moved)
+  @console.print("{n} {moved} {p} {ps}")

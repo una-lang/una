@@ -1,9 +1,9 @@
--- test: in edition 0.5, `let` is reserved: each `let`, `let edit` and top-level `let` is U7007 at the word, with the exact rewrite to `const` or `var`; module constants are not in this release, so the top-level `let` is U0101 too (ADR 0137 rule 1)
+-- test: in edition 0.5, `let` is reserved: each `let`, `let edit` and top-level `let` is U7007 at the word, with the exact rewrite to `const` or `var`; the top-level `let` reads as a module constant, `const limit = 3`, whose missing type is U0101 at `=` (ADR 0137 rule 1, ADR 0126 rule 1)
 -- spec: spec/01 §5
 -- expect: error U7007 at src/m.una:11:3
 -- expect: error U7007 at src/m.una:12:3
 -- expect: error U7007 at src/m.una:17:1
--- expect: error U0101 at src/m.una:17:1
+-- expect: error U0101 at src/m.una:17:11
 module m
 
 pub total(xs: List[Int]) -> Int

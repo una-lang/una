@@ -1,0 +1,6 @@
+-- test: in edition 0.5, `let` at the top level of a module is U7007 with the exact rewrite to `const`, and nothing else (ADR 0126 rule 1, ADR 0137 rules 1 and 11)
+-- spec: spec/02 §1
+-- expect: error U7007 at src/m.una:6:1
+module m
+
+let max_items: Int = 1000

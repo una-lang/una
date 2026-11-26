@@ -2198,6 +2198,69 @@
           ]
         }
       ]
+    },
+    {
+      "name": "millisecond",
+      "module": "std.time",
+      "kind": "constant",
+      "spec": [
+        "spec/26 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4",
+            "0.5"
+          ],
+          "declaration": "pub const millisecond: Int of Millisecond = 1",
+          "docs": [
+            "One millisecond, the unit of the host's clock and driver (`spec/26 §2`). A built-in name of",
+            "`std.time` in edition 0.4, a constant declared here from edition 0.5 (ADR 0126 rule 12)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "second",
+      "module": "std.time",
+      "kind": "constant",
+      "spec": [
+        "spec/26 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4",
+            "0.5"
+          ],
+          "declaration": "pub const second: Int of Millisecond = 1000",
+          "docs": [
+            "One second, in milliseconds (`spec/26 §2`). A built-in name of `std.time` in edition 0.4,",
+            "a constant declared here from edition 0.5 (ADR 0126 rule 12)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "minute",
+      "module": "std.time",
+      "kind": "constant",
+      "spec": [
+        "spec/26 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.4",
+            "0.5"
+          ],
+          "declaration": "pub const minute: Int of Millisecond = 60_000",
+          "docs": [
+            "One minute, in milliseconds (`spec/26 §2`). A built-in name of `std.time` in edition 0.4,",
+            "a constant declared here from edition 0.5 (ADR 0126 rule 12)."
+          ]
+        }
+      ]
     }
   ]
 }

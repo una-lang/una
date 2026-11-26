@@ -1,0 +1,13 @@
+-- test: in edition 0.5, `std.time` declares `millisecond`, `second` and `minute` as constants of type `Int of Millisecond`, with the values of edition 0.4 (ADR 0126 rule 12, ADR 0116 Appendix A amendment)
+-- spec: spec/26 §2
+-- expect: run-output "1 1000 60000 62000"
+module m
+
+import std.time (Millisecond, millisecond, minute, second)
+
+pub const timeout: Int of Millisecond = 2 * second + minute
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{millisecond.magnitude()} {second.magnitude()} {minute.magnitude()} {timeout.magnitude()}")

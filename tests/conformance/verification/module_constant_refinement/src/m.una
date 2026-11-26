@@ -1,0 +1,16 @@
+-- test: a refined constant type gives one `refinement` obligation at the value with a closed goal: proven for `500`, refuted with U5001 for `0` and for a refined record field, with no counterexample note (ADR 0126 rule 7)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/m.una:14:31
+-- expect: error U5001 at src/m.una:16:31
+module m
+
+pub kind Pos = Int where it > 0
+
+pub kind Box
+  n: Pos
+
+pub const good: Int in 1..1000 = 500
+
+pub const bad: Int in 1..10 = 0
+
+pub const boxed: Box = Box(n: 0)

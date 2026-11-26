@@ -7,7 +7,7 @@ use una_syntax::Span;
 use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident, Literal, TextPart};
 
 use super::check::Checker;
-use super::env::ParamDef;
+use super::env::{Entity, ParamDef};
 use super::locals::TakenState;
 use super::records::Res;
 use super::ty::Ty;
@@ -246,6 +246,25 @@ impl<'a> Checker<'_, 'a, '_> {
             return None;
         };
         let name = self.name(root);
+        // ADR 0126 rule 13: a module constant is not an editable binding, one O(1) lookup of
+        // the root's name.
+        if self.local_index(name).is_none()
+            && matches!(self.env.lower(self.module, name), Some(Entity::Const(_)))
+        {
+            let what = if assigned {
+                "assigned"
+            } else {
+                "passed as `edit`"
+            };
+            self.report.error(
+                Code::U2019,
+                root.span,
+                format!(
+                    "`{name}` is a module constant, which is not editable, so it cannot be {what}; copy it to a local first, as `var {name}_copy = {name}`"
+                ),
+            );
+            return None;
+        }
         let index = self.local_index(name)?;
         if self.captured_by_task(
             index,
@@ -445,6 +464,19 @@ impl<'a> Checker<'_, 'a, '_> {
             return;
         };
         let name = self.name(ident);
+        // ADR 0126 rule 13: a module constant is not a local binding, so it is never taken.
+        if self.local_index(name).is_none()
+            && matches!(self.env.lower(self.module, name), Some(Entity::Const(_)))
+        {
+            self.report.error(
+                Code::U2020,
+                value.span,
+                format!(
+                    "`{name}` is a module constant, not a local binding, so it cannot be taken; copy it to a local first, as `const {name}_copy = {name}`, and take that"
+                ),
+            );
+            return;
+        }
         if let Some(index) = self.local_index(name)
             && !self.captured_by_task(index, name, value.span, "passed as `take`")
         {

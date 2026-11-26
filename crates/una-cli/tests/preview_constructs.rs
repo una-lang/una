@@ -398,6 +398,12 @@ const CASES: &[Case] = &[
         module: "module m\n\npub make(re: F64, im: F64) -> Complex[F64] = complex(re, im)\n",
     },
     Case {
+        construct: "module constants",
+        edition: "0.5",
+        sections: "",
+        module: "module m\n\npub const limit: Int = 3\n\npub twice() -> Int = 2 * limit\n",
+    },
+    Case {
         construct: "const and var",
         edition: "0.5",
         sections: "",

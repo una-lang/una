@@ -21,6 +21,7 @@ mod check;
 mod collections;
 mod complex;
 mod conditions;
+mod constants;
 mod crossing;
 mod dead;
 mod decimal;
@@ -181,6 +182,13 @@ fn testing_source(edition: Edition) -> String {
 /// `std.time` (`spec/26 §2`), edition 0.4, as Una source.
 const TIME: &str = include_str!("../std/time.una");
 
+/// `std.time` in edition 0.5: its constants `millisecond`, `second` and `minute` are declared
+/// in Una (ADR 0126 rule 12), not built in.
+const TIME_0_5: &str = concat!(
+    include_str!("../std/time.una"),
+    include_str!("../std/time_0_5.una")
+);
+
 /// `std.drive` (`spec/26 §2`), edition 0.4, as Una source.
 const DRIVE: &str = include_str!("../std/drive.una");
 
@@ -321,7 +329,9 @@ pub fn standard_source(edition: Edition) -> StandardSource {
     } else {
         (PRELUDE.to_owned(), KeywordSet::V0_1)
     };
-    let later = if edition >= Edition::V0_4 {
+    let later = if edition >= Edition::V0_5 {
+        vec![("std.time", TIME_0_5), ("std.drive", DRIVE)]
+    } else if edition >= Edition::V0_4 {
         vec![("std.time", TIME), ("std.drive", DRIVE)]
     } else {
         Vec::new()
@@ -905,7 +915,46 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 module,
             );
         }
+        // ADR 0126 rule 12: the constants of the standard modules (`std.time`'s).
+        let ids: Vec<usize> = (0..env.constants.len())
+            .filter(|id| {
+                env.constants
+                    .get(*id)
+                    .is_some_and(|c| c.module >= env.prelude)
+            })
+            .collect();
+        findings.standard_constants = constants::evaluate(
+            &env,
+            &standard_findings.records,
+            &ids,
+            &standard_findings.refused_constants,
+            None,
+            &mut scratch,
+            false,
+        );
         findings.standard_records = standard_findings.records;
+    }
+    // ADR 0126 rules 4 and 5: the package's constants, evaluated once, in dependency order.
+    {
+        let ids: Vec<usize> = (0..env.constants.len())
+            .filter(|id| {
+                env.constants
+                    .get(*id)
+                    .is_some_and(|c| c.module < env.prelude && env.reports(c.module))
+            })
+            .collect();
+        let refused = std::mem::take(&mut findings.refused_constants);
+        findings.constants = constants::evaluate(
+            &env,
+            &findings.records,
+            &ids,
+            &refused,
+            Some(&findings.standard_constants),
+            &mut report,
+            true,
+        );
+        findings.refused_constants = refused;
+        constants::substitution_budget(&env, &findings.records, &findings.constants, &mut report);
     }
     authority::testing_installs(&findings, &mut report, env.edition);
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
@@ -1036,6 +1085,29 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     "internal error: this {what} type-checked but did not elaborate to Core IR, so none of its obligations could be verified; the package is rejected"
                 ),
             );
+        }
+        // A signature whose type is unknown in Core IR, in a package with no error, would be
+        // a position checked against the error type, which accepts everything: an internal
+        // error, never a silent pass (#1632 review, H1).
+        let paths: std::collections::BTreeSet<&str> = (0..env.prelude)
+            .filter_map(|m| env.modules.get(m).map(|module| module.path.as_str()))
+            .collect();
+        for module in program
+            .modules
+            .iter()
+            .filter(|m| paths.contains(m.path.as_str()))
+        {
+            for decl in &module.decls {
+                if let una_core::Decl::Fun(fun) = decl
+                    && (fun.params.iter().any(|(_, ty)| unknown_in(ty)) || unknown_in(&fun.result))
+                {
+                    report.error(
+                        Code::U8001,
+                        fun.span,
+                        "internal error: a type of this function's signature is unknown in Core IR, though no error was reported; the package is rejected".to_owned(),
+                    );
+                }
+            }
         }
         for (span, what) in gaps.standard {
             report.push(Diagnostic::error(
@@ -1213,6 +1285,12 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
 /// What checking the bodies finds besides diagnostics.
 #[derive(Default)]
 pub(crate) struct Findings {
+    /// The module constants of the package evaluated at check time, edition 0.5 (ADR 0126).
+    pub(crate) constants: constants::Evaluated,
+    /// The same for the constants of the standard modules, whose spans are kept apart.
+    pub(crate) standard_constants: constants::Evaluated,
+    /// The module constants whose check reported a diagnostic: they are not evaluated.
+    pub(crate) refused_constants: std::collections::BTreeSet<usize>,
     /// Pending obligations: kind, primary span and the span of the declared type.
     pub(crate) obligations: Vec<(ObligationKind, Span, Option<Span>)>,
     /// The `Int` literals of a `systems` package outside the tagged range, each an `overflow`
@@ -1446,13 +1524,15 @@ impl Standard {
         let testing = sources.add("std/testing.una", testing.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, keywords);
-        // The modules of edition 0.4 declare measures, a construct of edition 0.3.
+        // The modules of edition 0.4 declare measures, a construct of edition 0.3; in edition
+        // 0.5, `std.time` declares constants with `const` (ADR 0126 rule 12).
+        let later_keywords = keywords.max(KeywordSet::V0_4);
         let later = later
             .into_iter()
             .map(|(path, text)| {
                 let file = format!("std/{}.una", path.trim_start_matches("std."));
                 let id = sources.add(&file, text.as_bytes());
-                parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
+                parse_standard(&sources, id, &mut interner, later_keywords)
             })
             .collect();
         // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.
@@ -1495,6 +1575,23 @@ impl Standard {
             interner: &self.interner,
             reports: false,
             mount: None,
+        }
+    }
+}
+
+/// Whether `ty` holds, at any depth, the unknown base type that Core IR gives a checker error
+/// type.
+fn unknown_in(ty: &una_core::Type) -> bool {
+    match ty {
+        una_core::Type::Base { base, .. } => match base {
+            una_core::Base::Unknown => true,
+            una_core::Base::Named { args, .. } | una_core::Base::Tuple(args) => {
+                args.iter().any(unknown_in)
+            }
+            _ => false,
+        },
+        una_core::Type::Fn { params, result, .. } => {
+            params.iter().any(unknown_in) || unknown_in(result)
         }
     }
 }

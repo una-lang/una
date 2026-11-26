@@ -1,0 +1,13 @@
+-- test: two module constants of one name, and a constant and a function of one name, are U1002 (ADR 0126 rule 2)
+-- spec: spec/10 §11
+-- expect: error U1002 at src/m.una:9:11
+-- expect: error U1002 at src/m.una:13:5
+module m
+
+pub const limit: Int = 1
+
+pub const limit: Int = 2
+
+pub const size: Int = 3
+
+pub size() -> Int = 4

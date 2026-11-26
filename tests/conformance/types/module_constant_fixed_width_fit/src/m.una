@@ -1,0 +1,15 @@
+-- test: a constant's value that does not fit its fixed-width type is U2041 at check time, never an `overflow` obligation (ADR 0126 rule 6)
+-- spec: spec/18 §2
+-- expect: error U2041 at src/m.una:7:20
+-- expect: error U2041 at src/m.una:9:19
+module m
+
+pub const n: I32 = 3_000_000_000
+
+pub const m: U8 = 200 + 100
+
+pub const k: U8 = 200 + 55
+
+pub const least: I8 = -128
+
+pub const lowest: I64 = -9223372036854775808

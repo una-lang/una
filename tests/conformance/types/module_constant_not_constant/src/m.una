@@ -1,0 +1,32 @@
+-- test: a call, a method call, a lambda, an interpolated text, `if`, a field access and `implies` are each U2041 naming the construct (ADR 0126 rule 3)
+-- spec: spec/10 §8
+-- expect: error U2041 at src/m.una:20:20
+-- expect: error U2041 at src/m.una:22:20
+-- expect: error U2041 at src/m.una:24:20
+-- expect: error U2041 at src/m.una:26:21
+-- expect: error U2041 at src/m.una:28:20
+-- expect: error U2041 at src/m.una:30:20
+-- expect: error U2041 at src/m.una:32:21
+module m
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub const origin: Point = Point(x: 0, y: 0)
+
+pub double(n: Int) -> Int = n * 2
+
+pub const a: Int = double(2)
+
+pub const b: Int = "ab".len
+
+pub const c: Int = fn(x) -> x
+
+pub const d: Text = "n {1}"
+
+pub const e: Int = if true then 1 else 2
+
+pub const f: Int = origin.x
+
+pub const g: Bool = true implies false

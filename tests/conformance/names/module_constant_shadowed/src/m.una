@@ -1,0 +1,11 @@
+-- test: a local of the same name shadows a module constant (ADR 0126 rule 2)
+-- spec: spec/10 §11
+-- expect: ok
+module m
+
+pub const limit: Int = 1000
+
+pub shadowed() -> Int
+=
+  const limit = 3
+  limit + 1

@@ -673,6 +673,36 @@ impl<'a> Checker<'_, 'a, '_> {
                     None => Ty::Int,
                 }
             }
+            // A module constant (ADR 0126 rules 6 and 8): its declared type, refinements at the
+            // top as for any annotated binder, elaborated to its value.
+            Some(Entity::Const(id)) => {
+                self.resolved(ident.span, Res::Const(id));
+                let Some(def) = self.env.constants.get(id).cloned() else {
+                    return Ty::error();
+                };
+                // ADR 0126 rule 9, as `spec/12 §3` reads it: a constant of a scalar type is a
+                // literal of the refinement language; a record or list constant is outside it,
+                // as the record or list it stands for is (U2014), never an internal error.
+                let scalar = matches!(
+                    def.declared.base.magnitude(),
+                    Ty::Int
+                        | Ty::Fixed(_)
+                        | Ty::F64
+                        | Ty::F32
+                        | Ty::Decimal(_)
+                        | Ty::Bool
+                        | Ty::Text
+                        | Ty::Unit
+                        | Ty::Error(_)
+                );
+                if !scalar {
+                    let name = def.name;
+                    self.outside_rl(ident.span, || {
+                        format!("the record or list constant `{name}`")
+                    });
+                }
+                self.env.top_refined(&def.declared)
+            }
             // An unknown name is U1001, reported by M3.
             _ => {
                 self.vars.mark_unknown();
@@ -946,7 +976,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U2001,
                 format!("`{name}` is a unit, not a value; a value takes it with `measured()`"),
             ),
-            Entity::Function(_) | Entity::Handler(_) | Entity::Constant { .. } => {
+            Entity::Function(_)
+            | Entity::Handler(_)
+            | Entity::Constant { .. }
+            | Entity::Const(_) => {
                 return Ty::error();
             }
         };

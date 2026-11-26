@@ -1,0 +1,95 @@
+-- test: each constant expression folded at check time has the value the same expression has when a body computes it, in both engines: decimals by value across scales, records and lists that hold decimals, `F64` identity of `-0.0` and NaN, total order, texts, Euclidean division and the signed minimum (ADR 0126 rule 5, spec/29 §5 and §16)
+-- spec: spec/11 §2
+-- expect: run-output "true true | true true"
+-- expect: run-output "false false | false false"
+-- expect: run-output "true true | false false | true true"
+-- expect: run-output "true true | true true"
+-- expect: run-output "false false | true true | true true"
+-- expect: run-output "-5 -5 | 1 1 | -128 -128"
+-- expect: run-output "true true | true true"
+module m
+
+pub kind Price
+  amount: Decimal[2]
+
+pub const d1: Decimal[1] = 1.0
+
+pub const d2: Decimal[2] = 1.00
+
+pub const d3: Decimal[2] = 1.05
+
+pub const eq_scales: Bool = d1 == d2
+
+pub const le_scales: Bool = d1 <= d2
+
+pub const lt_scales: Bool = d3 < d1
+
+pub const ne_scales: Bool = d1 != d2
+
+pub const p1: Price = Price(amount: 1.50)
+
+pub const records: Bool = p1 == Price(amount: 1.50)
+
+pub const records_differ: Bool = p1 == Price(amount: 1.51)
+
+pub const lists: Bool = [d2, d3] == [1.00, 1.05]
+
+pub const zero: F64 = 0.0
+
+pub const negative_zero: F64 = -0.0
+
+pub const nan: F64 = 0.0 / 0.0
+
+pub const zeros: Bool = zero == negative_zero
+
+pub const nans: Bool = nan == nan
+
+pub const order: Bool = negative_zero < zero and zero < nan
+
+pub const texts: Bool = "Z" < "a" and "z" < "é"
+
+pub const quotient: Int = -9 / 2
+
+pub const remainder: Int = -9 mod 2
+
+pub const least: I8 = -128
+
+pub const f1: F32 = 1.5
+
+pub const f2: F32 = -0.0
+
+pub const floats32: Bool = f2 < f1 and f1 >= f1 and not (f1 <= f2)
+
+pub const w1: U8 = 200
+
+pub const w2: U8 = 7
+
+pub const fixed: Bool = w2 < w1 and w1 > w2 and w1 != w2
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const b_eq = d1 == d2
+  const b_le = d1 <= d2
+  const b_lt = d3 < d1
+  const b_ne = d1 != d2
+  const b_records = p1 == Price(amount: 1.50)
+  const b_differ = p1 == Price(amount: 1.51)
+  const b_lists = [d2, d3] == [1.00, 1.05]
+  const b_zeros = zero == negative_zero
+  const b_nans = nan == nan
+  const b_order = negative_zero < zero and zero < nan
+  const b_texts = "Z" < "a" and "z" < "é"
+  const x = -9
+  const b_quotient = x / 2
+  const b_remainder = x mod 2
+  const b_least: I8 = -128
+  const b_floats32 = f2 < f1 and f1 >= f1 and not (f1 <= f2)
+  const b_fixed = w2 < w1 and w1 > w2 and w1 != w2
+  @console.print("{eq_scales} {b_eq} | {le_scales} {b_le}")
+  @console.print("{lt_scales} {b_lt} | {ne_scales} {b_ne}")
+  @console.print("{records} {b_records} | {records_differ} {b_differ} | {lists} {b_lists}")
+  @console.print("{nans} {b_nans} | {order} {b_order}")
+  @console.print("{zeros} {b_zeros} | {texts} {b_texts} | {texts} {b_texts}")
+  @console.print("{quotient} {b_quotient} | {remainder} {b_remainder} | {least} {b_least}")
+  @console.print("{floats32} {b_floats32} | {fixed} {b_fixed}")

@@ -219,6 +219,7 @@ impl Normalizer<'_> {
                     self.body(&mut op.body);
                 }
             }
+            DeclKind::Const(constant) => self.expr(&mut constant.value),
             DeclKind::Policy(policy) => self.text(&mut policy.purpose),
             DeclKind::Requirement(requirement) => {
                 self.text(&mut requirement.text);

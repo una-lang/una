@@ -1,0 +1,14 @@
+-- test: a constant's declared type holds no function type, at the top or in a record field: U2041 at the type (ADR 0126 rule 14)
+-- spec: spec/05 §6
+-- expect: error U2041 at src/m.una:12:14
+-- expect: error U2041 at src/m.una:14:14
+module m
+
+pub kind Holder
+  run: fn(Int) -> Int
+
+pub id(n: Int) -> Int = n
+
+pub const g: fn(Int) -> Int = id
+
+pub const h: Holder = Holder(run: id)

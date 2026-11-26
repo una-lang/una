@@ -1313,6 +1313,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 self.handler(handler, id);
             }
             (DeclKind::Example(example), _) => self.example(example),
+            (DeclKind::Const(constant), Some(Entity::Const(id))) => self.constant(constant, id),
             _ => {}
         }
     }

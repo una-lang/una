@@ -82,7 +82,10 @@
   "std.testing elapse",
   "std.testing fake_hash",
   "std.testing test_exchange",
-  "std.testing test_request"
+  "std.testing test_request",
+  "std.time millisecond",
+  "std.time minute",
+  "std.time second"
  ],
  "entries": [
   {

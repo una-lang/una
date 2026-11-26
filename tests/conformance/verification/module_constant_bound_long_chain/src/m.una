@@ -1,0 +1,610 @@
+-- test: a range bound that names the constant at the end of a chain of 300 constants is its value, 301: a call with 1,000,000 is refuted, never a type that accepts it (ADR 0126 rules 4 and 9)
+-- spec: spec/02 §2
+-- expect: error U5001 at src/m.una:610:20
+module m
+
+pub const a0: Int = 1
+
+pub const a1: Int = a0 + 1
+
+pub const a2: Int = a1 + 1
+
+pub const a3: Int = a2 + 1
+
+pub const a4: Int = a3 + 1
+
+pub const a5: Int = a4 + 1
+
+pub const a6: Int = a5 + 1
+
+pub const a7: Int = a6 + 1
+
+pub const a8: Int = a7 + 1
+
+pub const a9: Int = a8 + 1
+
+pub const a10: Int = a9 + 1
+
+pub const a11: Int = a10 + 1
+
+pub const a12: Int = a11 + 1
+
+pub const a13: Int = a12 + 1
+
+pub const a14: Int = a13 + 1
+
+pub const a15: Int = a14 + 1
+
+pub const a16: Int = a15 + 1
+
+pub const a17: Int = a16 + 1
+
+pub const a18: Int = a17 + 1
+
+pub const a19: Int = a18 + 1
+
+pub const a20: Int = a19 + 1
+
+pub const a21: Int = a20 + 1
+
+pub const a22: Int = a21 + 1
+
+pub const a23: Int = a22 + 1
+
+pub const a24: Int = a23 + 1
+
+pub const a25: Int = a24 + 1
+
+pub const a26: Int = a25 + 1
+
+pub const a27: Int = a26 + 1
+
+pub const a28: Int = a27 + 1
+
+pub const a29: Int = a28 + 1
+
+pub const a30: Int = a29 + 1
+
+pub const a31: Int = a30 + 1
+
+pub const a32: Int = a31 + 1
+
+pub const a33: Int = a32 + 1
+
+pub const a34: Int = a33 + 1
+
+pub const a35: Int = a34 + 1
+
+pub const a36: Int = a35 + 1
+
+pub const a37: Int = a36 + 1
+
+pub const a38: Int = a37 + 1
+
+pub const a39: Int = a38 + 1
+
+pub const a40: Int = a39 + 1
+
+pub const a41: Int = a40 + 1
+
+pub const a42: Int = a41 + 1
+
+pub const a43: Int = a42 + 1
+
+pub const a44: Int = a43 + 1
+
+pub const a45: Int = a44 + 1
+
+pub const a46: Int = a45 + 1
+
+pub const a47: Int = a46 + 1
+
+pub const a48: Int = a47 + 1
+
+pub const a49: Int = a48 + 1
+
+pub const a50: Int = a49 + 1
+
+pub const a51: Int = a50 + 1
+
+pub const a52: Int = a51 + 1
+
+pub const a53: Int = a52 + 1
+
+pub const a54: Int = a53 + 1
+
+pub const a55: Int = a54 + 1
+
+pub const a56: Int = a55 + 1
+
+pub const a57: Int = a56 + 1
+
+pub const a58: Int = a57 + 1
+
+pub const a59: Int = a58 + 1
+
+pub const a60: Int = a59 + 1
+
+pub const a61: Int = a60 + 1
+
+pub const a62: Int = a61 + 1
+
+pub const a63: Int = a62 + 1
+
+pub const a64: Int = a63 + 1
+
+pub const a65: Int = a64 + 1
+
+pub const a66: Int = a65 + 1
+
+pub const a67: Int = a66 + 1
+
+pub const a68: Int = a67 + 1
+
+pub const a69: Int = a68 + 1
+
+pub const a70: Int = a69 + 1
+
+pub const a71: Int = a70 + 1
+
+pub const a72: Int = a71 + 1
+
+pub const a73: Int = a72 + 1
+
+pub const a74: Int = a73 + 1
+
+pub const a75: Int = a74 + 1
+
+pub const a76: Int = a75 + 1
+
+pub const a77: Int = a76 + 1
+
+pub const a78: Int = a77 + 1
+
+pub const a79: Int = a78 + 1
+
+pub const a80: Int = a79 + 1
+
+pub const a81: Int = a80 + 1
+
+pub const a82: Int = a81 + 1
+
+pub const a83: Int = a82 + 1
+
+pub const a84: Int = a83 + 1
+
+pub const a85: Int = a84 + 1
+
+pub const a86: Int = a85 + 1
+
+pub const a87: Int = a86 + 1
+
+pub const a88: Int = a87 + 1
+
+pub const a89: Int = a88 + 1
+
+pub const a90: Int = a89 + 1
+
+pub const a91: Int = a90 + 1
+
+pub const a92: Int = a91 + 1
+
+pub const a93: Int = a92 + 1
+
+pub const a94: Int = a93 + 1
+
+pub const a95: Int = a94 + 1
+
+pub const a96: Int = a95 + 1
+
+pub const a97: Int = a96 + 1
+
+pub const a98: Int = a97 + 1
+
+pub const a99: Int = a98 + 1
+
+pub const a100: Int = a99 + 1
+
+pub const a101: Int = a100 + 1
+
+pub const a102: Int = a101 + 1
+
+pub const a103: Int = a102 + 1
+
+pub const a104: Int = a103 + 1
+
+pub const a105: Int = a104 + 1
+
+pub const a106: Int = a105 + 1
+
+pub const a107: Int = a106 + 1
+
+pub const a108: Int = a107 + 1
+
+pub const a109: Int = a108 + 1
+
+pub const a110: Int = a109 + 1
+
+pub const a111: Int = a110 + 1
+
+pub const a112: Int = a111 + 1
+
+pub const a113: Int = a112 + 1
+
+pub const a114: Int = a113 + 1
+
+pub const a115: Int = a114 + 1
+
+pub const a116: Int = a115 + 1
+
+pub const a117: Int = a116 + 1
+
+pub const a118: Int = a117 + 1
+
+pub const a119: Int = a118 + 1
+
+pub const a120: Int = a119 + 1
+
+pub const a121: Int = a120 + 1
+
+pub const a122: Int = a121 + 1
+
+pub const a123: Int = a122 + 1
+
+pub const a124: Int = a123 + 1
+
+pub const a125: Int = a124 + 1
+
+pub const a126: Int = a125 + 1
+
+pub const a127: Int = a126 + 1
+
+pub const a128: Int = a127 + 1
+
+pub const a129: Int = a128 + 1
+
+pub const a130: Int = a129 + 1
+
+pub const a131: Int = a130 + 1
+
+pub const a132: Int = a131 + 1
+
+pub const a133: Int = a132 + 1
+
+pub const a134: Int = a133 + 1
+
+pub const a135: Int = a134 + 1
+
+pub const a136: Int = a135 + 1
+
+pub const a137: Int = a136 + 1
+
+pub const a138: Int = a137 + 1
+
+pub const a139: Int = a138 + 1
+
+pub const a140: Int = a139 + 1
+
+pub const a141: Int = a140 + 1
+
+pub const a142: Int = a141 + 1
+
+pub const a143: Int = a142 + 1
+
+pub const a144: Int = a143 + 1
+
+pub const a145: Int = a144 + 1
+
+pub const a146: Int = a145 + 1
+
+pub const a147: Int = a146 + 1
+
+pub const a148: Int = a147 + 1
+
+pub const a149: Int = a148 + 1
+
+pub const a150: Int = a149 + 1
+
+pub const a151: Int = a150 + 1
+
+pub const a152: Int = a151 + 1
+
+pub const a153: Int = a152 + 1
+
+pub const a154: Int = a153 + 1
+
+pub const a155: Int = a154 + 1
+
+pub const a156: Int = a155 + 1
+
+pub const a157: Int = a156 + 1
+
+pub const a158: Int = a157 + 1
+
+pub const a159: Int = a158 + 1
+
+pub const a160: Int = a159 + 1
+
+pub const a161: Int = a160 + 1
+
+pub const a162: Int = a161 + 1
+
+pub const a163: Int = a162 + 1
+
+pub const a164: Int = a163 + 1
+
+pub const a165: Int = a164 + 1
+
+pub const a166: Int = a165 + 1
+
+pub const a167: Int = a166 + 1
+
+pub const a168: Int = a167 + 1
+
+pub const a169: Int = a168 + 1
+
+pub const a170: Int = a169 + 1
+
+pub const a171: Int = a170 + 1
+
+pub const a172: Int = a171 + 1
+
+pub const a173: Int = a172 + 1
+
+pub const a174: Int = a173 + 1
+
+pub const a175: Int = a174 + 1
+
+pub const a176: Int = a175 + 1
+
+pub const a177: Int = a176 + 1
+
+pub const a178: Int = a177 + 1
+
+pub const a179: Int = a178 + 1
+
+pub const a180: Int = a179 + 1
+
+pub const a181: Int = a180 + 1
+
+pub const a182: Int = a181 + 1
+
+pub const a183: Int = a182 + 1
+
+pub const a184: Int = a183 + 1
+
+pub const a185: Int = a184 + 1
+
+pub const a186: Int = a185 + 1
+
+pub const a187: Int = a186 + 1
+
+pub const a188: Int = a187 + 1
+
+pub const a189: Int = a188 + 1
+
+pub const a190: Int = a189 + 1
+
+pub const a191: Int = a190 + 1
+
+pub const a192: Int = a191 + 1
+
+pub const a193: Int = a192 + 1
+
+pub const a194: Int = a193 + 1
+
+pub const a195: Int = a194 + 1
+
+pub const a196: Int = a195 + 1
+
+pub const a197: Int = a196 + 1
+
+pub const a198: Int = a197 + 1
+
+pub const a199: Int = a198 + 1
+
+pub const a200: Int = a199 + 1
+
+pub const a201: Int = a200 + 1
+
+pub const a202: Int = a201 + 1
+
+pub const a203: Int = a202 + 1
+
+pub const a204: Int = a203 + 1
+
+pub const a205: Int = a204 + 1
+
+pub const a206: Int = a205 + 1
+
+pub const a207: Int = a206 + 1
+
+pub const a208: Int = a207 + 1
+
+pub const a209: Int = a208 + 1
+
+pub const a210: Int = a209 + 1
+
+pub const a211: Int = a210 + 1
+
+pub const a212: Int = a211 + 1
+
+pub const a213: Int = a212 + 1
+
+pub const a214: Int = a213 + 1
+
+pub const a215: Int = a214 + 1
+
+pub const a216: Int = a215 + 1
+
+pub const a217: Int = a216 + 1
+
+pub const a218: Int = a217 + 1
+
+pub const a219: Int = a218 + 1
+
+pub const a220: Int = a219 + 1
+
+pub const a221: Int = a220 + 1
+
+pub const a222: Int = a221 + 1
+
+pub const a223: Int = a222 + 1
+
+pub const a224: Int = a223 + 1
+
+pub const a225: Int = a224 + 1
+
+pub const a226: Int = a225 + 1
+
+pub const a227: Int = a226 + 1
+
+pub const a228: Int = a227 + 1
+
+pub const a229: Int = a228 + 1
+
+pub const a230: Int = a229 + 1
+
+pub const a231: Int = a230 + 1
+
+pub const a232: Int = a231 + 1
+
+pub const a233: Int = a232 + 1
+
+pub const a234: Int = a233 + 1
+
+pub const a235: Int = a234 + 1
+
+pub const a236: Int = a235 + 1
+
+pub const a237: Int = a236 + 1
+
+pub const a238: Int = a237 + 1
+
+pub const a239: Int = a238 + 1
+
+pub const a240: Int = a239 + 1
+
+pub const a241: Int = a240 + 1
+
+pub const a242: Int = a241 + 1
+
+pub const a243: Int = a242 + 1
+
+pub const a244: Int = a243 + 1
+
+pub const a245: Int = a244 + 1
+
+pub const a246: Int = a245 + 1
+
+pub const a247: Int = a246 + 1
+
+pub const a248: Int = a247 + 1
+
+pub const a249: Int = a248 + 1
+
+pub const a250: Int = a249 + 1
+
+pub const a251: Int = a250 + 1
+
+pub const a252: Int = a251 + 1
+
+pub const a253: Int = a252 + 1
+
+pub const a254: Int = a253 + 1
+
+pub const a255: Int = a254 + 1
+
+pub const a256: Int = a255 + 1
+
+pub const a257: Int = a256 + 1
+
+pub const a258: Int = a257 + 1
+
+pub const a259: Int = a258 + 1
+
+pub const a260: Int = a259 + 1
+
+pub const a261: Int = a260 + 1
+
+pub const a262: Int = a261 + 1
+
+pub const a263: Int = a262 + 1
+
+pub const a264: Int = a263 + 1
+
+pub const a265: Int = a264 + 1
+
+pub const a266: Int = a265 + 1
+
+pub const a267: Int = a266 + 1
+
+pub const a268: Int = a267 + 1
+
+pub const a269: Int = a268 + 1
+
+pub const a270: Int = a269 + 1
+
+pub const a271: Int = a270 + 1
+
+pub const a272: Int = a271 + 1
+
+pub const a273: Int = a272 + 1
+
+pub const a274: Int = a273 + 1
+
+pub const a275: Int = a274 + 1
+
+pub const a276: Int = a275 + 1
+
+pub const a277: Int = a276 + 1
+
+pub const a278: Int = a277 + 1
+
+pub const a279: Int = a278 + 1
+
+pub const a280: Int = a279 + 1
+
+pub const a281: Int = a280 + 1
+
+pub const a282: Int = a281 + 1
+
+pub const a283: Int = a282 + 1
+
+pub const a284: Int = a283 + 1
+
+pub const a285: Int = a284 + 1
+
+pub const a286: Int = a285 + 1
+
+pub const a287: Int = a286 + 1
+
+pub const a288: Int = a287 + 1
+
+pub const a289: Int = a288 + 1
+
+pub const a290: Int = a289 + 1
+
+pub const a291: Int = a290 + 1
+
+pub const a292: Int = a291 + 1
+
+pub const a293: Int = a292 + 1
+
+pub const a294: Int = a293 + 1
+
+pub const a295: Int = a294 + 1
+
+pub const a296: Int = a295 + 1
+
+pub const a297: Int = a296 + 1
+
+pub const a298: Int = a297 + 1
+
+pub const a299: Int = a298 + 1
+
+pub const a300: Int = a299 + 1
+
+pub f(x: Int in 0..a300) -> Int = x
+
+pub g() -> Int = f(1000000)

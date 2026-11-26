@@ -1,0 +1,9 @@
+-- test: `1 / 0` and `1 mod 0` in a constant are U2041 at check time, never an obligation (ADR 0126 rules 3 and 5)
+-- spec: spec/10 §8
+-- expect: error U2041 at src/m.una:7:20
+-- expect: error U2041 at src/m.una:9:20
+module m
+
+pub const a: Int = 1 / 0
+
+pub const b: Int = 1 mod 0

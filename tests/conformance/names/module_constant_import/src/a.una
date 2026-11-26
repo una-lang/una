@@ -1,0 +1,5 @@
+module a
+
+pub const max_items: Int = 1000
+
+const hidden: Int = 1

@@ -1,0 +1,11 @@
+-- test: a constant's declared label applies to each use: `const s: secret Int = 1` is accepted and printing it is U4003 (ADR 0126 Question 3)
+-- spec: spec/07 §7
+-- expect: error U4003 at src/m.una:11:18
+module m
+
+pub const s: secret Int = 1
+
+pub show() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s}")

@@ -87,7 +87,7 @@ pub(crate) fn counted_in(construct: Construct) -> &'static str {
         | Construct::HttpServer
         | Construct::Drive => "Core IR, imports and project files",
         Construct::MapUpdate => "the checker",
-        Construct::Diverges => "the syntax tree",
+        Construct::Diverges | Construct::ModuleConstants => "the syntax tree",
         Construct::SimdName | Construct::ArgumentLabels | Construct::ConstVar => "the tokens",
         Construct::GrantLimits
         | Construct::ItaManifest
@@ -204,6 +204,10 @@ fn syntax(file: &una_syntax::ast::File, interner: &Interner, sites: &mut Sites) 
         }
     }
     for decl in &file.decls {
+        // ADR 0126: each module constant.
+        if let DeclKind::Const(constant) = &decl.kind {
+            sites.add(Construct::ModuleConstants, constant.name.span);
+        }
         if let DeclKind::Function(function) = &decl.kind
             && function
                 .clauses

@@ -145,6 +145,10 @@ fn index(
             una_lsp::HoverText::Lazy(std::sync::Arc::new(move || format!("```una\n{ty}\n```"))),
         ));
     }
+    // A module constant's type and value (ADR 0126 rule 11).
+    for (span, text) in &analysis.index.constants {
+        checked.hovers.push((location(*span), text.clone().into()));
+    }
     // The contract of each function a call or a name refers to, as `una contract` prints it.
     let modules = crate::contract::Modules {
         sources,
@@ -226,6 +230,8 @@ fn index(
             let (name, selection, kind) = match &decl.kind {
                 // A unit of measure (ADR 0104): no LSP kind names it; a type-level name.
                 DeclKind::Measure(measure) => (named(&measure.name), measure.name.span, 26),
+                // A module constant (ADR 0126 rule 11).
+                DeclKind::Const(constant) => (named(&constant.name), constant.name.span, 14),
                 DeclKind::Kind(kind) => (named(&kind.name), kind.name.span, 23),
                 DeclKind::Predicate(predicate) => (named(&predicate.name), predicate.name.span, 6),
                 DeclKind::Function(function) => (named(&function.name), function.name.span, 12),

@@ -556,6 +556,12 @@ const EXPECTED_DIFFERENCES_0_4: &[Difference04] = &[
 /// comparison made with edition `0.4` before the move (ADR 0119 and ADR 0120, amendments of
 /// 2026-11-06: "each comparison with edition `0.3` is made with edition `0.4`").
 const EXPECTED_DIFFERENCES_0_5: &[Difference04] = &[
+    // ADR 0126 rule 1: a module constant exists from edition 0.5.
+    Difference04 {
+        case: "syntax/module_constant_before_0_5",
+        added: &[],
+        removed: &[("U0101", "src/m.una:6:7")],
+    },
     // ADR 0119 rule 0: `std.collections` is an importable module from edition 0.5.
     Difference04 {
         case: "names/collections_import_0_4",

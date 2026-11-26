@@ -333,6 +333,15 @@ impl Dumper<'_> {
                 }
                 items
             }
+            DeclKind::Const(constant) => {
+                let mut items = vec![atom("const"), atom(self.name(&constant.name))];
+                if constant.public {
+                    items.insert(1, atom("pub"));
+                }
+                items.push(self.ty(&constant.ty));
+                items.push(self.expr(&constant.value));
+                items
+            }
         };
         let docs = decl.docs.iter().map(|comment| {
             let text = self
@@ -425,6 +434,17 @@ impl Dumper<'_> {
     }
 
     /// A type as `{source spelling}`.
+    /// The range of a type, a bound that names a module constant shown by its name, edition
+    /// 0.5 (ADR 0126 rule 9).
+    fn type_range_text(&self, range: &Range) -> String {
+        let bound = |value: &SignedInt| match &value.constant {
+            Some(constant) => self.name(constant),
+            None => signed_text(value),
+        };
+        let operator = if range.exclusive { "..<" } else { ".." };
+        format!("{}{operator}{}", bound(&range.low), bound(&range.high))
+    }
+
     fn ty(&self, ty: &Type) -> Node {
         atom(format!("{{{}}}", self.type_text(ty)))
     }
@@ -475,7 +495,7 @@ impl Dumper<'_> {
             text.push_str(&format!(" of {}", self.unit_text(unit)));
         }
         if let Some(range) = &ty.range {
-            text.push_str(&format!(" in {}", range_text(range)));
+            text.push_str(&format!(" in {}", self.type_range_text(range)));
         }
         text
     }

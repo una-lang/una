@@ -555,6 +555,14 @@ impl<'a> Resolver<'_, '_, 'a> {
             // Unit expressions resolve in the type check, which reports an unknown unit as
             // U2029 (ADR 0104 rule 1).
             DeclKind::Requirement(_) | DeclKind::Measure(_) => {}
+            // A module constant (ADR 0126 rule 2): its type, and its value with no local in
+            // scope.
+            DeclKind::Const(constant) => {
+                self.ty(&constant.ty);
+                self.enter();
+                self.expr(&constant.value);
+                self.leave();
+            }
             DeclKind::Example(example) => {
                 self.enter();
                 for given in &example.givens {
@@ -596,6 +604,12 @@ impl<'a> Resolver<'_, '_, 'a> {
 
     /// A type (an unknown type name is U1001); label categories wait for M6.
     fn ty(&mut self, ty: &Type) {
+        // A range bound that names a constant, edition 0.5 (ADR 0126 rule 9).
+        for bound in ty.range.iter().flat_map(|range| [&range.low, &range.high]) {
+            if let Some(constant) = &bound.constant {
+                self.lookup(constant, Space::Lower, "constant");
+            }
+        }
         match &ty.core {
             TypeCore::Named { name, args } => {
                 self.lookup(name, Space::Upper, "type");

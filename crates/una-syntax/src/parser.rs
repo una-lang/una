@@ -6,15 +6,15 @@ use una_diag::Code;
 
 use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
-    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch, EverStmt,
-    ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FirstOf, FnTypeClause,
-    ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
-    Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
-    Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
-    OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
-    Range, RequirementDecl, RequirementSource, SignedInt, StartStmt, Stmt, StopAfter, StopStmt,
-    TasksStmt, TextLit, TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr,
-    UntilStmt, UsesClause, Variant, VariantExpr, WhenExpr,
+    CapType, CapabilityDecl, Clause, ClauseKind, ConstDecl, Convention, Decl, DeclKind, ElseBranch,
+    EverStmt, ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FirstOf,
+    FnTypeClause, ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl,
+    HandlerOp, Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody,
+    KindDecl, Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader,
+    ModulePath, OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl,
+    PredicateDecl, Range, RequirementDecl, RequirementSource, SignedInt, StartStmt, Stmt,
+    StopAfter, StopStmt, TasksStmt, TextLit, TextPart, TogetherFor, TogetherStmt, Type, TypeCore,
+    UnaryOp, UnitExpr, UntilStmt, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::{Interner, Symbol};
@@ -1321,6 +1321,19 @@ impl<'a> Parser<'a> {
                 self.measure_decl(public)?
             }
             TokenKind::LowerIdent(_) | TokenKind::Reserved(_) => self.function_decl(public)?,
+            // Edition 0.5: a module constant (ADR 0126 rule 1). `let` there has its U7007 from
+            // the lexer, with the rewrite to `const`, and is read the same way.
+            TokenKind::Keyword(Keyword::Const) => self.constant_decl(public)?,
+            TokenKind::Keyword(Keyword::Let) if self.keywords >= KeywordSet::V0_5 => {
+                if matches!(self.peek_at(1), TokenKind::Keyword(Keyword::Edit)) {
+                    let span = self.span();
+                    return self.fail(
+                        span,
+                        "a module declares no `var`; a module value is a `const`",
+                    );
+                }
+                self.constant_decl(public)?
+            }
             // Edition 0.5: a module has no mutable state (ADR 0137 rule 3).
             TokenKind::Keyword(Keyword::Var) => {
                 let span = self.span();
@@ -1545,7 +1558,7 @@ impl<'a> Parser<'a> {
             None
         };
         let range = if self.eat_keyword(Keyword::In) {
-            Some(self.range()?)
+            Some(self.type_range()?)
         } else {
             None
         };
@@ -1685,6 +1698,39 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// The range of a type: in edition 0.5, a bound may name a module constant,
+    /// `signed_int | lower_ident` (ADR 0126 rule 9).
+    fn type_range(&mut self) -> Parse<Range> {
+        let start = self.span();
+        let low = self.type_bound()?;
+        let exclusive = if self.eat(&TokenKind::DotDotLt) {
+            true
+        } else {
+            self.expect(&TokenKind::DotDot, "`..` or `..<`")?;
+            false
+        };
+        let high = self.type_bound()?;
+        Ok(Range {
+            low,
+            high,
+            exclusive,
+            span: self.since(start),
+        })
+    }
+
+    fn type_bound(&mut self) -> Parse<SignedInt> {
+        if self.keywords >= KeywordSet::V0_5 && matches!(self.peek(), TokenKind::LowerIdent(_)) {
+            let ident = self.lower_name("a constant")?;
+            return Ok(SignedInt {
+                negative: false,
+                digits: String::new(),
+                span: ident.span,
+                constant: Some(Box::new(ident)),
+            });
+        }
+        self.signed_int()
+    }
+
     fn signed_int(&mut self) -> Parse<SignedInt> {
         let start = self.span();
         let negative = self.eat(&TokenKind::Minus);
@@ -1697,6 +1743,7 @@ impl<'a> Parser<'a> {
             negative,
             digits,
             span: self.since(start),
+            constant: None,
         })
     }
 
@@ -2208,6 +2255,34 @@ impl<'a> Parser<'a> {
         };
         self.expect_line_end()?;
         Ok(DeclKind::Measure(MeasureDecl { public, name, unit }))
+    }
+
+    /// `[ "pub" ] "const" lower_ident ":" type "=" line_expr NEWLINE`, edition 0.5 (ADR 0126
+    /// rule 1). The type is required: without it, U0101 at `=`.
+    fn constant_decl(&mut self, public: bool) -> Parse<DeclKind> {
+        self.advance();
+        let name = self.binding_name("a constant's name", Binding::Let)?;
+        if matches!(self.peek(), TokenKind::Eq) {
+            let span = self.span();
+            let written = self.interner.resolve(name.name).to_owned();
+            return self.fail(
+                span,
+                format!(
+                    "a module constant writes its type: `const {written}: Type = value` (ADR 0126 rule 1)"
+                ),
+            );
+        }
+        self.expect(&TokenKind::Colon, "`:` and the constant's type")?;
+        let ty = self.ty()?;
+        self.expect(&TokenKind::Eq, "`=` and the constant's value")?;
+        let value = self.line_expr()?;
+        self.expect_line_end()?;
+        Ok(DeclKind::Const(ConstDecl {
+            public,
+            name,
+            ty,
+            value,
+        }))
     }
 
     /// `unit_expr = unit_term { ( "*" | "/" ) unit_term }`, left to right (ADR 0104 rule 2).

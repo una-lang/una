@@ -1,0 +1,6 @@
+-- test: the canonical form writes a module constant with one space after `:` and around `=`, so `pub const x :Int=1` is U7001 (ADR 0126 rule 10)
+-- spec: spec/15 §4
+-- expect: error U7001 at src/m.una:6:1
+module m
+
+pub const x :Int=1

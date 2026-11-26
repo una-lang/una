@@ -1,0 +1,14 @@
+-- test: in edition 0.5, a bound of a type's range may name an integer constant, which is its value: a call with `5` is proven and one with `5000` refuted (ADR 0126 rule 9)
+-- spec: spec/02 §2
+-- expect: error U5001 at src/m.una:14:33
+module m
+
+pub const low: Int = 1
+
+pub const max_items: Int = 10 * 100
+
+pub take_count(n: Int in low..max_items) -> Int = n
+
+pub small() -> Int = take_count(5)
+
+pub large() -> Int = take_count(5000)

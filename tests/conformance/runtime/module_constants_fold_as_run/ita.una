@@ -1,0 +1,8 @@
+ita module_constants_fold_as_run
+  version 0.1.0
+  edition 0.5
+
+run
+  entry m
+  grants
+    console

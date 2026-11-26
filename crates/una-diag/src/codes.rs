@@ -104,6 +104,8 @@ pub enum Code {
     U1009,
     /// A module whose first path segment is a dependency's local name.
     U1010,
+    /// A constant depends on itself, directly or through other constants.
+    U1011,
     /// Type mismatch.
     U2001,
     /// Unknown or ill-formed type.
@@ -186,6 +188,8 @@ pub enum Code {
     U2039,
     /// A statement after `stop` or `skip` in the same block, which never runs.
     U2040,
+    /// The value of a constant is not a constant expression, divides by zero, does not fit its type or exceeds the size caps, or its type holds a function type.
+    U2041,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -326,7 +330,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 123] = [
+    pub const ALL: [Code; 125] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -347,6 +351,7 @@ impl Code {
         Code::U1008,
         Code::U1009,
         Code::U1010,
+        Code::U1011,
         Code::U2001,
         Code::U2002,
         Code::U2003,
@@ -386,6 +391,7 @@ impl Code {
         Code::U2038,
         Code::U2039,
         Code::U2040,
+        Code::U2041,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -568,6 +574,11 @@ impl Code {
                 code: "U1010",
                 domain: Domain::Names,
                 meaning: "A module whose first path segment is a dependency's local name",
+            },
+            Code::U1011 => &Entry {
+                code: "U1011",
+                domain: Domain::Names,
+                meaning: "A constant depends on itself, directly or through other constants",
             },
             Code::U2001 => &Entry {
                 code: "U2001",
@@ -763,6 +774,11 @@ impl Code {
                 code: "U2040",
                 domain: Domain::Types,
                 meaning: "A statement after `stop` or `skip` in the same block, which never runs",
+            },
+            Code::U2041 => &Entry {
+                code: "U2041",
+                domain: Domain::Types,
+                meaning: "The value of a constant is not a constant expression, divides by zero, does not fit its type or exceeds the size caps, or its type holds a function type",
             },
             Code::U3001 => &Entry {
                 code: "U3001",

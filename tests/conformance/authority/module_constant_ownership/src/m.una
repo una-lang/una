@@ -1,0 +1,38 @@
+-- test: an assignment to a module constant and an `edit` argument rooted at one are U2019, a `take` of one is U2020, and a local copy can be taken (ADR 0126 rule 13)
+-- spec: spec/17 §3
+-- expect: error U2019 at src/m.una:29:3
+-- expect: error U2019 at src/m.una:33:13
+-- expect: error U2020 at src/m.una:37:24
+module m
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub const origin: Point = Point(x: 0, y: 0)
+
+pub const max_items: Int = 1000
+
+pub moved(take p: Point) -> Point = Point(x: p.x + 1, y: p.y)
+
+pub bump(edit n: Int) -> Unit
+=
+  n = n + 1
+
+pub start() -> Point
+=
+  const p = origin
+  moved(take p)
+
+pub assigns() -> Unit
+=
+  max_items = 2
+
+pub edits() -> Unit
+=
+  bump(edit max_items)
+
+pub takes() -> Point
+=
+  const q = moved(take origin)
+  q

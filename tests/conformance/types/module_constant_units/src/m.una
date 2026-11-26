@@ -1,0 +1,16 @@
+-- test: a constant expression of integers takes the declared unit, and a constant of another unit is U2028 (ADR 0126 rule 6)
+-- spec: spec/25 §3
+-- expect: error U2028 at src/m.una:16:33
+module m
+
+measure Meter
+
+measure Second
+
+pub const d: Int of Meter = 5 * 2
+
+pub const t: Int of Second = 3
+
+pub const sum: Int of Meter = d + d
+
+pub const wrong: Int of Meter = t
