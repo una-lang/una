@@ -1,0 +1,25 @@
+-- test: a record or list constant in `requires`, `ensures` or a `where` refinement is outside the refinement language, U2014 at the reference, as the record or list it stands for is (ADR 0126 rule 9, spec/12 §3)
+-- spec: spec/12 §3
+-- expect: error U2014 at src/m.una:16:16
+-- expect: error U2014 at src/m.una:21:21
+-- expect: error U2014 at src/m.una:25:33
+module m
+
+pub kind P
+  a: Int
+
+pub const xs: List[Int] = [1, 2, 3]
+
+pub const p: P = P(a: 3)
+
+pub f(x: Int) -> Int
+  requires x < xs.len
+=
+  x
+
+pub g(x: Int) -> Int
+  ensures result == p.a
+=
+  3
+
+pub kind Small = Int where it < xs.len

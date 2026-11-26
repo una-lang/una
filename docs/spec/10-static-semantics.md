@@ -167,7 +167,8 @@ Handler operations are checked like functions whose parameters, `requires`, `ens
 2. **Evaluation.** The compiler evaluates each value once, at check time, in the order of the constants' dependencies, by the dynamic semantics of `spec/11` for those operators: integers with arbitrary precision and Euclidean division, `F64` as `spec/29` defines each operation, decimals exactly. A division or `mod` by zero, a value at a fixed-width type that does not fit it (`spec/18 §2`), an integer of more than 4,300 decimal digits, and a value of more than 1,000,000 elements, fields and characters together are U2041 at check time, never an obligation. Nothing else fails.
 3. **Typing.** The value's type MUST flow into `T` as at an annotated `const`: U2001, U2028 (units, `spec/25 §3`) or U4001 (labels) otherwise. `T` MUST NOT be or hold, at any depth, a field of a kind included, a function type: U2041 at the type. A reference to the constant has type `T`, its refinements at the top as for any annotated binder.
 4. **Refinements.** A refinement of `T`, at the top or at a nested position, gives its `refinement` obligation at the value (`spec/12 §3`), whose goal is closed.
-5. **Ownership.** A constant is neither an editable binding nor a local binding (`spec/17 §2`, `§3`): an assignment to it and an `edit` argument rooted at it are U2019, and a `take` of it is U2020.
+5. **Contracts.** In `requires`, `ensures`, `where` and `given`, a constant of a scalar type is a literal of the refinement language; a record or list constant is U2014 there (`spec/12 §3`).
+6. **Ownership.** A constant is neither an editable binding nor a local binding (`spec/17 §2`, `§3`): an assignment to it and an `edit` argument rooted at it are U2019, and a `take` of it is U2020.
 
 ## 9. Syntactic side conditions
 

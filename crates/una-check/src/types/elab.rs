@@ -789,6 +789,14 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// generates the obligations of the type at the value.
     fn constant_check(&mut self, id: usize) -> Option<una_core::ConstantCheck> {
         let def = self.env.constants.get(id)?;
+        // The verifier skips an obligation at a position of a checked value by its span alone,
+        // and the standard modules' spans share file ids with the package's: only a package
+        // module's constant is ever checked, so every checked span is a package span
+        // (#1632 review 2, L2).
+        if def.module >= self.env.prelude {
+            self.broken.set(true);
+            return None;
+        }
         let span = def.ast.value.span;
         let mut lets = Vec::new();
         let atom = self.substitute(id, |fx, value| fx.atom(&mut lets, value))?;
@@ -2223,7 +2231,9 @@ impl<'e, 'a> Fx<'e, 'a> {
                 },
             ));
         }
-        let mut body = self.expr(&example.action);
+        // The `do` line shares the constants it names, as a function body does (ADR 0126
+        // rule 8, #1632 review 2).
+        let mut body = self.shared_body(|fx| fx.expr(&example.action));
         for (cap, source) in givens.into_iter().rev() {
             body = CoreExpr::With {
                 cap,

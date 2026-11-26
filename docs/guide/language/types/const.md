@@ -73,7 +73,7 @@ constant_decl = [ "pub" ] "const" lower_ident ":" type "=" line_expr NEWLINE ;
 
 - The type is required. The value is a **constant expression**: literals, `-`, the arithmetic of integers, of `F64` and of decimals of one scale, `and`, `or`, `not`, comparisons, constructors and lists of constant expressions, parentheses, and the names of other constants, declared before or after (`spec/10 §8`).
 - A constant is a lower-case name of the module, like a function (`spec/10 §11`). `pub` exports it, and `import m (name)` brings it in.
-- A constant may appear in `requires`, `ensures` and `where`, and as a bound of a type's range, as in `Int in 1..max_items` (`spec/02 §2`).
+- A constant of a scalar type (an integer, a float, a decimal, a `Bool`, a `Text` or `Unit`) may appear in `requires`, `ensures` and `where`, where it is its literal, and as a bound of a type's range, as in `Int in 1..max_items` (`spec/02 §2`). A record or list constant there is U2014, as the record or list it stands for is: the refinement language has no records or lists (`spec/12 §3`).
 
 ## Examples
 

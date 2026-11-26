@@ -1,7 +1,8 @@
--- test: a constant integer of more than 4,300 decimal digits, and a constant value of more than 1,000,000 elements, fields and characters, are U2041 (ADR 0126 rule 5)
+-- test: a constant integer of more than 4,300 decimal digits, a constant value of more than 1,000,000 elements, fields and characters, and one of more than 4,096 records, variants and lists, are U2041 (ADR 0126 rule 5)
 -- spec: spec/10 §8
--- expect: error U2041 at src/m.una:33:22
--- expect: error U2041 at src/m.una:45:57
+-- expect: error U2041 at src/m.una:34:22
+-- expect: error U2041 at src/m.una:38:28
+-- expect: error U2041 at src/m.una:108:100
 module m
 
 pub const s0: Int = 10
@@ -32,14 +33,78 @@ pub const s12: Int = s11 * s11
 
 pub const s13: Int = s12 * s12
 
-pub const l0: List[Int] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+pub const t0: Text = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-pub const l1: List[List[Int]] = [l0, l0, l0, l0, l0, l0, l0, l0, l0, l0]
+pub const l1: List[Text] = [t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0
+]
 
-pub const l2: List[List[List[Int]]] = [l1, l1, l1, l1, l1, l1, l1, l1, l1, l1]
+pub const n0: List[Int] = [0, 1]
 
-pub const l3: List[List[List[List[Int]]]] = [l2, l2, l2, l2, l2, l2, l2, l2, l2, l2]
+pub const n1: List[List[Int]] = [n0, n0]
 
-pub const l4: List[List[List[List[List[Int]]]]] = [l3, l3, l3, l3, l3, l3, l3, l3, l3, l3]
+pub const n2: List[List[List[Int]]] = [n1, n1]
 
-pub const l5: List[List[List[List[List[List[Int]]]]]] = [l4, l4, l4, l4, l4, l4, l4, l4, l4, l4]
+pub const n3: List[List[List[List[Int]]]] = [n2, n2]
+
+pub const n4: List[List[List[List[List[Int]]]]] = [n3, n3]
+
+pub const n5: List[List[List[List[List[List[Int]]]]]] = [n4, n4]
+
+pub const n6: List[List[List[List[List[List[List[Int]]]]]]] = [n5, n5]
+
+pub const n7: List[List[List[List[List[List[List[List[Int]]]]]]]] = [n6, n6]
+
+pub const n8: List[List[List[List[List[List[List[List[List[Int]]]]]]]]] = [n7, n7]
+
+pub const n9: List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]] = [n8, n8]
+
+pub const n10: List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]] = [n9, n9]
+
+pub const n11: List[List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]]] = [n10,
+  n10
+]
+
+pub const n12: List[List[List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]]]] = [n11,
+  n11
+]

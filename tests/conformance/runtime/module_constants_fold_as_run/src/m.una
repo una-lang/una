@@ -6,6 +6,7 @@
 -- expect: run-output "true true | true true"
 -- expect: run-output "false false | true true | true true"
 -- expect: run-output "-5 -5 | 1 1 | -128 -128"
+-- expect: run-output "true true | true true"
 module m
 
 pub kind Price
@@ -53,6 +54,18 @@ pub const remainder: Int = -9 mod 2
 
 pub const least: I8 = -128
 
+pub const f1: F32 = 1.5
+
+pub const f2: F32 = -0.0
+
+pub const floats32: Bool = f2 < f1 and f1 >= f1 and not (f1 <= f2)
+
+pub const w1: U8 = 200
+
+pub const w2: U8 = 7
+
+pub const fixed: Bool = w2 < w1 and w1 > w2 and w1 != w2
+
 pub main() -> Unit
   uses @console: Console[print]
 =
@@ -71,9 +84,12 @@ pub main() -> Unit
   const b_quotient = x / 2
   const b_remainder = x mod 2
   const b_least: I8 = -128
+  const b_floats32 = f2 < f1 and f1 >= f1 and not (f1 <= f2)
+  const b_fixed = w2 < w1 and w1 > w2 and w1 != w2
   @console.print("{eq_scales} {b_eq} | {le_scales} {b_le}")
   @console.print("{lt_scales} {b_lt} | {ne_scales} {b_ne}")
   @console.print("{records} {b_records} | {records_differ} {b_differ} | {lists} {b_lists}")
   @console.print("{nans} {b_nans} | {order} {b_order}")
   @console.print("{zeros} {b_zeros} | {texts} {b_texts} | {texts} {b_texts}")
   @console.print("{quotient} {b_quotient} | {remainder} {b_remainder} | {least} {b_least}")
+  @console.print("{floats32} {b_floats32} | {fixed} {b_fixed}")

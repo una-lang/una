@@ -42,6 +42,40 @@ pub(crate) struct Evaluated {
     pub(crate) folded: BTreeMap<usize, BTreeMap<Span, Atom>>,
     /// The value of each constant evaluated, which the constants of other modules name.
     values: BTreeMap<usize, Sized>,
+    /// The constructors and lists of each value, as elaboration expands it: each is one Core
+    /// binding of the chain that substitutes the value.
+    compound: BTreeMap<usize, u64>,
+}
+
+/// The cap on the constructors and lists of one constant's value, and of the values one body
+/// shares, together: each is one binding of a Core `let` chain, which every later pass walks
+/// by recursion, so a few lines that nest constants must not make a chain deeper than code
+/// written out could practically be (#1632 review 2; measured: a chain of about 11,000
+/// bindings exhausts the stack of `una test`'s copy of the program in a debug build).
+const MAX_COMPOUND: u64 = 4_096;
+
+/// The constructors and lists of `value`, its shared parts counted at each use, as
+/// elaboration expands them; O(that count), which stops past `limit`.
+fn compound_count(value: &Value, limit: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut stack: Vec<&Value> = vec![value];
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Ctor { fields, .. } if !fields.is_empty() => {
+                count += 1;
+                stack.extend(fields.iter());
+            }
+            Value::List(items) => {
+                count += 1;
+                stack.extend(items.iter());
+            }
+            _ => {}
+        }
+        if count > limit {
+            break;
+        }
+    }
+    count
 }
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -331,9 +365,24 @@ pub(crate) fn evaluate(
             ten: &ten,
         };
         if let Ok(value) = eval.expr(&def.ast.value) {
+            let count = compound_count(&value.0, MAX_COMPOUND);
+            if count > MAX_COMPOUND {
+                if reports {
+                    report.error(
+                        Code::U2041,
+                        def.ast.value.span,
+                        format!(
+                            "the constant is too large: the value of `{}` holds more than {MAX_COMPOUND} records, variants and lists",
+                            def.name
+                        ),
+                    );
+                }
+                continue;
+            }
             let folded = eval.folded;
             values.insert(id, value);
             evaluated.folded.insert(id, folded);
+            evaluated.compound.insert(id, count);
         }
     }
     values.retain(|id, _| wanted.contains(id));
@@ -477,11 +526,11 @@ fn cycles(
     }
 }
 
-/// The cap on the size of the values a package's declarations substitute, together: each
-/// declaration counts once each constant it names, which its body shares (ADR 0126 rule 8),
-/// so the Core IR of a package grows with its values and its declarations, never with the
-/// number of references; a package past this cap is U2041 at the first reference that passes
-/// it. Ten times the cap of one value.
+/// The cap on the size of the values a package's declarations substitute, together: a body
+/// (a function's, a handler operation's, a test's `do` line) counts once each constant it
+/// names, since it shares the value (ADR 0126 rule 8), and every other reference counts once,
+/// so the cap bounds the Core IR that substitution makes; a package past it is U2041 at the
+/// first reference that passes it. Ten times the cap of one value.
 const MAX_SUBSTITUTED: u64 = 10 * MAX_SIZE;
 
 /// U2041 when the declarations of the package, together, substitute values larger than
@@ -519,15 +568,52 @@ pub(crate) fn substitution_budget(
                 continue;
             }
             let span = decl.span;
+            // The parts of the declaration whose elaboration shares the constants it names:
+            // a function's body, a handler operation's, a test's `do` line. Every other
+            // reference, in a clause or a `given` line, substitutes the value again.
+            let shared: Vec<Span> = match &decl.kind {
+                una_syntax::ast::DeclKind::Function(function) => vec![body_span(&function.body)],
+                una_syntax::ast::DeclKind::Handler(handler) => {
+                    handler.ops.iter().map(|op| body_span(&op.body)).collect()
+                }
+                una_syntax::ast::DeclKind::Example(example) => vec![example.action.span],
+                _ => Vec::new(),
+            };
             let from = Span::new(span.file, span.start, span.start);
             let to = Span::new(span.file, span.end, span.end);
-            let mut seen: BTreeSet<usize> = BTreeSet::new();
+            let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
+            let mut chains: BTreeMap<usize, u64> = BTreeMap::new();
             for (at, res) in records.res.range(from..=to) {
                 let Res::Const(id) = res else {
                     continue;
                 };
-                if at.end > span.end || !seen.insert(*id) {
+                if at.end > span.end {
                     continue;
+                }
+                // A shared reference counts once per part that shares it; any other counts
+                // once per reference.
+                let part = shared
+                    .iter()
+                    .position(|s| s.file == at.file && s.start <= at.start && at.end <= s.end);
+                if let Some(part) = part
+                    && !seen.insert((part, *id))
+                {
+                    continue;
+                }
+                // The bindings a shared part binds before its body, together.
+                if let Some(part) = part {
+                    let chain = chains.entry(part).or_insert(0);
+                    *chain += evaluated.compound.get(id).copied().unwrap_or(0);
+                    if *chain > MAX_COMPOUND {
+                        report.error(
+                            Code::U2041,
+                            *at,
+                            format!(
+                                "the constants this body names are too large together: their values hold more than {MAX_COMPOUND} records, variants and lists"
+                            ),
+                        );
+                        return;
+                    }
                 }
                 let size = evaluated.values.get(id).map_or(1, |(_, size, _)| *size);
                 total = total.saturating_add(size);
@@ -536,13 +622,21 @@ pub(crate) fn substitution_budget(
                         Code::U2041,
                         *at,
                         format!(
-                            "the constants this package names are too large: their values, counted once in each declaration that names them, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
+                            "the constants this package names are too large: their values, counted once in each body that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
                         ),
                     );
                     return;
                 }
             }
         }
+    }
+}
+
+/// The span of a function's or a handler operation's body.
+fn body_span(body: &una_syntax::ast::Body) -> Span {
+    match body {
+        una_syntax::ast::Body::Line(expr) => expr.span,
+        una_syntax::ast::Body::Block(block) => block.span,
     }
 }
 
@@ -922,7 +1016,16 @@ fn canonical(bits: u64) -> u64 {
 fn compare(x: &Value, y: &Value) -> Option<std::cmp::Ordering> {
     match (x, y) {
         (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
-        (Value::F64(a), Value::F64(b)) => Some(f64::from_bits(*a).total_cmp(&f64::from_bits(*b))),
+        // The engines' own order: IEEE totalOrder on the canonical bits (`spec/29 §5`, §17
+        // rule 7 for `F32`).
+        (Value::F64(a), Value::F64(b)) => Some(una_core::float::total_cmp(
+            f64::from_bits(*a),
+            f64::from_bits(*b),
+        )),
+        (Value::F32(a), Value::F32(b)) => Some(una_core::float32::total_cmp(
+            f32::from_bits(*a),
+            f32::from_bits(*b),
+        )),
         (Value::Decimal(a, s), Value::Decimal(b, t)) => Some(decimal_cmp(a, *s, b, *t)),
         (Value::Text(a), Value::Text(b)) => Some(a.cmp(b)),
         _ => None,

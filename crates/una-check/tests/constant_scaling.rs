@@ -111,6 +111,29 @@ fn references_to_a_nested_constant_share_its_value_in_linear_time() {
     );
 }
 
+/// The same nested list constant named `n` times in the `do` line of one test.
+fn nested_in_test(n: usize) -> String {
+    let mut text = nested_references(0);
+    let items = vec!["l3.len"; n].join(", ");
+    text.push_str(&format!(
+        "\npub id(n: Int) -> Int = n\n\ntest \"many references\"\n  do id([{items}].len)\n  expect result >= 0\n"
+    ));
+    text
+}
+
+/// A test's `do` line shares the constants it names, as a body does (#1632 review 2, M2).
+#[test]
+fn references_in_a_test_share_the_value_in_linear_time() {
+    timing::assert_growth(
+        "references to a nested list constant in a test",
+        &[20, 320],
+        0.0,
+        timing::FLOOR,
+        8.0,
+        |n| checked(&nested_in_test(n)),
+    );
+}
+
 #[test]
 fn a_chain_of_constants_checks_in_linear_time() {
     timing::assert_growth(
