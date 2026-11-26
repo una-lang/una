@@ -10307,17 +10307,40 @@ pub main() -> Unit
 
 #[test]
 fn to_json_of_many_mid_size_values_is_u6003_in_both_engines_never_a_crash() {
-    // #1223, review 3 of #2257 (M1), `spec/23 §3` rule 6: `to_json` checks the budget every
-    // 4096 values and, since #1223, every 64 KiB of text it copies or writes. An array of 4,095
-    // `Number`s of 6,924 digits each (below the reservation's threshold one by one), or of as
-    // many `Str`s of that text, makes about 28 MB of JSON: at 14 MiB both engines end with
-    // U6003, where the copies between two checks of values used to pass the hard ceiling (exit
-    // 134). At 400 MiB both write it.
+    // #1223, reviews 3 (M1) and 4 (M1, L1) of #2257, `spec/23 §3` rule 6: `to_json` checks the
+    // budget every 4096 values and, since #1223, every 64 KiB of the text of numbers, strings
+    // and keys it copies or writes. Each case holds little (references to one value) and makes
+    // a large JSON text: 4,095 `Number`s of 6,924 digits each (below the reservation's
+    // threshold one by one), 4,095 `Str`s of one such text, or 2,000 objects under one key of
+    // 55,392 characters. At 14 MiB both engines print `built` and end with U6003 at the call
+    // of `to_json`, where the copies between two checks of values used to pass the hard ceiling
+    // (exit 134). With room, both write it.
     runtime();
-    for (case, item, length) in [
-        ("number", "Number(t)", "28357876"),
-        ("str", "Str(\"{t}\")", "28366066"),
+    for (case, prep, count, length) in [
+        (
+            "number",
+            ["const u = 0", "const v = 0", "const o = Number(t)"],
+            4095,
+            "28357876",
+        ),
+        (
+            "str",
+            ["const u = \"{t}\"", "const v = 0", "const o = Str(u)"],
+            4095,
+            "28366066",
+        ),
+        (
+            "key",
+            [
+                "const u = \"{t}{t}{t}{t}{t}{t}{t}{t}\"",
+                "const v: Map[Text, Json] = empty_map()",
+                "const o = Object(v.with(key: u, value: Null))",
+            ],
+            2000,
+            "110804001",
+        ),
     ] {
+        let [p0, p1, p2] = prep;
         let source = format!(
             "module big
 
@@ -10333,9 +10356,12 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   const t = squarings(7, k: 13)
+  {p0}
+  {p1}
+  {p2}
   var xs: List[Json] = []
-  for i in 0..<4095
-    xs = xs.append(item: {item})
+  for i in 0..<{count}
+    xs = xs.append(item: o)
   @console.print(\"built\")
   const s = Array(xs).to_json()
   @console.print(\"{{s.len}}\")
@@ -10354,12 +10380,21 @@ pub main() -> Unit
         ] {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(output.status.code(), Some(1), "{case} {engine}: {stderr}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "built\n",
+                "{case} {engine}: {stderr}"
+            );
             assert!(
                 stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 14 MiB"),
                 "{case} {engine}: {stderr}"
             );
+            assert!(
+                stderr.contains("src/big.una:22:13"),
+                "{case} {engine}: {stderr}"
+            );
         }
-        let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "400"]);
+        let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "1024"]);
         for (engine, output) in [
             ("una run", run.output().unwrap()),
             ("native", native.output().unwrap()),

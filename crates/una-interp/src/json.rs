@@ -190,8 +190,8 @@ pub(crate) fn tree(
     let mut stack: Vec<Walking<'_, '_>> = Vec::new();
     let mut pending = Some(value);
     let mut ticks = 0;
-    // The bytes of text copied into the tree since the last check: every 64 KiB of them is a
-    // check too, so many mid-size numbers and strings cannot pass the hard ceiling between two
+    // The bytes of text copied into the tree since the last check, of numbers, strings and keys:
+    // every 64 KiB of them is a check too, so many mid-size numbers and strings cannot pass the hard ceiling between two
     // checks of values (`spec/11 §7`, `spec/23 §3` rule 6, #1223).
     let mut copied = 0usize;
     loop {
@@ -270,6 +270,16 @@ pub(crate) fn tree(
             };
             match next {
                 Some((key, item)) => {
+                    // A key's text is copied too, and counted with the others.
+                    if let Some(key) = &key {
+                        copied = copied.saturating_add(key.len());
+                        if copied >= una_core::INT_TEXT_RESERVED_FROM {
+                            copied = 0;
+                            if !within() {
+                                return Err(NoTree::OverBudget);
+                            }
+                        }
+                    }
                     if let (Some(key), Some(Walking::Object(_, _, slot))) = (key, stack.last_mut())
                     {
                         *slot = Some(key);
