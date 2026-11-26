@@ -239,8 +239,9 @@ enum Value {
     List(Rc<[Value]>),
 }
 
-/// A value with its size: its elements, fields and characters together, at least 1.
-type Sized = (Value, u64);
+/// A value with its size, its elements, fields and characters together, at least 1, and its
+/// depth of nested constructors and lists, 0 for a scalar.
+type Sized = (Value, u64, u32);
 
 /// Why an evaluation stopped: reported, or a part whose value is unknown (a constant that
 /// failed, or an error the type check reported).
@@ -385,11 +386,17 @@ fn cycles(
     let mut stack: Vec<usize> = Vec::new();
     let mut next = 0usize;
     let mut components: Vec<Vec<usize>> = Vec::new();
-    let edges = |id: usize| -> Vec<usize> {
-        deps.get(&id)
-            .map(|d| d.iter().copied().filter(|x| left_set.contains(x)).collect())
-            .unwrap_or_default()
-    };
+    // The edges among the constants left, built once: O(references).
+    let adjacency: BTreeMap<usize, Vec<usize>> = left
+        .iter()
+        .map(|&id| {
+            let out = deps
+                .get(&id)
+                .map(|d| d.iter().copied().filter(|x| left_set.contains(x)).collect())
+                .unwrap_or_default();
+            (id, out)
+        })
+        .collect();
     for &root in left {
         if index.contains_key(&root) {
             continue;
@@ -402,11 +409,10 @@ fn cycles(
         stack.push(root);
         on_stack.insert(root);
         while let Some(&mut (node, ref mut at)) = work.last_mut() {
-            let out = edges(node);
-            if let Some(&target) = out.get(*at) {
+            if let Some(&target) = adjacency.get(&node).and_then(|out| out.get(*at)) {
                 *at += 1;
-                if !index.contains_key(&target) {
-                    index.insert(target, next);
+                if let std::collections::btree_map::Entry::Vacant(entry) = index.entry(target) {
+                    entry.insert(next);
                     low.insert(target, next);
                     next += 1;
                     stack.push(target);
@@ -560,13 +566,13 @@ impl Eval<'_, '_, '_, '_> {
                     Some(Entity::Const(id)) => self.values.get(&id).cloned().ok_or(Stop),
                     // A built-in constant of `std.time` in edition 0.4 (ADR 0116, amended).
                     Some(Entity::Constant { value, .. }) => {
-                        Ok((Value::Int(BigInt::from(value as i128)), 1))
+                        Ok((Value::Int(BigInt::from(value as i128)), 1, 0))
                     }
                     _ => Err(Stop),
                 }
             }
             ExprKind::Unary { op, operand } => {
-                let (value, size) = self.expr(operand)?;
+                let (value, size, _) = self.expr(operand)?;
                 let value = match (op, value) {
                     (UnaryOp::Neg, Value::Int(n)) => Value::Int(-n),
                     (UnaryOp::Neg, Value::F64(bits)) => Value::F64(canonical(bits ^ (1 << 63))),
@@ -575,25 +581,28 @@ impl Eval<'_, '_, '_, '_> {
                     (UnaryOp::Not, Value::Bool(b)) => Value::Bool(!b),
                     _ => return Err(Stop),
                 };
-                Ok((value, size))
+                Ok((value, size, 0))
             }
             ExprKind::Binary { op, left, right } => {
-                let (a, _) = self.expr(left)?;
-                let (b, _) = self.expr(right)?;
+                let (a, _, _) = self.expr(left)?;
+                let (b, _, _) = self.expr(right)?;
                 self.binary(*op, a, b, span)
             }
             ExprKind::List(items) => {
                 let mut values = Vec::with_capacity(items.len());
                 let mut size: u64 = 1;
+                let mut depth: u32 = 0;
                 for item in items {
-                    let (value, item_size) = self.expr(item)?;
+                    let (value, item_size, item_depth) = self.expr(item)?;
                     size = size.saturating_add(item_size);
+                    depth = depth.max(item_depth);
                     if size > MAX_SIZE {
                         return self.too_large(span);
                     }
                     values.push(value);
                 }
-                Ok((Value::List(values.into()), size))
+                self.nested(span, depth)?;
+                Ok((Value::List(values.into()), size, depth + 1))
             }
             ExprKind::UpperName(_) => match self.records.res.get(&span) {
                 Some(Res::Ctor { kind, variant }) => Ok((
@@ -602,6 +611,7 @@ impl Eval<'_, '_, '_, '_> {
                         variant: *variant,
                         fields: Rc::from(Vec::new()),
                     },
+                    1,
                     1,
                 )),
                 _ => Err(Stop),
@@ -616,9 +626,11 @@ impl Eval<'_, '_, '_, '_> {
                 let order = self.records.args.get(&span).cloned().unwrap_or_default();
                 let mut fields: Vec<Option<Value>> = vec![None; args.len()];
                 let mut size: u64 = 1;
+                let mut depth: u32 = 0;
                 for (position, arg) in args.iter().enumerate() {
-                    let (value, field_size) = self.expr(&arg.value)?;
+                    let (value, field_size, field_depth) = self.expr(&arg.value)?;
                     size = size.saturating_add(field_size);
+                    depth = depth.max(field_depth);
                     if size > MAX_SIZE {
                         return self.too_large(span);
                     }
@@ -629,6 +641,7 @@ impl Eval<'_, '_, '_, '_> {
                 }
                 let fields: Option<Vec<Value>> = fields.into_iter().collect();
                 let fields = fields.ok_or(Stop)?;
+                self.nested(span, depth)?;
                 Ok((
                     Value::Ctor {
                         kind,
@@ -636,6 +649,7 @@ impl Eval<'_, '_, '_, '_> {
                         fields: fields.into(),
                     },
                     size,
+                    depth + 1,
                 ))
             }
             _ => Err(Stop),
@@ -681,12 +695,12 @@ impl Eval<'_, '_, '_, '_> {
                     }
                 }
                 let chars = u64::try_from(plain.chars().count()).unwrap_or(u64::MAX);
-                return Ok((Value::Text(plain.into()), chars.max(1)));
+                return Ok((Value::Text(plain.into()), chars.max(1), 0));
             }
             Literal::Bool(b) => Value::Bool(*b),
             Literal::Unit => Value::Unit,
         };
-        Ok((value, 1))
+        Ok((value, 1, 0))
     }
 
     fn binary(&mut self, op: BinaryOp, a: Value, b: Value, span: Span) -> Result<Sized, Stop> {
@@ -746,7 +760,24 @@ impl Eval<'_, '_, '_, '_> {
             }
             _ => return outside(self, &format!("`{}`", op_word(op))),
         };
-        Ok((value, 1))
+        Ok((value, 1, 0))
+    }
+
+    /// The cap on nesting (ADR 0126 rule 5, as this implementation reads it): a value whose
+    /// constructors and lists nest deeper than a source line may, `MAX_NESTING`, is too large,
+    /// so that no engine walks a value deeper than the parser admits.
+    fn nested(&mut self, span: Span, depth: u32) -> Result<(), Stop> {
+        if usize::try_from(depth).unwrap_or(usize::MAX) >= una_syntax::MAX_NESTING {
+            let name = self.name;
+            self.fail(
+                span,
+                format!(
+                    "the constant is too large: the value of `{name}` nests constructors and lists more than {} deep",
+                    una_syntax::MAX_NESTING
+                ),
+            )?;
+        }
+        Ok(())
     }
 }
 

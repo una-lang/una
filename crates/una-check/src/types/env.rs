@@ -2404,7 +2404,7 @@ impl<'a> Env<'a> {
             .range
             .as_ref()
             .and_then(|range| self.range_constants(module, range, report));
-        if resolved.is_none() && ty.range.as_ref().is_some_and(|r| has_constant_bound(r)) {
+        if resolved.is_none() && ty.range.as_ref().is_some_and(has_constant_bound) {
             declared.base = Ty::error();
             return declared;
         }

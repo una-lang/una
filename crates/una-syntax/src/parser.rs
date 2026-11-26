@@ -1725,7 +1725,7 @@ impl<'a> Parser<'a> {
                 negative: false,
                 digits: String::new(),
                 span: ident.span,
-                constant: Some(ident),
+                constant: Some(Box::new(ident)),
             });
         }
         self.signed_int()

@@ -342,7 +342,7 @@ pub struct SignedInt {
     pub digits: String,
     /// The module constant a bound of a type's range names, edition 0.5 (ADR 0126 rule 9),
     /// which the checker substitutes before the range is read.
-    pub constant: Option<Ident>,
+    pub constant: Option<Box<Ident>>,
     /// The whole integer.
     pub span: Span,
 }
