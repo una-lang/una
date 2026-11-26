@@ -82,11 +82,14 @@ pub enum Construct {
     // Edition 0.5, ADR 0137 (`spec/02 §6`, `spec/17 §2`).
     /// The binding words `const` and `var`, in place of `let` and `let edit`.
     ConstVar,
+    // Edition 0.5, ADR 0126 (`spec/02 §1`, `spec/10 §11`).
+    /// Module constants: `[pub] const name: type = value` at the top level of a module.
+    ModuleConstants,
 }
 
 impl Construct {
     /// The number of constructs, the length of [`LEDGER`].
-    pub const COUNT: usize = Construct::ConstVar as usize + 1;
+    pub const COUNT: usize = Construct::ModuleConstants as usize + 1;
 
     /// The construct's ledger entry: O(1).
     #[allow(clippy::indexing_slicing)]
@@ -1002,6 +1005,30 @@ pub static LEDGER: [Entry; Construct::COUNT] = [
                 diagnostic: "U0101",
             },
         ],
+        trust: NO_TRUST,
+        unsettled: &[],
+        landed: una_syntax::keywords::LET_CHANGED_IN,
+        changed: &[],
+    },
+    Entry {
+        id: Construct::ModuleConstants,
+        name: "module constants",
+        edition: Edition::V0_5,
+        record: "ADR 0126",
+        spec: "spec/02 §1",
+        reserved: &[],
+        contextual: &[],
+        prelude: &[],
+        methods: &[],
+        modules: &[],
+        variants: &[],
+        manifest: &[],
+        codes: &["U1011", "U2041"],
+        clashes: &[Clash {
+            id: "0126-top-level-let",
+            program: "a module value written `let` at the top level",
+            diagnostic: "U7007, with the exact rewrite to `const`",
+        }],
         trust: NO_TRUST,
         unsettled: &[],
         landed: una_syntax::keywords::LET_CHANGED_IN,

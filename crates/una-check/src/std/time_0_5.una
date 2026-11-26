@@ -1,0 +1,9 @@
+
+--- One millisecond, the unit of the host's clock (ADR 0126 rule 12).
+pub const millisecond: Int of Millisecond = 1
+
+--- One second, in milliseconds.
+pub const second: Int of Millisecond = 1000
+
+--- One minute, in milliseconds.
+pub const minute: Int of Millisecond = 60_000
