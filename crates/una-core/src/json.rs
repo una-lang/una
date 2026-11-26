@@ -573,10 +573,15 @@ fn write_hooked<E>(tree: &Tree, within: &mut dyn FnMut() -> Result<(), E>) -> Re
     let mut out = String::new();
     let mut steps = vec![Step::Value(tree)];
     let mut ticks = 0;
+    // The length of the output at the last check: every [`crate::INT_TEXT_RESERVED_FROM`]
+    // bytes written since is a check too, so long numbers and strings cannot pass the hard
+    // ceiling between two checks of values (#1223).
+    let mut checked = 0usize;
     while let Some(step) = steps.pop() {
         ticks += 1;
-        if ticks >= CHECK_EVERY {
+        if ticks >= CHECK_EVERY || out.len() - checked >= crate::INT_TEXT_RESERVED_FROM {
             ticks = 0;
+            checked = out.len();
             within()?;
         }
         match step {

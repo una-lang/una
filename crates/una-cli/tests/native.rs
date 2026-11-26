@@ -10254,7 +10254,7 @@ fn a_write_whose_text_does_not_fit_the_budget_is_u6003_in_both_engines_never_a_c
 #[test]
 fn a_text_of_many_small_parts_grows_within_the_budget_natively() {
     // #1223, review 2 of #2257 (M3): the text of a list of 20,000 references to one integer of
-    // 6,923 digits, each below the reservation's threshold, is checked as it grows, its buffer
+    // 6,924 digits, each below the reservation's threshold, is checked as it grows, its buffer
     // reserved at each doubling, O(1) amortized per part: at 12 MiB the native executable ends
     // with U6003 at the write instead of passing the hard ceiling (exit 134). The interpreter,
     // whose list holds more, aborts earlier, at the loop that builds it, as memory allows.
@@ -10303,6 +10303,76 @@ pub main() -> Unit
         "built\n138520000\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn to_json_of_many_mid_size_values_is_u6003_in_both_engines_never_a_crash() {
+    // #1223, review 3 of #2257 (M1), `spec/23 §3` rule 6: `to_json` checks the budget every
+    // 4096 values and, since #1223, every 64 KiB of text it copies or writes. An array of 4,095
+    // `Number`s of 6,924 digits each (below the reservation's threshold one by one), or of as
+    // many `Str`s of that text, makes about 28 MB of JSON: at 14 MiB both engines end with
+    // U6003, where the copies between two checks of values used to pass the hard ceiling (exit
+    // 134). At 400 MiB both write it.
+    runtime();
+    for (case, item, length) in [
+        ("number", "Number(t)", "28357876"),
+        ("str", "Str(\"{t}\")", "28366066"),
+    ] {
+        let source = format!(
+            "module big
+
+--- `b` squared `k` times.
+squarings(b: Int, k: Int) -> Int
+=
+  var n = b
+  for i in 0..<k
+    n = n * n
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const t = squarings(7, k: 13)
+  var xs: List[Json] = []
+  for i in 0..<4095
+    xs = xs.append(item: {item})
+  @console.print(\"built\")
+  const s = Array(xs).to_json()
+  @console.print(\"{{s.len}}\")
+"
+        );
+        let name = format!("i1223json{case}");
+        let dir = ita_package(
+            &name,
+            "\nrun\n  entry big\n  grants\n    console\n",
+            &[("src/big.una", &source)],
+        );
+        let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "14"]);
+        for (engine, output) in [
+            ("una run", run.output().unwrap()),
+            ("native", native.output().unwrap()),
+        ] {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{case} {engine}: {stderr}");
+            assert!(
+                stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 14 MiB"),
+                "{case} {engine}: {stderr}"
+            );
+        }
+        let [mut run, mut native] = engines(&dir, &name, &["--max-memory", "400"]);
+        for (engine, output) in [
+            ("una run", run.output().unwrap()),
+            ("native", native.output().unwrap()),
+        ] {
+            assert_eq!(output.status.code(), Some(0), "{case} {engine}: {output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("built\n{length}\n"),
+                "{case} {engine}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

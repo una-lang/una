@@ -57,7 +57,7 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
    - `at` is a position in scalar values, as in `spec/22 §1`.
    - The failure is the first error in reading order: `Syntax` at the first scalar value where no valid JSON text can continue, or at the end of `t` when it ends early. In a `\u` escape, that is the first character that cannot continue a valid escape: `"\uD800` fails at 7, `"\uDC00` at 4, the `C` that makes it a lone low surrogate.
    - `NumberTooLong` at the first character of an integer of more than 4300 digits. A number with a fraction or an exponent has no such limit. (2026-10-18, #914.) The same bound, 4300 digits, holds for `parse_int` (`spec/22 §4`) and `to_int` (`spec/14 §1`). It bounds reading only: `to_json` writes an `Int` of any size, whose text `parse_json` then refuses (§6 rule 1, 2026-11-26, #1223).
-6. **Size.** There is no limit beyond the memory budget (`spec/11 §7`). `parse_json` and `to_json` check the budget as they go, every 4096 values and every 4096 scalar values of a string, so a run over its budget ends with U6003 at the call (#314).
+6. **Size.** There is no limit beyond the memory budget (`spec/11 §7`). `parse_json` and `to_json` check the budget as they go, every 4096 values and every 4096 scalar values of a string, so a run over its budget ends with U6003 at the call (#314); `to_json` also checks it every 64 KiB of the text of numbers and strings it copies, and every 64 KiB of the text it writes (2026-11-26, #1223).
 
 ## 4. Writing
 
