@@ -16,6 +16,8 @@
 //! disk, and the tests of the lists' exactness hold each list to the programs.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/binding_words.rs"]
+mod binding_words;
 #[path = "common/case_lists.rs"]
 mod case_lists;
 #[path = "common/cpu.rs"]
@@ -2365,7 +2367,7 @@ fn collections_updated_in_a_loop_are_never_copied_at_any_size() {
     // interpreter's.
     for n in [1 << 10, 1 << 12, 1 << 14] {
         let program = format!(
-            "module grown\n\nimport std.collections (BitSet, HashSet, PriorityQueue, Queue, Set, empty_bit_set, empty_hash_set,\n  empty_queue, empty_set, lowest_first\n)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit q: Queue[Int] = empty_queue()\n  let edit s: Set[Int] = empty_set()\n  let edit p: PriorityQueue[Int, Int] = lowest_first()\n  let edit b: BitSet = empty_bit_set(size: {n})\n  let edit h: HashSet[Int] = empty_hash_set()\n  for i in 0..<{n}\n    edit q.push(item: i)\n    edit s.add(item: i)\n    edit p.push(item: i, priority: i)\n    if 0 <= i and i < b.size\n      edit b.add(item: i)\n    edit h.add(item: i)\n  let kept = q\n  edit q.push(item: 0)\n  @console.print(\"{{kept.len}} {{q.len}} {{s.len}} {{p.len}} {{b.len}} {{h.len}}\")\n"
+            "module grown\n\nimport std.collections (BitSet, HashSet, PriorityQueue, Queue, Set, empty_bit_set, empty_hash_set,\n  empty_queue, empty_set, lowest_first\n)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  var q: Queue[Int] = empty_queue()\n  var s: Set[Int] = empty_set()\n  var p: PriorityQueue[Int, Int] = lowest_first()\n  var b: BitSet = empty_bit_set(size: {n})\n  var h: HashSet[Int] = empty_hash_set()\n  for i in 0..<{n}\n    edit q.push(item: i)\n    edit s.add(item: i)\n    edit p.push(item: i, priority: i)\n    if 0 <= i and i < b.size\n      edit b.add(item: i)\n    edit h.add(item: i)\n  const kept = q\n  edit q.push(item: 0)\n  @console.print(\"{{kept.len}} {{q.len}} {{s.len}} {{p.len}} {{b.len}} {{h.len}}\")\n"
         );
         let dir = ita_package(
             &format!("grown{n}"),
@@ -4845,7 +4847,7 @@ pub step(edit count: Int, input: Tick) -> Unit
   uses @clock: Clock[now]
 =
   count = count + 1
-  let now = @clock.now()
+  const now = @clock.now()
   @console.print(\"step {count} at {input.at} missed {input.missed} now {now}\")
 ";
 
@@ -5123,7 +5125,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let edit n = 0
+  var n = 0
   for ever
     @console.print(\"first {n}\")
     n = n + 1
@@ -5143,7 +5145,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let edit n = 0
+  var n = 0
   for ever
     if n == 0
       @console.print(\"started\")
@@ -5160,7 +5162,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let edit n = 0
+  var n = 0
   for ever
     if n == 0
       @console.print(\"started\")
@@ -5178,7 +5180,7 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   @console.print(\"started\")
-  let edit n = 0
+  var n = 0
   for i in 0..<1000000000000
     n = n + 1
   @console.print(\"after\")
@@ -5305,7 +5307,7 @@ spin(s: secret Int) -> Unit
   diverges
 =
   if s > 0
-    let edit k: secret Int = 0
+    var k: secret Int = 0
     for ever
       stop when k >= s
       k = k + 1
@@ -5314,9 +5316,9 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   spin(s)
-  let edit n = 0
+  var n = 0
   for ever
     @console.print(\"tick {n}\")
     n = n + 1
@@ -5543,11 +5545,11 @@ pub main() -> Unit
   diverges
 =
   for ever
-    let reply = attempt @http.get(\"http://127.0.0.1:{port}/\", headers: [], key_name: None)
-    let shown: internal Text = when reply
+    const reply = attempt @http.get(\"http://127.0.0.1:{port}/\", headers: [], key_name: None)
+    const shown: internal Text = when reply
       is Ok(response) -> \"ok\"
       is Err(e) -> \"{{e}}\"
-    let w = attempt @files.write(\"v.txt\", content: shown)
+    const w = attempt @files.write(\"v.txt\", content: shown)
     unit
 "
     );
@@ -6942,7 +6944,7 @@ spin(go: secret Bool) -> Unit
   diverges
 =
   if go
-    let edit k: secret Int = 0
+    var k: secret Int = 0
     for ever
       k = k + 1
 
@@ -6950,7 +6952,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   for i in 0..<16
     spin(s > i)
   @console.print(\"done\")
@@ -6964,7 +6966,7 @@ spin(s: secret Int) -> Unit
   diverges
 =
   if s > 0
-    let edit k: secret Int = 0
+    var k: secret Int = 0
     for ever
       stop when k >= s
       k = k + 1
@@ -6973,7 +6975,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   spin(s)
   @console.print(\"done\")
 ";
@@ -6989,14 +6991,14 @@ pub kind Box
 turn(b: Box) -> Unit
   diverges
 =
-  let edit k = b.n
+  var k = b.n
   for ever
     k = k + 1
 
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
@@ -7010,7 +7012,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   for i in 0..<4
     if s > i
       spin()
@@ -7020,7 +7022,7 @@ pub main() -> Unit
       tasks
         start spin()
     if s > i + 12
-      let b = Box(n: i)
+      const b = Box(n: i)
       b.turn()
   @console.print(\"done\")
 ";
@@ -7033,7 +7035,7 @@ spin(go: secret Bool) -> Unit
   diverges
 =
   if go
-    let edit k: secret Int = 0
+    var k: secret Int = 0
     for ever
       k = k + 1
 
@@ -7041,9 +7043,9 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   @console.print(\"started\")
-  let edit n = 0
+  var n = 0
   for ever
     n = n + 1
   for i in 0..<16
@@ -7247,17 +7249,17 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
-  let t: internal Int = SECRET
-  let edit k: secret Int = 0
+  const s: secret Int = SECRET
+  const t: internal Int = SECRET
+  var k: secret Int = 0
   for i in 0..<4
     if s > i
       bump(edit k)
     if t > i
-      let edit m: internal Int = 0
+      var m: internal Int = 0
       for ever
         m = m + 1
-  let edit n = 0
+  var n = 0
   for ever
     n = n + 1
   @console.print(\"done\")
@@ -7272,7 +7274,7 @@ spin(go: secret Bool) -> Unit
   diverges
 =
   if go
-    let edit k: secret Int = 0
+    var k: secret Int = 0
     for ever
       k = k + 1
 
@@ -7280,9 +7282,9 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
-  let r = attempt spin(s > 0) within 50 * millisecond
-  let edit n = 0
+  const s: secret Int = SECRET
+  const r = attempt spin(s > 0) within 50 * millisecond
+  var n = 0
   for ever
     n = n + 1
   @console.print(\"done\")
@@ -7352,14 +7354,14 @@ import std.time (millisecond)
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
 wrapper() -> Unit
   diverges
 =
-  let r = attempt spin() within 20 * millisecond
+  const r = attempt spin() within 20 * millisecond
   noop()
 
 noop() -> Unit = unit
@@ -7368,7 +7370,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   for i in 0..<4
     if s > i
       wrapper()
@@ -7384,7 +7386,7 @@ pub kind Bad = Boom | Other
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
@@ -7405,7 +7407,7 @@ run_block() -> Unit
 wrapper() -> Unit
   diverges
 =
-  let r = attempt run_block()
+  const r = attempt run_block()
   noop()
 
 noop() -> Unit = unit
@@ -7414,7 +7416,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   for i in 0..<4
     if s > i
       wrapper()
@@ -7434,7 +7436,7 @@ pub kind Bad = Boom | Other
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
@@ -7455,7 +7457,7 @@ run_block() -> Unit
 
 inner() -> Unit
 =
-  let r = attempt run_block()
+  const r = attempt run_block()
   noop()
 
 middle() -> Unit = inner()
@@ -7474,19 +7476,19 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
-  let edit n = 0
+  const s: internal Int = SECRET
+  var n = 0
   for i in 0..<4
     n = n + 1
     if s > i
-      let r = attempt spin() within 20 * millisecond
+      const r = attempt spin() within 20 * millisecond
       middle()
     if s > i + 4
       apply(inner)
-      let g = inner
+      const g = inner
       g()
     if s > i + 8
-      let v = race(i)
+      const v = race(i)
       tasks
         start noop()
         if i == 1
@@ -7556,7 +7558,7 @@ run_block() -> Unit
 
 blk() -> Unit
 =
-  let r = attempt run_block()
+  const r = attempt run_block()
   noop()
 
 nothing() -> Unit = unit
@@ -7575,12 +7577,12 @@ const SECRET_VALUE_CALL: &str = "
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
-  let f = if s > 0 then blk else nothing
+  const s: internal Int = SECRET
+  const f = if s > 0 then blk else nothing
   f()
-  let g = if s > 1 then blk else nothing
+  const g = if s > 1 then blk else nothing
   g()
-  let h = if s > 2 then blk else nothing
+  const h = if s > 2 then blk else nothing
   h()
   @console.print(\"done\")
 ";
@@ -7590,12 +7592,12 @@ const SECRET_FIELD_CALL: &str = "
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
-  let a = if s > 0 then Job(run: blk) else Job(run: nothing)
+  const s: internal Int = SECRET
+  const a = if s > 0 then Job(run: blk) else Job(run: nothing)
   a.run()
-  let b = if s > 1 then Job(run: blk) else Job(run: nothing)
+  const b = if s > 1 then Job(run: blk) else Job(run: nothing)
   b.run()
-  let c = if s > 2 then Job(run: blk) else Job(run: nothing)
+  const c = if s > 2 then Job(run: blk) else Job(run: nothing)
   c.run()
   @console.print(\"done\")
 ";
@@ -7607,7 +7609,7 @@ const SECRET_DECIDED_CALL: &str = "
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   pick(s, b: 0, f: when_true)
   pick(s, b: 1, f: when_true)
   pick(s, b: 2, f: when_true)
@@ -7660,12 +7662,12 @@ worker(n: Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
-  let f = if s > 0 then blk else nothing
+  const s: internal Int = SECRET
+  const f = if s > 0 then blk else nothing
   f()
-  let g = if s > 1 then blk else nothing
+  const g = if s > 1 then blk else nothing
   g()
-  let a = if s > 2 then Job(run: blk) else Job(run: nothing)
+  const a = if s > 2 then Job(run: blk) else Job(run: nothing)
   a.run()
   tasks
     start worker(1)
@@ -7695,7 +7697,7 @@ spin(s: secret Int) -> Unit
   diverges
 =
   if s > 0
-    let edit k: secret Int = 0
+    var k: secret Int = 0
     for ever
       stop when k >= s
       k = k + 1
@@ -7704,9 +7706,9 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   spin(s)
-  let edit n = 0
+  var n = 0
   for ever
     n = n + 1
   on stop
@@ -7764,7 +7766,7 @@ inner(s: internal Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   for i in 0..<3
     if s > i
       tasks
@@ -7829,12 +7831,12 @@ show(n: Int) -> Int
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   for i in 0..<3
     if s > i
-      let v = race(i)
+      const v = race(i)
       noop(v)
-  let r = first of
+  const r = first of
     show(1)
     show(1)
   noop(r)
@@ -7892,14 +7894,14 @@ noop() -> Unit = unit
 
 hold() -> Unit
 =
-  let edit n = 0
+  var n = 0
   for i in 0..<1000000000000
     n = n + 1
 
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
@@ -7925,7 +7927,7 @@ blocked() -> Unit
 
 rb() -> Unit
 =
-  let q = attempt run_block()
+  const q = attempt run_block()
   noop()
 
 loops(s: internal Int) -> Unit
@@ -7940,17 +7942,17 @@ loops(s: internal Int) -> Unit
             skip
           if m == 2
             stop
-      let r = attempt blocked() within 5 * millisecond
+      const r = attempt blocked() within 5 * millisecond
       rb()
 
 pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   loops(s)
-  let p = attempt run_block()
-  let r = attempt blocked() within 10 * minute
+  const p = attempt run_block()
+  const r = attempt blocked() within 10 * minute
   spin()
   @console.print("done")
 "#;
@@ -8043,18 +8045,18 @@ use_it() -> Unit
 
 quietly() -> Int
 =
-  let n = 1
+  const n = 1
   n
 
 inner() -> Unit
 =
-  let r = quietly() with @k = keep()
+  const r = quietly() with @k = keep()
   unit
 
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   for i in 0..<3
     if s > i
 INSTALL
@@ -8093,7 +8095,7 @@ fn s41_installations_under_a_secret_branch_do_not_move_later_public_instance_ids
     let expected = Value::from(vec![sink_put(1, "", "with:keep#1"), done_print(2)]);
     for install in [
         "      inner()",
-        "      let r = quietly() with @k = keep()\n      unit",
+        "      const r = quietly() with @k = keep()\n      unit",
     ] {
         let source = SECRET_INSTALLS.replace("INSTALL", install);
         for secret in [0, 1, 2, 3] {
@@ -8134,7 +8136,7 @@ worker(s: internal Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   for i in 0..<3
     if s > i
       quiet_put()
@@ -8189,7 +8191,7 @@ use_it() -> Unit
 
 quietly() -> Int
 =
-  let n = 1
+  const n = 1
   n
 
 inner() -> Unit
@@ -8207,10 +8209,10 @@ hold_one() -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   for i in 0..<3
     if s > i
-      let r = quietly() with @k = keep()
+      const r = quietly() with @k = keep()
       unit
   hold_one() with @b = box()
   @console.print("done")
@@ -8235,7 +8237,7 @@ use_it() -> Unit
 
 quietly() -> Int
 =
-  let n = 1
+  const n = 1
   n
 
 inner() -> Unit
@@ -8250,10 +8252,10 @@ branchy[T](a: T, b: T) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   for i in 0..<3
     if s > i
-      let r = quietly() with @k = keep()
+      const r = quietly() with @k = keep()
       unit
   branchy(1, b: 1)
   use_it() with @k = keep()
@@ -8303,11 +8305,11 @@ fn s41_the_conformance_case_has_one_trace_for_every_secret() {
     // S-41 (#1514), review of #1541, L1: the conformance case `installs_under_secret` checks
     // only its output; here its whole trace is compared across secrets, in both engines.
     let path = root().join("tests/conformance/runtime/installs_under_secret/src/installs.una");
-    let source = std::fs::read_to_string(&path).unwrap();
-    let fixed = "let s: internal Int = 2";
+    let source = binding_words::of_0_5(&std::fs::read_to_string(&path).unwrap());
+    let fixed = "const s: internal Int = 2";
     assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
     let source = source
-        .replace(fixed, "let s: internal Int = SECRET")
+        .replace(fixed, "const s: internal Int = SECRET")
         .replace("module installs", "module leak");
     let trace = one_trace_for_every_secret("s41conf", &source, &serde_json::json!(["done 3"]));
     let ids: Vec<&str> = trace
@@ -8333,8 +8335,7 @@ fn started_tasks_number_installations_run_wide_in_schedule_order() {
     // ids are still `#1` to `#4`, each once.
     let path =
         root().join("tests/conformance/runtime/started_tasks_install_handlers/src/installs.una");
-    let source = std::fs::read_to_string(&path)
-        .unwrap()
+    let source = binding_words::of_0_5(&std::fs::read_to_string(&path).unwrap())
         .replace("module installs", "module leak");
     let printed = serde_json::json!(["w 1", "w 2", "done"]);
     let puts = |trace: &Value| -> Vec<(String, String, String)> {
@@ -8492,7 +8493,7 @@ INSTALL
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   if s > 0
     pinger()
   @console.print("done")
@@ -8524,11 +8525,11 @@ fn l1544_the_conformance_case_has_one_trace_for_every_secret() {
     // whole trace is compared across secrets, in both engines, and is exactly the events of its
     // public installations: a `put` in the started task, then one in the root task.
     let path = root().join("tests/conformance/runtime/local_handler_under_secret/src/local.una");
-    let source = std::fs::read_to_string(&path).unwrap();
-    let fixed = "let s: internal Int = 2";
+    let source = binding_words::of_0_5(&std::fs::read_to_string(&path).unwrap());
+    let fixed = "const s: internal Int = 2";
     assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
     let source = source
-        .replace(fixed, "let s: internal Int = SECRET")
+        .replace(fixed, "const s: internal Int = SECRET")
         .replace("module local", "module leak");
     let trace = one_trace_for_every_secret("l1544conf", &source, &serde_json::json!(["done"]));
     let expected = Value::from(vec![
@@ -8560,7 +8561,7 @@ feed(s: secret Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: secret Int = SECRET
+  const s: secret Int = SECRET
   feed(s) with @k = keep()
   @console.print("done")
 "#;
@@ -8599,11 +8600,11 @@ fn s42_the_conformance_case_has_one_trace_for_every_secret() {
     // a `secret` branch, by the effect floor of `hold`'s body or by a decision on values of a
     // type parameter, and those of the started task under its branch, append nothing.
     let path = root().join("tests/conformance/runtime/operations_under_secret/src/operations.una");
-    let source = std::fs::read_to_string(&path).unwrap();
-    let fixed = "let s: internal Int = 2";
+    let source = binding_words::of_0_5(&std::fs::read_to_string(&path).unwrap());
+    let fixed = "const s: internal Int = 2";
     assert_eq!(source.matches(fixed).count(), 1, "{}", path.display());
     let source = source
-        .replace(fixed, "let s: internal Int = SECRET")
+        .replace(fixed, "const s: internal Int = SECRET")
         .replace("module operations", "module leak");
     let trace = one_trace_for_every_secret("s42conf", &source, &serde_json::json!(["done 2"]));
     let ops: Vec<(&str, &str)> = trace
@@ -8635,7 +8636,7 @@ maybe(s: internal Int) -> Unit
   uses @gate: Limit[acquire]
 =
   if s > 0
-    let a = attempt @gate.acquire()
+    const a = attempt @gate.acquire()
     unit
   else
     unit
@@ -8644,7 +8645,7 @@ step(s: internal Int) -> Unit
   uses @gate: Limit[acquire]
 =
   maybe(s)
-  let b = attempt @gate.acquire()
+  const b = attempt @gate.acquire()
   unit
 
 poll(s: internal Int) -> Unit
@@ -8659,7 +8660,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   poll(s) with @gate = limiter(at_most: 1, per: minute, waiting: 1000)
   @console.print("done")
 "#;
@@ -8726,7 +8727,7 @@ maybe(s: internal Int) -> Unit
   uses @gate: Limit[acquire]
 =
   if s > 0
-    let a = attempt @gate.acquire()
+    const a = attempt @gate.acquire()
     unit
   else
     unit
@@ -8742,7 +8743,7 @@ step(s: internal Int) -> internal Int
   uses @console: Console[print]
 =
   maybe(s)
-  let b = attempt @gate.acquire()
+  const b = attempt @gate.acquire()
   @gate.acquire()
     if error use unit
   @console.print("asked")
@@ -8751,9 +8752,9 @@ step(s: internal Int) -> internal Int
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
-  let count = step(s) with @gate = limiter(at_most: 1, per: minute, waiting: 0)
-  let kept: internal Int = count + 1
+  const s: internal Int = SECRET
+  const count = step(s) with @gate = limiter(at_most: 1, per: minute, waiting: 0)
+  const kept: internal Int = count + 1
   @console.print("done")
 "#;
 
@@ -8768,7 +8769,7 @@ maybe(s: internal Int) -> Unit
   uses @gate: Limit[acquire]
 =
   if s > 0
-    let a = attempt @gate.acquire()
+    const a = attempt @gate.acquire()
     unit
   else
     unit
@@ -8778,7 +8779,7 @@ step(s: internal Int) -> Unit
   uses @console: Console[print]
 =
   maybe(s)
-  let b = attempt @gate.acquire()
+  const b = attempt @gate.acquire()
   when b
     is Ok(v) -> @console.print("token")
     is Err(e) -> @console.print("none")
@@ -8786,7 +8787,7 @@ step(s: internal Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   step(s) with @gate = limiter(at_most: 1, per: minute, waiting: 0)
   @console.print("done")
 "#;
@@ -8845,7 +8846,7 @@ const SECRET_START_INDEX: &str = r#"module leak
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
@@ -8860,7 +8861,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   for i in 0..<5
     tasks
       if s > i
@@ -8875,10 +8876,11 @@ pub main() -> Unit
 /// fixed, in the root task and in a task started at a `public` program counter.
 fn secret_start_mixed() -> String {
     let case = root().join("tests/conformance/runtime/start_paths_under_secret/src/starts.una");
-    let text = std::fs::read_to_string(case).unwrap();
-    let program = text
-        .replace("module starts", "module leak")
-        .replace("let s: internal Int = 2", "let s: internal Int = SECRET");
+    let text = binding_words::of_0_5(&std::fs::read_to_string(case).unwrap());
+    let program = text.replace("module starts", "module leak").replace(
+        "const s: internal Int = 2",
+        "const s: internal Int = SECRET",
+    );
     assert!(program.contains("SECRET"), "{program}");
     program
 }
@@ -8893,7 +8895,7 @@ pub kind Bad = Boom | Other
 spin() -> Unit
   diverges
 =
-  let edit k = 0
+  var k = 0
   for ever
     k = k + 1
 
@@ -8918,9 +8920,9 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: LABEL Int = SECRET
+  const s: LABEL Int = SECRET
   for i in 0..<4
-    let r = attempt run_block(s, i: i)
+    const r = attempt run_block(s, i: i)
     noop()
   @console.print("done")
 "#;
@@ -9068,7 +9070,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   for i in 0..<3
     block(1, b: 1, s: s, i: i)
   @console.print("done")
@@ -9127,7 +9129,7 @@ boxed(s: internal Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   boxed(s) with @k = keep()
   @console.print("done")
 "#;
@@ -9164,11 +9166,11 @@ block(x: internal Int) -> Unit
     if x > i
       tasks
         start noop()
-      let r = first of
+      const r = first of
         double(i)
         double(i)
       noop()
-  let v = first of
+  const v = first of
     double(1)
     double(2)
   tasks
@@ -9191,7 +9193,7 @@ boxed(s: internal Int) -> Unit
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   boxed(s) with @k = keep()
   @console.print("done")
 "#;
@@ -9268,7 +9270,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   tasks at most 2 at once
     start worker(1)
     if s > 0
@@ -9414,7 +9416,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   tasks at most 1 at once
     start worker(1)
     if s > 0
@@ -9439,7 +9441,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   tasks
     start worker(1)
     if s > 0
@@ -9465,7 +9467,7 @@ noop() -> Unit = unit
 
 spin(n: internal Int) -> Unit
 =
-  let edit k: internal Int = 0
+  var k: internal Int = 0
   for i in 0..<n
     k = k + i
 
@@ -9489,7 +9491,7 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   tasks
     start worker(1)
     if s > 0
@@ -9573,14 +9575,14 @@ worker(n: Int) -> Unit
   uses @console: Console[print]
 =
   @console.print("worker {n} starts")
-  let edit k = 0
+  var k = 0
   for i in 0..<3000
     k = k + i
   @console.print("worker {n} ends")
 
 spin(n: internal Int) -> Unit
 =
-  let edit k: internal Int = 0
+  var k: internal Int = 0
   for i in 0..<n
     k = k + i
 
@@ -9588,13 +9590,13 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   tasks at most 2 at once
     @console.print("main starts")
     start worker(1)
     if s > 0
       start spin(s * 5000)
-    let edit k = 0
+    var k = 0
     for i in 0..<3000
       k = k + i
     @console.print("main")
@@ -9679,14 +9681,14 @@ worker(n: Int) -> Unit
   uses @console: Console[print]
 =
   @console.print("worker {n} starts")
-  let edit k = 0
+  var k = 0
   for i in 0..<3000
     k = k + i
   @console.print("worker {n} ends")
 
 spin(n: internal Int) -> Unit
 =
-  let edit k: internal Int = 0
+  var k: internal Int = 0
   for i in 0..<n
     k = k + i
 
@@ -9694,12 +9696,12 @@ pub main() -> Unit
   uses @console: Console[print]
   diverges
 =
-  let s: internal Int = SECRET
+  const s: internal Int = SECRET
   tasks at most 2 at once
     @console.print("main starts")
     if s > 0
       start spin(s * 5000)
-    let edit k = 0
+    var k = 0
     for i in 0..<1500
       k = k + i
     start worker(1)
@@ -10159,7 +10161,7 @@ handler keep() for Sink
 
 power(exp: Int) -> Int
 =
-  let edit n = 1
+  var n = 1
   for i in 1..exp
     n = n * 10
   n
@@ -10184,7 +10186,7 @@ pub main() -> Unit
   uses @console: Console[print]
 =
   @console.print(\"before\")
-  let r = every() with @k = keep()
+  const r = every() with @k = keep()
   @console.print(\"done\")
 ";
 
@@ -10199,10 +10201,12 @@ fn an_integer_too_long_for_text_at_an_operation_aborts_alike_with_or_without_a_t
     // native run used to go on past the operation and exit 0.
     runtime();
     for case in ["int_text_op_argument", "int_text_op_result"] {
-        let source = std::fs::read_to_string(
-            root().join(format!("tests/conformance/runtime/{case}/src/big.una")),
-        )
-        .unwrap();
+        let source = binding_words::of_0_5(
+            &std::fs::read_to_string(
+                root().join(format!("tests/conformance/runtime/{case}/src/big.una")),
+            )
+            .unwrap(),
+        );
         let name = format!("i1550{}", case.trim_start_matches("int_text_op_"));
         let dir = ita_package(
             &name,
