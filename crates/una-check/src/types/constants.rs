@@ -798,7 +798,7 @@ fn compare(x: &Value, y: &Value) -> Option<std::cmp::Ordering> {
 }
 
 /// Euclidean division and remainder (`spec/11`): the remainder is never negative.
-fn div_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
+pub(crate) fn div_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
     let q = a / b;
     let r = a % b;
     if r.sign() == Sign::Minus {

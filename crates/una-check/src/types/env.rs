@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use una_core::IntType;
+use una_core::bigint::BigInt;
 use una_diag::Code;
 use una_project::{Edition, Profile};
 use una_syntax::ast::{
@@ -1525,6 +1526,23 @@ impl<'a> Env<'a> {
             let Some((module, ast)) = self.constants.get(id).map(|c| (c.module, c.ast)) else {
                 continue;
             };
+            // ADR 0126 rule 9: a constant may not be used in its own type.
+            let own = self.text(module, ast.name.name);
+            let bound = ast.ty.range.iter().flat_map(|r| [&r.low, &r.high]).find_map(|b| {
+                b.constant
+                    .as_ref()
+                    .filter(|ident| self.text(module, ident.name) == own)
+            });
+            if let Some(ident) = bound {
+                if self.reports(module) {
+                    report.error(
+                        Code::U1011,
+                        ident.span,
+                        format!("constant `{own}` is used in its own type"),
+                    );
+                }
+                continue;
+            }
             let declared = self.lower_type(module, &ast.ty, &[], report);
             if let Some(def) = self.constants.get_mut(id) {
                 def.declared = declared;
@@ -2372,7 +2390,17 @@ impl<'a> Env<'a> {
                 }
             }
         }
-        if let Some(range) = &ty.range {
+        // ADR 0126 rule 9: a bound that names a constant is its value, substituted before the
+        // range is read.
+        let resolved = ty
+            .range
+            .as_ref()
+            .and_then(|range| self.range_constants(module, range, report));
+        if resolved.is_none() && ty.range.as_ref().is_some_and(|r| has_constant_bound(r)) {
+            declared.base = Ty::error();
+            return declared;
+        }
+        if let Some(range) = resolved.as_ref() {
             // Range sugar on a fixed-width type: its bounds fit the type (`spec/18 §1`).
             if let Ty::Fixed(int) = declared.base.magnitude()
                 && self.reports(module)
@@ -2420,6 +2448,140 @@ impl<'a> Env<'a> {
             declared.base = declared.base.with_label(&label);
         }
         declared
+    }
+
+    /// The range `range` with each bound that names a constant replaced by the constant's
+    /// value (ADR 0126 rule 9): U1001 when the name does not resolve (reported by M3), U2002
+    /// when it is not a constant of an integer type. `None` when a bound cannot be read; a
+    /// range without such bounds is returned as written.
+    fn range_constants(
+        &self,
+        module: usize,
+        range: &una_syntax::ast::Range,
+        report: &mut Report<'_>,
+    ) -> Option<una_syntax::ast::Range> {
+        let mut resolved = range.clone();
+        for bound in [&mut resolved.low, &mut resolved.high] {
+            let Some(ident) = bound.constant.clone() else {
+                continue;
+            };
+            let name = self.text(module, ident.name);
+            let entity = self.lower(module, name);
+            let value = match entity {
+                Some(Entity::Const(id)) => {
+                    let integer = self.constants.get(id).is_some_and(|c| {
+                        matches!(&c.ast.ty.core, TypeCore::Named { name, args }
+                            if args.is_empty()
+                                && (self.text(c.module, name.name) == "Int"
+                                    || IntType::from_name(self.text(c.module, name.name)).is_some()))
+                    });
+                    if !integer {
+                        if self.reports(module) {
+                            report.error(
+                                Code::U2002,
+                                ident.span,
+                                format!("the range bound `{name}` names a constant that is not an integer"),
+                            );
+                        }
+                        return None;
+                    }
+                    match self.constant_int(id, &mut Vec::new()) {
+                        Ok(value) => value,
+                        Err(cycle) => {
+                            if cycle && self.reports(module) {
+                                report.error(
+                                    Code::U1011,
+                                    ident.span,
+                                    format!("constant `{name}` is used in its own type"),
+                                );
+                            }
+                            return None;
+                        }
+                    }
+                }
+                None => return None,
+                Some(_) => {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2002,
+                            ident.span,
+                            format!("the range bound `{name}` is not a constant; a bound is an integer literal or the name of an integer constant"),
+                        );
+                    }
+                    return None;
+                }
+            };
+            bound.negative = value.sign() == una_core::bigint::Sign::Minus;
+            let magnitude = if bound.negative { -value } else { value };
+            bound.digits = magnitude.to_string();
+        }
+        Some(resolved)
+    }
+
+    /// The value of the integer constant `id`, for a range bound (ADR 0126 rule 9), computed
+    /// from its source before the type check: the integer forms of rule 3. `Err(true)` for a
+    /// cycle, `Err(false)` for a value that the evaluation of the constant reports itself
+    /// (U2041) or that is not an integer constant expression. O(size of the values named).
+    fn constant_int(&self, id: usize, visiting: &mut Vec<usize>) -> Result<BigInt, bool> {
+        if visiting.contains(&id) {
+            return Err(true);
+        }
+        // A chain past this depth is read by the evaluation of rule 5, not here.
+        if visiting.len() > 256 {
+            return Err(false);
+        }
+        let def = self.constants.get(id).ok_or(false)?;
+        visiting.push(id);
+        let result = self.constant_int_expr(def.module, &def.ast.value, visiting);
+        visiting.pop();
+        result
+    }
+
+    fn constant_int_expr(
+        &self,
+        module: usize,
+        expr: &una_syntax::ast::Expr,
+        visiting: &mut Vec<usize>,
+    ) -> Result<BigInt, bool> {
+        use una_syntax::ast::{BinaryOp, ExprKind, Literal, UnaryOp};
+        let value = match &expr.kind {
+            ExprKind::Paren(inner) => self.constant_int_expr(module, inner, visiting)?,
+            ExprKind::Literal(Literal::Int(digits)) => {
+                let clean: String = digits.chars().filter(|c| *c != '_').collect();
+                clean.parse::<BigInt>().map_err(|_| false)?
+            }
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } => -self.constant_int_expr(module, operand, visiting)?,
+            ExprKind::Binary { op, left, right } => {
+                let a = self.constant_int_expr(module, left, visiting)?;
+                let b = self.constant_int_expr(module, right, visiting)?;
+                match op {
+                    BinaryOp::Add => a + b,
+                    BinaryOp::Sub => a - b,
+                    BinaryOp::Mul => a * b,
+                    BinaryOp::Div | BinaryOp::Mod => {
+                        if b.sign() == una_core::bigint::Sign::NoSign {
+                            return Err(false);
+                        }
+                        let (q, r) = super::constants::div_euclid(&a, &b);
+                        if *op == BinaryOp::Div { q } else { r }
+                    }
+                    _ => return Err(false),
+                }
+            }
+            ExprKind::Name(ident) => match self.lower(module, self.text(module, ident.name)) {
+                Some(Entity::Const(other)) => self.constant_int(other, visiting)?,
+                _ => return Err(false),
+            },
+            _ => return Err(false),
+        };
+        // Past the digit cap of rule 5, which the evaluation reports (2^14,300 > 10^4,300).
+        if value.bits() > 14_300 {
+            return Err(false);
+        }
+        Ok(value)
     }
 
     /// U3016: a written type argument that is, or contains, a second-class type, a function
@@ -2878,4 +3040,9 @@ fn first_of_each(needs: Vec<Need>) -> Vec<Need> {
 /// The name of a capability declaration.
 fn ast_name<'a>(env: &Env<'a>, module: usize, ast: &'a CapabilityDecl) -> &'a str {
     env.text(module, ast.name.name)
+}
+
+/// Whether a bound of `range` names a constant (ADR 0126 rule 9).
+fn has_constant_bound(range: &una_syntax::ast::Range) -> bool {
+    range.low.constant.is_some() || range.high.constant.is_some()
 }

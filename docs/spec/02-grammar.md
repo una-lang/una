@@ -77,6 +77,8 @@ A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0: ever
 
 After a `level`, `[` always starts the label's categories. A labeled list type is written with the named form, `secret List[Int]`, or after the categories, `secret[PII] [Int]`. A label with categories that is not followed by a type is U0101 (ADR 0018).
 
+(v0.5, ADR 0126 rule 9.) In edition `0.5`, each bound of the `range` of a type MAY also name a module constant, `bound = signed_int | lower_ident`. The name MUST resolve to a constant of an integer type (U1001 if it does not resolve, U2002 if it is not a constant or not an integer), whose value is substituted before the range is read; a constant MUST NOT be used in its own type (U1011). The ranges of expressions and patterns keep their integer bounds.
+
 ## 3. Predicates and functions
 
 ```ebnf

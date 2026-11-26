@@ -604,6 +604,12 @@ impl<'a> Resolver<'_, '_, 'a> {
 
     /// A type (an unknown type name is U1001); label categories wait for M6.
     fn ty(&mut self, ty: &Type) {
+        // A range bound that names a constant, edition 0.5 (ADR 0126 rule 9).
+        for bound in ty.range.iter().flat_map(|range| [&range.low, &range.high]) {
+            if let Some(constant) = &bound.constant {
+                self.lookup(constant, Space::Lower, "constant");
+            }
+        }
         match &ty.core {
             TypeCore::Named { name, args } => {
                 self.lookup(name, Space::Upper, "type");

@@ -337,8 +337,12 @@ pub struct Range {
 pub struct SignedInt {
     /// Whether it has a leading `-`.
     pub negative: bool,
-    /// The decimal digits, without underscores or leading zeros.
+    /// The decimal digits, without underscores or leading zeros; empty for a bound that names
+    /// a constant.
     pub digits: String,
+    /// The module constant a bound of a type's range names, edition 0.5 (ADR 0126 rule 9),
+    /// which the checker substitutes before the range is read.
+    pub constant: Option<Ident>,
     /// The whole integer.
     pub span: Span,
 }

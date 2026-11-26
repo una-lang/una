@@ -1558,7 +1558,7 @@ impl<'a> Parser<'a> {
             None
         };
         let range = if self.eat_keyword(Keyword::In) {
-            Some(self.range()?)
+            Some(self.type_range()?)
         } else {
             None
         };
@@ -1698,6 +1698,39 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// The range of a type: in edition 0.5, a bound may name a module constant,
+    /// `signed_int | lower_ident` (ADR 0126 rule 9).
+    fn type_range(&mut self) -> Parse<Range> {
+        let start = self.span();
+        let low = self.type_bound()?;
+        let exclusive = if self.eat(&TokenKind::DotDotLt) {
+            true
+        } else {
+            self.expect(&TokenKind::DotDot, "`..` or `..<`")?;
+            false
+        };
+        let high = self.type_bound()?;
+        Ok(Range {
+            low,
+            high,
+            exclusive,
+            span: self.since(start),
+        })
+    }
+
+    fn type_bound(&mut self) -> Parse<SignedInt> {
+        if self.keywords >= KeywordSet::V0_5 && matches!(self.peek(), TokenKind::LowerIdent(_)) {
+            let ident = self.lower_name("a constant")?;
+            return Ok(SignedInt {
+                negative: false,
+                digits: String::new(),
+                span: ident.span,
+                constant: Some(ident),
+            });
+        }
+        self.signed_int()
+    }
+
     fn signed_int(&mut self) -> Parse<SignedInt> {
         let start = self.span();
         let negative = self.eat(&TokenKind::Minus);
@@ -1710,6 +1743,7 @@ impl<'a> Parser<'a> {
             negative,
             digits,
             span: self.since(start),
+            constant: None,
         })
     }
 

@@ -1,0 +1,16 @@
+-- test: a range bound that names a function, or a constant that is not an integer, is U2002, and a constant used in its own type is U1011 (ADR 0126 rule 9)
+-- spec: spec/02 §2
+-- expect: error U2002 at src/m.una:12:20
+-- expect: error U2002 at src/m.una:14:20
+-- expect: error U1011 at src/m.una:16:26
+module m
+
+pub const name: Text = "a"
+
+pub limit() -> Int = 3
+
+pub f(n: Int in 1..limit) -> Int = n
+
+pub g(n: Int in 1..name) -> Int = n
+
+pub const own: Int in 1..own = 2
