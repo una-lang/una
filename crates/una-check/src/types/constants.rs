@@ -19,15 +19,13 @@ use una_core::Atom;
 use una_core::bigint::{BigInt, Sign};
 use una_diag::Code;
 use una_syntax::Span;
-use una_syntax::ast::{
-    BinaryOp, ConstDecl, Expr, ExprKind, Literal, TextLit, TextPart, UnaryOp,
-};
+use una_syntax::ast::{BinaryOp, ConstDecl, Expr, ExprKind, Literal, TextLit, TextPart, UnaryOp};
 
+use super::Report;
 use super::check::{Checker, Ctx};
 use super::env::{Entity, Env};
 use super::records::{Records, Res};
 use super::ty::{KindId, Ty};
-use super::Report;
 use una_diag::ObligationKind;
 
 /// The cap on the digits of a constant integer (ADR 0126 rule 5): that of `parse_decimal`.
@@ -93,7 +91,12 @@ impl<'a> Checker<'_, 'a, '_> {
             checker.expr(&decl.value, Some(&expected))
         });
         let name = def.name;
-        self.flow(decl.value.span, &ty, &def.declared.base, &format!("`{name}`"));
+        self.flow(
+            decl.value.span,
+            &ty,
+            &def.declared.base,
+            &format!("`{name}`"),
+        );
         if def.declared.is_refined() {
             self.obligation(
                 ObligationKind::Refinement,
@@ -110,7 +113,9 @@ impl<'a> Checker<'_, 'a, '_> {
             Some((
                 Code::U2041,
                 expr.span,
-                format!("{what} is not a constant expression; a constant's value is computed at check time, so compute this in a function"),
+                format!(
+                    "{what} is not a constant expression; a constant's value is computed at check time, so compute this in a function"
+                ),
             ))
         };
         match &expr.kind {
@@ -124,9 +129,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 op: BinaryOp::Implies,
                 ..
             } => outside("`implies`"),
-            ExprKind::Binary { left, right, .. } => self
-                .not_constant(left)
-                .or_else(|| self.not_constant(right)),
+            ExprKind::Binary { left, right, .. } => {
+                self.not_constant(left).or_else(|| self.not_constant(right))
+            }
             ExprKind::List(items) => items.iter().find_map(|item| self.not_constant(item)),
             ExprKind::UpperName(_) => None,
             ExprKind::Call { callee, args } => match &callee.kind {
@@ -142,9 +147,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let name = self.name(ident);
                 match self.env.lower(self.module, name) {
                     Some(Entity::Const(_) | Entity::Constant { .. }) | None => None,
-                    Some(Entity::Function(_)) => {
-                        outside(&format!("`{name}`, a function,"))
-                    }
+                    Some(Entity::Function(_)) => outside(&format!("`{name}`, a function,")),
                     Some(_) => outside(&format!("`{name}`")),
                 }
             }
@@ -202,7 +205,10 @@ fn holds_function(env: &Env<'_>, ty: &Ty, seen: &mut BTreeSet<KindId>) -> bool {
                 return false;
             };
             let record = def.record.iter().flatten();
-            let variants = def.variants.iter().flat_map(|variant| variant.fields.iter());
+            let variants = def
+                .variants
+                .iter()
+                .flat_map(|variant| variant.fields.iter());
             record
                 .chain(variants)
                 .any(|field| holds_function(env, &field.ty.base, seen))
@@ -292,7 +298,11 @@ pub(crate) fn evaluate(
         }
     }
     let done: BTreeSet<usize> = order.iter().copied().collect();
-    let left: Vec<usize> = deps.keys().copied().filter(|id| !done.contains(id)).collect();
+    let left: Vec<usize> = deps
+        .keys()
+        .copied()
+        .filter(|id| !done.contains(id))
+        .collect();
     if reports {
         cycles(env, &deps, &left, report);
     }
@@ -426,8 +436,8 @@ fn cycles(
                         break;
                     }
                 }
-                let cyclic = component.len() > 1
-                    || deps.get(&node).is_some_and(|d| d.contains(&node));
+                let cyclic =
+                    component.len() > 1 || deps.get(&node).is_some_and(|d| d.contains(&node));
                 if cyclic {
                     component.sort_unstable();
                     components.push(component);
@@ -454,12 +464,7 @@ fn cycles(
             format!(
                 "constant `{}` depends on itself through {}",
                 def.name,
-                names
-                    .iter()
-                    .skip(1)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                names.iter().skip(1).cloned().collect::<Vec<_>>().join(", ")
             )
         };
         report.error(Code::U1011, def.ast.name.span, message);
@@ -493,7 +498,10 @@ impl Eval<'_, '_, '_, '_> {
 
     /// The type the checker recorded at `span`, its label, refinements and unit set aside.
     fn magnitude(&self, span: Span) -> Option<Ty> {
-        self.records.types.get(&span).map(|ty| ty.magnitude().clone())
+        self.records
+            .types
+            .get(&span)
+            .map(|ty| ty.magnitude().clone())
     }
 
     fn expr(&mut self, expr: &Expr) -> Result<Sized, Stop> {
@@ -528,7 +536,10 @@ impl Eval<'_, '_, '_, '_> {
             {
                 return self.fail(
                     expr.span,
-                    format!("the constant's value `{n}` does not fit `{}`", int_name(int)),
+                    format!(
+                        "the constant's value `{n}` does not fit `{}`",
+                        int_name(int)
+                    ),
                 );
             }
         }
@@ -548,7 +559,9 @@ impl Eval<'_, '_, '_, '_> {
                 match self.env.lower(self.module, name) {
                     Some(Entity::Const(id)) => self.values.get(&id).cloned().ok_or(Stop),
                     // A built-in constant of `std.time` in edition 0.4 (ADR 0116, amended).
-                    Some(Entity::Constant { value, .. }) => Ok((Value::Int(BigInt::from(value as i128)), 1)),
+                    Some(Entity::Constant { value, .. }) => {
+                        Ok((Value::Int(BigInt::from(value as i128)), 1))
+                    }
                     _ => Err(Stop),
                 }
             }
@@ -728,7 +741,9 @@ impl Eval<'_, '_, '_, '_> {
             (_, Value::Decimal(..), _) => {
                 return outside(self, &format!("`{}` on a decimal", op_word(op)));
             }
-            (_, Value::Text(_), _) => return outside(self, &format!("`{}` on `Text`", op_word(op))),
+            (_, Value::Text(_), _) => {
+                return outside(self, &format!("`{}` on `Text`", op_word(op)));
+            }
             _ => return outside(self, &format!("`{}`", op_word(op))),
         };
         Ok((value, 1))
@@ -773,7 +788,9 @@ fn int_name(int: una_core::IntType) -> &'static str {
 /// An `F64` operation by `spec/29 §2`: the IEEE result in round-to-nearest-even, which Rust's
 /// operators on `f64` give, with a NaN replaced by the canonical NaN.
 fn f64_op(x: u64, y: u64, op: impl Fn(f64, f64) -> f64) -> Value {
-    Value::F64(canonical(op(f64::from_bits(x), f64::from_bits(y)).to_bits()))
+    Value::F64(canonical(
+        op(f64::from_bits(x), f64::from_bits(y)).to_bits(),
+    ))
 }
 
 /// The canonical NaN for any NaN (`spec/29 §1`), other bits unchanged.

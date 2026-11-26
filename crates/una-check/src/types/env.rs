@@ -965,7 +965,10 @@ impl<'a> Env<'a> {
                         ast: constant,
                         declared: Declared::error(),
                     });
-                    Some((name(&constant.name), Entity::Const(self.constants.len() - 1)))
+                    Some((
+                        name(&constant.name),
+                        Entity::Const(self.constants.len() - 1),
+                    ))
                 }
                 DeclKind::Requirement(_) | DeclKind::Example(_) => None,
             };
@@ -1528,11 +1531,16 @@ impl<'a> Env<'a> {
             };
             // ADR 0126 rule 9: a constant may not be used in its own type.
             let own = self.text(module, ast.name.name);
-            let bound = ast.ty.range.iter().flat_map(|r| [&r.low, &r.high]).find_map(|b| {
-                b.constant
-                    .as_ref()
-                    .filter(|ident| self.text(module, ident.name) == own)
-            });
+            let bound = ast
+                .ty
+                .range
+                .iter()
+                .flat_map(|r| [&r.low, &r.high])
+                .find_map(|b| {
+                    b.constant
+                        .as_ref()
+                        .filter(|ident| self.text(module, ident.name) == own)
+                });
             if let Some(ident) = bound {
                 if self.reports(module) {
                     report.error(

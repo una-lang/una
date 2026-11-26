@@ -955,7 +955,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 Code::U2001,
                 format!("`{name}` is a unit, not a value; a value takes it with `measured()`"),
             ),
-            Entity::Function(_) | Entity::Handler(_) | Entity::Constant { .. } | Entity::Const(_) => {
+            Entity::Function(_)
+            | Entity::Handler(_)
+            | Entity::Constant { .. }
+            | Entity::Const(_) => {
                 return Ty::error();
             }
         };

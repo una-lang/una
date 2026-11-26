@@ -9266,7 +9266,7 @@ mod tests {
                 path: "m".to_owned(),
                 decls,
                 examples: Vec::new(),
-constants: Vec::new(),
+                constants: Vec::new(),
             }],
             ..Program::default()
         }
@@ -9462,7 +9462,7 @@ constants: Vec::new(),
                     public: false,
                 }))],
                 examples: Vec::new(),
-constants: Vec::new(),
+                constants: Vec::new(),
             }],
             ..Program::default()
         }
@@ -9620,7 +9620,7 @@ constants: Vec::new(),
                     public: false,
                 }))],
                 examples: Vec::new(),
-constants: Vec::new(),
+                constants: Vec::new(),
             }],
             ..Program::default()
         };
@@ -9729,7 +9729,7 @@ constants: Vec::new(),
                     record: false,
                 }],
                 examples: Vec::new(),
-constants: Vec::new(),
+                constants: Vec::new(),
             }],
             ..Program::default()
         };
@@ -9761,7 +9761,7 @@ constants: Vec::new(),
                     record: false,
                 }],
                 examples: Vec::new(),
-constants: Vec::new(),
+                constants: Vec::new(),
             }],
             ..Program::default()
         };
@@ -9849,13 +9849,13 @@ constants: Vec::new(),
                     path: "aaa".to_owned(),
                     decls: vec![files(vec![nonempty])],
                     examples: Vec::new(),
-constants: Vec::new(),
+                    constants: Vec::new(),
                 },
                 una_core::Module {
                     path: "bbb".to_owned(),
                     decls: vec![files(Vec::new())],
                     examples: Vec::new(),
-constants: Vec::new(),
+                    constants: Vec::new(),
                 },
             ],
             library: Vec::new(),

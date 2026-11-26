@@ -6,15 +6,15 @@ use una_diag::Code;
 
 use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
-    CapType, CapabilityDecl, Clause, ClauseKind, ConstDecl, Convention, Decl, DeclKind, ElseBranch, EverStmt,
-    ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FirstOf, FnTypeClause,
-    ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
-    Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
-    Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader, ModulePath,
-    OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl,
-    Range, RequirementDecl, RequirementSource, SignedInt, StartStmt, Stmt, StopAfter, StopStmt,
-    TasksStmt, TextLit, TextPart, TogetherFor, TogetherStmt, Type, TypeCore, UnaryOp, UnitExpr,
-    UntilStmt, UsesClause, Variant, VariantExpr, WhenExpr,
+    CapType, CapabilityDecl, Clause, ClauseKind, ConstDecl, Convention, Decl, DeclKind, ElseBranch,
+    EverStmt, ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FirstOf,
+    FnTypeClause, ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl,
+    HandlerOp, Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody,
+    KindDecl, Label, LambdaParam, LetStmt, LetValue, Level, Literal, MeasureDecl, ModuleHeader,
+    ModulePath, OnStop, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl,
+    PredicateDecl, Range, RequirementDecl, RequirementSource, SignedInt, StartStmt, Stmt,
+    StopAfter, StopStmt, TasksStmt, TextLit, TextPart, TogetherFor, TogetherStmt, Type, TypeCore,
+    UnaryOp, UnitExpr, UntilStmt, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::{Interner, Symbol};

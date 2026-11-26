@@ -251,7 +251,11 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.local_index(name).is_none()
             && matches!(self.env.lower(self.module, name), Some(Entity::Const(_)))
         {
-            let what = if assigned { "assigned" } else { "passed as `edit`" };
+            let what = if assigned {
+                "assigned"
+            } else {
+                "passed as `edit`"
+            };
             self.report.error(
                 Code::U2019,
                 root.span,

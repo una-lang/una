@@ -771,7 +771,11 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// Elaborates the value of constant `id` with `elaborate`, in its own module and records,
     /// so that a reference is substituted by the value (ADR 0126 rule 8). `None`, and the
     /// declaration not elaborated, for a constant without a value, which a diagnostic reports.
-    fn substitute<R>(&mut self, id: usize, elaborate: impl FnOnce(&mut Self, &Expr) -> R) -> Option<R> {
+    fn substitute<R>(
+        &mut self,
+        id: usize,
+        elaborate: impl FnOnce(&mut Self, &Expr) -> R,
+    ) -> Option<R> {
         let def = self.env.constants.get(id)?;
         let evaluated = if def.module >= self.env.prelude {
             &self.findings.standard_constants

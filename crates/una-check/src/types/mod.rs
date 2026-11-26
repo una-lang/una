@@ -917,10 +917,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         }
         // ADR 0126 rule 12: the constants of the standard modules (`std.time`'s).
         let ids: Vec<usize> = (0..env.constants.len())
-            .filter(|id| env.constants.get(*id).is_some_and(|c| c.module >= env.prelude))
+            .filter(|id| {
+                env.constants
+                    .get(*id)
+                    .is_some_and(|c| c.module >= env.prelude)
+            })
             .collect();
-        findings.standard_constants =
-            constants::evaluate(
+        findings.standard_constants = constants::evaluate(
             &env,
             &standard_findings.records,
             &ids,
@@ -941,8 +944,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             })
             .collect();
         let refused = std::mem::take(&mut findings.refused_constants);
-        findings.constants =
-            constants::evaluate(
+        findings.constants = constants::evaluate(
             &env,
             &findings.records,
             &ids,
