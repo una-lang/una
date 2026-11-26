@@ -541,7 +541,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "una-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "una-diag",
  "una-syntax",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "una-diag"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ariadne",
  "serde",
@@ -558,14 +558,14 @@ dependencies = [
 
 [[package]]
 name = "una-hash"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "getrandom 0.4.3",
 ]
 
 [[package]]
 name = "una-http"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "rustls",
  "serde",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "una-interp"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "una-link"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "object",
  "sha2",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "una-project"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ed25519-dalek",
  "sha2",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "una-rt"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "cap",
  "serde_json",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "una-syntax"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "indexmap",
  "una-diag",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "una-sys"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "libc",
 ]
