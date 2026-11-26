@@ -477,6 +477,75 @@ fn cycles(
     }
 }
 
+/// The cap on the size of the values a package's declarations substitute, together: each
+/// declaration counts once each constant it names, which its body shares (ADR 0126 rule 8),
+/// so the Core IR of a package grows with its values and its declarations, never with the
+/// number of references; a package past this cap is U2041 at the first reference that passes
+/// it. Ten times the cap of one value.
+const MAX_SUBSTITUTED: u64 = 10 * MAX_SIZE;
+
+/// U2041 when the declarations of the package, together, substitute values larger than
+/// [`MAX_SUBSTITUTED`]: one O(log n) range query of the resolutions per declaration, and
+/// O(1) per reference.
+pub(crate) fn substitution_budget(
+    env: &Env<'_>,
+    records: &Records,
+    evaluated: &Evaluated,
+    report: &mut Report<'_>,
+) {
+    let mut total: u64 = 0;
+    for module in 0..env.prelude {
+        if !env.reports(module) {
+            continue;
+        }
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        for (decl, entity) in m.tree.decls.iter().zip(m.decls.iter()) {
+            // A constant's own check elaborates its whole value, unshared: its size.
+            if let Some(Entity::Const(id)) = entity {
+                let size = evaluated.values.get(id).map_or(1, |(_, size, _)| *size);
+                total = total.saturating_add(size);
+                if total > MAX_SUBSTITUTED {
+                    report.error(
+                        Code::U2041,
+                        decl.span,
+                        format!(
+                            "the constants of this package are too large: their values hold more than {MAX_SUBSTITUTED} elements, fields and characters together"
+                        ),
+                    );
+                    return;
+                }
+                continue;
+            }
+            let span = decl.span;
+            let from = Span::new(span.file, span.start, span.start);
+            let to = Span::new(span.file, span.end, span.end);
+            let mut seen: BTreeSet<usize> = BTreeSet::new();
+            for (at, res) in records.res.range(from..=to) {
+                let Res::Const(id) = res else {
+                    continue;
+                };
+                if at.end > span.end || !seen.insert(*id) {
+                    continue;
+                }
+                let size = evaluated.values.get(id).map_or(1, |(_, size, _)| *size);
+                total = total.saturating_add(size);
+                if total > MAX_SUBSTITUTED {
+                    report.error(
+                        Code::U2041,
+                        *at,
+                        format!(
+                            "the constants this package names are too large: their values, counted once in each declaration that names them, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// The evaluation of one constant's value.
 struct Eval<'e, 'a, 'r, 's> {
     env: &'e Env<'a>,
@@ -570,6 +639,21 @@ impl Eval<'_, '_, '_, '_> {
                     }
                     _ => Err(Stop),
                 }
+            }
+            // A negated integer literal is one signed literal, as for a local (`spec/18 §2`):
+            // its fit is checked once, on the negative value, so `-128` fits `I8`.
+            ExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if matches!(&operand.kind, ExprKind::Literal(Literal::Int(_))) => {
+                let ExprKind::Literal(literal) = &operand.kind else {
+                    return Err(Stop);
+                };
+                let (value, size, _) = self.literal(literal, operand.span)?;
+                let Value::Int(n) = value else {
+                    return Err(Stop);
+                };
+                Ok((Value::Int(-n), size, 0))
             }
             ExprKind::Unary { op, operand } => {
                 let (value, size, _) = self.expr(operand)?;
@@ -713,8 +797,8 @@ impl Eval<'_, '_, '_, '_> {
         let value = match (op, a, b) {
             (BinaryOp::And, Value::Bool(x), Value::Bool(y)) => Value::Bool(x && y),
             (BinaryOp::Or, Value::Bool(x), Value::Bool(y)) => Value::Bool(x || y),
-            (BinaryOp::Eq, x, y) => Value::Bool(x == y),
-            (BinaryOp::NotEq, x, y) => Value::Bool(x != y),
+            (BinaryOp::Eq, x, y) => Value::Bool(equal(&x, &y)),
+            (BinaryOp::NotEq, x, y) => Value::Bool(!equal(&x, &y)),
             (BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge, x, y) => {
                 let Some(ordering) = compare(&x, &y) else {
                     return outside(self, "this comparison");
@@ -839,9 +923,54 @@ fn compare(x: &Value, y: &Value) -> Option<std::cmp::Ordering> {
     match (x, y) {
         (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
         (Value::F64(a), Value::F64(b)) => Some(f64::from_bits(*a).total_cmp(&f64::from_bits(*b))),
-        (Value::Decimal(a, s), Value::Decimal(b, t)) if s == t => Some(a.cmp(b)),
+        (Value::Decimal(a, s), Value::Decimal(b, t)) => Some(decimal_cmp(a, *s, b, *t)),
         (Value::Text(a), Value::Text(b)) => Some(a.cmp(b)),
         _ => None,
+    }
+}
+
+/// Two decimals by value, across scales (`spec/29 §16`: `1.0 == 1.00`): both coefficients at
+/// the larger scale, which is exact.
+fn decimal_cmp(a: &BigInt, s: u8, b: &BigInt, t: u8) -> std::cmp::Ordering {
+    let scale = s.max(t);
+    una_core::decimal::widen(a, s, scale).cmp(&una_core::decimal::widen(b, t, scale))
+}
+
+/// The language's `==` on two values of one type (`spec/10 §3`): integers and texts by value,
+/// `F64` and `F32` by identity of their bits (`spec/29 §5`), decimals by value across scales
+/// (`spec/29 §16`), constructors by variant and fields, lists by length and elements, each
+/// part by this same equality. The derived `PartialEq` of [`Value`] compares a decimal's
+/// scale too, so it is never the language's equality.
+fn equal(x: &Value, y: &Value) -> bool {
+    match (x, y) {
+        (Value::Decimal(a, s), Value::Decimal(b, t)) => decimal_cmp(a, *s, b, *t).is_eq(),
+        (
+            Value::Ctor {
+                kind: k1,
+                variant: v1,
+                fields: f1,
+            },
+            Value::Ctor {
+                kind: k2,
+                variant: v2,
+                fields: f2,
+            },
+        ) => {
+            k1 == k2
+                && v1 == v2
+                && f1.len() == f2.len()
+                && f1.iter().zip(f2.iter()).all(|(a, b)| equal(a, b))
+        }
+        (Value::List(a), Value::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| equal(x, y))
+        }
+        (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::F64(a), Value::F64(b)) => a == b,
+        (Value::F32(a), Value::F32(b)) => a == b,
+        (Value::Text(a), Value::Text(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Unit, Value::Unit) => true,
+        _ => false,
     }
 }
 

@@ -245,9 +245,17 @@ pub fn obligations(
 ) -> Result<Vec<Obligation>, Problem> {
     let index = Index::new(program);
     let mut all = Vec::new();
+    let mut spans: Vec<Span> = program
+        .modules
+        .iter()
+        .flat_map(|module| module.constants.iter().map(|check| check.span))
+        .collect();
+    spans.sort_by_key(|s| (s.file, s.start, s.end));
+    let constant_values: std::rc::Rc<[Span]> = std::rc::Rc::from(spans);
     for module in &program.modules {
         for decl in &module.decls {
             let mut walker = Walker::new(&index, sources, &module.path, layout);
+            walker.constant_values = constant_values.clone();
             match decl {
                 Decl::Fun(fun) => walker.function(fun),
                 Decl::Handler {
@@ -285,6 +293,8 @@ pub fn obligations(
         // value, with no hypothesis: the value is closed.
         for check in &module.constants {
             let mut walker = Walker::new(&index, sources, &module.path, layout);
+            walker.constant_values = constant_values.clone();
+            walker.in_constant = true;
             walker.declaration = format!("{}.{}", module.path, check.name);
             walker.lambdas.clear();
             let mut leaves = Vec::new();
@@ -293,6 +303,7 @@ pub fn obligations(
         }
         for example in &module.examples {
             let mut walker = Walker::new(&index, sources, &module.path, layout);
+            walker.constant_values = constant_values.clone();
             walker.declaration =
                 format!("{}.example {}", module.path, una_core::quote(&example.name));
             walker.within = Within::Example;
@@ -322,6 +333,15 @@ pub fn obligations(
     }
     all.sort_by_key(|o| (o.source.file, o.source.start, o.kind));
     Ok(all)
+}
+
+/// Whether `span` lies inside one of `values`, the sorted spans of the values of module
+/// constants, which do not overlap.
+fn inside_constant_value(values: &[Span], span: Span) -> bool {
+    let at = values.partition_point(|s| (s.file, s.start) <= (span.file, span.start));
+    at.checked_sub(1)
+        .and_then(|i| values.get(i))
+        .is_some_and(|s| s.file == span.file && s.start <= span.start && span.end <= s.end)
 }
 
 /// For each `ensures` clause of a public function, a query without any hypothesis, its
@@ -1416,6 +1436,11 @@ struct Env<'a> {
 
 struct Walker<'p, 'i> {
     index: &'i Index<'p>,
+    /// The spans of the values of the program's module constants, sorted, and whether this
+    /// walk is a constant's own check (ADR 0126 rules 7 and 8): outside it, an obligation at a
+    /// position inside a constant's value is the check's, generated there once.
+    constant_values: std::rc::Rc<[Span]>,
+    in_constant: bool,
     sources: &'i SourceDb,
     module: &'p str,
     /// How the text of goals and hypotheses is normalized, by the package's edition.
@@ -1503,6 +1528,8 @@ impl<'p, 'i> Walker<'p, 'i> {
     ) -> Self {
         Walker {
             index,
+            constant_values: std::rc::Rc::from(Vec::new()),
+            in_constant: false,
             sources,
             module,
             layout,
@@ -6877,6 +6904,13 @@ impl<'p, 'i> Walker<'p, 'i> {
         site: Site,
         divisions: Vec<Vec<(F, Span)>>,
     ) {
+        // ADR 0126 rule 8: a reference to a constant elaborates its value as the constant's
+        // check does, with the same types, so an obligation at a position of the value is the
+        // check's, which has no hypothesis; generating it again at each reference would only
+        // repeat it. O(log c) for c constants.
+        if !self.in_constant && inside_constant_value(&self.constant_values, source) {
+            return;
+        }
         // ADR 0114 rule 8.3: an obligation's query keeps the `F64` hypotheses of its cone; the
         // full query decides a refutation that is not final.
         let (assertions, sliced) = slice_floats(assertions, &self.let_defs);

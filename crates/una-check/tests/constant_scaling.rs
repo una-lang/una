@@ -78,6 +78,39 @@ fn references(n: usize) -> String {
     text
 }
 
+/// A nested list constant of about 11,000 nodes, named `n` times in one function.
+fn nested_references(n: usize) -> String {
+    let mut text =
+        String::from("module m\n\npub const l0: List[Int] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\n");
+    let mut ty = String::from("List[Int]");
+    for k in 1..4 {
+        ty = format!("List[{ty}]");
+        let items = vec![format!("l{}", k - 1); 10].join(", ");
+        text.push_str(&format!("\npub const l{k}: {ty} = [{items}]\n"));
+    }
+    text.push_str("\npub count() -> Int\n=\n  var total = 0\n");
+    for _ in 0..n {
+        text.push_str("  total = total + l3.len\n");
+    }
+    text.push_str("  total\n");
+    text
+}
+
+/// A body elaborates each record or list constant it names once (ADR 0126 rule 8, #1632
+/// review M1): 16 times the references to a value of about 11,000 nodes take less than 8
+/// times as long, where substituting the value at each reference would take about 16 times.
+#[test]
+fn references_to_a_nested_constant_share_its_value_in_linear_time() {
+    timing::assert_growth(
+        "references to a nested list constant",
+        &[20, 320],
+        0.0,
+        timing::FLOOR,
+        8.0,
+        |n| checked(&nested_references(n)),
+    );
+}
+
 #[test]
 fn a_chain_of_constants_checks_in_linear_time() {
     timing::assert_growth(

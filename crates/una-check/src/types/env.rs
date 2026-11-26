@@ -382,6 +382,8 @@ pub(crate) struct Env<'a> {
     pub(crate) units: Vec<UnitDef<'a>>,
     /// The module constants of every module, edition 0.5 (ADR 0126).
     pub(crate) constants: Vec<ConstDef<'a>>,
+    /// The integer value of each constant that has one, for range bounds (ADR 0126 rule 9).
+    pub(crate) bound_values: BTreeMap<usize, Option<BigInt>>,
     pub(crate) functions: Vec<FnDef<'a>>,
     pub(crate) capabilities: Vec<CapDef<'a>>,
     pub(crate) handlers: Vec<HandlerDef<'a>>,
@@ -617,6 +619,7 @@ impl<'a> Env<'a> {
             aliases: Vec::new(),
             units: Vec::new(),
             constants: Vec::new(),
+            bound_values: BTreeMap::new(),
             functions: Vec::new(),
             capabilities: Vec::new(),
             handlers: Vec::new(),
@@ -1486,6 +1489,8 @@ impl<'a> Env<'a> {
     /// come before kinds, whose fields may have function types with `uses`.
     fn signatures(&mut self, report: &mut Report<'_>) {
         self.lower_units(report);
+        // ADR 0126 rule 9: the values of integer constants, for range bounds, before any type.
+        self.compute_bound_values();
         for id in 0..self.aliases.len() {
             self.lower_alias(id, report);
         }
@@ -2477,37 +2482,55 @@ impl<'a> Env<'a> {
             let entity = self.lower(module, name);
             let value = match entity {
                 Some(Entity::Const(id)) => {
+                    // An integer constant without a label or a unit: a bound is a plain integer
+                    // of the range, so a label or a unit written on the constant would be
+                    // dropped there (#1632 review, L1).
                     let integer = self.constants.get(id).is_some_and(|c| {
-                        matches!(&c.ast.ty.core, TypeCore::Named { name, args }
-                            if args.is_empty()
-                                && (self.text(c.module, name.name) == "Int"
-                                    || IntType::from_name(self.text(c.module, name.name)).is_some()))
+                        c.ast.ty.label.is_none()
+                            && c.ast.ty.unit.is_none()
+                            && matches!(&c.ast.ty.core, TypeCore::Named { name, args }
+                                if args.is_empty()
+                                    && (self.text(c.module, name.name) == "Int"
+                                        || IntType::from_name(self.text(c.module, name.name)).is_some()))
                     });
                     if !integer {
                         if self.reports(module) {
                             report.error(
                                 Code::U2002,
                                 ident.span,
-                                format!("the range bound `{name}` names a constant that is not an integer"),
+                                format!("the range bound `{name}` names a constant that is not a plain integer: a bound's constant has an integer type without a label or a unit"),
                             );
                         }
                         return None;
                     }
-                    match self.constant_int(id, &mut Vec::new()) {
-                        Ok(value) => value,
-                        Err(cycle) => {
-                            if cycle && self.reports(module) {
+                    // The values are read in dependency order before any type is lowered, so a
+                    // chain of any length has its value here (#1632 review, H1).
+                    match self.bound_values.get(&id).cloned().flatten() {
+                        Some(value) => value,
+                        None => {
+                            if self.reports(module) {
                                 report.error(
-                                    Code::U1011,
+                                    Code::U2002,
                                     ident.span,
-                                    format!("constant `{name}` is used in its own type"),
+                                    format!("the range bound `{name}` names a constant whose value is not an integer constant expression the compiler can compute"),
                                 );
                             }
                             return None;
                         }
                     }
                 }
-                None => return None,
+                // A name M3 did not resolve (U1001), or one it resolved to a local, such as a
+                // parameter: never a silent error type.
+                None => {
+                    if self.reports(module) {
+                        report.error(
+                            Code::U2002,
+                            ident.span,
+                            format!("the range bound `{name}` is not a module constant; a bound is an integer literal or the name of an integer constant"),
+                        );
+                    }
+                    return None;
+                }
                 Some(_) => {
                     if self.reports(module) {
                         report.error(
@@ -2526,34 +2549,60 @@ impl<'a> Env<'a> {
         Some(resolved)
     }
 
-    /// The value of the integer constant `id`, for a range bound (ADR 0126 rule 9), computed
-    /// from its source before the type check: the integer forms of rule 3. `Err(true)` for a
-    /// cycle, `Err(false)` for a value that the evaluation of the constant reports itself
-    /// (U2041) or that is not an integer constant expression. O(size of the values named).
-    fn constant_int(&self, id: usize, visiting: &mut Vec<usize>) -> Result<BigInt, bool> {
-        if visiting.contains(&id) {
-            return Err(true);
+    /// The integer value of every module constant whose value is an integer constant
+    /// expression, for range bounds (ADR 0126 rule 9), read from the source before any type is
+    /// lowered. The constants are taken in dependency order (Kahn), so a chain of any length
+    /// is read without recursion across constants; a constant in a cycle, or one that names a
+    /// constant without such a value, has `None`, which the evaluation of rule 5 reports.
+    /// O(constants + size of their values).
+    fn compute_bound_values(&mut self) {
+        let count = self.constants.len();
+        let mut deps: Vec<Vec<usize>> = vec![Vec::new(); count];
+        let mut users: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (id, def) in self.constants.iter().enumerate() {
+            let mut found = std::collections::BTreeSet::new();
+            names_of(self, def.module, &def.ast.value, &mut found);
+            for &dep in &found {
+                if let Some(list) = users.get_mut(dep) {
+                    list.push(id);
+                }
+            }
+            if let Some(slot) = deps.get_mut(id) {
+                *slot = found.into_iter().collect();
+            }
         }
-        // A chain past this depth is read by the evaluation of rule 5, not here.
-        if visiting.len() > 256 {
-            return Err(false);
+        let mut waiting: Vec<usize> = deps.iter().map(Vec::len).collect();
+        let mut ready: Vec<usize> = (0..count)
+            .filter(|id| waiting.get(*id) == Some(&0))
+            .collect();
+        let mut values: BTreeMap<usize, Option<BigInt>> = BTreeMap::new();
+        while let Some(id) = ready.pop() {
+            let value = self.constants.get(id).and_then(|def| {
+                self.constant_int_expr(def.module, &def.ast.value, &values)
+                    .ok()
+            });
+            values.insert(id, value);
+            for &user in users.get(id).into_iter().flatten() {
+                if let Some(count) = waiting.get_mut(user) {
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.push(user);
+                    }
+                }
+            }
         }
-        let def = self.constants.get(id).ok_or(false)?;
-        visiting.push(id);
-        let result = self.constant_int_expr(def.module, &def.ast.value, visiting);
-        visiting.pop();
-        result
+        self.bound_values = values;
     }
 
     fn constant_int_expr(
         &self,
         module: usize,
         expr: &una_syntax::ast::Expr,
-        visiting: &mut Vec<usize>,
+        values: &BTreeMap<usize, Option<BigInt>>,
     ) -> Result<BigInt, bool> {
         use una_syntax::ast::{BinaryOp, ExprKind, Literal, UnaryOp};
         let value = match &expr.kind {
-            ExprKind::Paren(inner) => self.constant_int_expr(module, inner, visiting)?,
+            ExprKind::Paren(inner) => self.constant_int_expr(module, inner, values)?,
             ExprKind::Literal(Literal::Int(digits)) => {
                 let clean: String = digits.chars().filter(|c| *c != '_').collect();
                 clean.parse::<BigInt>().map_err(|_| false)?
@@ -2561,10 +2610,10 @@ impl<'a> Env<'a> {
             ExprKind::Unary {
                 op: UnaryOp::Neg,
                 operand,
-            } => -self.constant_int_expr(module, operand, visiting)?,
+            } => -self.constant_int_expr(module, operand, values)?,
             ExprKind::Binary { op, left, right } => {
-                let a = self.constant_int_expr(module, left, visiting)?;
-                let b = self.constant_int_expr(module, right, visiting)?;
+                let a = self.constant_int_expr(module, left, values)?;
+                let b = self.constant_int_expr(module, right, values)?;
                 match op {
                     BinaryOp::Add => a + b,
                     BinaryOp::Sub => a - b,
@@ -2580,7 +2629,7 @@ impl<'a> Env<'a> {
                 }
             }
             ExprKind::Name(ident) => match self.lower(module, self.text(module, ident.name)) {
-                Some(Entity::Const(other)) => self.constant_int(other, visiting)?,
+                Some(Entity::Const(other)) => values.get(&other).cloned().flatten().ok_or(false)?,
                 _ => return Err(false),
             },
             _ => return Err(false),
@@ -3053,4 +3102,39 @@ fn ast_name<'a>(env: &Env<'a>, module: usize, ast: &'a CapabilityDecl) -> &'a st
 /// Whether a bound of `range` names a constant (ADR 0126 rule 9).
 fn has_constant_bound(range: &una_syntax::ast::Range) -> bool {
     range.low.constant.is_some() || range.high.constant.is_some()
+}
+
+/// The module constants that `expr`, a value of module `module`, names.
+fn names_of(
+    env: &Env<'_>,
+    module: usize,
+    expr: &una_syntax::ast::Expr,
+    found: &mut std::collections::BTreeSet<usize>,
+) {
+    use una_syntax::ast::ExprKind;
+    match &expr.kind {
+        ExprKind::Name(ident) => {
+            if let Some(Entity::Const(id)) = env.lower(module, env.text(module, ident.name)) {
+                found.insert(id);
+            }
+        }
+        ExprKind::Paren(inner) | ExprKind::Unary { operand: inner, .. } => {
+            names_of(env, module, inner, found);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            names_of(env, module, left, found);
+            names_of(env, module, right, found);
+        }
+        ExprKind::List(items) => {
+            for item in items {
+                names_of(env, module, item, found);
+            }
+        }
+        ExprKind::Call { args, .. } => {
+            for arg in args {
+                names_of(env, module, &arg.value, found);
+            }
+        }
+        _ => {}
+    }
 }

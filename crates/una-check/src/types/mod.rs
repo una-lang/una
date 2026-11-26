@@ -954,6 +954,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             true,
         );
         findings.refused_constants = refused;
+        constants::substitution_budget(&env, &findings.records, &findings.constants, &mut report);
     }
     authority::testing_installs(&findings, &mut report, env.edition);
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
@@ -1084,6 +1085,29 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                     "internal error: this {what} type-checked but did not elaborate to Core IR, so none of its obligations could be verified; the package is rejected"
                 ),
             );
+        }
+        // A signature whose type is unknown in Core IR, in a package with no error, would be
+        // a position checked against the error type, which accepts everything: an internal
+        // error, never a silent pass (#1632 review, H1).
+        let paths: std::collections::BTreeSet<&str> = (0..env.prelude)
+            .filter_map(|m| env.modules.get(m).map(|module| module.path.as_str()))
+            .collect();
+        for module in program
+            .modules
+            .iter()
+            .filter(|m| paths.contains(m.path.as_str()))
+        {
+            for decl in &module.decls {
+                if let una_core::Decl::Fun(fun) = decl
+                    && (fun.params.iter().any(|(_, ty)| unknown_in(ty)) || unknown_in(&fun.result))
+                {
+                    report.error(
+                        Code::U8001,
+                        fun.span,
+                        "internal error: a type of this function's signature is unknown in Core IR, though no error was reported; the package is rejected".to_owned(),
+                    );
+                }
+            }
         }
         for (span, what) in gaps.standard {
             report.push(Diagnostic::error(
@@ -1551,6 +1575,23 @@ impl Standard {
             interner: &self.interner,
             reports: false,
             mount: None,
+        }
+    }
+}
+
+/// Whether `ty` holds, at any depth, the unknown base type that Core IR gives a checker error
+/// type.
+fn unknown_in(ty: &una_core::Type) -> bool {
+    match ty {
+        una_core::Type::Base { base, .. } => match base {
+            una_core::Base::Unknown => true,
+            una_core::Base::Named { args, .. } | una_core::Base::Tuple(args) => {
+                args.iter().any(unknown_in)
+            }
+            _ => false,
+        },
+        una_core::Type::Fn { params, result, .. } => {
+            params.iter().any(unknown_in) || unknown_in(result)
         }
     }
 }

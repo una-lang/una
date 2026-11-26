@@ -677,6 +677,14 @@ struct Fx<'e, 'a> {
     /// The module constant whose value is being substituted at a reference, edition 0.5
     /// (ADR 0126 rule 8): its scalar nodes are their folded literals.
     constant: Option<usize>,
+    /// Whether the body being elaborated shares each constant that is a record or a list:
+    /// elaborated once, at the top of the body, and named by a temporary at every reference,
+    /// so a body costs the size of each value it names once, not once per reference.
+    sharing: bool,
+    /// The temporaries of the shared constants, by constant.
+    shared: BTreeMap<usize, Atom>,
+    /// The bindings of the shared constants, in dependency order, which the body closes over.
+    hoisted: Vec<Let>,
 }
 
 /// How a tail value is wrapped into a tuple (`spec/17 §4`).
@@ -715,7 +723,63 @@ impl<'e, 'a> Fx<'e, 'a> {
             loop_names: None,
             call_tuple: None,
             constant: None,
+            sharing: false,
+            shared: BTreeMap::new(),
+            hoisted: Vec::new(),
         }
+    }
+
+    /// Elaborates a body with sharing of the constants it names (ADR 0126 rule 8, the
+    /// engines' MAY): the values are bound once, before the body. They are closed values, so
+    /// binding them first changes no result, and a lambda or a task of the body refers to them
+    /// as to any binder in scope.
+    fn shared_body(&mut self, elaborate: impl FnOnce(&mut Self) -> CoreExpr) -> CoreExpr {
+        let saved = (
+            std::mem::replace(&mut self.sharing, true),
+            std::mem::take(&mut self.shared),
+            std::mem::take(&mut self.hoisted),
+        );
+        let body = elaborate(self);
+        let hoisted = std::mem::take(&mut self.hoisted);
+        (self.sharing, self.shared, self.hoisted) = saved;
+        close(hoisted, body)
+    }
+
+    /// A reference to constant `id` (ADR 0126 rule 8): its value, substituted; when sharing,
+    /// a record or a list is elaborated once into the hoisted bindings, and each reference is
+    /// its temporary.
+    fn constant_atom(&mut self, lets: &mut Vec<Let>, id: usize) -> Atom {
+        let scalar = self
+            .env
+            .constants
+            .get(id)
+            .is_some_and(|def| self.folded_of(id, def.ast.value.span).is_some());
+        if !self.sharing || scalar {
+            return self
+                .substitute(id, |fx, value| fx.atom(lets, value))
+                .unwrap_or(Atom::Unit);
+        }
+        if let Some(atom) = self.shared.get(&id) {
+            return atom.clone();
+        }
+        let mut own = Vec::new();
+        let atom = self
+            .substitute(id, |fx, value| fx.atom(&mut own, value))
+            .unwrap_or(Atom::Unit);
+        self.hoisted.extend(own);
+        self.shared.insert(id, atom.clone());
+        atom
+    }
+
+    /// The folded literal of the node at `span` of constant `id`'s value.
+    fn folded_of(&self, id: usize, span: Span) -> Option<Atom> {
+        let def = self.env.constants.get(id)?;
+        let evaluated = if def.module >= self.env.prelude {
+            &self.findings.standard_constants
+        } else {
+            &self.findings.constants
+        };
+        evaluated.folded.get(&id)?.get(&span).cloned()
     }
 
     // ----- module constants (ADR 0126 rule 8) -----
@@ -753,6 +817,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         Some(una_core::ConstantCheck {
             name: def.name.to_owned(),
             body,
+            span,
         })
     }
 
@@ -1965,7 +2030,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 if self.returning.is_some() {
                     self.tail_wrap = Some(Wrap::Return);
                 }
-                let body = self.body(&function.body);
+                let body = self.shared_body(|fx| fx.body(&function.body));
                 self.returning = None;
                 self.tail_wrap = None;
                 let uses_of = def
@@ -2070,7 +2135,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                             self.bind(name)
                         })
                         .collect();
-                    let body = self.body(&op.body);
+                    let body = self.shared_body(|fx| fx.body(&op.body));
                     self.scope.truncate(mark);
                     ops.push(CoreHandlerOp {
                         name: self.name(&op.name).to_owned(),
@@ -4770,8 +4835,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let Some(Res::Const(id)) = self.records.res.get(&ident.span).cloned() else {
                     return self.unelaborated();
                 };
-                self.substitute(id, |fx, value| fx.atom(lets, value))
-                    .unwrap_or(Atom::Unit)
+                self.constant_atom(lets, id)
             }
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
