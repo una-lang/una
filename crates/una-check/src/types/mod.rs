@@ -1489,13 +1489,15 @@ impl Standard {
         let testing = sources.add("std/testing.una", testing.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, keywords);
-        // The modules of edition 0.4 declare measures, a construct of edition 0.3.
+        // The modules of edition 0.4 declare measures, a construct of edition 0.3; in edition
+        // 0.5, `std.time` declares constants with `const` (ADR 0126 rule 12).
+        let later_keywords = keywords.max(KeywordSet::V0_4);
         let later = later
             .into_iter()
             .map(|(path, text)| {
                 let file = format!("std/{}.una", path.trim_start_matches("std."));
                 let id = sources.add(&file, text.as_bytes());
-                parse_standard(&sources, id, &mut interner, KeywordSet::V0_4)
+                parse_standard(&sources, id, &mut interner, later_keywords)
             })
             .collect();
         // `empty_set[T: Ord]` writes a constraint, which edition 0.2's syntax has.

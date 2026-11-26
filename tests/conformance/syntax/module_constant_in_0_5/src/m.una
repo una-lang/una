@@ -1,0 +1,18 @@
+-- test: in edition 0.5, a module declares a constant `[pub] const name: type = value`, with a doc comment, used in a body and in a contract (ADR 0126 rules 1 and 9)
+-- spec: spec/02 §1
+-- expect: ok
+module m
+
+--- The ratio of a circle's circumference to its diameter.
+pub const pi: F64 = 3.141592653589793
+
+pub const max_items: Int = 1000
+
+const half: Int = max_items / 2
+
+pub area(radius: F64) -> F64 = pi * radius * radius
+
+pub limit(n: Int) -> Int
+  requires n <= max_items
+=
+  n + half

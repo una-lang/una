@@ -1,0 +1,32 @@
+-- test: every form of rule 3 is a constant expression: literals, `-`, the integer, `F64` and decimal operators, the Boolean operators and comparisons, constructors, lists, parentheses and names of constants (ADR 0126 rule 3)
+-- spec: spec/10 §8
+-- expect: ok
+module m
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub kind Shape = Dot | Circle(radius: Int)
+
+pub const a: Int = -(7 + 3 * 2 - 1) / 2 mod 5
+
+pub const b: F64 = 1.5 * 2.0 - 0.25 / 2.0 + -1.0
+
+pub const c: Decimal[2] = 1.25 + 2.50 - 0.75
+
+pub const d: Bool = not (a < 3) and (b >= 1.0 or a == 0) and a != 2 and 2 <= 3 and 3 > 2
+
+pub const e: Text = "plain"
+
+pub const f: Point = Point(x: 2, y: a)
+
+pub const g: Shape = Circle(radius: 3)
+
+pub const h: Shape = Dot
+
+pub const i: List[Point] = [f, Point(x: 1, y: 1)]
+
+pub const j: Unit = unit
+
+pub const k: I32 = 40 + 2

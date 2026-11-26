@@ -124,6 +124,8 @@ Capability references are not values. A capability reference MUST NOT be bound w
 
 A function type with non-empty `uses` or `fails` is **second-class** (ADR 0038 D2). A type parameter is never instantiated, explicitly or by inference, with a second-class type or with a type that contains one, such as `List[fn() -> Unit uses @log: Log[write]]` (U3016). Together with the rule above, an effectful or failing function value can never be stored, returned or carried out of its `with` scope: it always runs on the handler that was in scope where it was created.
 
+(v0.5, ADR 0126 rule 14.) A module constant's declared type holds no function type at any depth (U2041), and a capability reference as its value is U3005: a constant holds no authority, and importing one grants nothing.
+
 Consequence: authority moves only downward along calls, through `uses` and `with`, and every function's reachable authority is visible in its header. This is what makes capability confinement (`spec/10 §6`, theorem T4) hold without an escape analysis.
 
 ## 7. Host capabilities

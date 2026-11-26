@@ -1,0 +1,3 @@
+module limits
+
+pub const max_items: Int = 10 * 100

@@ -1,0 +1,15 @@
+-- test: a constant that depends on itself, directly or through others, is U1011 once per cycle, at its first constant (ADR 0126 rule 4)
+-- spec: spec/10 §11
+-- expect: error U1011 at src/m.una:7:11
+-- expect: error U1011 at src/m.una:11:11
+module m
+
+pub const width: Int = height + 1
+
+pub const height: Int = width - 1
+
+pub const own: Int = own * 2
+
+pub const after: Int = before + 1
+
+pub const before: Int = 41

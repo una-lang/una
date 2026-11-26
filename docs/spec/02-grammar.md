@@ -28,6 +28,14 @@ decl            = kind_decl | predicate_decl | function_decl | capability_decl
 
 (v0.3, ADR 0104.) In edition `0.3`, `decl` also takes `measure_decl`, and a type takes a unit after its core, `type = [ label ] type_core [ "of" unit_expr ] [ "in" range ]` (`spec/25 §1`, `§2`).
 
+(v0.5, ADR 0126 rules 1 and 9.) In edition `0.5`, `decl` also takes `constant_decl`, a module constant:
+
+```ebnf
+constant_decl   = [ "pub" ] "const" lower_ident ":" type "=" line_expr NEWLINE ;
+```
+
+The type is required: without it, the declaration is U0101 at `=`. The value is a constant expression (`spec/10 §8`), one logical line, continued inside brackets as any line is; a doc comment may lead it. A `primary` that is a `lower_ident` may resolve to a constant (§7). In editions `0.1` to `0.4`, `const` and `let` at the top level are U0101; in edition `0.5`, `let` at the top level is U7007 with the exact rewrite to `const` (`spec/01 §5`), and is read as `const`.
+
 Declarations within a module may appear in any order; all top-level names of a module are visible throughout it.
 
 ## 2. Kinds and types
@@ -195,7 +203,7 @@ if_block        = "if" line_expr NEWLINE INDENT block DEDENT
 let_stmt        = ( "const" | "var" ) lower_ident [ ":" type ] "=" ( handled | block_expr ) ;
 ```
 
-The production keeps its name, as `spec/09` keeps the Core `let`. `const x = e` is what `let x = e` is in edition `0.4`, and `var x = e` what `let edit x = e` is (`spec/17 §1`), with the same typing, desugaring, verification and information flow. `const` binds a name to a value that does not change; at the top level of a module its type MUST be written and its value MUST be a constant expression (ADR 0126 rule 3), and in a block it MAY be any expression. `const edit x` and `var edit x` are U0101, since `edit` and `take` mark only parameters, arguments and receivers. A `var` at the top level of a module is U0101, `` a module declares no `var`; a module value is a `const` ``: a module has no mutable state. Module constants (ADR 0126) land with issue #1632: until then, a `const` at the top level is U0101. `let` is U7007 in edition `0.5` (`spec/01 §5`). Wherever this chapter and the others name a `let` of the surface language, edition `0.5` reads `const`, and a `let edit`, `var`; a Core `let` (`spec/09`) stays.
+The production keeps its name, as `spec/09` keeps the Core `let`. `const x = e` is what `let x = e` is in edition `0.4`, and `var x = e` what `let edit x = e` is (`spec/17 §1`), with the same typing, desugaring, verification and information flow. `const` binds a name to a value that does not change; at the top level of a module its type MUST be written and its value MUST be a constant expression (ADR 0126 rule 3), and in a block it MAY be any expression. `const edit x` and `var edit x` are U0101, since `edit` and `take` mark only parameters, arguments and receivers. A `var` at the top level of a module is U0101, `` a module declares no `var`; a module value is a `const` ``: a module has no mutable state. A `const` at the top level is a module constant (§1, ADR 0126). `let` is U7007 in edition `0.5` (`spec/01 §5`). Wherever this chapter and the others name a `let` of the surface language, edition `0.5` reads `const`, and a `let edit`, `var`; a Core `let` (`spec/09`) stays.
 
 (Edition 0.4, ADR 0117 rule 5.) In edition `0.4`, a `handled` line MAY bound its expression by a deadline, after its `with` clause, and `attempt` MAY take one, which it then holds (`spec/27 §5`):
 

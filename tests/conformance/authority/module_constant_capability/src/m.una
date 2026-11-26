@@ -1,0 +1,6 @@
+-- test: a capability reference as a constant's value is U3005: a constant never holds authority (ADR 0126 rule 14)
+-- spec: spec/05 §6
+-- expect: error U3005 at src/m.una:6:22
+module m
+
+pub const log: Int = @console

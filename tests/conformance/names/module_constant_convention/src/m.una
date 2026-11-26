@@ -1,0 +1,6 @@
+-- test: a constant's name follows the conventions of lower-case names: `max__items` is U1005 (ADR 0126 rule 2)
+-- spec: spec/10 §11
+-- expect: error U1005 at src/m.una:6:11
+module m
+
+pub const max__items: Int = 1000

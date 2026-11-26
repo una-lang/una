@@ -1,0 +1,15 @@
+-- test: a constant in `requires` is its value: a call with `5` is proven and one with `5000` refuted (ADR 0126 rules 8 and 9)
+-- spec: spec/12 §4
+-- expect: error U5001 at src/m.una:15:22
+module m
+
+pub const max_items: Int = 1000
+
+pub limit(n: Int) -> Int
+  requires n <= max_items
+=
+  n
+
+pub small() -> Int = limit(5)
+
+pub large() -> Int = limit(5000)

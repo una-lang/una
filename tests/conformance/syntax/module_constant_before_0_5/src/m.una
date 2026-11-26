@@ -1,0 +1,6 @@
+-- test: in edition 0.4, `const` at the top level of a module is U0101, with the help that names edition 0.5 (ADR 0126 rule 1, ADR 0137 rule 1)
+-- spec: spec/02 §1
+-- expect: error U0101 at src/m.una:6:7
+module m
+
+const max_items: Int = 1000

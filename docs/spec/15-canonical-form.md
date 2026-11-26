@@ -52,7 +52,7 @@ Imports are sorted bytewise by module path, stably, with the comments that lead 
 
 ## 8. Blank lines
 
-Top-level items (the module header, each import and each declaration) are separated by exactly one blank line, except consecutive imports, which have none. Elsewhere, a run of blank lines becomes one blank line, except that no blank line follows a line opening a block (the next line is deeper), and none precedes or follows the `=` line of the long form. Blank lines before the module header and after the last declaration also collapse to one.
+Top-level items (the module header, each import and each declaration, a module constant of edition `0.5` included, written on one logical line as `pub const name: type = value`, ADR 0126 rule 10) are separated by exactly one blank line, except consecutive imports, which have none. Elsewhere, a run of blank lines becomes one blank line, except that no blank line follows a line opening a block (the next line is deeper), and none precedes or follows the `=` line of the long form. Blank lines before the module header and after the last declaration also collapse to one.
 
 ## 9. Comments
 

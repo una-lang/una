@@ -69,6 +69,7 @@ Refinements, `requires` and `ensures` clauses, the bodies of reflect predicates 
 | Nested pure expression `f(g(x), y + 1)` | `let %t0 = g(x) in let %t1 = y + 1 in f(%t0, %t1)` |
 | Labeled arguments, punning | Positional arguments in parameter order |
 | `e.f(args)` method call | `f(e, args)` (`spec/04 §3`) |
+| A reference to a module constant (edition `0.5`, ADR 0126 rule 8) | Its value, evaluated at check time: a literal, or a constructor or list of such; Core IR declares no constant |
 | `a and b` | `if a then b else false` |
 | `a or b` | `if a then true else b` |
 | `a implies b` | `if a then b else true` |

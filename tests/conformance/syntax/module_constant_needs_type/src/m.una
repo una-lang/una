@@ -1,0 +1,6 @@
+-- test: a module constant writes its type: `const max_items = 1000` is U0101 at `=` (ADR 0126 rule 1)
+-- spec: spec/02 §1
+-- expect: error U0101 at src/m.una:6:21
+module m
+
+pub const max_items = 1000

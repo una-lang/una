@@ -20,6 +20,8 @@ trace         t  ::= [event, ...]
 world         W  host state (stdout, clock, environment, files, keys)
 ```
 
+(v0.5, ADR 0126 rule 8.) A reference to a module constant evaluates to its value, which the compiler computed at check time with these rules: a scalar as a literal does, a record or list by one construction at the reference, which counts against the memory budget as a literal at that place would. An engine MAY construct it once per run and share it, which no program can observe. A module runs no code when it is loaded.
+
 Every instance has a stable `id`. Rebinding (`with c = d`) shares the instance, so events are attributed to the instance regardless of the name used at the call site.
 
 A closure ⟨λ, ρ, H⟩ keeps both the environment and the capability environment in scope where it is made (E-Lam, §4), and its body runs under them wherever it is called (E-App): the bindings around the call do not reach it. A function named as a value is elaborated into a lambda that calls it, made where it is named, so its `uses` resolve there (`spec/05 §6` rule 7).

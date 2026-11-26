@@ -1,0 +1,8 @@
+ita std_time_constants_in_0_5
+  version 0.1.0
+  edition 0.5
+
+run
+  entry m
+  grants
+    console
