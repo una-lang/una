@@ -26,6 +26,9 @@ pub struct Index {
     /// Each call of, or reference to, a function of the package: its span, the function's
     /// module path and its name.
     pub functions: Vec<(Span, String, String)>,
+    /// Each reference to a module constant (ADR 0126 rule 11): its span, and the hover text
+    /// that shows the constant's declared type and, for a scalar, its value.
+    pub constants: Vec<(Span, String)>,
 }
 
 /// The span of the name that declares the kind `kind`, or its variant `variant`, when a
@@ -73,6 +76,27 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
     };
     let records = &findings.records;
     for (span, res) in &records.res {
+        // ADR 0126 rule 11: a constant's hover shows its type and value.
+        if let Res::Const(id) = res
+            && let Some(def) = env.constants.get(*id)
+        {
+            let evaluated = if def.module >= env.prelude {
+                &findings.standard_constants
+            } else {
+                &findings.constants
+            };
+            let value = evaluated
+                .folded
+                .get(id)
+                .and_then(|folded| folded.get(&def.ast.value.span))
+                .map(una_core::print_atom);
+            let ty = env.show_plain(&env.top_refined(&def.declared));
+            let text = match value {
+                Some(value) => format!("```una\nconst {}: {ty} = {value}\n```", def.name),
+                None => format!("```una\nconst {}: {ty}\n```", def.name),
+            };
+            index.constants.push((*span, text));
+        }
         let target = match res {
             Res::Function { id, .. } => {
                 let Some(def) = env.functions.get(*id) else {

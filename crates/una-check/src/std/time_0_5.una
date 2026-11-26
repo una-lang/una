@@ -1,9 +1,12 @@
 
---- One millisecond, the unit of the host's clock (ADR 0126 rule 12).
+--- One millisecond, the unit of the host's clock and driver (`spec/26 §2`). A built-in name of
+--- `std.time` in edition 0.4, a constant declared here from edition 0.5 (ADR 0126 rule 12).
 pub const millisecond: Int of Millisecond = 1
 
---- One second, in milliseconds.
+--- One second, in milliseconds (`spec/26 §2`). A built-in name of `std.time` in edition 0.4,
+--- a constant declared here from edition 0.5 (ADR 0126 rule 12).
 pub const second: Int of Millisecond = 1000
 
---- One minute, in milliseconds.
+--- One minute, in milliseconds (`spec/26 §2`). A built-in name of `std.time` in edition 0.4,
+--- a constant declared here from edition 0.5 (ADR 0126 rule 12).
 pub const minute: Int of Millisecond = 60_000

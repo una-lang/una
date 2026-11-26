@@ -32,9 +32,9 @@ struct Listing {
 pub struct Item {
     /// Its name.
     pub name: String,
-    /// `prelude`, `std.host` or `std.testing`.
+    /// `prelude`, `std.host`, `std.testing` or `std.time`.
     pub module: &'static str,
-    /// `function`, `predicate`, `kind` or `capability`.
+    /// `function`, `predicate`, `kind`, `capability` or `constant`.
     pub kind: &'static str,
     /// The spec sections its doc comments cite, as `spec/NN §M`, in order of first mention.
     pub spec: Vec<String>,
@@ -56,7 +56,10 @@ pub struct Variant {
 
 /// The standard modules of the listing: the prelude, `std.host` for the names that only an
 /// import of it brings into scope (`spec/31 §1`), and `std.testing`.
-const MODULES: [&str; 3] = ["prelude", "std.host", "std.testing"];
+const MODULES: [&str; 4] = ["prelude", "std.host", "std.testing", TIME];
+
+/// `std.time`, whose constants the listing holds (ADR 0126 rule 11).
+const TIME: &str = "std.time";
 
 /// Every public item of the standard modules, in order of first declaration: the prelude's,
 /// then `std.testing`'s, each in source order, oldest edition first.
@@ -108,8 +111,38 @@ pub fn std_items() -> Vec<Item> {
             }
         }
     }
+    // The constants of `std.time` (ADR 0126 rules 11 and 12): declared in Una from edition
+    // 0.5, and the same built-in names, of the same types and values, in edition 0.4.
+    let source = una_check::standard_source(Edition::V0_5);
+    if let Some((_, text)) = source.later.iter().find(|(path, _)| *path == "std.time") {
+        let mut sources = SourceDb::new();
+        let mut interner = Interner::new();
+        let id = sources.add("std.time", text.as_bytes());
+        let lexed = lex_in(sources.file(id), id, &mut interner, una_syntax::KeywordSet::V0_5);
+        let tree: File = parse(&lexed, id, &interner).file;
+        for decl in &tree.decls {
+            let DeclKind::Const(constant) = &decl.kind else {
+                continue;
+            };
+            if !constant.public {
+                continue;
+            }
+            let mut item = Item {
+                name: interner.resolve(constant.name.name).to_owned(),
+                module: TIME,
+                kind: "constant",
+                spec: Vec::new(),
+                variants: Vec::new(),
+            };
+            let declaration = span_text(text, decl.span);
+            for edition in Edition::ALL.into_iter().filter(|e| *e >= Edition::V0_4) {
+                add(&mut item, edition.name(), declaration.clone(), docs(decl, text));
+            }
+            items.push(item);
+        }
+    }
     // Keep the order of first declaration, but list the prelude's items, then `std.host`'s,
-    // before `std.testing`'s: a stable sort by module.
+    // before `std.testing`'s, then `std.time`'s: a stable sort by module.
     items.sort_by_key(|item| MODULES.iter().position(|m| *m == item.module));
     for item in &mut items {
         item.spec = cited(&item.variants);

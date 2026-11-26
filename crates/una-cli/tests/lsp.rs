@@ -586,6 +586,36 @@ pub main() -> Unit
 }
 
 #[test]
+fn hover_on_a_module_constant_shows_its_type_and_value_and_goes_to_it() {
+    // ADR 0126 rule 11: in edition 0.5, the hover of a reference to a constant shows its
+    // declared type and its value, and the definition is its declaration.
+    let text = "module app\n\npub const max_items: Int = 10 * 100\n\npub limit() -> Int = max_items\n";
+    let dir = package_in("constant-hover", "0.5", text);
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, text);
+    let _ = session.published(&file);
+    let hover = session.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri(&file) },
+            "position": position(4, 22),
+        }),
+    );
+    let shown = hover["contents"]["value"].as_str().unwrap_or_default();
+    assert!(shown.contains("const max_items: Int = 1000"), "{shown}");
+    let definition = session.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri(&file) },
+            "position": position(4, 22),
+        }),
+    );
+    assert_eq!(definition["range"]["start"], json!({ "line": 2, "character": 10 }), "{definition}");
+    session.finish();
+}
+
+#[test]
 fn tier_1_on_open_equals_una_check_with_its_counterexample() {
     let text = "module app\n\npub kind Pos = Int where it > 0\n\npub half(n: Pos) -> Pos = n - 1\n\npub next(n: Pos) -> Pos = n + 1\n";
     let dir = package("tier1", text);

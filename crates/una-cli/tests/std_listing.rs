@@ -235,6 +235,11 @@ fn probe(dir: &Path, item: &Item, edition: Edition) {
             format!("import std.host ({name})\n\n"),
             format!("pub probe(x: {name}) -> Unit = unit\n"),
         ),
+        // A constant of `std.time` (ADR 0126 rule 12), a value of `Int of Millisecond`.
+        ("std.time", _) => (
+            format!("import std.time ({name})\n\n"),
+            format!("pub probe() -> Unit\n=\n  let x = {name}\n  unit\n"),
+        ),
         ("std.host", _) => (
             format!("import std.host ({name})\n\n"),
             format!("pub probe() -> Unit\n  uses @c: {name}\n=\n  unit\n"),
