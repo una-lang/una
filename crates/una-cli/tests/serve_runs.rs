@@ -386,7 +386,7 @@ fn a_reply_never_follows_an_abort_of_the_run_at_any_switch_point() {
         std::fs::write(dir.join("src/srv.una"), program).unwrap();
         let (wire, ran) = run(&dir);
         let completion = ran[0]["completion"]["aborted"].as_str().unwrap_or_default();
-        assert!(completion.starts_with("IntText"), "k = {k}: {}", ran[0]);
+        assert!(completion.starts_with("Memory"), "k = {k}: {}", ran[0]);
         let events = &ran[1..];
         let op = |event: &Value| event["op"].as_str().map(str::to_owned);
         let abort_at = events
@@ -817,7 +817,7 @@ fn build_native(dir: &Path, tag: &str) -> (PathBuf, PathBuf, String) {
 /// The code of the abort an interpreted run ended with, as the native executable reports it.
 fn abort_code(completion: &Value) -> Option<&'static str> {
     let aborted = completion["aborted"].as_str()?;
-    if aborted.starts_with("IntText") {
+    if aborted.starts_with("Memory") {
         return Some("U6003");
     }
     panic!("the code of the abort {aborted}: add it here");
@@ -1627,7 +1627,11 @@ fn many_requests(scratch: &Path, n: u32, aborts: bool) -> (PathBuf, String) {
     let dir = scratch.join(if aborts { "many_aborts" } else { "many" });
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::copy(from.join("ita.lock"), dir.join("ita.lock")).unwrap();
-    let manifest = std::fs::read_to_string(from.join("ita.una")).unwrap();
+    let mut manifest = std::fs::read_to_string(from.join("ita.una")).unwrap();
+    // `std.collections`, whose `empty_bit_set` aborts the run, is of edition 0.5.
+    if aborts {
+        manifest = manifest.replacen("  edition 0.4\n", "  edition 0.5\n", 1);
+    }
     std::fs::write(dir.join("ita.una"), manifest).unwrap();
     let mut program = std::fs::read_to_string(from.join("src/srv.una")).unwrap();
     if aborts {
@@ -1635,7 +1639,27 @@ fn many_requests(scratch: &Path, n: u32, aborts: bool) -> (PathBuf, String) {
             "    on stop\n      @server.close()\n",
             "    on stop\n      @server.close()\n      bomb()\n",
         );
-        program.push_str("\n--- Aborts the run: an integer of more than 4300 digits written as text.\nbomb() -> Unit\n=\n  let edit big = 1\n  for i in 1..2000\n    big = big * 1000\n  let shown = \"{big}\"\n  unit\n");
+        program = program.replacen(
+            "import std.host (",
+            "import std.collections (empty_bit_set)\nimport std.host (",
+            1,
+        );
+        // Edition 0.5 writes `let` as `const` and `let edit` as `var` (ADR 0137).
+        program = program
+            .lines()
+            .map(|line| {
+                let body = line.trim_start();
+                let indent = &line[..line.len() - body.len()];
+                if let Some(rest) = body.strip_prefix("let edit ") {
+                    format!("{indent}var {rest}\n")
+                } else if let Some(rest) = body.strip_prefix("let ") {
+                    format!("{indent}const {rest}\n")
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect();
+        program.push_str("\n--- Aborts the run after a count: 2^64 bits are past every memory budget (U6003).\nbomb() -> Unit\n=\n  var big = 1\n  for i in 1..2000\n    big = big * 1000\n  const bits = empty_bit_set(size: 18446744073709551616)\n  unit\n");
     }
     std::fs::write(dir.join("src/srv.una"), program).unwrap();
     let mut script = String::new();

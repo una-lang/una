@@ -178,14 +178,15 @@ pub(crate) enum NoTree {
     NotJson,
     /// The run is over its memory budget.
     OverBudget,
-    /// A `Number` holds an `Int` of more than `MAX_INT_DIGITS` digits, which is never written
-    /// (`spec/11 §7`, #923).
-    IntTooLong,
 }
 
 /// The tree of a `Json` value, asking `within` every [`json::CHECK_EVERY`] values whether the
-/// run is within its memory budget.
-pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Result<Tree, NoTree> {
+/// run is within its memory budget, and `room` before a large `Int` is written.
+pub(crate) fn tree(
+    value: &Value<'_>,
+    within: &mut dyn FnMut() -> bool,
+    room: crate::machine::Room<'_>,
+) -> Result<Tree, NoTree> {
     let mut stack: Vec<Walking<'_, '_>> = Vec::new();
     let mut pending = Some(value);
     let mut ticks = 0;
@@ -206,8 +207,12 @@ pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Resul
             done = match (data.ctor.index, field) {
                 (NULL, _) => Some(Tree::Null),
                 (BOOLEAN, Some(Value::Bool(b))) => Some(Tree::Bool(*b)),
+                // A large `Int` is written once its text fits the budget (`spec/11 §7`).
                 (NUMBER, Some(Value::Int(n))) => {
-                    Some(Tree::Int(una_core::int_text(n).ok_or(NoTree::IntTooLong)?))
+                    if una_core::int_text_room(n).is_some_and(|bytes| !room(bytes)) {
+                        return Err(NoTree::OverBudget);
+                    }
+                    Some(Tree::Int(n.to_string()))
                 }
                 (DECIMAL, Some(Value::Text(t))) => Some(Tree::Decimal(t.to_string())),
                 (STR, Some(Value::Text(t))) => Some(Tree::Str(t.to_string())),

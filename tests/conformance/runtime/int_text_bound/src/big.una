@@ -1,7 +1,9 @@
--- test: an `Int` of exactly 4300 digits, the bound of parsing, is still written as text by interpolation, in both engines (spec/11 §7, #923)
+-- test: writing has no digit bound but reading keeps the bound of parsing, 4300 digits: the text of an `Int` of 4300 digits reads back, that of one of 4301 digits is written and refused by `to_int` and `parse_int` with `TooLong`, in both engines (spec/11 §7, spec/22 §4, #1223)
 -- spec: spec/11 §7
 -- grant: console
--- expect: run-output "4300"
+-- expect: run-output "4300 4301"
+-- expect: run-output "read true -1"
+-- expect: run-output "parse TooLong"
 module big
 
 --- Ten to the `exp`, built by a loop of multiplications.
@@ -12,9 +14,21 @@ power(exp: Int) -> Int
     n = n * 10
   n
 
+--- What `parse_int` says of `t`.
+parsed(t: Text) -> Text
+=
+  let read = attempt t.parse_int()
+  when read
+    is Ok(n) -> "parse {n}"
+    is Err(failure) -> "parse {failure}"
+
 pub main() -> Unit
   uses @console: Console[print]
 =
-  let n = power(4299)
-  let text = "{n}"
-  @console.print("{text.len}")
+  let fits = power(4299)
+  let over = power(4300)
+  let a = "{fits}"
+  let b = "{over}"
+  @console.print("{a.len} {b.len}")
+  @console.print("read {or_else(a.to_int(), default: 0) == fits} {or_else(b.to_int(), default: -1)}")
+  @console.print(parsed(b))

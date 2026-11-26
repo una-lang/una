@@ -2431,8 +2431,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .map(|(name, _)| source_name(name))
             .collect();
         let site = i64::try_from(self.emitter.ops.len()).map_err(crate::internal)?;
-        // Where an abort at the operation is reported, an integer too long for text among its
-        // values (`spec/11 §7`), as the interpreter reports it (#1550).
+        // Where an abort at the operation is reported, a value of its event whose text does not
+        // fit the memory budget (`spec/11 §7`, #1223), as the interpreter reports it.
         let position = self.emitter.sites.len();
         self.emitter.sites.push(*span);
         self.emitter.ops.push(serde_json::json!({
@@ -2458,8 +2458,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             let position = self.builder.ins().iconst(types::I64, position);
             self.runtime("una_rt_event_arg", &[site, slot, position, value]);
         }
-        // An argument too long for text stopped the task (`spec/11 §7`): the operation does not
-        // start, as in the interpreter (#1550); in `main`'s thread the run has ended.
+        // An argument whose text does not fit the memory budget stopped the task (`spec/11 §7`,
+        // #1223): the operation does not start, as in the interpreter; in `main`'s thread the
+        // run has ended.
         if !values.is_empty() {
             let stopped = self.call("una_rt_stopped", &[])?;
             self.stop_if(stopped);
@@ -2586,9 +2587,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             return Err(internal("an operation lost its result"));
         };
         self.runtime("una_rt_event_end", &[site, slot, value, failed]);
-        // An outcome too long for text stopped the task (`spec/11 §7`): it stops here, before
-        // it uses the value, as in the interpreter (#1550). An operation that ended with status
-        // 2 stopped at or in its call and goes on as a failure, as before.
+        // An outcome whose text does not fit the memory budget stopped the task (`spec/11 §7`,
+        // #1223): it stops here, before it uses the value, as in the interpreter. An operation
+        // that ended with status 2 stopped at or in its call and goes on as a failure.
         let stopped = self.call("una_rt_stopped", &[])?;
         let ended = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failed, 2);
         let ended = self.builder.ins().uextend(types::I64, ended);
@@ -2861,8 +2862,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         }
                     ) {
                         let (value, _) = self.atom(first, env)?;
-                        // The site, where an integer too long for text aborts the run
-                        // (`spec/11 §7`, #923); a task stopped by it stops here.
+                        // The site, where a text that does not fit the memory budget aborts
+                        // the run (`spec/11 §7`, #1223); a task stopped by it stops here.
                         let site = self.site(*span);
                         // A type that holds type parameters is written through its composite
                         // descriptor (ADR 0068 D6).
@@ -3517,16 +3518,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.switch_to_block(next);
     }
 
-    /// Stops the task at once when `stopping` is not 0: for an abort only (see `stop`).
     /// `value`, once the task has been checked for a stop that a runtime call raised at its
-    /// site, as an integer too long for text does (`spec/11 §7`, #923): a stopped task leaves
-    /// here, before it uses the value.
+    /// site, as a text that does not fit the memory budget does (`spec/11 §7`, #1223): a stopped
+    /// task leaves here, before it uses the value.
     fn stopped_after(&mut self, value: Value) -> Result<Value, CodegenError> {
         let stopped = self.call("una_rt_stopped", &[])?;
         self.stop_if(stopped);
         Ok(value)
     }
 
+    /// Stops the task at once when `stopping` is not 0: for an abort only (see `stop`).
     fn stop_if(&mut self, stopping: Value) {
         let next = self.builder.create_block();
         self.builder.ins().brif(stopping, self.stop, &[], next, &[]);
@@ -4125,7 +4126,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let cc = match prim {
             Prim::Convert(_) => return self.call("una_rt_generic_to_int", operands),
             // Interpolation, by the type that instantiates the parameter (ADR 0068), at its
-            // site, where an integer too long for text aborts the run (`spec/11 §7`, #923).
+            // site, where a text that does not fit the memory budget aborts the run (`spec/11
+            // §7`, #1223).
             Prim::ToText => {
                 let mut sited = vec![self.site(span)];
                 sited.extend_from_slice(operands);
@@ -4237,13 +4239,25 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     self.builder.ins().iconst(types::I64, index),
                     self.builder.ins().iconst(types::I64, packed),
                 ];
+                // `to_text` and `json_decimal` take one operand: the second word is their
+                // site, where a text that does not fit the memory budget aborts the run
+                // (`spec/11 §7`, #1223); a task stopped by it stops after the call.
+                let writes = matches!(
+                    op,
+                    una_core::DecimalOp::ToText(_) | una_core::DecimalOp::ToJson(_)
+                );
                 for i in 0..3 {
                     words.push(match args.get(i) {
                         Some((word, _)) => *word,
+                        None if writes && i == 1 => self.site(span),
                         None => self.builder.ins().iconst(types::I64, 1),
                     });
                 }
-                self.call("una_rt_decimal", &words)
+                let value = self.call("una_rt_decimal", &words)?;
+                if writes {
+                    return self.stopped_after(value);
+                }
+                Ok(value)
             }
             // Lowered with their receiver's ownership, in `rhs`.
             Prim::Seq(_)
@@ -4397,8 +4411,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Prim::ToText => {
                 let (a, kind) = operand(first)?;
                 match kind {
-                    // At its site, where an integer too long for text aborts the run
-                    // (`spec/11 §7`, #923).
+                    // At its site, where a text that does not fit the memory budget aborts the
+                    // run (`spec/11 §7`, #1223).
                     Kind::Int => {
                         let site = self.site(span);
                         let text = self.call("una_rt_int_text", &[site, a])?;

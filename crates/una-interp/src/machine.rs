@@ -211,13 +211,6 @@ pub enum Abort {
         /// The call.
         span: Span,
     },
-    /// An integer of more than `MAX_INT_DIGITS` digits is written as text at this span (U6003,
-    /// `spec/11 §7`, #923): an interpolation, a call of `to_text` or `to_json`, or an
-    /// operation whose event shows it; `None` for the final value or failure of `main`.
-    IntText {
-        /// The site, when the write has one.
-        span: Option<Span>,
-    },
     /// The hard stop of the host came at the check point at this span: a call or a loop
     /// iteration (U6007, ADR 0116 rule 16).
     HostStop {
@@ -466,28 +459,29 @@ impl<'p> Index<'p> {
     }
 
     /// The Una form of `value`. A field whose declared type is labeled above
-    /// `public` is `<redacted:level>`.
-    pub(crate) fn render(&self, value: &Value<'_>) -> Result<String, IntTooLong> {
-        self.una_form(value, Form::Redacted)
+    /// `public` is `<redacted:level>`. `room` is asked before a large `Int` is written
+    /// ([`Room`]).
+    pub(crate) fn render(&self, value: &Value<'_>, room: Room<'_>) -> Written {
+        self.una_form(value, Form::Redacted, room)
     }
 
     /// The Una form of `value` with every field, which interpolation writes: its text carries
     /// the value's labels (`spec/11 §5`, ADR 0068).
-    pub(crate) fn written(&self, value: &Value<'_>) -> Result<String, IntTooLong> {
-        self.una_form(value, Form::Written)
+    pub(crate) fn written(&self, value: &Value<'_>, room: Room<'_>) -> Written {
+        self.una_form(value, Form::Written, room)
     }
 
     /// The Una form of `value` in `form`: an example's results and reasons, which edition `0.2`
     /// shows with every field (`spec/11 §5`, ADR 0078).
-    pub(crate) fn shown(&self, value: &Value<'_>, form: Form) -> Result<String, IntTooLong> {
-        self.una_form(value, form)
+    pub(crate) fn shown(&self, value: &Value<'_>, form: Form, room: Room<'_>) -> Written {
+        self.una_form(value, form, room)
     }
 
-    /// The Una form of `value` (`spec/11 §5`), in `form`. An `Int` of more than
-    /// `MAX_INT_DIGITS` digits is never written (`spec/11 §7`, #923): the form is refused
-    /// before any conversion, and the caller aborts the run with U6003.
-    fn una_form(&self, value: &Value<'_>, form: Form) -> Result<String, IntTooLong> {
-        self.una_form_in(value, form, None)
+    /// The Una form of `value` (`spec/11 §5`), in `form`. An `Int` of any size is written, in
+    /// O(M(d) log d) for its d digits, once `room` has the bytes of a large one (`spec/11 §7`,
+    /// #1223).
+    fn una_form(&self, value: &Value<'_>, form: Form, room: Room<'_>) -> Written {
+        self.una_form_in(value, form, None, room)
     }
 
     /// The Una form of `value` in an event of the host's `HttpServer`, in `form`, with the
@@ -498,8 +492,9 @@ impl<'p> Index<'p> {
         value: &Value<'_>,
         form: Form,
         key: &una_http::serve::trace::TraceKey,
-    ) -> Result<String, IntTooLong> {
-        self.una_form_in(value, form, Some(key))
+        room: Room<'_>,
+    ) -> Written {
+        self.una_form_in(value, form, Some(key), room)
     }
 
     /// `value` in an event of the host's `HttpServer`, redacted by `label` as [`Self::redacted`]
@@ -509,9 +504,10 @@ impl<'p> Index<'p> {
         value: &Value<'_>,
         label: &Label,
         key: &una_http::serve::trace::TraceKey,
-    ) -> Result<String, IntTooLong> {
+        room: Room<'_>,
+    ) -> Written {
         if label.is_public() || matches!(value, Value::Unit) {
-            self.server_form(value, Form::Redacted, key)
+            self.server_form(value, Form::Redacted, key, room)
         } else {
             Ok(format!("<redacted:{}>", level_name(label.level)))
         }
@@ -523,7 +519,8 @@ impl<'p> Index<'p> {
         value: &Value<'_>,
         form: Form,
         reduce: Option<&una_http::serve::trace::TraceKey>,
-    ) -> Result<String, IntTooLong> {
+        room: Room<'_>,
+    ) -> Written {
         // A worklist instead of recursion: a value built by a loop can be deeper than the
         // native stack allows (`spec/17 §4`, ADR 0032).
         enum Task<'v, 'p> {
@@ -535,27 +532,39 @@ impl<'p> Index<'p> {
         while let Some(task) = pending.pop() {
             let value = match task {
                 Task::Text(text) => {
-                    out.push_str(&text);
+                    put(&mut out, &text, room)?;
                     continue;
                 }
                 Task::Value(value) => value,
             };
             let mut parts: Vec<Task<'_, '_>> = Vec::new();
             match value {
-                Value::Int(n) => out.push_str(&una_core::int_text(n).ok_or(IntTooLong)?),
-                Value::F64(x) => out.push_str(&una_core::float::render(*x)),
-                Value::Decimal(c, s) => out.push_str(&una_core::decimal::render(c, *s)),
-                Value::F32(x) => out.push_str(&una_core::float32::render(*x)),
-                Value::Bool(b) => out.push_str(&b.to_string()),
-                Value::Text(t) => out.push_str(&una_core::quote(t)),
-                Value::Unit => out.push_str("unit"),
+                Value::Int(n) => {
+                    if una_core::int_text_room(n).is_some_and(|bytes| !room(bytes)) {
+                        return Err(OverBudget);
+                    }
+                    put(&mut out, &n.to_string(), room)?;
+                }
+                Value::F64(x) => put(&mut out, &una_core::float::render(*x), room)?,
+                Value::Decimal(c, s) => {
+                    if una_core::int_text_room(c).is_some_and(|bytes| !room(bytes)) {
+                        return Err(OverBudget);
+                    }
+                    put(&mut out, &una_core::decimal::render(c, *s), room)?
+                }
+                Value::F32(x) => put(&mut out, &una_core::float32::render(*x), room)?,
+                Value::Bool(b) => put(&mut out, &b.to_string(), room)?,
+                Value::Text(t) => put(&mut out, &una_core::quote(t), room)?,
+                Value::Unit => put(&mut out, "unit", room)?,
                 // Interpolation writes no bytes of a hash (ADR 0068, amendment of
                 // 2026-10-06); traces, examples and diagnostics show them.
-                Value::Hashed(_) if form == Form::Written => out.push_str("<hashed>"),
-                Value::Hashed(bytes) => out.push_str(&format!("hashed:{}", host::hex(bytes))),
-                Value::Closure(_) => out.push_str("<function>"),
+                Value::Hashed(_) if form == Form::Written => put(&mut out, "<hashed>", room)?,
+                Value::Hashed(bytes) => {
+                    put(&mut out, &format!("hashed:{}", host::hex(bytes)), room)?
+                }
+                Value::Closure(_) => put(&mut out, "<function>", room)?,
                 // Nothing of a reply right is ever written (ADR 0123 rule 1).
-                Value::Right(_) => out.push_str("<reply-right>"),
+                Value::Right(_) => put(&mut out, "<reply-right>", room)?,
                 Value::List(items) | Value::Tuple(items) => {
                     let (open, close) = if matches!(value, Value::List(_)) {
                         ("[", "]")
@@ -575,7 +584,7 @@ impl<'p> Index<'p> {
                 // (ADR 0120 rule 38).
                 Value::Dense(dense) if dense.kind == crate::value::DenseKind::Lu => {
                     let size = dense.shape.get(1).copied().unwrap_or(0);
-                    out.push_str(&format!("<lu size {size}>"));
+                    put(&mut out, &format!("<lu size {size}>"), room)?;
                 }
                 // The construction call that rebuilds a dense value, its elements in
                 // row-major order (ADR 0120 rule 41), each a task like a list's, so a deep
@@ -699,7 +708,7 @@ impl<'p> Index<'p> {
                     // A complex value is written `complex(re: ..., im: ...)` (ADR 0120 rule 24).
                     let constructor = una_core::complex::constructor_name(&data.ctor);
                     if data.fields.is_empty() {
-                        out.push_str(constructor);
+                        put(&mut out, constructor, room)?;
                         continue;
                     }
                     parts.push(Task::Text(format!("{constructor}(")));
@@ -757,9 +766,9 @@ impl<'p> Index<'p> {
         Ok(out)
     }
 
-    pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label) -> Result<String, IntTooLong> {
+    pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label, room: Room<'_>) -> Written {
         if label.is_public() || matches!(value, Value::Unit) {
-            self.render(value)
+            self.render(value, room)
         } else {
             Ok(format!("<redacted:{}>", level_name(label.level)))
         }
@@ -768,12 +777,10 @@ impl<'p> Index<'p> {
     /// The variant of a failure and its fields whose declared labels are `public`, in their Una
     /// form (`spec/04 §8`). A field of a type parameter is not shown, since its label is not
     /// known at run time.
-    pub(crate) fn public_fields(
-        &self,
-        value: &Value<'_>,
-    ) -> Result<Vec<(String, String)>, IntTooLong> {
+    /// A field whose text does not fit the budget is named, [`OVER_BUDGET`].
+    pub(crate) fn public_fields(&self, value: &Value<'_>, room: Room<'_>) -> Vec<(String, String)> {
         let Value::Data(data) = value else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
         let names = self.fields(&data.ctor);
         data.fields
@@ -782,20 +789,51 @@ impl<'p> Index<'p> {
             .filter(|(_, (_, ty))| {
                 ty.is_some_and(|ty| !ty.has_param() && ty.deep_label().is_public())
             })
-            .map(|(v, (name, _))| Ok((name.to_owned(), self.render(v)?)))
+            .map(|(v, (name, _))| {
+                let text = self
+                    .render(v, room)
+                    .unwrap_or_else(|OverBudget| OVER_BUDGET.to_owned());
+                (name.to_owned(), text)
+            })
             .collect()
     }
 }
 
-/// An `Int` of more than `MAX_INT_DIGITS` digits met where a value is written as text
-/// (`spec/11 §7`, #923): the run aborts with U6003 rather than convert it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct IntTooLong;
+/// Whether a write may hold `bytes` more within the run's memory budget (ADR 0061): asked
+/// before an `Int` of at least [`una_core::INT_TEXT_RESERVED_FROM`] bytes of text and
+/// temporaries is converted, so that the write never passes the hard ceiling (`spec/11 §7`,
+/// #1223). [`Machine::room`] gives the run's.
+pub(crate) type Room<'a> = &'a dyn Fn(usize) -> bool;
 
-/// The abort of a write of an integer too long for text, at `span` (U6003, `spec/11 §7`).
-fn int_text_abort<'p>(span: Option<Span>) -> Stop<'p> {
-    Stop::Abort(Abort::IntText { span })
+/// Appends `piece` to `out`, which first grows, when it must, within the memory budget: a
+/// growth to at least [`una_core::INT_TEXT_RESERVED_FROM`] bytes asks `room` for the new
+/// buffer and the piece (`spec/11 §7`, #1223), so a text built of many small parts is checked
+/// as it grows, at O(1) amortized per part.
+fn put(out: &mut String, piece: &str, room: Room<'_>) -> Result<(), OverBudget> {
+    let need = out.len().saturating_add(piece.len());
+    if need > out.capacity() {
+        let grown = need.max(out.capacity().saturating_mul(2));
+        let held = grown.saturating_add(piece.len());
+        if held >= una_core::INT_TEXT_RESERVED_FROM && !room(held) {
+            return Err(OverBudget);
+        }
+        out.reserve_exact(grown - out.len());
+    }
+    out.push_str(piece);
+    Ok(())
 }
+
+/// What a message (U6001, a test's report) says of a value whose text does not fit the run's
+/// memory budget (`spec/11 §7`, #1223): it is named rather than written.
+pub(crate) const OVER_BUDGET: &str = "<a value whose text exceeds the memory budget>";
+
+/// A value's text, or [`OverBudget`].
+pub(crate) type Written = Result<String, OverBudget>;
+
+/// A write that does not fit the run's memory budget: the run aborts with U6003 at its site
+/// (`spec/11 §7`, #1223).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OverBudget;
 
 fn level_name(level: Level) -> &'static str {
     match level {
@@ -1447,6 +1485,30 @@ impl<'p, 'w> Machine<'p, 'w> {
         // reads none of its bindings.
         self.callers.push(std::mem::take(&mut self.later));
         Ok(())
+    }
+
+    /// The run's memory budget, in MiB.
+    pub(crate) fn max_memory(&self) -> usize {
+        self.max_memory
+    }
+
+    /// Whether the run, holding `bytes` more, stays within its memory budget: the [`Room`] of
+    /// its writes (`spec/11 §7`, #1223).
+    pub(crate) fn fits(&self, bytes: usize) -> bool {
+        let budget = self.max_memory.saturating_mul(1024 * 1024);
+        (self.held)()
+            .saturating_sub(self.baseline)
+            .saturating_add(bytes)
+            <= budget
+    }
+
+    /// The abort of a write at `span` that does not fit the run's memory budget (U6003,
+    /// `spec/11 §7`, #1223), as a call over the budget aborts.
+    pub(crate) fn over_budget(&self, span: Span) -> Stop<'p> {
+        Stop::Abort(Abort::Memory {
+            span,
+            limit: self.max_memory,
+        })
     }
 
     /// Whether the heap the run holds is within its budget (ADR 0061): checked at each call
@@ -3368,18 +3430,23 @@ impl<'p, 'w> Machine<'p, 'w> {
                 {
                     let text = self
                         .index
-                        .written(value)
-                        .map_err(|IntTooLong| int_text_abort(Some(*span)))?;
+                        .written(value, &|bytes| self.fits(bytes))
+                        .map_err(|OverBudget| self.over_budget(*span))?;
                     return Ok(Value::text(&text));
                 }
-                // An `Int` of more than `MAX_INT_DIGITS` digits is never written (`spec/11
-                // §7`, #923): the run aborts at the interpolation or the call of `to_text`.
+                // A large `Int` is written once its text fits the budget (`spec/11 §7`, #1223).
                 if *prim == Prim::ToText
                     && let Some(Value::Int(n)) = args.first()
+                    && una_core::int_text_room(n).is_some_and(|bytes| !self.fits(bytes))
                 {
-                    return una_core::int_text(n)
-                        .map(|text| Value::text(&text))
-                        .ok_or_else(|| int_text_abort(Some(*span)));
+                    return Err(self.over_budget(*span));
+                }
+                // So is a `Decimal`'s, from its coefficient.
+                if let Prim::Decimal(DecimalOp::ToText(_) | DecimalOp::ToJson(_)) = *prim
+                    && let Some(Value::Decimal(c, _)) = args.first()
+                    && una_core::int_text_room(c).is_some_and(|bytes| !self.fits(bytes))
+                {
+                    return Err(self.over_budget(*span));
                 }
                 // A bit set's precondition aborts at the call (ADR 0119 rule 14).
                 if let Prim::BitSet(op) = *prim {
@@ -3698,21 +3765,24 @@ impl<'p, 'w> Machine<'p, 'w> {
             let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
             // An argument labeled above `public` is redacted.
             let label = labels.get(i).cloned().unwrap_or_else(Label::public);
-            // An integer too long for text aborts the run at the operation (`spec/11 §7`).
+            // A write that does not fit the budget aborts the run at the operation, before it
+            // starts (`spec/11 §7`, #1223).
+            let room = |bytes| self.fits(bytes);
             let text = match trace {
                 // The toolchain's tests only: the reduced form without the labels' redaction.
-                Some((key, true)) => self.index.server_form(value, Form::Written, &key),
-                Some((key, false)) => self.index.server_redacted(value, &label, &key),
+                Some((key, true)) => self.index.server_form(value, Form::Written, &key, &room),
+                Some((key, false)) => self.index.server_redacted(value, &label, &key, &room),
                 None if server => self.index.redacted(
                     value,
                     &label.join(&Label {
                         level: Level::Internal,
                         ..Label::public()
                     }),
+                    &room,
                 ),
-                None => self.index.redacted(value, &label),
+                None => self.index.redacted(value, &label, &room),
             }
-            .map_err(|IntTooLong| int_text_abort(Some(span)))?;
+            .map_err(|OverBudget| self.over_budget(span))?;
             shown.push((name, text));
         }
         // The operation's event is written when it ends, after the events of the handler code
@@ -3733,37 +3803,46 @@ impl<'p, 'w> Machine<'p, 'w> {
         self.ops_open = self.ops_open.saturating_sub(1);
         // S-45 (#1552, `spec/11 §5`): in a run, an outcome labeled above `public` is written
         // as `redacted`, at the static label of the site, so whether it is depends on no
-        // value; no text is built from its value, so it raises no abort for a long integer.
+        // value; no text is built from its value.
         let revealed = matches!(trace, Some((_, true)));
         let hidden = (!request.outcome.is_public() && !self.run.clear_outcomes.get() && !revealed)
             .then(|| level_name(request.outcome.level));
-        // An outcome that holds an integer too long for text aborts the run at the operation
-        // (`spec/11 §7`, #923), its event left `aborted`.
         let (result, outcome) = match (result, hidden) {
             (result @ (Ok(_) | Err(Stop::Fail(_))), Some(level)) => {
                 (result, EventOutcome::Redacted(level.to_owned()))
             }
-            (Ok(value), None) => match match trace {
-                Some((key, true)) => self.index.server_form(&value, Form::Written, &key),
-                Some((key, false)) => self.index.server_redacted(&value, &request.result, &key),
-                None => self.index.redacted(&value, &request.result),
-            } {
-                Ok(text) => (Ok(value), EventOutcome::Ok(text)),
-                Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
-            },
-            (Err(Stop::Fail(failure)), None) => match self.index.render(&failure) {
-                Ok(text) => {
-                    let variant = variant(&failure);
-                    (
-                        Err(Stop::Fail(failure)),
-                        EventOutcome::Fail {
-                            variant,
-                            value: text,
-                        },
-                    )
+            // An outcome that does not fit the budget aborts the run at the operation, its event
+            // left `aborted` (`spec/11 §7`, #1223).
+            (Ok(value), None) => {
+                let room = |bytes| self.fits(bytes);
+                let text = match trace {
+                    Some((key, true)) => self.index.server_form(&value, Form::Written, &key, &room),
+                    Some((key, false)) => {
+                        self.index
+                            .server_redacted(&value, &request.result, &key, &room)
+                    }
+                    None => self.index.redacted(&value, &request.result, &room),
+                };
+                match text {
+                    Ok(text) => (Ok(value), EventOutcome::Ok(text)),
+                    Err(OverBudget) => (Err(self.over_budget(span)), EventOutcome::Aborted),
                 }
-                Err(IntTooLong) => (Err(int_text_abort(Some(span))), EventOutcome::Aborted),
-            },
+            }
+            (Err(Stop::Fail(failure)), None) => {
+                match self.index.render(&failure, &|bytes| self.fits(bytes)) {
+                    Ok(text) => {
+                        let variant = variant(&failure);
+                        (
+                            Err(Stop::Fail(failure)),
+                            EventOutcome::Fail {
+                                variant,
+                                value: text,
+                            },
+                        )
+                    }
+                    Err(OverBudget) => (Err(self.over_budget(span)), EventOutcome::Aborted),
+                }
+            }
             // `next` of the host's `HttpServer`, an interruptible operation, was waiting when its
             // task was cancelled, and took no request (ADR 0117 rules 4 and 10, ADR 0123 rule
             // 4.7).
@@ -4294,13 +4373,11 @@ impl<'p, 'w> Machine<'p, 'w> {
                     span,
                     limit: self.max_memory,
                 });
-                let tree = match crate::json::tree(&arg(0)?, &mut within) {
+                let room = |bytes| self.fits(bytes);
+                let tree = match crate::json::tree(&arg(0)?, &mut within, &room) {
                     Ok(tree) => tree,
                     Err(crate::json::NoTree::NotJson) => return Err(bad()),
                     Err(crate::json::NoTree::OverBudget) => return Err(over),
-                    Err(crate::json::NoTree::IntTooLong) => {
-                        return Err(int_text_abort(Some(span)));
-                    }
                 };
                 match una_core::json::write_within(&tree, &mut within) {
                     Some(text) => Value::text(&text),
@@ -4823,12 +4900,8 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         },
         Prim::Float32(op) => return float32_apply(op, args),
         Prim::ToText => match arg(0)? {
-            // The machine writes an `Int` at its site, where a too long one aborts the run
-            // (`spec/11 §7`); here, without a site, one is a fault, never a conversion.
-            Value::Int(n) => match una_core::int_text(n) {
-                Some(text) => Value::text(&text),
-                None => return Err(fault("an integer too long for text outside a site")),
-            },
+            // In O(M(d) log d) for d digits, of any size (`spec/11 §7`, #1223).
+            Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),
             Value::Text(t) => Value::Text(t.clone()),
             _ => {

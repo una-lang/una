@@ -3,25 +3,23 @@
 use std::collections::BTreeMap;
 
 use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs, Source};
+use una_syntax::Span;
 
 use crate::clock::Clock;
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, IntTooLong, Limits, Machine, Stop,
-    hashes, variant,
+    Abort, Drive, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, OVER_BUDGET,
+    OverBudget, Stop, hashes, variant,
 };
 
-/// What a test's reason says of a value that holds an integer too long for text (`spec/11 §7`,
-/// #923): the reason is a message, so the value is named rather than written.
-const INT_TOO_LONG: &str = "<an integer of more than 4300 digits>";
-
-/// The Una form of `value` for a message, or [`INT_TOO_LONG`].
-fn named(index: &Index<'_>, value: &Value<'_>, form: Form) -> String {
-    index
-        .shown(value, form)
-        .unwrap_or_else(|IntTooLong| INT_TOO_LONG.to_owned())
-}
 use crate::value::Value;
+
+/// The Una form of `value` for a message, or [`OVER_BUDGET`].
+fn named(machine: &Machine<'_, '_>, index: &Index<'_>, value: &Value<'_>, form: Form) -> String {
+    index
+        .shown(value, form, &|bytes| machine.fits(bytes))
+        .unwrap_or_else(|OverBudget| OVER_BUDGET.to_owned())
+}
 
 /// What `una run` grants: the grants, with the keys of the key files of `keys:` grants loaded
 /// (`spec/14 §3`).
@@ -96,7 +94,7 @@ pub fn run_main(
         machine.run.next_waiters.borrow().is_empty(),
         "a task left in the waiters of `next`"
     );
-    let completion = completion(&index, result, Form::Redacted);
+    let completion = completion(&machine, &index, result, Form::Redacted, Some(main.span));
     Some(Run {
         completion,
         trace: machine.run.take_trace(),
@@ -145,7 +143,7 @@ pub fn run_drive(
         machine.run.next_waiters.borrow().is_empty(),
         "a task left in the waiters of `next`"
     );
-    let completion = completion(&index, result, Form::Redacted);
+    let completion = completion(&machine, &index, result, Form::Redacted, Some(init.span));
     Ok(Run {
         completion,
         trace: machine.run.take_trace(),
@@ -190,7 +188,7 @@ pub fn run_serve(
         machine.run.next_waiters.borrow().is_empty(),
         "a task left in the waiters of `next`"
     );
-    let completion = completion(&index, result, Form::Redacted);
+    let completion = completion(&machine, &index, result, Form::Redacted, Some(handle.span));
     Some(Run {
         completion,
         trace: machine.run.take_trace(),
@@ -214,25 +212,38 @@ fn not_started(abort: Abort) -> Run {
     }
 }
 
-fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
-    // A final value or failure that holds an integer too long for text aborts the run, with no
-    // position (`spec/11 §7`, #923).
-    let too_long = || Completion::Aborted(Abort::IntText { span: None });
+/// How a run ended, its value or failure written within the run's memory budget (`spec/11 §7`,
+/// #1223): a final value whose text does not fit aborts the run with U6003 at `at`, the entry
+/// function, and is named in an example's report (no `at`); a failure is named.
+fn completion(
+    machine: &Machine<'_, '_>,
+    index: &Index<'_>,
+    result: Flow<'_>,
+    form: Form,
+    at: Option<Span>,
+) -> Completion {
+    let room = |bytes| machine.fits(bytes);
+    let over = || match at {
+        Some(span) => Err(Completion::Aborted(Abort::Memory {
+            span,
+            limit: machine.max_memory(),
+        })),
+        None => Ok(OVER_BUDGET.to_owned()),
+    };
+    let written = |value: &Value<'_>| index.shown(value, form, &room).or_else(|OverBudget| over());
     match result {
-        Ok(value) => match index.shown(&value, form) {
+        Ok(value) => match written(&value) {
             Ok(shown) => Completion::Ok(shown),
-            Err(IntTooLong) => too_long(),
+            Err(aborted) => aborted,
         },
-        Err(Stop::Fail(failure)) => {
-            match (index.shown(&failure, form), index.public_fields(&failure)) {
-                (Ok(value), Ok(public)) => Completion::Failed {
-                    variant: variant(&failure),
-                    value,
-                    public,
-                },
-                _ => too_long(),
-            }
-        }
+        // U6001 names a failure, or a field, whose text does not fit, as a test's report does.
+        Err(Stop::Fail(failure)) => Completion::Failed {
+            variant: variant(&failure),
+            value: index
+                .shown(&failure, form, &room)
+                .unwrap_or_else(|OverBudget| OVER_BUDGET.to_owned()),
+            public: index.public_fields(&failure, &room),
+        },
         Err(Stop::Abort(abort)) => Completion::Aborted(abort),
         // Core puts an exit only in a loop's body, which catches it.
         Err(Stop::Exit(..)) => Completion::Aborted(Abort::Fault {
@@ -349,7 +360,7 @@ fn run_example<'p>(
         module: module.to_owned(),
         name: example.name.clone(),
         failure,
-        completion: completion(index, result, form),
+        completion: completion(&machine, index, result, form, None),
         trace,
     }
 }
@@ -381,7 +392,7 @@ fn judge<'p>(
             expectation: None,
             reason: format!(
                 "the `do` line failed with `{}`, and no `expect fails` line expects a failure",
-                named(index, failure, form)
+                named(machine, index, failure, form)
             ),
         }),
         _ => None,
@@ -413,7 +424,7 @@ where
                 Err(Stop::Fail(failure)) if mentions_result => {
                     let reason = format!(
                         "the `do` line failed with `{}`, so `result` has no value",
-                        named(index, failure, form)
+                        named(machine, index, failure, form)
                     );
                     return Some((*line, text, reason));
                 }
@@ -428,13 +439,13 @@ where
                     Ok(value) if mentions_result => {
                         format!(
                             "it is false, with `result` = `{}`",
-                            named(index, value, form)
+                            named(machine, index, value, form)
                         )
                     }
                     _ => "it is false".to_owned(),
                 },
                 Err(Stop::Fail(failure)) => {
-                    format!("it failed with `{}`", named(index, &failure, form))
+                    format!("it failed with `{}`", named(machine, index, &failure, form))
                 }
                 Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => "it aborted".to_owned(),
             };
@@ -450,12 +461,12 @@ where
                 Err(Stop::Fail(failure)) => {
                     format!(
                         "the `do` line failed with `{}`",
-                        named(index, failure, form)
+                        named(machine, index, failure, form)
                     )
                 }
                 Ok(value) => format!(
                     "the `do` line completed with `{}`",
-                    named(index, value, form)
+                    named(machine, index, value, form)
                 ),
                 Err(Stop::Abort(_) | Stop::Exit(..) | Stop::Cut(_)) => {
                     "the `do` line aborted".to_owned()

@@ -8,8 +8,8 @@ use una_core::json::{self, Halt, Tree};
 use crate::host;
 use crate::runtime;
 use crate::values::{
-    data, field, int_value, int_word, list, list_items, map_from_sorted, map_words, push, release,
-    tag, text_value, text_word,
+    data, field, int_word, list, list_items, map_from_sorted, map_words, push, release, tag,
+    text_value, text_word,
 };
 
 /// The variants of `Json`, in declaration order (`spec/23 §1`).
@@ -155,8 +155,8 @@ enum Walking {
 
 /// The tree of a `Json` word, which stays borrowed, asking `within` every
 /// [`json::CHECK_EVERY`] values whether the run is within its memory budget: `None` when it is
-/// not.
-fn tree(word: i64, within: &mut dyn FnMut() -> bool) -> Option<Tree> {
+/// not, or when a large `Int` does not fit it, the run then aborting at `site`.
+fn tree(word: i64, within: &mut dyn FnMut() -> bool, site: i64) -> Option<Tree> {
     let mut stack: Vec<Walking> = Vec::new();
     let mut pending = Some(word);
     let mut ticks = 0;
@@ -172,10 +172,12 @@ fn tree(word: i64, within: &mut dyn FnMut() -> bool) -> Option<Tree> {
             }
             done = match tag(word) {
                 BOOLEAN => Some(Tree::Bool(field(word, 0) != 0)),
-                NUMBER => match una_core::int_text(&int_value(field(word, 0))) {
+                // A large `Int` is written once the run has room for its text (`spec/11 §7`,
+                // #1223): otherwise the call aborts with U6003, as over the budget.
+                NUMBER => match crate::render::int_written(field(word, 0)) {
                     Some(digits) => Some(Tree::Int(digits)),
                     None => {
-                        TOO_LONG.with(|cell| cell.set(true));
+                        runtime::write_over_budget(site);
                         return None;
                     }
                 },
@@ -264,21 +266,8 @@ pub fn parse_json(t: i64, site: i64) -> i64 {
 /// checked as [`parse_json`] checks it.
 pub fn to_json(j: i64, site: i64) -> i64 {
     let mut within = || runtime::budget(usize::try_from(site).unwrap_or(usize::MAX)) == 0;
-    TOO_LONG.with(|cell| cell.set(false));
-    let text = tree(j, &mut within).and_then(|tree| json::write_within(&tree, &mut within));
-    // A `Number` whose `Int` is too long for text aborts the run at the call (`spec/11 §7`,
-    // #923); the task then stops as one over the budget does.
-    if TOO_LONG.with(|cell| cell.replace(false)) {
-        runtime::int_text_abort(site);
-        return stopped();
-    }
+    let text = tree(j, &mut within, site).and_then(|tree| json::write_within(&tree, &mut within));
     text.map_or_else(stopped, text_word)
-}
-
-thread_local! {
-    /// Whether the last `to_json` of this thread met an `Int` of more than `MAX_INT_DIGITS`
-    /// digits, which is never written (`spec/11 §7`, #923).
-    static TOO_LONG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 thread_local! {

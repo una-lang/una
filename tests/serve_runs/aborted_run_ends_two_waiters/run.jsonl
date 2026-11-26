@@ -1,3 +1,3 @@
-{"completion":{"aborted":"IntText { span: Some(Span { file: FileId(2), start: 1004, end: 1007 }) }"},"output":[]}
+{"completion":{"aborted":"Memory { span: Span { file: FileId(2), start: 1136, end: 1177 }, limit: 18446744073709551615 }"},"output":[]}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"aborted"},"seq":1,"task":"s1.1"}
 {"args":{},"capability":"HttpServer","instance":"host:HttpServer","op":"next","outcome":{"kind":"aborted"},"seq":2,"task":"s1.2"}

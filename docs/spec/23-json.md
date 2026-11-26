@@ -56,7 +56,7 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 
    - `at` is a position in scalar values, as in `spec/22 §1`.
    - The failure is the first error in reading order: `Syntax` at the first scalar value where no valid JSON text can continue, or at the end of `t` when it ends early. In a `\u` escape, that is the first character that cannot continue a valid escape: `"\uD800` fails at 7, `"\uDC00` at 4, the `C` that makes it a lone low surrogate.
-   - `NumberTooLong` at the first character of an integer of more than 4300 digits. A number with a fraction or an exponent has no such limit. (2026-10-18, #914.) The same bound, 4300 digits, holds for `parse_int` (`spec/22 §4`) and `to_int` (`spec/14 §1`).
+   - `NumberTooLong` at the first character of an integer of more than 4300 digits. A number with a fraction or an exponent has no such limit. (2026-10-18, #914.) The same bound, 4300 digits, holds for `parse_int` (`spec/22 §4`) and `to_int` (`spec/14 §1`). It bounds reading only: `to_json` writes an `Int` of any size, whose text `parse_json` then refuses (§6 rule 1, 2026-11-26, #1223).
 6. **Size.** There is no limit beyond the memory budget (`spec/11 §7`). `parse_json` and `to_json` check the budget as they go, every 4096 values and every 4096 scalar values of a string, so a run over its budget ends with U6003 at the call (#314).
 
 ## 4. Writing
@@ -91,7 +91,7 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 
 1. **Complexity.** For an input of n scalar values, with an object of k keys counted once for each object:
    - parsing takes O(n + Σ k log k) time, which is O(n) when every object's keys arrive in order, as `to_json` writes them;
-   - writing takes O(n) time for an output of n scalar values, except that writing a `Number` of d digits takes O(d²) for d at most 4300: an `Int` of more digits is never written, the run aborting with U6003 at the call of `to_json` (`spec/11 §7`, #923), so no write exceeds that cost;
+   - writing takes O(n) time for an output of n scalar values, except that writing a `Number` of d digits takes O(M(d) log d), M(d) the cost of a product of d-digit integers, for an `Int` of any size (`spec/11 §7`, 2026-11-26, #1223; from #923 to #1223 an `Int` of more than 4300 digits was never written);
    - both take O(n) space.
 2. **No native recursion.** Parsing and writing keep their own stack on the heap, and never recurse on the native stack over a value's depth (ADR 0060).
 3. **Equivalence.** Both engines use one implementation, and give the same value, text or failure for every input (`spec/16 §5`).

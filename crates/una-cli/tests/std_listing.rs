@@ -1245,10 +1245,10 @@ const STATED_COSTS: [Stated; 4] = [
     ),
     (
         "spec/23 §6",
-        "writing takes O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+        "writing takes O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(M(d) log d)",
         &[(
             "prelude to_json",
-            "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(d²)",
+            "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(M(d) log d)",
         )],
     ),
 ];

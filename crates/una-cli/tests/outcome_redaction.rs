@@ -605,10 +605,10 @@ pub main() -> Unit
 "#;
 
 #[test]
-fn s45_a_redacted_outcome_builds_no_text_so_a_long_integer_does_not_abort() {
-    // `spec/11 §7`: rendering an integer of more than 4300 digits aborts the run at the
-    // operation. A redacted outcome renders nothing, so the run ends normally in both engines,
-    // whatever the value; at `public` the same answer still aborts (the control).
+fn s45_a_redacted_outcome_builds_no_text_of_a_long_integer() {
+    // S-45: a redacted outcome renders nothing of its value, so its event shows the level
+    // alone in both engines, whatever the value; at `public` the same answer, of more than the
+    // 4300 digits parsing reads, is written in full (`spec/11 §7`, #1223), the control.
     let trace = one_trace(
         "s45long",
         &Manifest::Toml("0.3", ""),
@@ -629,9 +629,12 @@ fn s45_a_redacted_outcome_builds_no_text_so_a_long_integer_does_not_abort() {
     );
     let run = una(&dir, &["--json", "run", "."]);
     let document: Value = serde_json::from_slice(&run.stdout).unwrap();
-    assert_eq!(run.status.code(), Some(1), "{document}");
-    assert_eq!(
-        document["trace"][0]["outcome"]["kind"], "aborted",
+    assert_eq!(run.status.code(), Some(0), "{document}");
+    assert_eq!(document["trace"][0]["outcome"]["kind"], "ok", "{document}");
+    assert!(
+        document["trace"][0]
+            .to_string()
+            .contains(&format!("1{}", "0".repeat(5000))),
         "{document}"
     );
     let _ = std::fs::remove_dir_all(&dir);

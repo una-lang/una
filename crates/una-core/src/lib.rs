@@ -23,40 +23,36 @@ mod text;
 
 /// The most decimal digits of an integer that a text may write, its sign excluded and leading
 /// zeros included, for JSON (`spec/23 §3`), `parse_int` (`spec/22 §4`) and `to_int`
-/// (`spec/14 §1`): a longer text is refused before any conversion, as in CPython (#914). The
-/// same bound holds the other way: an integer of more digits is never written as text
-/// ([`int_text`], `spec/11 §7`, #923). The bound is the specification's; the conversions of
-/// [`bigint`] are subquadratic past it, O(M(d) log d), and lifting it is #1223.
+/// (`spec/14 §1`): a longer text is refused in O(b) before any conversion, as in CPython
+/// (#914). It bounds what a run reads, not what it writes: an `Int` of any size is written as
+/// text, in O(M(d) log d) for its d digits by the divide and conquer of [`bigint`], the cost
+/// class of one multiplication of its size, and its text is counted by the memory budget as any
+/// value's (`spec/11 §7`, #1223). Reading divides and conquers too, but stays superlinear in its
+/// input, so the bound keeps the work a text from outside can ask for linear in its bytes.
 pub const MAX_INT_DIGITS: usize = 4300;
 
-/// The message of U6003 when a run writes an integer beyond [`MAX_INT_DIGITS`] as text
-/// (`spec/11 §7`, #923), the same in both engines.
-pub const INT_TEXT_LIMIT_MESSAGE: &str =
-    "an integer of more than 4300 digits is written as text here, past the limit of a run";
+/// The bytes from which a write of an `Int` as text first reserves them against the run's
+/// memory budget (`spec/11 §7`, #1223): a smaller write is within the slack of every check.
+pub const INT_TEXT_RESERVED_FROM: usize = 1 << 16;
 
-/// The decimal text of `n` when it has at most [`MAX_INT_DIGITS`] digits, its sign excluded,
-/// else `None` (`spec/11 §7`, #923): a longer integer is refused before any conversion, as a
-/// longer text is before parsing. Decided in O(1) from the bit length: only an integer with as
-/// many bits as 10^4300 is compared with it, computed once.
-pub fn int_text(n: &bigint::BigInt) -> Option<String> {
-    int_fits(n).then(|| n.to_string())
-}
+/// The bytes per limb that writing an `Int` in decimal may hold at once: the digits of the
+/// conversion, 20 bytes per limb, their copy into the text written, 20 more, and the
+/// temporaries of the divide and conquer of [`bigint`], within 7 words per limb (the powers
+/// `10^(19·2^i)` up to half the value, the quotient and remainder of each split and the work
+/// space of a division).
+const INT_TEXT_BYTES_PER_LIMB: usize = 96;
 
-/// Whether `n` has at most [`MAX_INT_DIGITS`] decimal digits, its sign excluded, in O(1) apart
-/// from one comparison at the bound.
-pub fn int_fits(n: &bigint::BigInt) -> bool {
-    static BOUND: std::sync::OnceLock<bigint::BigUint> = std::sync::OnceLock::new();
-    let bound = BOUND.get_or_init(|| {
-        bigint::BigUint::from(10u32).pow(u32::try_from(MAX_INT_DIGITS).unwrap_or(u32::MAX))
-    });
-    let bits = n.bits();
-    if bits < bound.bits() {
-        true
-    } else if bits > bound.bits() {
-        false
-    } else {
-        n.magnitude() < bound
-    }
+/// An upper bound on the bytes that writing `n` in decimal holds at once, its text and the
+/// conversion's temporaries, from its bit length in O(1) (`spec/11 §7`, #1223); `None` below
+/// [`INT_TEXT_RESERVED_FROM`], where the engines write without reserving. Each engine checks
+/// it against the run's memory budget before it converts an `Int`, or a `Decimal`'s
+/// coefficient, and aborts the run with U6003 when the write does not fit, so the conversion
+/// never passes the hard ceiling of twice the budget; the text it is appended to reserves its
+/// own growth.
+pub fn int_text_room(n: &bigint::BigInt) -> Option<usize> {
+    let limbs = usize::try_from(n.bits().div_ceil(64)).unwrap_or(usize::MAX);
+    let bytes = limbs.saturating_mul(INT_TEXT_BYTES_PER_LIMB);
+    (bytes >= INT_TEXT_RESERVED_FROM).then_some(bytes)
 }
 
 pub use descriptor::Descriptor;
@@ -73,22 +69,3 @@ pub use label::{Accepts, Label, Level, Names, counters as label_counters};
 pub use names::{binders, has_tasks, rhs_vars, vars};
 pub use print::{atomic, print_atom, print_module, print_term, print_term_with, print_type, quote};
 pub use text::Text;
-
-#[cfg(test)]
-mod int_text_tests {
-    use super::*;
-    use crate::bigint::BigInt;
-
-    #[test]
-    fn the_bound_of_writing_is_the_bound_of_parsing() {
-        let ten = BigInt::from(10);
-        let at = ten.pow(u32::try_from(MAX_INT_DIGITS).unwrap()) - 1;
-        assert_eq!(int_text(&at).map(|t| t.len()), Some(MAX_INT_DIGITS));
-        assert_eq!(int_text(&-&at).map(|t| t.len()), Some(MAX_INT_DIGITS + 1));
-        let over = &at + 1;
-        assert_eq!(int_text(&over), None);
-        assert_eq!(int_text(&-&over), None);
-        assert!(int_fits(&BigInt::from(0)));
-        assert!(!int_fits(&(&over * &ten)));
-    }
-}

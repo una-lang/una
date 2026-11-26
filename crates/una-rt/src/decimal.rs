@@ -47,10 +47,21 @@ fn json(variant: i64, value: i64) -> i64 {
     word
 }
 
+/// The text of the coefficient `c` at scale `s`, once the run has room for it: otherwise the
+/// run aborts with U6003 at `site`, and the empty text is given to a task that stops.
+fn written(c: &BigInt, s: u8, site: i64) -> String {
+    crate::render::decimal_written(c, s).unwrap_or_else(|| {
+        crate::runtime::write_over_budget(site);
+        String::new()
+    })
+}
+
 /// The operation of `index` and `packed` (`DecimalOp::code`) on the coefficients `a` and `b`,
 /// with the `Rounding` word `r` where the operation rounds. A comparison gives 0 or 1, as a
 /// `Bool` word; `to_int` and `coefficient` an `Int` word; `to_text` a text; `json_decimal` a
-/// `Json`; every other operation the result's coefficient.
+/// `Json`; every other operation the result's coefficient. For `to_text` and `json_decimal`,
+/// which take one operand, `b` is the site where a text that does not fit the memory budget
+/// aborts the run with U6003 (`spec/11 §7`, #1223).
 pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
     let zero = || int_word(&BigInt::default());
     let Some(op) = DecimalOp::from_code(index, packed) else {
@@ -119,9 +130,9 @@ pub fn decimal(index: i64, packed: i64, a: i64, b: i64, r: i64) -> i64 {
             None => zero(),
         },
         DecimalOp::Coefficient | DecimalOp::FromInt => int_word(&x),
-        DecimalOp::ToText(s) => text_word(decimal::render(&x, s)),
+        DecimalOp::ToText(s) => text_word(written(&x, s, b)),
         DecimalOp::ToJson(0) => json(NUMBER, int_word(&x)),
-        DecimalOp::ToJson(s) => json(DECIMAL, text_word(decimal::render(&x, s))),
+        DecimalOp::ToJson(s) => json(DECIMAL, text_word(written(&x, s, b))),
         // Above, and the prelude's calls have their own entry points.
         DecimalOp::FromF64(_)
         | DecimalOp::ToF64(_)

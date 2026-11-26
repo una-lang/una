@@ -954,7 +954,6 @@ pub(crate) fn run_command(
             | Abort::NotText { .. }
             | Abort::NoRandomBytes
             | Abort::Tables { .. }
-            | Abort::IntText { .. }
             | Abort::HostStop { .. }
             | Abort::Unstarted { .. },
         ) => ExitStatus::Errors,
@@ -1563,12 +1562,6 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
             Code::U6003,
             "this call makes a hash table after the run's table counter reached its limit",
             sources.location(*span),
-        ),
-        // A final value of `main` has no position of its own (`spec/11 §7`, #923).
-        Abort::IntText { span } => Diagnostic::error(
-            Code::U6003,
-            una_core::INT_TEXT_LIMIT_MESSAGE,
-            span.map_or_else(|| root.clone(), |span| sources.location(span)),
         ),
         Abort::HostStop { span, hard } => Diagnostic::error(
             Code::U6007,
