@@ -925,6 +925,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             &standard_findings.records,
             &ids,
             &standard_findings.refused_constants,
+            None,
             &mut scratch,
             false,
         );
@@ -941,7 +942,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             .collect();
         let refused = std::mem::take(&mut findings.refused_constants);
         findings.constants =
-            constants::evaluate(&env, &findings.records, &ids, &refused, &mut report, true);
+            constants::evaluate(
+            &env,
+            &findings.records,
+            &ids,
+            &refused,
+            Some(&findings.standard_constants),
+            &mut report,
+            true,
+        );
         findings.refused_constants = refused;
     }
     authority::testing_installs(&findings, &mut report, env.edition);

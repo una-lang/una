@@ -13,7 +13,9 @@ pub const a: Int = -(7 + 3 * 2 - 1) / 2 mod 5
 
 pub const b: F64 = 1.5 * 2.0 - 0.25 / 2.0 + -1.0
 
-pub const c: Decimal[2] = 1.25 + 2.50 - 0.75
+pub const c0: Decimal[2] = 1.25
+
+pub const c: Decimal[2] = c0 + 2.50 - 0.75
 
 pub const d: Bool = not (a < 3) and (b >= 1.0 or a == 0) and a != 2 and 2 <= 3 and 3 > 2
 

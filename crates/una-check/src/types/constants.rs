@@ -42,6 +42,8 @@ const MAX_SIZE: u64 = 1_000_000;
 #[derive(Debug, Default)]
 pub(crate) struct Evaluated {
     pub(crate) folded: BTreeMap<usize, BTreeMap<Span, Atom>>,
+    /// The value of each constant evaluated, which the constants of other modules name.
+    values: BTreeMap<usize, Sized>,
 }
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -246,6 +248,7 @@ pub(crate) fn evaluate(
     records: &Records,
     ids: &[usize],
     refused: &BTreeSet<usize>,
+    outer: Option<&Evaluated>,
     report: &mut Report<'_>,
     reports: bool,
 ) -> Evaluated {
@@ -293,7 +296,8 @@ pub(crate) fn evaluate(
     if reports {
         cycles(env, &deps, &left, report);
     }
-    let mut values: BTreeMap<usize, Sized> = BTreeMap::new();
+    // The constants of the standard modules, which a package's constants may name.
+    let mut values: BTreeMap<usize, Sized> = outer.map(|o| o.values.clone()).unwrap_or_default();
     let mut evaluated = Evaluated::default();
     let ten = una_core::decimal::pow10(MAX_DIGITS);
     for id in order {
@@ -321,6 +325,8 @@ pub(crate) fn evaluate(
             evaluated.folded.insert(id, folded);
         }
     }
+    values.retain(|id, _| wanted.contains(id));
+    evaluated.values = values;
     evaluated
 }
 
