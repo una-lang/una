@@ -1,0 +1,11 @@
+-- test: a dependency of edition 0.4 under a root of edition 0.5 is checked under its own edition: `Array` is not a type there but a variant of `Json`, U2002 in the dependency as when it is checked alone (ADR 0122 rule 49, ADR 0139 rule 6)
+-- spec: spec/30 §12
+-- expect: error U2002 at deps/util/src/text.una:3:13
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  const line = twice("hello")
+  line

@@ -362,7 +362,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 | Ty::Error(_)
                 | Ty::Never
                 | Ty::Var(_) => {}
-                other if self.env.edition >= Edition::V0_2 => {
+                other if self.edition() >= Edition::V0_2 => {
                     if let Some(position) = self.unwritable(&other, &mut BTreeSet::new()) {
                         self.report.error(
                             Code::U2001,
@@ -1216,7 +1216,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
                         // Edition 0.2: ordering on a type parameter needs `Ord` (`spec/20 §3`).
-                        Ty::Param(_) if self.env.edition >= Edition::V0_2 => {
+                        Ty::Param(_) if self.edition() >= Edition::V0_2 => {
                             self.needs.push((left_ty, Constraint::Ord, span));
                         }
                         // A type that an unknown name left unsolved is not reported (#581).
@@ -1245,8 +1245,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 // in the refinement language (ADR 0114 rule 8.4).
                 let literal = |e: &Expr| {
                     int_literal(e).is_some()
-                        || (self.env.edition >= Edition::V0_5
-                            && super::decimal::is_float_literal(e))
+                        || (self.edition() >= Edition::V0_5 && super::decimal::is_float_literal(e))
                 };
                 // A complex product reported its own U2014 (ADR 0120 V3). A measured product
                 // is read by its magnitude.
@@ -1312,7 +1311,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let clause = self.in_clause();
         // Edition 0.5: a float literal is typed after the other operand, whose decimal scale it
         // takes (ADR 0120 rule 12).
-        let decimals = self.env.edition >= Edition::V0_5;
+        let decimals = self.edition() >= Edition::V0_5;
         let float = |e: &Expr| decimals && super::decimal::is_float_literal(e);
         let constant = (
             fixed::is_constant(left) || float(left),
@@ -1564,7 +1563,7 @@ impl<'a> Checker<'_, 'a, '_> {
     fn operand_pair(&mut self, left: &Expr, right: &Expr) -> (Ty, Ty) {
         // Edition 0.5: a float literal beside a decimal takes the scale of its own digits
         // (ADR 0120 rule 12).
-        let decimals = self.env.edition >= Edition::V0_5;
+        let decimals = self.edition() >= Edition::V0_5;
         let constant =
             |e: &Expr| fixed::is_constant(e) || (decimals && super::decimal::is_float_literal(e));
         if constant(left) && !constant(right) {
@@ -2363,7 +2362,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.findings.contained.insert(inner.span);
             // Edition 0.3: `attempt` of a call that cannot fail (ADR 0100, U3026); with a
             // deadline it can always fail.
-            if self.env.edition >= Edition::V0_3
+            if self.edition() >= Edition::V0_3
                 && open.is_none()
                 && !self.call_fails.contains_key(&inner.span)
             {

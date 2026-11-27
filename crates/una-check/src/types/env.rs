@@ -14,7 +14,7 @@ use una_syntax::ast::{
     FunctionDecl, HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param,
     PolicyDecl, PredicateDecl, Type, TypeCore, UsesClause,
 };
-use una_syntax::{Interner, Span, Symbol};
+use una_syntax::{FileId, Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
@@ -37,6 +37,12 @@ pub(crate) struct Module<'a> {
     pub(crate) path: String,
     /// The local name of the dependency it is a module of, if any.
     pub(crate) mount: Option<&'a str>,
+    /// The edition it is checked under: its package's (ADR 0122 rule 49). A standard module's
+    /// is the root package's.
+    pub(crate) edition: Edition,
+    /// The file of a package module, the root's or a dependency's; `None` for the standard
+    /// modules, whose files are in a source database of their own.
+    pub(crate) file: Option<FileId>,
     pub(crate) upper: BTreeMap<&'a str, Entity>,
     pub(crate) lower: BTreeMap<&'a str, Entity>,
     /// Names imported explicitly.
@@ -349,6 +355,12 @@ pub(crate) struct Source<'a> {
     pub(crate) reports: bool,
     /// The local name of the dependency it is a module of, if any (ADR 0122 rule 47).
     pub(crate) mount: Option<&'a str>,
+    /// The edition of the package it is a module of, when it is not the root package's (ADR
+    /// 0122 rule 49): a dependency's of an earlier edition. `None` for the root's modules and
+    /// the standard ones.
+    pub(crate) edition: Option<Edition>,
+    /// The file of a package module; `None` for the standard modules.
+    pub(crate) file: Option<FileId>,
 }
 
 /// How far the base of an alias has been lowered, to find aliases defined through themselves.
@@ -444,7 +456,9 @@ pub(crate) struct Env<'a> {
     /// name of its variable: later checks give each label position inside it a variable.
     pub(crate) edit_shapes: BTreeMap<String, super::ty::Ty>,
     alias_state: Vec<AliasState>,
-    /// The package's edition (`spec/13 §7`).
+    /// The root package's edition (`spec/13 §7`), which the standard modules have. A module's
+    /// own code is checked under [`Env::edition_of`] its module, its package's edition (ADR
+    /// 0122 rule 49), never under this one when they differ.
     pub(crate) edition: Edition,
     /// The package's profile (ADR 0109 rule 1): `app` for a single file and before edition
     /// 0.3. In `systems`, each `Int` operation outside clauses records an `overflow` site
@@ -822,6 +836,27 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// The edition module `module` is checked under: its package's (ADR 0122 rule 49), so a
+    /// dependency of an earlier edition keeps that edition's rules under a later root. The
+    /// root's edition for the standard modules and for an index past them.
+    pub(crate) fn edition_of(&self, module: usize) -> Edition {
+        self.modules
+            .get(module)
+            .map_or(self.edition, |module| module.edition)
+    }
+
+    /// The edition of the package module of the file that `span` is in, as
+    /// [`Env::edition_of`]. A package module is found by its file, header or none, so a
+    /// dependency's module never falls back to the root's edition; only a span in no package
+    /// module (a standard module's, which has the root's edition) gets the root's. O(modules),
+    /// for a message's words.
+    pub(crate) fn edition_at(&self, span: Span) -> Edition {
+        self.modules
+            .iter()
+            .find(|module| module.file == Some(span.file))
+            .map_or(self.edition, |module| module.edition)
+    }
+
     /// Whether problems in module `module` are reported.
     pub(crate) fn reports(&self, module: usize) -> bool {
         self.modules.get(module).is_some_and(|m| m.reports)
@@ -855,6 +890,8 @@ impl<'a> Env<'a> {
             reports: source.reports,
             path,
             mount: source.mount,
+            edition: source.edition.unwrap_or(self.edition),
+            file: source.file,
             upper: BTreeMap::new(),
             lower: BTreeMap::new(),
             imports: BTreeMap::new(),
@@ -1075,7 +1112,7 @@ impl<'a> Env<'a> {
                 };
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
-                    if host && !prelude::std_host_names(self.edition).contains(&name) {
+                    if host && !prelude::std_host_names(module.edition).contains(&name) {
                         continue;
                     }
                     // ADR 0123 rule 0: a package module that imports a name of the server.
@@ -1100,7 +1137,7 @@ impl<'a> Env<'a> {
                     // `millisecond`, `second` and `minute` are built-in names of `std.time`, of
                     // type `Int of Millisecond` (ADR 0116 rule 0, amended 2026-10-19).
                     if time
-                        && self.edition < una_project::Edition::V0_5
+                        && module.edition < una_project::Edition::V0_5
                         && let Some(&(_, value)) =
                             prelude::STD_TIME_CONSTANTS.iter().find(|(c, _)| *c == name)
                         && let Some(&Entity::Unit(unit)) = target.upper.get("Millisecond")
@@ -1141,8 +1178,9 @@ impl<'a> Env<'a> {
     /// The dense type that `name` names in a type, in edition 0.5 (ADR 0120 rule 3): `Array`,
     /// `Matrix`, `Tensor` and `Lu` are built in, ahead of any declaration and of the variant
     /// `Json.Array`.
-    pub(crate) fn dense_name(&self, name: &str) -> Option<Dense> {
-        if self.edition < Edition::V0_5 {
+    /// The rule is the edition's of `module`, where the name is written (ADR 0122 rule 49).
+    pub(crate) fn dense_name(&self, module: usize, name: &str) -> Option<Dense> {
+        if self.edition_of(module) < Edition::V0_5 {
             return None;
         }
         match name {
@@ -1191,6 +1229,13 @@ impl<'a> Env<'a> {
                 // The prelude functions of dense methods are reached by their receiver only
                 // (`spec/29 §17`): no name in a program finds them.
                 if name.starts_with(prelude::DENSE_HIDDEN) {
+                    return None;
+                }
+                // ADR 0122 rule 49: the environment loads the root's prelude, so a module of
+                // an earlier edition (a dependency of edition 0.4 under a root of 0.5) finds
+                // only its own edition's prelude functions, by a name and by method syntax
+                // alike: `t.parse_decimal(scale: 2)` there is U1001, as it is alone.
+                if self.edition_of(module) < Edition::V0_5 && prelude::moved_to_0_5(name) {
                     return None;
                 }
                 self.modules
@@ -1662,15 +1707,16 @@ impl<'a> Env<'a> {
     /// function of that name, so a package function `to_f64` whose first parameter has an
     /// integer type, a refinement or a measured one, or is a type parameter, is U1002 at its
     /// name: no program changes meaning silently.
+    /// The rule is its module's edition's (ADR 0122 rule 49).
     fn no_function_to_f64(&self, report: &mut Report<'_>) {
-        if self.edition < Edition::V0_3 {
-            return;
-        }
         for def in &self.functions {
             let FnAst::Function(function) = def.ast else {
                 continue;
             };
-            if def.name != "to_f64" || !self.reports(def.module) {
+            if def.name != "to_f64"
+                || !self.reports(def.module)
+                || self.edition_of(def.module) < Edition::V0_3
+            {
                 continue;
             }
             let integer = def.params.first().is_some_and(|param| {
@@ -1694,11 +1740,15 @@ impl<'a> Env<'a> {
     /// package function `to_decimal` whose first parameter has an integer type, a refinement
     /// or a measured one, `F64`, `F32`, or a type parameter, and a package function `to_f32`
     /// whose first parameter has an integer type, `F64`, or a type parameter, is U1002 at its
-    /// name, and so is an import of one: no program changes meaning silently.
+    /// name, and so is an import of one: no program changes meaning silently. Each rule is
+    /// the edition's of the module that declares or imports the function (ADR 0122 rule 49):
+    /// a dependency of edition 0.4 may declare `to_decimal(n: Int)`, and a module of edition
+    /// 0.5 that imports it is U1002 at the import.
     fn no_function_to_decimal(&self, report: &mut Report<'_>) {
         if self.edition < Edition::V0_5 {
             return;
         }
+        let edition_0_5 = |module: usize| self.edition_of(module) >= Edition::V0_5;
         let built_in = |def: &FnDef<'_>| {
             let first = def.params.first().map(|param| param.ty.base.unlabeled());
             let integer = first.is_some_and(|ty| {
@@ -1729,7 +1779,7 @@ impl<'a> Env<'a> {
             let FnAst::Function(function) = def.ast else {
                 continue;
             };
-            if self.reports(def.module) && built_in(def) {
+            if self.reports(def.module) && edition_0_5(def.module) && built_in(def) {
                 let (conversion, firsts) = what(def.name);
                 let mut diagnostic = report.make(
                     Code::U1002,
@@ -1749,7 +1799,11 @@ impl<'a> Env<'a> {
         }
         // An import of such a function, from a dependency or another module, is U1002 at the
         // name it imports: the built-in would resolve ahead of it there too.
-        for module in self.modules.iter().filter(|module| module.reports) {
+        for module in self
+            .modules
+            .iter()
+            .filter(|module| module.reports && module.edition >= Edition::V0_5)
+        {
             for import in &module.tree.imports {
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
@@ -1759,10 +1813,10 @@ impl<'a> Env<'a> {
                     let Some(Entity::Function(id)) = module.imports.get(name) else {
                         continue;
                     };
-                    let foreign = self
-                        .functions
-                        .get(*id)
-                        .is_some_and(|def| built_in(def) && !self.reports(def.module));
+                    // Not when its declaration is U1002 already.
+                    let foreign = self.functions.get(*id).is_some_and(|def| {
+                        built_in(def) && !(self.reports(def.module) && edition_0_5(def.module))
+                    });
                     if foreign {
                         let (conversion, firsts) = what(name);
                         report.error(
@@ -1966,7 +2020,9 @@ impl<'a> Env<'a> {
         }
         // ADR 0062 E3: a private function infers them from a body that only calls the
         // parameter or passes it on.
-        if !function.public && self.edition >= Edition::V0_2 && (!declares_uses || !declares_fails)
+        if !function.public
+            && self.edition_of(module) >= Edition::V0_2
+            && (!declares_uses || !declares_fails)
         {
             let text = |ident: &Ident| self.text(module, ident.name).to_owned();
             let mut run: Vec<usize> = Vec::new();
@@ -2391,9 +2447,9 @@ impl<'a> Env<'a> {
                 Ty::Error(_) => {}
                 _ => {
                     if self.reports(module) {
-                        let message = if self.edition >= Edition::V0_5 {
+                        let message = if self.edition_of(module) >= Edition::V0_5 {
                             "a unit follows only a number type: `Int`, a fixed-width integer type, `F64`, `F32`, `Decimal[s]`, `Complex[F64]` or `Complex[F32]`"
-                        } else if self.edition >= Edition::V0_3 {
+                        } else if self.edition_of(module) >= Edition::V0_3 {
                             "a unit follows only a number type: `Int`, a fixed-width integer type or `F64`"
                         } else {
                             "a unit follows only an integer type, `Int` or a fixed-width one"
@@ -2448,7 +2504,7 @@ impl<'a> Env<'a> {
                     range.span,
                 ));
             } else if self.reports(module) {
-                let message = if self.edition >= Edition::V0_2 {
+                let message = if self.edition_of(module) >= Edition::V0_2 {
                     "range sugar applies only to integer types"
                 } else {
                     "range sugar applies only to `Int`"
@@ -2703,7 +2759,7 @@ impl<'a> Env<'a> {
         // ADR 0103 rule 1: in edition 0.3 a refined type argument is well-formed.
         if !self.reports(module)
             || !lowered.is_refined()
-            || self.edition >= una_project::Edition::V0_3
+            || self.edition_of(module) >= una_project::Edition::V0_3
         {
             return;
         }
@@ -2733,7 +2789,7 @@ impl<'a> Env<'a> {
             }
         };
         // The rule holds in every edition; edition 0.1 keeps its message (#188).
-        let version = if self.edition >= Edition::V0_2 {
+        let version = if self.edition_of(module) >= Edition::V0_2 {
             ""
         } else {
             " in v0.1"
@@ -2833,7 +2889,7 @@ impl<'a> Env<'a> {
         }
         // Edition 0.5: `Decimal` is the decimal type only with its scale, an integer literal,
         // in brackets (ADR 0120 rule 2); the name alone is the `Json` variant.
-        if self.edition >= Edition::V0_5 && name == "Decimal" {
+        if self.edition_of(module) >= Edition::V0_5 && name == "Decimal" {
             if reports {
                 report.error(
                     Code::U2037,
@@ -2847,7 +2903,7 @@ impl<'a> Env<'a> {
         // Edition 0.5 (ADR 0120 rule 3): `Array`, `Matrix`, `Tensor` and `Lu` are built-in
         // types, which no declaration can hide; the prelude's variant `Json.Array` is a constructor, written
         // with parentheses, so it never meets the type, written with brackets.
-        if let Some(dense) = self.dense_name(name) {
+        if let Some(dense) = self.dense_name(module, name) {
             if bases.len() != 1 {
                 return arity(1, bases.len());
             }
@@ -2964,7 +3020,8 @@ impl<'a> Env<'a> {
             // ADR 0139 rule 7: in edition 0.4, `Array` is still `Json`'s variant; the dense
             // type moved to edition 0.5.
             Some(Entity::Variant(kind, _))
-                if self.edition == Edition::V0_4 && matches!(name, "Array" | "Decimal") =>
+                if self.edition_of(module) == Edition::V0_4
+                    && matches!(name, "Array" | "Decimal") =>
             {
                 format!(
                     "`{name}` is a variant of `{}`, not a type; the type `{name}` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it",

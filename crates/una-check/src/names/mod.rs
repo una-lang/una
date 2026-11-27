@@ -136,6 +136,18 @@ fn check_names_with(
         diagnostics: Vec::new(),
         references: Vec::new(),
         poison,
+        // ADR 0122 rule 49: each module's edition, its package's, found once per module.
+        editions: package
+            .modules
+            .iter()
+            .filter_map(|module| {
+                let path = package.sources.file(module.id).path();
+                package
+                    .settings
+                    .mount_of(path)
+                    .map(|mount| (module.id, mount.edition))
+            })
+            .collect(),
     };
     let mut tables: Vec<Table<'_>> = package
         .modules
@@ -242,6 +254,9 @@ struct Checker<'p, 'a> {
     references: Vec<(Span, Span)>,
     /// The poisoned names of each module with broken declarations (ADR 0096 rule 8).
     poison: Option<&'p BTreeMap<FileId, Poison>>,
+    /// The edition of each module of a dependency (ADR 0122 rule 49); every other file is of
+    /// the package's edition.
+    editions: BTreeMap<FileId, Edition>,
 }
 
 impl<'p, 'a> Checker<'p, 'a> {
@@ -259,6 +274,16 @@ impl<'p, 'a> Checker<'p, 'a> {
         settings
             .mount_of(self.package.sources.file(id).path())
             .map(|mount| mount.local.as_str())
+    }
+
+    /// The edition the module of file `id` is checked under: its package's (ADR 0122 rule 49),
+    /// never the importing package's.
+    /// O(log m) for m dependency modules.
+    fn edition(&self, id: FileId) -> Edition {
+        self.editions
+            .get(&id)
+            .copied()
+            .unwrap_or(self.package.settings.edition)
     }
 
     fn name(&self, ident: &Ident) -> &'a str {
@@ -539,7 +564,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                             first,
                             format!(
                                 "{} \"{text}\" is defined twice in this module",
-                                self.package.settings.edition.test_word()
+                                self.edition(example.name.span.file).test_word()
                             ),
                         ),
                         None => {
@@ -562,6 +587,8 @@ impl<'p, 'a> Checker<'p, 'a> {
         variants: Vec<&'a str>,
     ) {
         let name = self.name(ident);
+        // The names built in by the edition of the module that declares it (ADR 0122 rule 49).
+        let edition = self.edition(ident.span.file);
         let upper = matches!(
             what,
             What::Kind | What::Variant | What::Capability | What::Measure
@@ -572,10 +599,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.lower_convention(ident, what.word());
         }
         // Edition 0.2: the fixed-width integer types are built in (`spec/18 §1` rule 1).
-        if upper
-            && self.package.settings.edition >= Edition::V0_2
-            && IntType::from_name(name).is_some()
-        {
+        if upper && edition >= Edition::V0_2 && IntType::from_name(name).is_some() {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
@@ -587,7 +611,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.diagnostics.push(diagnostic);
         }
         // Edition 0.5: `Decimal` is built in (`spec/29 §16`, ADR 0120 rule 3).
-        if upper && self.package.settings.edition >= Edition::V0_5 && name == "Decimal" {
+        if upper && edition >= Edition::V0_5 && name == "Decimal" {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
@@ -599,7 +623,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.diagnostics.push(diagnostic);
         }
         // Edition 0.3: `F64` is built in (`spec/29`, ADR 0114 rule 1.4).
-        if upper && self.package.settings.edition >= Edition::V0_3 && name == "F64" {
+        if upper && edition >= Edition::V0_3 && name == "F64" {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
@@ -612,9 +636,7 @@ impl<'p, 'a> Checker<'p, 'a> {
         }
         // Edition 0.5: the dense types are built in, and `Tensor` and `Lu` are reserved for
         // them (`spec/29 §17`, ADR 0120 rule 3).
-        if upper
-            && self.package.settings.edition >= Edition::V0_5
-            && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
+        if upper && edition >= Edition::V0_5 && matches!(name, "Array" | "Matrix" | "Tensor" | "Lu")
         {
             let diagnostic = self.make(
                 Code::U1002,
@@ -628,10 +650,7 @@ impl<'p, 'a> Checker<'p, 'a> {
         }
         // Edition 0.5: the other types of the numeric foundation are built in (`spec/29`, ADR
         // 0120 rule 3), as `F64` is; `Decimal` and the dense types have their own messages above.
-        if upper
-            && self.package.settings.edition >= Edition::V0_5
-            && matches!(name, "F32" | "Complex")
-        {
+        if upper && edition >= Edition::V0_5 && matches!(name, "F32" | "Complex") {
             let mut diagnostic = self.make(
                 Code::U1002,
                 ident.span,
@@ -653,7 +672,7 @@ impl<'p, 'a> Checker<'p, 'a> {
         // uses, cannot be shadowed by a declaration (`spec/03 §1`, ADR 0079): in edition 0.1 a
         // kind named `Int` silently replaced it (#130).
         if upper
-            && self.package.settings.edition >= Edition::V0_2
+            && edition >= Edition::V0_2
             && matches!(
                 name,
                 "Int" | "Nat" | "Bool" | "Text" | "Unit" | "Hashed" | "List" | "Option" | "Result"
@@ -670,10 +689,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.diagnostics.push(diagnostic);
         }
         // Edition 0.2: maps and their entries are built in (`spec/21 §1` rule 1).
-        if upper
-            && self.package.settings.edition >= Edition::V0_2
-            && matches!(name, "Map" | "Entry")
-        {
+        if upper && edition >= Edition::V0_2 && matches!(name, "Map" | "Entry") {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
@@ -687,7 +703,7 @@ impl<'p, 'a> Checker<'p, 'a> {
         // Edition 0.2: the kinds of JSON are names of the prelude (`spec/23 §1` rule 2); their
         // variants may be shadowed, as `Some` may.
         if upper
-            && self.package.settings.edition >= Edition::V0_2
+            && edition >= Edition::V0_2
             && matches!(
                 name,
                 "Json" | "JsonNumber" | "JsonError" | "Http" | "Header" | "Response" | "HttpError"
@@ -704,10 +720,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.diagnostics.push(diagnostic);
         }
         // Edition 0.2: the constraints are names of the prelude (`spec/20 §2` rule 3).
-        if upper
-            && self.package.settings.edition >= Edition::V0_2
-            && matches!(name, "Eq" | "Ord" | "Integer")
-        {
+        if upper && edition >= Edition::V0_2 && matches!(name, "Eq" | "Ord" | "Integer") {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
@@ -1001,7 +1014,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             }
             // The importable standard modules (`spec/10 §11` rule 10), `std.collections` among
             // them from edition 0.5 (ADR 0119 rule 0).
-            let edition = self.package.settings.edition;
+            let edition = self.edition(import.module.span.file);
             let importable = prelude::importable(edition);
             let is_std = importable.contains(&path.as_str());
             let standard: &[&str] = match path.as_str() {
@@ -1063,7 +1076,8 @@ impl<'p, 'a> Checker<'p, 'a> {
                     Found::Declared(declared, file) if !declared.public => {
                         self.private(ident.span, name, &path, &declared, file);
                     }
-                    Found::Declared(declared, _) => {
+                    Found::Declared(declared, file) => {
+                        self.built_in_import(ident.span, name, edition, &declared, file, &path);
                         if declared.what == What::Kind
                             && let Some(table) = tables.get_mut(index)
                         {
@@ -1084,6 +1098,53 @@ impl<'p, 'a> Checker<'p, 'a> {
                     Found::Standard | Found::Unknown => {}
                 }
                 self.import_name(tables, index, ident, name);
+            }
+        }
+    }
+
+    /// U1002 at an import, into a module of edition `edition`, of an upper-case declaration of
+    /// module `path` (file `file`) whose name, or the name of one of whose variants, that
+    /// edition builds in while the declaring module's edition does not (ADR 0122 rule 49):
+    /// a dependency of edition 0.4 may declare `kind F32`, and a module of edition 0.5 may not
+    /// import it, since no declaration takes the name there (ADR 0120 rule 3). When both
+    /// editions build the name in, the declaration is U1002 itself. O(variants).
+    fn built_in_import(
+        &mut self,
+        span: Span,
+        name: &str,
+        edition: Edition,
+        declared: &Declared<'a>,
+        file: FileId,
+        path: &str,
+    ) {
+        if !matches!(
+            declared.what,
+            What::Kind | What::Variant | What::Capability | What::Measure
+        ) {
+            return;
+        }
+        let own = self.edition(file);
+        let names = std::iter::once(name).chain(declared.variants.iter().copied());
+        for built in names {
+            let Some(from) = prelude::built_in_upper(built) else {
+                continue;
+            };
+            if edition >= from && own < from {
+                let what = if built == name {
+                    format!("{} `{name}`", declared.what.word())
+                } else {
+                    format!("variant `{built}` of kind `{name}`")
+                };
+                self.error(
+                    Code::U1002,
+                    span,
+                    format!(
+                        "`{built}` is a built-in name from edition {}, the edition of this module, so the {what} of module `{path}`, of edition {}, cannot be imported here",
+                        from.name(),
+                        own.name()
+                    ),
+                );
+                return;
             }
         }
     }

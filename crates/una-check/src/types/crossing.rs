@@ -1099,7 +1099,7 @@ impl Checker<'_, '_, '_> {
             boundary,
             &format!(
                 "this {}'s `given` of handler `{name}`",
-                self.env.edition.test_word()
+                self.edition().test_word()
             ),
             &grants,
             span,

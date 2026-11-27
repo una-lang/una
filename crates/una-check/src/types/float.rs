@@ -335,10 +335,10 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_3 {
+        if self.edition() < Edition::V0_3 {
             return None;
         }
-        let edition_0_5 = self.env.edition >= Edition::V0_5;
+        let edition_0_5 = self.edition() >= Edition::V0_5;
         let receiver = self.resolve(target);
         let label = self.deep(target);
         // A measured receiver takes its magnitude's methods, with the units of ADR 0114 rule

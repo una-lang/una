@@ -160,7 +160,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);
@@ -308,7 +308,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);

@@ -1,0 +1,18 @@
+-- test: a dependency of edition 0.4 under a root of edition 0.5 is checked and run under its own edition: it declares `to_decimal` on an `Int` and `update` on a `Map`, which edition 0.5 hides behind its built-ins (U1002 there), and binds with `let` and `let edit` (ADR 0122 rule 49)
+-- spec: spec/30 §12
+-- grant: console
+-- expect: run-output "hellohello 4"
+-- expect: test-pass
+module main
+
+import strings.text (bump, twice)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const line = twice("hello")
+  @console.print("{line} {bump(3)}")
+
+test "the dependency's function runs under its own edition"
+  do bump(3)
+  expect result == 4

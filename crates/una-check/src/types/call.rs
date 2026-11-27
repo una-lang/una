@@ -174,7 +174,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // ADR 0139 rule 7: `Map.update` moved to edition 0.5 with no diagnostic of its own, so
         // edition 0.4 gives the ordinary U1001, with the advice to raise the edition (#1743).
-        if self.env.edition == Edition::V0_4
+        if self.edition() == Edition::V0_4
             && call
             && member == "update"
             && matches!(ty, Ty::Map(..))
@@ -614,7 +614,7 @@ impl<'a> Checker<'_, 'a, '_> {
             // Edition 0.1 keeps the decision in the flow as well (#253, #356): a function value
             // whose parameter is `ℓ_T` rejects it (U4001), where edition 0.2 lets the raise
             // below carry it. Stripping it here would accept programs that edition 0.1 rejects.
-            let found = if self.env.edition >= Edition::V0_2 {
+            let found = if self.edition() >= Edition::V0_2 {
                 stripped
             } else {
                 found
@@ -785,7 +785,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // (`spec/29 §8`, ADR 0114 rule 8.4).
         let float_constant = def.module == self.env.prelude
             && matches!(def.name, "nan" | "infinity")
-            && self.env.edition >= una_project::Edition::V0_3;
+            && self.edition() >= una_project::Edition::V0_3;
         if !matches!(def.kind, FnKind::Predicate { .. }) && !float_constant {
             // Contracts call only predicates (`spec/03 §3`).
             let word = if def.kind == FnKind::Policy {
@@ -1201,7 +1201,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if subst.is_empty() || def.module == self.env.prelude {
             return result;
         }
-        if self.env.edition >= Edition::V0_2 {
+        if self.edition() >= Edition::V0_2 {
             let summary = self.env.summaries.get(&id).cloned().unwrap_or_default();
             return super::summary::raise(&def.result.base, result, &summary, subst);
         }
@@ -1320,7 +1320,7 @@ impl<'a> Checker<'_, 'a, '_> {
         checked: &[Checked<'a>],
     ) -> Label {
         let mut raised = Label::public();
-        if self.env.edition >= Edition::V0_2 || self.type_params.is_empty() {
+        if self.edition() >= Edition::V0_2 || self.type_params.is_empty() {
             return raised;
         }
         // Every decision the arguments carry, at any position, beside callbacks too.
@@ -1598,7 +1598,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         *at,
                         format!(
                             "the `via` `{via}` would have a public failure (ADR 0098), but the `Keys` handler `{handler}` is named here, outside its declaration and {}",
-                            self.env.edition.tests_word()
+                            self.edition().tests_word()
                         ),
                     ),
                 );
@@ -1881,7 +1881,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let result = if host
             && capability.name == "Clock"
             && op_name == "now"
-            && self.env.edition >= Edition::V0_4
+            && self.edition() >= Edition::V0_4
         {
             self.clock_site(span);
             match self.env.clock_timing.get(&span) {
@@ -2404,7 +2404,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // ADR 0120 rules 3 and 38: `Matrix`, `Tensor` and `Lu` are types without a
         // constructor; an `Lu[T]` in particular comes only from `lu()`, so none is forged.
         if name != "Array"
-            && let Some(dense) = self.env.dense_name(name)
+            && let Some(dense) = self.env.dense_name(self.module, name)
         {
             let made_by = match dense {
                 super::ty::Dense::Lu => "a factorization comes from `m.lu()`",
@@ -2546,7 +2546,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// unifications join into it still reach this type; a type without a refinement, in any
     /// edition before `0.3` always, is returned as it is.
     fn refined_vars_at_base(&self, ty: &Ty) -> Ty {
-        if self.env.edition < Edition::V0_3 || !self.vars.resolve_shape(ty).flags().refined {
+        if self.edition() < Edition::V0_3 || !self.vars.resolve_shape(ty).flags().refined {
             return ty.clone();
         }
         match ty {
@@ -2681,7 +2681,7 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let module = def.module;
         let labeled_json = labeled
-            && self.env.edition >= Edition::V0_4
+            && self.edition() >= Edition::V0_4
             && module == self.env.prelude
             && def.name == "Json";
         let (fields, constructor): (Vec<FieldDef<'a>>, &'a str) = match index {

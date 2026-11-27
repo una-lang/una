@@ -156,7 +156,7 @@ impl Checker<'_, '_, '_> {
     /// scale of its own digits, since a comparison is exact across scales. A literal whose own
     /// scale is above 38 is U2037.
     pub(crate) fn comparison_literal(&mut self, literal: &Expr, other: &Ty) -> Ty {
-        if self.env.edition >= Edition::V0_5
+        if self.edition() >= Edition::V0_5
             && self.is_decimal(&self.number_of(other))
             && let Some(text) = float_text(literal)
         {
@@ -377,7 +377,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         let receiver = self.resolve(target);
@@ -699,7 +699,7 @@ impl Checker<'_, '_, '_> {
         span: Span,
         ty: Ty,
     ) -> Ty {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return ty;
         }
         let Some(def) = self.env.functions.get(id) else {
@@ -730,7 +730,7 @@ impl Checker<'_, '_, '_> {
     /// value in edition 0.5: the scale of their result is the literal of each call (ADR 0120
     /// rules 16 and 17), which a function value cannot carry.
     pub(crate) fn decimal_function_value(&mut self, id: usize, span: Span) {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return;
         }
         let Some(def) = self.env.functions.get(id) else {

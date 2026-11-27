@@ -1,0 +1,8 @@
+module text
+
+pub dec(t: Text) -> Text
+=
+  let outcome = attempt t.parse_decimal(scale: 2)
+  when outcome
+    is Ok(d) -> "{d}"
+    is Err(failure) -> "bad"

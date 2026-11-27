@@ -1,0 +1,6 @@
+module text
+
+pub twice(word: Text) -> Text
+=
+  const both = "{word}{word}"
+  both

@@ -1,0 +1,7 @@
+ita case
+  version 0.1.0
+  edition 0.4
+
+needs
+  util as strings from path "deps/util"
+    accept name

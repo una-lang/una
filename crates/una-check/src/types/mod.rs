@@ -549,14 +549,19 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     let sources = package
         .modules
         .iter()
-        .map(|module| Source {
-            tree: module.tree,
-            interner: package.interner,
-            reports: !module.broken,
-            mount: package
+        .map(|module| {
+            let mount = package
                 .settings
-                .mount_of(package.sources.file(module.id).path())
-                .map(|mount| mount.local.as_str()),
+                .mount_of(package.sources.file(module.id).path());
+            Source {
+                tree: module.tree,
+                interner: package.interner,
+                reports: !module.broken,
+                mount: mount.map(|mount| mount.local.as_str()),
+                // ADR 0122 rule 49: a dependency's module is checked under its own edition.
+                edition: mount.map(|mount| mount.edition),
+                file: Some(module.id),
+            }
         })
         .collect();
     let categories = package
@@ -658,6 +663,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     facts::kind_recursion(&env, &mut report);
     // Edition 0.5: functions named like a built-in method of a collection (ADR 0119 rules 0
     // and 18, moved to edition 0.5 by ADR 0139).
+    // Each function's module's edition decides (ADR 0122 rule 49).
     if package.settings.edition >= Edition::V0_5 {
         collections::method_names(&env, &mut report);
     }
@@ -956,7 +962,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         findings.refused_constants = refused;
         constants::substitution_budget(&env, &findings.records, &findings.constants, &mut report);
     }
-    authority::testing_installs(&findings, &mut report, env.edition);
+    authority::testing_installs(&findings, &mut report, |span| env.edition_at(span));
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
     crossing::releases(&env, &findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
@@ -1575,6 +1581,8 @@ impl Standard {
             interner: &self.interner,
             reports: false,
             mount: None,
+            edition: None,
+            file: None,
         }
     }
 }
@@ -2337,6 +2345,8 @@ mod tests {
             interner: &standard.interner,
             reports: true,
             mount: None,
+            edition: None,
+            file: None,
         };
         let mut env = Env::build(
             Vec::new(),

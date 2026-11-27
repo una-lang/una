@@ -1,0 +1,5 @@
+module text
+
+pub to_decimal(n: Int) -> Int = n
+
+pub twice(word: Text) -> Text = "{word}{word}"

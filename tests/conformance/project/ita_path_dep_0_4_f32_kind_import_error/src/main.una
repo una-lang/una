@@ -1,0 +1,12 @@
+-- test: a root of edition 0.5 that imports kinds named `F32` and `Complex` from a dependency of edition 0.4 is U1002 at each import, by the rule of the importing module's edition: the built-in numeric types take those names there, while the declarations are valid in their own edition (ADR 0122 rule 49, ADR 0120 rule 3)
+-- spec: spec/30 §12
+-- expect: error U1002 at src/main.una:7:22
+-- expect: error U1002 at src/main.una:7:31
+module main
+
+import strings.text (Complex, F32, half)
+
+pub show() -> Text
+=
+  const x: F32 = 7
+  "{half(x)}"

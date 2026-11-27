@@ -83,6 +83,16 @@ pub fn words_of_0_5(text: &str) -> String {
 /// the binding words of edition `0.5` ([`words_of_0_5`]). U7007, whose message names `let` as
 /// the form edition `0.5` changed, keeps its words.
 pub fn in_edition_0_5(diagnostic: &mut Diagnostic) {
+    in_edition_0_5_where(diagnostic, |_| true);
+}
+
+/// [`in_edition_0_5`] for a program whose packages have different editions (ADR 0122 rule
+/// 49): each text takes the words of the file it is about, as `edition_0_5` tells for a file's
+/// path. The message and the repair descriptions are about the main location, and each
+/// related note about its own, so a note in a dependency of edition `0.4` keeps its words
+/// under a root of edition `0.5`, and a note in the root takes the words of `0.5` in a
+/// dependency's diagnostic.
+pub fn in_edition_0_5_where(diagnostic: &mut Diagnostic, edition_0_5: impl Fn(&str) -> bool) {
     if diagnostic.code == Code::U7007 {
         return;
     }
@@ -91,12 +101,16 @@ pub fn in_edition_0_5(diagnostic: &mut Diagnostic) {
             *text = words_of_0_5(text);
         }
     };
-    rewrite(&mut diagnostic.message);
-    for related in &mut diagnostic.related {
-        rewrite(&mut related.message);
+    if edition_0_5(&diagnostic.primary.file) {
+        rewrite(&mut diagnostic.message);
+        for repair in &mut diagnostic.repairs {
+            rewrite(&mut repair.description);
+        }
     }
-    for repair in &mut diagnostic.repairs {
-        rewrite(&mut repair.description);
+    for related in &mut diagnostic.related {
+        if edition_0_5(&related.location.file) {
+            rewrite(&mut related.message);
+        }
     }
 }
 
@@ -160,5 +174,37 @@ mod tests {
         }
         assert_eq!(words_of_0_5("`let`, then `let`"), "`const`, then `const`");
         assert_eq!(words_of_0_5("`let (a, b) = e`"), "`const (a, b) = e`");
+    }
+
+    #[test]
+    fn each_text_takes_the_words_of_its_own_file() {
+        // ADR 0122 rule 49 with ADR 0137 rule 10 (#2260): the message is about the main
+        // location's file, each related note about its own.
+        let at = |file: &str| crate::Location {
+            file: file.to_owned(),
+            start: crate::Position { line: 1, col: 1 },
+            end: crate::Position { line: 1, col: 2 },
+        };
+        let make = |primary: &str, related: &str| {
+            let mut diagnostic =
+                Diagnostic::error(Code::U2001, "bind its result with `let` first", at(primary));
+            diagnostic.related.push(crate::Related {
+                location: at(related),
+                message: "not a `let`".to_owned(),
+            });
+            diagnostic
+        };
+        let edition_0_5 = |file: &str| file.starts_with("src/");
+        let mut root = make("src/a.una", "deps/util/src/b.una");
+        in_edition_0_5_where(&mut root, edition_0_5);
+        assert_eq!(root.message, "bind its result with `const` first");
+        assert_eq!(root.related[0].message, "not a `let`");
+        let mut dependency = make("deps/util/src/b.una", "src/a.una");
+        in_edition_0_5_where(&mut dependency, edition_0_5);
+        assert_eq!(dependency.message, "bind its result with `let` first");
+        assert_eq!(
+            dependency.related[0].message,
+            "not a `const` or `var` statement"
+        );
     }
 }

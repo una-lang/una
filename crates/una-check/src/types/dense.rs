@@ -526,7 +526,7 @@ impl Checker<'_, '_, '_> {
 
     /// The dense type of `ty` and its element, through solved variables and labels.
     pub(crate) fn dense_of(&self, ty: &Ty) -> Option<(Dense, Shared<Ty>)> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         match self.vars.peel(ty) {

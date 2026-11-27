@@ -419,7 +419,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let wider = self
             .permitted_ops(level, target)
             .is_some_and(|permitted| permitted.iter().any(|op| !ops.contains(op)));
-        if self.env.edition >= una_project::Edition::V0_3 && wider && !ops.is_empty() {
+        if self.edition() >= una_project::Edition::V0_3 && wider && !ops.is_empty() {
             format!("@{target}[{}]", ops.join(", "))
         } else {
             format!("@{target}")
@@ -432,7 +432,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// point is public (`spec/04 §8`), so it is one of them. Editions 0.1 and 0.2 keep their
     /// repairs as they are.
     fn header_change(&self, mut repair: Repair) -> Repair {
-        if self.env.edition < una_project::Edition::V0_3 {
+        if self.edition() < una_project::Edition::V0_3 {
             return repair;
         }
         let Some(def) = self.current.and_then(|id| self.env.functions.get(id)) else {
@@ -637,7 +637,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     // `uses`, not the function around it.
                     Base::Pure
                         if self.own_depth() > 0
-                            && self.env.edition >= una_project::Edition::V0_2 =>
+                            && self.edition() >= una_project::Edition::V0_2 =>
                     {
                         self.report.error(
                             Code::U3004,
@@ -741,7 +741,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         );
                         // ADR 0093 rule 6, edition 0.3: rebinding the callee's reference to a
                         // binding of the capability it needs is a narrowing route.
-                        if self.env.edition >= una_project::Edition::V0_3 {
+                        if self.edition() >= una_project::Edition::V0_3 {
                             diagnostic.repairs.extend(self.rebinding(
                                 span,
                                 need,
@@ -879,7 +879,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         format!(
                             "{callee} needs `{}`, a host capability, and {} cannot use host capabilities; give it a handler with `given`",
                             self.show_need(need),
-                            self.env.edition.tests_word()
+                            self.edition().tests_word()
                         ),
                     ),
                     Base::Example => self.report.error(
@@ -902,7 +902,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         // ADR 0093 rule 6, edition 0.3: rebinding the callee's reference to a
                         // binding the caller holds ranks before declaring a new one, which
                         // widens the header, a public one last.
-                        if self.env.edition >= una_project::Edition::V0_3 {
+                        if self.edition() >= una_project::Edition::V0_3 {
                             diagnostic.repairs.extend(self.rebinding(
                                 span,
                                 need,
@@ -946,7 +946,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // one chosen by name among several. The right-hand side it adds to the statement's
         // `with` resolves outside that `with`, so the candidates are counted there, below the
         // statement's own frame.
-        let narrow = narrow && self.env.edition >= una_project::Edition::V0_3;
+        let narrow = narrow && self.edition() >= una_project::Edition::V0_3;
         let outer = statement.outer.min(self.frames.len());
         let other = if narrow {
             match self.sole_holder(
@@ -1099,7 +1099,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 span,
                 format!(
                     "`{name}` belongs to `std.testing`, which only handler operations and {} may use",
-                    self.env.edition.tests_word()
+                    self.edition().tests_word()
                 ),
             );
         }
@@ -4317,11 +4317,12 @@ pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
 
 /// U3015: a `with` binding that installs a handler whose operation bodies use `std.testing`,
 /// with the first use as a related span (ADR 0043 rule 2). Such a handler is installed only by
-/// `given` lines of examples, named by `edition`'s word for them (ADR 0105 rule 6).
+/// `given` lines of examples, named by the word for them of the edition of the binding's
+/// module, `edition_at` its span (ADR 0105 rule 6, ADR 0122 rule 49).
 pub(crate) fn testing_installs(
     findings: &Findings,
     report: &mut Report<'_>,
-    edition: una_project::Edition,
+    edition_at: impl Fn(Span) -> una_project::Edition,
 ) {
     let mut installs: Vec<&(usize, Span)> = findings.with_installs.iter().collect();
     installs.sort_by_key(|(_, span)| (span.file, span.start, span.end));
@@ -4335,7 +4336,7 @@ pub(crate) fn testing_installs(
             *span,
             format!(
                 "this `with` binding installs a handler that uses `std.testing`, which only `given` lines of {} may install",
-                edition.tests_word()
+                edition_at(*span).tests_word()
             ),
         );
         diagnostic

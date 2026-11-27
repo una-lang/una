@@ -75,6 +75,9 @@ pub struct Mount {
     /// The prefix of its module files' paths in the source database, ending with `src/`, such
     /// as `../util/src/`.
     pub src: String,
+    /// The edition of its `ita.una`, under which its modules are read and checked (ADR 0122
+    /// rule 49): its dependent's or earlier.
+    pub edition: Edition,
 }
 
 impl Manifest {

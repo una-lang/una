@@ -41,7 +41,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_2 {
+        if self.edition() < Edition::V0_2 {
             return None;
         }
         let labeled = self.labeled(target_ty);

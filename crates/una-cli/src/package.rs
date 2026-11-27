@@ -594,6 +594,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             manifest.mounts.push(una_project::Mount {
                 local: local.value.clone(),
                 src: format!("{}/src/", dependency.dir),
+                edition: settings.edition,
             });
             let manifest_text = package.sources.file(manifest_id).text();
             manifest.boundaries.push(una_project::Boundary {

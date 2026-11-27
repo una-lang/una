@@ -1,0 +1,12 @@
+ita case
+  version 0.1.0
+  edition 0.5
+
+needs
+  util as strings from path "deps/util"
+    accept name
+
+run
+  entry main
+  grants
+    console

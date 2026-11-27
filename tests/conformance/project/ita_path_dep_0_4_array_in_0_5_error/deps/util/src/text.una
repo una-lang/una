@@ -1,0 +1,5 @@
+module text
+
+pub size(a: Array[Int]) -> Int = 0
+
+pub twice(word: Text) -> Text = "{word}{word}"

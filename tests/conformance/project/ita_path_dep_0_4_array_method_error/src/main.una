@@ -1,0 +1,6 @@
+-- test: a dependency of edition 0.4 under a root of edition 0.5 reaches no function that edition 0.5 adds to the prelude by method syntax either: `xs.array()` is U1001 in the dependency as when it is checked alone, never the prelude's function typed under the rules of edition 0.4 (ADR 0122 rule 49, ADR 0139 rule 6)
+-- spec: spec/30 §12
+-- expect: error U1001 at deps/util/src/text.una:5:14
+module main
+
+import strings.text (count)

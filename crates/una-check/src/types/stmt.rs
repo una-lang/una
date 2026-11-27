@@ -1453,7 +1453,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // never run. Their own U3008 and U3009 are held with them until the package is judged.
         // A `within` can always fail.
         let dead = self.pass == super::authority::Pass::Check
-            && self.env.edition >= una_project::Edition::V0_3
+            && self.edition() >= una_project::Edition::V0_3
             && timed.is_none()
             && inner.is_none();
         if self.pass == super::authority::Pass::Check

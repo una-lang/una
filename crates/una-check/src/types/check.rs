@@ -557,6 +557,12 @@ pub(crate) fn declarations_at<'a>(
 }
 
 impl<'c, 'a, 's> Checker<'c, 'a, 's> {
+    /// The edition the code being checked is checked under: its module's package's (ADR 0122
+    /// rule 49), never the root's when a dependency's differs.
+    pub(crate) fn edition(&self) -> Edition {
+        self.env.edition_of(self.module)
+    }
+
     fn new(
         env: &'c mut Env<'a>,
         facts: &'c KindFacts,
@@ -1073,7 +1079,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// Records, in pass 2, that the type at `span` takes its refinements from the final value
     /// of `from` (ADR 0103 rule 5).
     pub(crate) fn refit(&mut self, span: Span, from: Ty) {
-        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+        if self.pass == Pass::Check && self.edition() >= Edition::V0_3 {
             self.records.refits.push((span, from));
         }
     }
@@ -1082,7 +1088,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// (ADR 0120, `super::dense::SYNTHESIZING`): its flows keep no refinement of the type
     /// arguments a later unification settles, as elaboration does.
     pub(crate) fn synthesized(&mut self, span: Span) {
-        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+        if self.pass == Pass::Check && self.edition() >= Edition::V0_3 {
             self.records.synthesized.insert(span);
         }
     }
@@ -1090,7 +1096,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// Records, in pass 2 and edition `0.3`, a value of type `source` at `span` flowing into
     /// `target`, for its pending `refinement` obligation (ADR 0103 rule 4, #615).
     pub(crate) fn record_flow(&mut self, span: Span, target: &Ty, source: &Ty) {
-        if self.pass == Pass::Check && self.env.edition >= Edition::V0_3 {
+        if self.pass == Pass::Check && self.edition() >= Edition::V0_3 {
             self.records
                 .refined_flows
                 .push(super::records::RefinedFlow {
@@ -1133,6 +1139,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// types that inference left unknown when nothing else was reported.
     fn finish(self) {
         let Checker {
+            module,
             report,
             findings,
             vars,
@@ -1191,7 +1198,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             findings.instances.push((current, callee, args, span));
         }
         if let Some(current) = current {
-            let v0_2 = env.edition >= Edition::V0_2;
+            let v0_2 = env.edition_of(module) >= Edition::V0_2;
             let mut reported: Vec<Span> = Vec::new();
             // The U2026 of each type parameter, in order: one edit per parameter, writing the
             // strongest constraint its body needs, so that the repairs of one check never edit
@@ -2248,7 +2255,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                let scalar = self.env.edition >= una_project::Edition::V0_2
+                let scalar = self.edition() >= una_project::Edition::V0_2
                     && def.is_some_and(|def| {
                         def.type_params.get(index) == Some(name)
                             && matches!(
