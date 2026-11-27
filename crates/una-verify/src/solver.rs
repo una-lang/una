@@ -237,8 +237,11 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
                 )
             };
         }
-        // Past its processor time, Z3's own handler of `SIGXCPU` ends the child by an exit:
-        // `cpu`, whatever came before on stdout, never a proof, a refutation or U8001.
+        // The `timeout` word with an exit: what Z3's own handler of `SIGXCPU` wrote before
+        // #2268, and the fallback of the child's processor-time thread
+        // (`una_sys::solver::processor_time`) if raising the signal ever returned. Since #2268 a
+        // child past its processor time ends by the signal (above). Either way `cpu`, whatever
+        // came before on stdout, never a proof, a refutation or U8001.
         Ended::Exited(_) if past_processor_time(&raw.stdout) => return unknown("cpu", None),
         Ended::Exited(status) => status,
     };

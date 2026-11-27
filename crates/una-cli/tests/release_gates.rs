@@ -2658,19 +2658,19 @@ fn the_limits_leg_refuses_emulation_and_counts_its_cases() {
     );
     let cases: &[Case] = &[
         // Native, with the counts of macOS: both runs, in order.
-        ("0", "", "3", "13", "0", "", 0, &both),
+        ("0", "", "3", "14", "0", "", 0, &both),
         // Under emulation, or when it cannot tell, no case runs.
-        ("0", "1", "3", "13", "0", "", 1, ""),
-        ("1", "", "3", "13", "0", "", 1, ""),
-        ("", "", "3", "13", "0", "", 1, ""),
+        ("0", "1", "3", "14", "0", "", 1, ""),
+        ("1", "", "3", "14", "0", "", 1, ""),
+        ("", "", "3", "14", "0", "", 1, ""),
         // A case missing, or one more than counted, fails the gate.
         ("0", "", "2", "13", "0", "", 1, limits),
-        ("0", "", "3", "11", "0", "", 1, &both),
+        ("0", "", "3", "13", "0", "", 1, &both),
         ("0", "", "4", "13", "0", "", 1, limits),
-        ("0", "", "3", "14", "0", "", 1, &both),
+        ("0", "", "3", "15", "0", "", 1, &both),
         // A failing run fails the gate, and so does output with two result lines.
-        ("0", "", "3", "13", "101", "", 1, limits),
-        ("0", "", "3", "13", "0", "1", 1, limits),
+        ("0", "", "3", "14", "101", "", 1, limits),
+        ("0", "", "3", "14", "0", "1", 1, limits),
     ];
     for (translated, marker, n_limits, n_confinement, exit, extra, code, ran) in cases {
         let _ = std::fs::remove_file(&log);

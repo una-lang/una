@@ -1,8 +1,9 @@
 #!/bin/sh
 # The limits gate on this machine (ADR 0124 rule 31, docs/release-gates.md §2): `limits` and the
 # confinement cases, natively on each shipped target, never under emulation. A solver child past
-# its memory limit ends as `memout`, past its processor-time limit as `cpu` (Z3's own SIGXCPU
-# handler prints `timeout` and exits 0, #2008), past the wall-clock guard as `wallclock`, with
+# its memory limit ends as `memout`, past its processor-time limit as `cpu` (it ends by SIGXCPU,
+# taken on its own thread, and Z3's handler of that signal never runs, #2008, #2268), past the
+# wall-clock guard as `wallclock`, with
 # the parent intact (crates/una-cli/tests/solver_limits.rs, ignored in the ordinary run); then the solver child's confinement cases (crates/una-sys/tests/
 # solver_confinement.rs). It runs on macOS for the `limits` gate, and in the Linux container of
 # scripts/local-ci.sh for `limits-linux-arm64` and `limits-linux` (`scripts/local-ci.sh --linux-arm64
