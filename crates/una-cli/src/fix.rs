@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use una_diag::{Code, Diagnostic, Edit, ObligationKind, Position, Repair, in_output_order};
+use una_diag::{Code, Diagnostic, Domain, Edit, ObligationKind, Position, Repair, in_output_order};
 use una_syntax::{Interner, SourceDb};
 
 use crate::package::{self, Package, load_with};
@@ -217,7 +217,15 @@ pub(crate) fn fix_command(
             None => verification::tier_one(&package, &program, &options.solving).diagnostics,
         };
     }
-    let skipped = skipped_repairs(&diagnostics, &modules, stopped);
+    let mut skipped = skipped_repairs(&diagnostics, &modules, stopped);
+    // ADR 0137 rule 11: the `let`s of doc comments' code are listed with the rest, in text order.
+    let left = doc_comment_lets(&package, &modules);
+    if !left.is_empty() {
+        skipped.extend(left);
+        skipped.sort_by(|a, b| {
+            (&a.file, a.start.line, a.start.col).cmp(&(&b.file, b.start.line, b.start.col))
+        });
+    }
     if options.json {
         let document = FixDocument {
             schema: FIX_SCHEMA,
@@ -390,6 +398,7 @@ fn ineligible(
     repair: &Repair,
     edit: &Edit,
     modules: &BTreeMap<String, Module>,
+    unparsed: &BTreeSet<&str>,
 ) -> Option<&'static str> {
     if repair.escape.is_some() {
         return Some("escape cost");
@@ -402,8 +411,90 @@ fn ineligible(
         Some(module) if module.invalid => Some("invalid UTF-8"),
         // The final `una fmt` step formats every file that parses.
         Some(_) if diagnostic.code == Code::U7001 => Some("formatting"),
+        // ADR 0137 rule 11: the rewrite of `let` is left in a file that does not parse, and
+        // listed; once the file's syntax errors are repaired, a later round takes it.
+        Some(_)
+            if diagnostic.code == Code::U7007 && unparsed.contains(edit.location.file.as_str()) =>
+        {
+            Some("does not parse")
+        }
         Some(_) => None,
     }
+}
+
+/// The files where `diagnostics` hold a syntax error (`spec/13 §4`, domain `syntax`): the files
+/// that do not parse, where the rewrite of `let` waits (ADR 0137 rule 11).
+fn unparsed(diagnostics: &[Diagnostic]) -> BTreeSet<&str> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.domain() == Domain::Syntax)
+        .map(|diagnostic| diagnostic.primary.file.as_str())
+        .collect()
+}
+
+/// Each `let` in the code of a doc comment of the package's modules, between backticks, in a
+/// package of edition 0.5 or later (ADR 0137 rule 11): `una fix` cannot rewrite it exactly, since
+/// a doc comment's code is text no check reads, so it lists the site and leaves it. Its
+/// description is the rewrite a binding there would take. Linear in the size of the modules.
+fn doc_comment_lets(package: &Package, modules: &BTreeMap<String, Module>) -> Vec<Skipped> {
+    let (manifest, _) = package::project(package);
+    if manifest.edition < una_project::Edition::V0_5 {
+        return Vec::new();
+    }
+    let keywords = keyword_set(manifest.edition);
+    let mut interner = Interner::new();
+    let mut sites = Vec::new();
+    for &id in &package.modules {
+        let file = package.sources.file(id);
+        if modules.get(file.path()).is_none_or(|module| module.invalid) {
+            continue;
+        }
+        let lexed = una_syntax::lex_in(file, id, &mut interner, keywords);
+        for comment in lexed.comments.iter().filter(|comment| comment.doc) {
+            let text = file
+                .text()
+                .get(comment.span.start..comment.span.end)
+                .unwrap_or("");
+            for (offset, edit) in lets_in_code(text) {
+                sites.push(Skipped {
+                    file: file.path().to_owned(),
+                    code: Code::U7007,
+                    start: file.position(comment.span.start + offset),
+                    description: if edit { "write `var`" } else { "write `const`" }.to_owned(),
+                    reason: "doc comment",
+                });
+            }
+        }
+    }
+    sites
+}
+
+/// The offset of each word `let` of `text` inside a backtick span, and whether the word `edit`
+/// follows it after spaces, as in `let edit x`.
+fn lets_in_code(text: &str) -> Vec<(usize, bool)> {
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut in_code = false;
+    let mut previous: Option<u8> = None;
+    for (at, &c) in bytes.iter().enumerate() {
+        if c == b'`' {
+            in_code = !in_code;
+        } else if in_code
+            && !previous.is_some_and(word)
+            && text.get(at..).is_some_and(|rest| rest.starts_with("let"))
+            && !bytes.get(at + 3).is_some_and(|&next| word(next))
+        {
+            let rest = text.get(at + 3..).unwrap_or("");
+            let after = rest.trim_start_matches(' ');
+            let edit = after.len() < rest.len()
+                && after.starts_with("edit")
+                && !after.as_bytes().get(4).is_some_and(|&next| word(next));
+            found.push((at, edit));
+        }
+        previous = Some(c);
+    }
+    found
 }
 
 /// Whether an edit of a diagnostic of `code` that writes `replacement` grants a boundary
@@ -462,6 +553,7 @@ fn take_round(
     modules: &BTreeMap<String, Module>,
 ) -> BTreeMap<String, Vec<Candidate>> {
     let mut by_file: BTreeMap<String, Vec<(Candidate, usize)>> = BTreeMap::new();
+    let unparsed = unparsed(diagnostics);
     for (index, diagnostic) in in_output_order(diagnostics).into_iter().enumerate() {
         let Some(repair) = first_repair(diagnostic) else {
             continue;
@@ -469,7 +561,7 @@ fn take_round(
         let Some(edit) = &repair.edit else {
             continue;
         };
-        if ineligible(diagnostic, repair, edit, modules).is_some() {
+        if ineligible(diagnostic, repair, edit, modules, &unparsed).is_some() {
             continue;
         }
         let Some((start, end)) = range(sources, edit) else {
@@ -596,12 +688,13 @@ fn skipped_repairs(
     modules: &BTreeMap<String, Module>,
     stopped: Stopped,
 ) -> Vec<Skipped> {
+    let unparsed = unparsed(diagnostics);
     in_output_order(diagnostics)
         .into_iter()
         .filter_map(|diagnostic| {
             let repair = first_repair(diagnostic)?;
             let edit = repair.edit.as_ref()?;
-            let reason = match ineligible(diagnostic, repair, edit, modules) {
+            let reason = match ineligible(diagnostic, repair, edit, modules, &unparsed) {
                 // A formatting edit left after the final format belongs to a file that does
                 // not parse; its syntax errors say why.
                 Some("formatting") => return None,
