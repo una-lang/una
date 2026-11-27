@@ -1273,6 +1273,327 @@ fn every_edition_0_4_package_checks_the_same_in_edition_0_5() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// Runs `una` with `args` in `dir`, with the hermetic environment of these tests.
+fn una_in(dir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_PROOF_KEY")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+/// Every file under `dir`, by its path relative to `dir`, as text.
+fn tree(dir: &Path) -> std::collections::BTreeMap<String, String> {
+    fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let bytes = std::fs::read(&path).unwrap();
+                out.insert(relative, String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// Writes `edition`, an `ita.una` edition line, for the edition line of edition `0.4` of the
+/// package at `work`.
+fn set_ita_edition(work: &Path, edition: &str) {
+    let manifest = work.join("ita.una");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let replaced: String = text
+        .lines()
+        .map(|line| {
+            if line == ITA_EDITION_0_4 {
+                edition
+            } else {
+                line
+            }
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&manifest, replaced).unwrap();
+}
+
+/// The `una.fix/1` document of `una --json fix --tier <tier>` in `work`, and its exit status.
+fn fix_at(work: &Path, tier: &str) -> (Option<i32>, Value) {
+    let output = una_in(work, &["--json", "fix", "--tier", tier, "."]);
+    assert!(
+        output.stdout.starts_with(b"{\"schema\":\"una.fix/1\""),
+        "{}: status {:?}, stderr {}",
+        work.display(),
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        output.status.code(),
+        serde_json::from_slice(&output.stdout).unwrap(),
+    )
+}
+
+/// The code and file of each diagnostic of `document` outside the manifest files, sorted.
+fn codes_by_file(document: &Value) -> Vec<(String, String)> {
+    let mut codes: Vec<(String, String)> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| !MANIFEST_FILES.contains(&d["primary"]["file"].as_str().unwrap_or("")))
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_owned(),
+                d["primary"]["file"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    codes.sort();
+    codes
+}
+
+/// Moves the package at `package` to edition `0.5` with `una fix`, in `work`, and checks the
+/// move (ADR 0137 rule 11): a copy kept in edition `0.4` and fixed there gives the same
+/// diagnostics, by code and file, and the same status, unless the package differs by design
+/// (`listed`), which are compared only for the listing and the second run; the moved package's modules are those of the copy fixed in edition `0.4` with
+/// each `let` rewritten by its U7007 repair, comments and layout kept, but where `una fmt`
+/// wraps a line the rewrite lengthened; every `let` left is listed, in a file that does not
+/// parse; and a second `una fix` changes nothing. A package of `una.toml` is first moved to
+/// `ita.una` of edition `0.4`: by `una fix` in edition `0.3`, then `una migrate`.
+fn moves_to_0_5(package: &Path, work: &Path, listed: bool) -> Result<(), String> {
+    if work.exists() {
+        std::fs::remove_dir_all(work).unwrap();
+    }
+    let (kept, moved) = (work.join("a"), work.join("b"));
+    copy_dir(package, &kept);
+    if !kept.join("ita.una").is_file() {
+        // The path of an earlier edition: edition 0.3 with `una fix`, which writes `test` for
+        // `example` (ADR 0105), then `ita.una` of edition 0.4 with `una migrate`.
+        let manifest = kept.join("una.toml");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        let text: String = text
+            .lines()
+            .map(|line| {
+                if line.starts_with("edition = ") {
+                    "edition = \"0.3\""
+                } else {
+                    line
+                }
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&manifest, text).unwrap();
+        fix_at(&kept, "0");
+        let output = una_in(&kept, &["migrate", "."]);
+        if !kept.join("ita.una").is_file() {
+            return Err(format!(
+                "una migrate wrote no ita.una: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    copy_dir(&kept, &moved);
+    set_ita_edition(&moved, ITA_EDITION_0_5);
+    // At tier 1, the default of `una fix` and `una check`: the moved package checks as the one
+    // kept, obligations included.
+    let (status_0_4, before) = fix_at(&kept, "1");
+    let (status_0_5, after) = fix_at(&moved, "1");
+    // Idempotent: a second run finds nothing to rewrite and writes nothing.
+    let files = tree(&moved);
+    let (_, again) = fix_at(&moved, "1");
+    if again["applied"] != Value::Array(Vec::new())
+        || again["formatted"] != Value::Array(Vec::new())
+    {
+        return Err(format!(
+            "a second una fix applied {} and formatted {}",
+            again["applied"], again["formatted"]
+        ));
+    }
+    if tree(&moved) != files {
+        return Err("a second una fix changed a file".to_owned());
+    }
+    // Every `let` left is listed: a U7007 that remains is skipped, in a file that does not
+    // parse, or of invalid UTF-8.
+    let skipped = after["skipped"].as_array().unwrap();
+    for diagnostic in after["diagnostics"].as_array().unwrap() {
+        if diagnostic["code"] != "U7007" {
+            continue;
+        }
+        let at = location(&diagnostic["repairs"][0]["edit"]);
+        let listed_here = skipped.iter().any(|skip| {
+            skip["code"] == "U7007"
+                && location(skip) == at
+                && matches!(
+                    skip["reason"].as_str(),
+                    Some("does not parse" | "invalid UTF-8")
+                )
+        });
+        if !listed_here {
+            return Err(format!("the U7007 at {at} is left and not listed"));
+        }
+    }
+    if listed {
+        return Ok(());
+    }
+    // The texts: the copy fixed in edition 0.4, moved to edition 0.5 by the repairs of its
+    // U7007, but in the files that do not parse, which `una fix` leaves.
+    set_ita_edition(&kept, ITA_EDITION_0_5);
+    let check = una_in(&kept, &["--json", "check", "--tier", "0", "."]);
+    let document: Value = serde_json::from_slice(&check.stdout).unwrap();
+    let unparsed: std::collections::BTreeSet<String> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| {
+            d["code"]
+                .as_str()
+                .is_some_and(|code| code.starts_with("U0"))
+        })
+        .map(|d| d["primary"]["file"].as_str().unwrap().to_owned())
+        .collect();
+    let texts = tree(&kept);
+    binding_words_of_0_5(&kept, &check);
+    for file in &unparsed {
+        if let Some(text) = texts.get(file) {
+            std::fs::write(kept.join(file), text).unwrap();
+        }
+    }
+    let differs = |kept: &Path| {
+        let (a, b) = (tree(kept), tree(moved.as_path()));
+        a.keys()
+            .filter(|file| file.ends_with(".una") && file.as_str() != "ita.una")
+            .filter(|file| a.get(*file) != b.get(*file))
+            .cloned()
+            .collect::<Vec<String>>()
+    };
+    if !differs(&kept).is_empty() {
+        // A rewrite that lengthens a line past the canonical width is wrapped by the format.
+        una_in(&kept, &["fmt", "."]);
+        let left = differs(&kept);
+        if !left.is_empty() {
+            return Err(format!(
+                "the moved modules are not the rewrite of those of edition 0.4: {left:?}"
+            ));
+        }
+    }
+    // The U7007 left in edition 0.5 are listed above, in files that do not parse.
+    let codes_0_4 = codes_by_file(&before);
+    let codes_0_5: Vec<(String, String)> = codes_by_file(&after)
+        .into_iter()
+        .filter(|(code, _)| code != "U7007")
+        .collect();
+    if codes_0_4 != codes_0_5 {
+        return Err(format!(
+            "edition 0.5 after una fix reports {codes_0_5:?}, and edition 0.4 {codes_0_4:?}"
+        ));
+    }
+    if status_0_4 != status_0_5 {
+        return Err(format!(
+            "una fix exits {status_0_5:?} in edition 0.5 and {status_0_4:?} in edition 0.4"
+        ));
+    }
+    Ok(())
+}
+
+/// Every package of edition `0.4` of the repository, and every example, moves to edition `0.5`
+/// with `una fix` (ADR 0137 rule 11 and the equivalence of its Conformance, #1629): the
+/// conformance corpus, the packages of `tests/serve_runs`, `formal/gen` and `examples`, those
+/// of `una.toml` moved to `ita.una` of edition `0.4` first. Each move is checked by
+/// [`moves_to_0_5`]. The packages of `EXPECTED_DIFFERENCES_0_5`, which differ by design, are
+/// moved and checked for the listing and the second run only. Linear in the packages, each
+/// fixed three times at tier 1 and checked once at tier 0.
+#[test]
+fn every_edition_0_4_package_moves_to_edition_0_5_with_una_fix() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut all = Vec::new();
+    for dir in [
+        "tests/conformance",
+        "tests/serve_runs",
+        "formal/gen",
+        "examples",
+    ] {
+        ita_packages(&repo.join(dir), &mut all);
+    }
+    let mut cases: Vec<(String, PathBuf)> = all
+        .into_iter()
+        .filter(|package| package.join("src").is_dir())
+        .filter(|package| {
+            std::fs::read_to_string(package.join("ita.una"))
+                .unwrap()
+                .lines()
+                .any(|line| line == ITA_EDITION_0_4)
+        })
+        .collect::<Vec<PathBuf>>()
+        .into_iter()
+        .chain(
+            std::fs::read_dir(repo.join("examples"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.join("una.toml").is_file() && path.join("src").is_dir()),
+        )
+        .map(|package| {
+            let name = package
+                .strip_prefix(&repo)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            (name, package)
+        })
+        .collect();
+    cases.sort();
+    assert!(
+        cases.iter().any(|(name, _)| name.starts_with("examples/"))
+            && cases
+                .iter()
+                .any(|(name, _)| name.starts_with("tests/conformance/")),
+        "no package found"
+    );
+    let workers = 4;
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("editions_fix_0_5");
+    let results: Vec<(String, Result<(), String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let cases = &cases;
+                let work = scratch.join(format!("w{worker}"));
+                scope.spawn(move || {
+                    cases
+                        .iter()
+                        .skip(worker)
+                        .step_by(workers)
+                        .map(|(name, package)| {
+                            let listed =
+                                name.strip_prefix("tests/conformance/").is_some_and(|case| {
+                                    EXPECTED_DIFFERENCES_0_5
+                                        .iter()
+                                        .any(|difference| difference.case == case)
+                                });
+                            (name.clone(), moves_to_0_5(package, &work, listed))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    let mut wrong: Vec<String> = results
+        .into_iter()
+        .filter_map(|(name, result)| result.err().map(|why| format!("{name}: {why}")))
+        .collect();
+    wrong.sort();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// The manifest and lock files of a package: the diagnostics there are the migration's, not the
 /// edition's.
 const MANIFEST_FILES: [&str; 4] = ["una.toml", "verification.lock", "ita.una", "ita.lock"];
