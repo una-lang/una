@@ -9,7 +9,7 @@ codes: [U7010, U7011, U7013]
 
 ## What it does
 
-In releases 0.4.0 to 0.5.1 no registry is served and no command builds one or a mirror, so the commands on this page have no registry package to put on the machine yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
+In releases 0.4.0 to 0.5.2 no registry is served and no command builds one or a mirror, so the commands on this page have no registry package to put on the machine yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
 
 A package of edition `0.4` builds with no network once its registry packages are on the machine. There are three ways to put them there, and each one checks every byte against `ita.lock`:
 

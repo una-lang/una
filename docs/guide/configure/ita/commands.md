@@ -9,7 +9,7 @@ codes: [U7013, U7014]
 
 ## What it does
 
-In releases 0.4.0 to 0.5.1 no registry is served and no command builds one or a mirror, so the commands and options on this page that read or write a registry have nothing to work with yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
+In releases 0.4.0 to 0.5.2 no registry is served and no command builds one or a mirror, so the commands and options on this page that read or write a registry have nothing to work with yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
 
 `una ita` is the package manager, part of the `una` binary. The same binary run under the name `ita` behaves as `una ita`: `ita lock` is `una ita lock`. No command of this release opens a network connection, and none ever starts another program: a bundle goes through a file, and a submission waits for an https transport.
 

@@ -9,7 +9,7 @@ codes: [U7008, U7010, U7011, U7013]
 
 ## What it does
 
-In releases 0.4.0 to 0.5.1 no registry is served and no command builds one or a mirror, so the commands on this page have nothing to read yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
+In releases 0.4.0 to 0.5.2 no registry is served and no command builds one or a mirror, so the commands on this page have nothing to read yet. Path dependencies are the dependencies usable in this release (see [path dependencies](path-dependencies.md)).
 
 A registry is a place that publishes packages for others to use. A package that needs a package from a registry names the registry in its `sources` section and the package in its `needs` section, with `from` and the registry's name. `una ita lock` then reads the registry, checks every byte it reads against the keys the package pins, and writes the release it chose into `ita.lock`. `una ita fetch` copies that release into Itaoca, the local store of packages on the machine, and checks it again. In this release a registry is read only from a mirror directory, a `file://` location that holds a copy of the registry's files: there is no `https://` transport, and `itaty`, the planned public registry, is not served (see the edge cases). From then on, `una check`, `una run` and `una build` read the package from Itaoca, with no network.
 
