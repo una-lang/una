@@ -1572,26 +1572,58 @@ fn serve_request(port: u16, path: &str, close: bool) -> std::net::TcpStream {
 }
 
 /// Reads one reply from `stream`, by its `Content-Length`, and returns its body.
+#[allow(clippy::panic)]
 fn serve_reply(stream: &mut std::net::TcpStream) -> Vec<u8> {
+    try_serve_reply(stream).unwrap_or_else(|problem| panic!("{problem}"))
+}
+
+/// [`serve_reply`], with what went wrong as an error instead of a panic, so that a caller can
+/// report the server's side too (#2273).
+fn try_serve_reply(stream: &mut std::net::TcpStream) -> Result<Vec<u8>, String> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
-        assert_eq!(
-            stream.read(&mut byte).unwrap(),
-            1,
-            "the reply ended in its head"
-        );
-        head.push(byte[0]);
+        match stream.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            Ok(_) => {
+                return Err(format!(
+                    "the reply ended in its head after {} bytes",
+                    head.len()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "reading the head after {} bytes: {error:?}",
+                    head.len()
+                ));
+            }
+        }
     }
     let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
     let length: usize = head
         .lines()
         .find_map(|line| line.strip_prefix("content-length:"))
         .map(|value| value.trim().parse().unwrap())
-        .expect("a reply without content-length");
+        .ok_or_else(|| format!("a reply without content-length: {head:?}"))?;
     let mut body = vec![0u8; length];
-    stream.read_exact(&mut body).unwrap();
-    body
+    let mut read = 0;
+    while read < length {
+        match stream.read(&mut body[read..]) {
+            Ok(0) => {
+                return Err(format!(
+                    "the reply ended after {read} of its {length} body bytes"
+                ));
+            }
+            Ok(n) => read += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(format!(
+                    "reading the body after {read} of its {length} bytes: {error:?}"
+                ));
+            }
+        }
+    }
+    Ok(body)
 }
 
 /// Runs the package `name` in `dir` in `engine` on one serve thread, so that one thread holds
@@ -2001,18 +2033,37 @@ fn spread_run(
         .map(|mut stream| {
             let start = Arc::clone(&start);
             std::thread::spawn(move || {
+                let port = stream.local_addr().map_or(0, |address| address.port());
                 start.wait();
-                stream
+                let began = Instant::now();
+                let outcome = stream
                     .write_all(b"GET /probe HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-                    .unwrap();
-                serve_reply(&mut stream).len()
+                    .map_err(|error| format!("sending the request: {error:?}"))
+                    .and_then(|()| try_serve_reply(&mut stream))
+                    .and_then(|body| {
+                        if body.len() == 1 << 23 {
+                            Ok(())
+                        } else {
+                            Err(format!("a body of {} bytes", body.len()))
+                        }
+                    });
+                outcome.map_err(|problem| {
+                    format!(
+                        "the probe from port {port}, after {:.1} ms: {problem}",
+                        began.elapsed().as_secs_f64() * 1000.0
+                    )
+                })
             })
         })
         .collect();
     start.wait();
     let sent = Instant::now();
-    for peer in peers {
-        assert_eq!(peer.join().unwrap(), 1 << 23, "{name}: a probe");
+    let failed: Vec<String> = peers
+        .into_iter()
+        .filter_map(|peer| peer.join().unwrap().err())
+        .collect();
+    if !failed.is_empty() {
+        spread_failure(name, child, &owners_file, &failed);
     }
     let took = sent.elapsed().as_secs_f64() * 1000.0;
     let id = child.0.as_ref().unwrap().id().to_string();
@@ -2052,6 +2103,42 @@ fn spread_run(
         took,
         owners,
     )
+}
+
+/// A probe of [`spread_run`] failed: the run gets the host stop, and the test fails with what
+/// each failed probe saw, the run's exit status and standard error, after at most 20 s, and the
+/// lines of the placement probe's log that say why a connection closed with its reply not
+/// written (`cut <peer> <bytes left> <cause>`, #2273), so a failure can be diagnosed.
+#[allow(clippy::panic)]
+fn spread_failure(name: &str, mut child: Reaped, owners_file: &Path, failed: &[String]) -> ! {
+    let mut process = child.0.take().unwrap();
+    let id = process.id().to_string();
+    let _ = Command::new("kill").args(["-TERM", &id]).status();
+    let until = Instant::now() + Duration::from_secs(20);
+    while process.try_wait().unwrap().is_none() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if process.try_wait().unwrap().is_none() {
+        let _ = process.kill();
+    }
+    let ended = process.wait_with_output().unwrap();
+    let log = std::fs::read_to_string(owners_file).unwrap_or_default();
+    let cuts: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("cut "))
+        .collect();
+    panic!(
+        "{name}: {} of {SPREAD_PEERS} probes failed:\n{}\nthe run ended with {:?} (after the host stop, or killed 20 s after it); its stderr:\n{}\nconnections closed with a reply not written:\n{}",
+        failed.len(),
+        failed.join("\n"),
+        ended.status,
+        String::from_utf8_lossy(&ended.stderr),
+        if cuts.is_empty() {
+            "none recorded".to_owned()
+        } else {
+            cuts.join("\n")
+        }
+    );
 }
 
 #[test]

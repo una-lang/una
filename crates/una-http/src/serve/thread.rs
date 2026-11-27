@@ -144,6 +144,41 @@ struct Conn {
     finished: bool,
     /// The connection yielded with work left and is in `Core::yielded`, once.
     yielded: bool,
+    /// Why the connection is closing while it writes, when a step that ends a write closed it:
+    /// what the placement probe of the toolchain's tests records for a reply cut short (#2273).
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    cut: Option<Cut>,
+}
+
+/// What ended a connection while it was writing (#2273): read only by the placement probe of
+/// the toolchain's tests, which records it for a connection that closes with a reply pending.
+#[derive(Clone, Copy, Debug)]
+// Its fields are read through `Debug` only, which the lint does not count.
+#[allow(dead_code)]
+enum Cut {
+    /// The socket took no byte of a write.
+    WroteZero,
+    /// The socket's write failed, with this error.
+    WriteFailed(io::ErrorKind, Option<i32>),
+    /// The pending reply was discarded (rule 13) before it was written.
+    Discarded,
+    /// The `write` timer fired.
+    WriteTimer,
+    /// The hard stop.
+    HardStop,
+    /// A close asked by the program's side (`Exchange::close`, a reply larger than `replies`,
+    /// a victim of reply pressure).
+    Asked,
+    /// A contained fault in one of the connection's steps.
+    Fault,
+    /// The serve thread ended.
+    Abandoned,
+}
+
+impl Cut {
+    fn failed(error: &io::Error) -> Cut {
+        Cut::WriteFailed(error.kind(), error.raw_os_error())
+    }
 }
 
 struct Slot {
@@ -275,7 +310,10 @@ impl Thread {
                 self.with_conn(&conn, now, |core, c, now| core.on_reply(c, close, now));
             }
             Msg::Close(conn) => {
-                self.with_conn(&conn, now, |core, c, now| core.close(c, now));
+                self.with_conn(&conn, now, |core, c, now| {
+                    c.cut.get_or_insert(Cut::Asked);
+                    core.close(c, now);
+                });
             }
             Msg::PeerExpiry { grant, peer, at } => {
                 self.core.arm_peer(grant, peer, at);
@@ -401,6 +439,7 @@ impl Thread {
             // used again: the fault is contained, so it does not stop the closing of the others.
             core.critical = 0;
             core.shared.contain(Some(&conn.grant), Site::Step);
+            conn.cut.get_or_insert(Cut::Fault);
             // The close, resumed after each step of it that faults: every step a fault passed is
             // done for good, so everything after it is still given back, and nothing twice.
             for _ in 0..CLOSE_ATTEMPTS {
@@ -475,6 +514,7 @@ impl Thread {
             self.run(slot as u32, now, |core, c, now| {
                 // Its timer was in the old wheel.
                 c.timer = None;
+                c.cut.get_or_insert(Cut::Abandoned);
                 core.close(c, now);
             });
         }
@@ -625,6 +665,7 @@ impl Thread {
             forgot: false,
             finished: false,
             yielded: false,
+            cut: None,
         });
         // In its slot before any step, so a fault in the steps is contained by `run` and an
         // ending thread's `abandon` finds the connection.
@@ -769,6 +810,7 @@ impl Core {
             if c.own_off < c.own.len() {
                 match c.sock.write(c.own.get(c.own_off..).unwrap_or_default()) {
                     Ok(0) => {
+                        c.cut = Some(Cut::WroteZero);
                         self.close(c, now);
                         return none;
                     }
@@ -787,7 +829,8 @@ impl Core {
                             write: true,
                         };
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        c.cut = Some(Cut::failed(&error));
                         self.close(c, now);
                         return none;
                     }
@@ -830,6 +873,7 @@ impl Core {
         let step = c.shared.write_front(|bytes| c.sock.write(bytes));
         match step {
             Ok(super::pressure::Step::Wrote { written: 0, .. }) => {
+                c.cut = Some(Cut::WroteZero);
                 self.close(c, now);
                 Some(Interest {
                     read: false,
@@ -845,6 +889,7 @@ impl Core {
                 None
             }
             Ok(super::pressure::Step::Discarded) => {
+                c.cut = Some(Cut::Discarded);
                 self.close(c, now);
                 Some(Interest {
                     read: false,
@@ -856,7 +901,8 @@ impl Core {
                 read: false,
                 write: true,
             }),
-            Err(_) => {
+            Err(error) => {
+                c.cut = Some(Cut::failed(&error));
                 self.close(c, now);
                 Some(Interest {
                     read: false,
@@ -1210,7 +1256,11 @@ impl Core {
     /// A timer of the connection fired.
     fn fire(&mut self, c: &mut Conn, kind: Kind, now: u64) {
         match kind {
-            Kind::Idle | Kind::Write | Kind::Linger => self.close(c, now),
+            Kind::Write => {
+                c.cut = Some(Cut::WriteTimer);
+                self.close(c, now);
+            }
+            Kind::Idle | Kind::Linger => self.close(c, now),
             Kind::Read => {
                 if c.started || c.reader.started() {
                     self.refuse(c, 408, false, now);
@@ -1268,6 +1318,14 @@ impl Core {
             c.grant.unqueue_waiting();
         }
         if !std::mem::replace(&mut c.discarded, true) {
+            // The toolchain's tests: a reply cut short is recorded with its cause (#2273).
+            #[cfg(feature = "test-hooks")]
+            {
+                let left = c.shared.bytes_left();
+                if left > 0 || matches!(c.cut, Some(Cut::Discarded)) {
+                    super::place::probe::cut(c.shared.address, left, &format!("{:?}", c.cut));
+                }
+            }
             #[cfg(feature = "test-hooks")]
             #[allow(clippy::panic)]
             if self.fault_in_close > 0 {
@@ -1356,6 +1414,7 @@ impl Core {
                 let _ = c.sock.write(&bytes);
             }
         }
+        c.cut.get_or_insert(Cut::HardStop);
         self.close(c, now);
     }
 }
