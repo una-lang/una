@@ -713,8 +713,10 @@ fn partial_of(
 
 /// The stack of the thread that checks a package. The passes recurse over the syntax tree,
 /// whose depth the parser bounds (`una_syntax::MAX_NESTING`); unoptimized builds use up to
-/// about 40 KiB of stack per level.
-const CHECK_STACK_BYTES: usize = 64 * 1024 * 1024;
+/// about 40 KiB of stack per level. The passes over Core IR, the verifier's included, recurse
+/// once per nested Core expression, which the checker bounds (`una_core::depth::MAX_DEPTH`,
+/// #2264). The stack is reserved, not committed.
+const CHECK_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 /// Runs `work` on a thread with [`CHECK_STACK_BYTES`] of stack, or on the current thread when
 /// the operating system cannot start one.

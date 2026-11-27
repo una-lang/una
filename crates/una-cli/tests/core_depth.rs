@@ -1,7 +1,7 @@
 //! The depth of Core IR (#2264): elaboration makes each statement of a block and each record,
 //! variant or list an expression builds one `let` of a chain, so a long body is a deep Core
 //! expression, which every later pass walks by recursion. A body at the bound passes every
-//! command on the real main thread of `una`; one past it is U0101 at check time, never a stack
+//! command in a real `una` process; one past it is U0101 at check time, never a stack
 //! overflow, wherever it is: a function body, an `expect` line, or a block of statements.
 //! Each command runs as a child process, so the stack is the one `una` really has.
 
@@ -50,9 +50,12 @@ fn una(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// A list literal of `n` lists, each one `let` of Core IR.
+/// One item of a list literal that builds seven lists, each one `let` of Core IR.
+const ITEM: &str = "[[[0], [0]], [[0], [0]]]";
+
+/// A list literal of `n` items, `7 * n` levels of Core IR.
 fn lists(n: usize) -> String {
-    format!("[{}]", vec!["[0, 1]"; n].join(", "))
+    format!("[{}]", vec![ITEM; n].join(", "))
 }
 
 /// A program whose function `big` builds `n` lists, with a test of it.
@@ -71,13 +74,13 @@ fn in_expect(n: usize) -> String {
     )
 }
 
-/// A program whose function `count` is a block of `n` statements.
+/// A program whose function `count` is a block of `n` statements, each building seven lists.
 fn in_block(n: usize) -> String {
-    let mut text = String::from("module m\n\npub count() -> Int\n=\n  const x0 = 0\n");
-    for i in 1..n {
-        text.push_str(&format!("  const x{i} = x{} + 1\n", i - 1));
+    let mut text = String::from("module m\n\npub count() -> Int\n=\n");
+    for i in 0..n {
+        text.push_str(&format!("  const x{i} = {ITEM}\n"));
     }
-    text.push_str(&format!("  x{}\n", n - 1));
+    text.push_str(&format!("  x{}.len\n", n - 1));
     text
 }
 
@@ -87,7 +90,8 @@ fn overflowed(output: &Output) -> bool {
 
 #[test]
 fn a_body_just_under_the_bound_passes_every_command() {
-    let dir = package("under", &in_body(8_000));
+    // 18,000 items: 126,000 levels, under the bound of 131,072.
+    let dir = package("under", &in_body(18_000));
     for args in [
         &["check"][..],
         &["test"],
@@ -102,11 +106,11 @@ fn a_body_just_under_the_bound_passes_every_command() {
         assert_eq!(output.status.code(), Some(0), "una {args:?}: {output:?}");
     }
     let run = una(&dir, &["run"]);
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "8000\n");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "18000\n");
     let native = Command::new(dir.join("target/una/under")).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&native.stdout),
-        "8000\n",
+        "18000\n",
         "{native:?}"
     );
 }
@@ -114,9 +118,10 @@ fn a_body_just_under_the_bound_passes_every_command() {
 #[test]
 fn a_body_past_the_bound_is_u0101_in_every_command_never_a_stack_overflow() {
     for (name, program) in [
-        ("body", in_body(13_000)),
-        ("expect", in_expect(13_000)),
-        ("block", in_block(9_000)),
+        // 19,000 items: 133,000 levels, past the bound.
+        ("body", in_body(19_000)),
+        ("expect", in_expect(19_000)),
+        ("block", in_block(19_000)),
     ] {
         let dir = package(name, &program);
         for args in [
@@ -136,7 +141,7 @@ fn a_body_past_the_bound_is_u0101_in_every_command_never_a_stack_overflow() {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(
-                all.contains("U0101") && all.contains("nests deeper than 8192 levels"),
+                all.contains("U0101") && all.contains("nests deeper than 131072 levels"),
                 "{name}: una {args:?}: {all}"
             );
         }

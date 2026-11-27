@@ -12,12 +12,11 @@ use una_syntax::Span;
 
 use crate::{Bound, Expr, LoopSource, Rhs};
 
-/// The deepest nesting of Core expressions a body may have. Measured in unoptimized builds on
-/// the 8 MiB main thread of `una`, every pass handles twice as deep (16,000) and the first to
-/// exhaust its stack does so at about 16,000 (`una test`'s copy of the program); the checker's
-/// own thread has 64 MiB. Twice the cap of the records, variants and lists that the constants
-/// one body names may substitute (ADR 0126, 4,096), so that cap is reached first.
-pub const MAX_DEPTH: usize = 8_192;
+/// The deepest nesting of Core expressions a body may have: 2^17, eight times the 16,000
+/// statements that the project's scaling tests check and run in one body. `una` runs each
+/// command, and the checker, on threads of 256 MiB (reserved, not committed), which an
+/// unoptimized build needs at about 1 KiB per level for its deepest pass outside the checker.
+pub const MAX_DEPTH: usize = 131_072;
 
 /// The first position, in a depth-first walk, at which `expr` nests deeper than `limit` Core
 /// expressions, or `None` when it is no deeper. Each `let`, branch, handled body, loop body,
@@ -165,18 +164,20 @@ mod tests {
     fn a_chain_at_the_limit_passes_and_one_more_does_not() {
         let fallback = Span::new(file(), 0, 0);
         // `n` lets and the atom at the end: `n + 1` levels.
+        // The derived `Drop` recurses, which is why the checker bounds the depth: no chain of
+        // this test is dropped on the test's stack.
         let at = chain(MAX_DEPTH - 1);
         assert_eq!(deeper_than(&at, MAX_DEPTH, fallback), None);
+        std::mem::forget(at);
         let past = chain(MAX_DEPTH);
         assert!(deeper_than(&past, MAX_DEPTH, fallback).is_some());
+        std::mem::forget(past);
         // The walk itself never recurses: a chain far past the limit, on a small stack.
         let far = chain(200_000);
         let found = std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(move || {
                 let found = deeper_than(&far, MAX_DEPTH, fallback);
-                // The derived `Drop` recurses, which is why the checker bounds the depth: the
-                // chain is not dropped on this small stack.
                 std::mem::forget(far);
                 found
             })

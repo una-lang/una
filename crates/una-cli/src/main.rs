@@ -27,26 +27,50 @@ fn main() -> ExitCode {
             .collect();
         return ExitCode::from(una_cli::solver_child::serve(&args));
     }
-    let stdout = std::io::stdout();
-    let stderr = std::io::stderr();
-    // `--color auto` follows stderr, where human diagnostics go (ADR 0015 D1).
-    let stderr_is_terminal = stderr.is_terminal();
-    let status = una_cli::run(
-        std::env::args_os(),
-        &mut stdout.lock(),
-        &mut stderr.lock(),
-        stderr_is_terminal,
-        &environment,
-        una_cli::Heap {
-            held: &|| ALLOCATOR.allocated(),
-            ceiling: &|bytes| {
-                // A ceiling below what is held fails; the next check reports the run then.
-                let _ = ALLOCATOR.set_limit(bytes);
+    // The command runs on a thread of `MAIN_STACK_BYTES`, never on the main thread, whose
+    // stack the system fixes (8 MiB on macOS and Linux): the passes over Core IR recurse once
+    // per nested expression, and the checker lets a declaration nest up to
+    // `una_core::depth::MAX_DEPTH` deep (#2264). The stack is reserved, not committed.
+    let command = || {
+        let stdout = std::io::stdout();
+        let stderr = std::io::stderr();
+        // `--color auto` follows stderr, where human diagnostics go (ADR 0015 D1).
+        let stderr_is_terminal = stderr.is_terminal();
+        una_cli::run(
+            std::env::args_os(),
+            &mut stdout.lock(),
+            &mut stderr.lock(),
+            stderr_is_terminal,
+            &environment,
+            una_cli::Heap {
+                held: &|| ALLOCATOR.allocated(),
+                ceiling: &|bytes| {
+                    // A ceiling below what is held fails; the next check reports the run then.
+                    let _ = ALLOCATOR.set_limit(bytes);
+                },
             },
-        },
-    );
+        )
+    };
+    let status = std::thread::scope(|scope| {
+        match std::thread::Builder::new()
+            .name("una".to_owned())
+            .stack_size(MAIN_STACK_BYTES)
+            .spawn_scoped(scope, command)
+        {
+            Ok(handle) => handle
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
+            Err(_) => command(),
+        }
+    });
     ExitCode::from(status.code())
 }
+
+/// The stack of the thread that runs a command (#2264): room for the passes over Core IR
+/// that run outside the checker's own thread (`una core`, the Core export, the report, the
+/// native backend, the copies and drops of the program) at the deepest Core IR the checker
+/// accepts.
+const MAIN_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 /// A variable of the process environment, for programs that `una run` grants `env`
 /// (`spec/14 §3`). The binary reads it, so that the library never does
