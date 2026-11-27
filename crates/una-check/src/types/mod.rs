@@ -1061,7 +1061,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
     }
     // #2264: a declaration whose Core IR nests deeper than the passes over Core IR can
-    // recurse, a body of thousands of statements or a list literal of thousands of records,
+    // recurse, a body of thousands of statements, calls or records,
     // is refused, as the parser refuses nesting past `MAX_NESTING` (U0101, ADR 0019), and left
     // out of the program, so that no command aborts on it with a stack overflow.
     for span in gaps.deep {
@@ -1069,7 +1069,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             Code::U0101,
             span,
             format!(
-                "the Core IR of this declaration nests deeper than {} levels here, counting each statement and each record, variant or list it builds; split it into helper functions",
+                "the Core IR of this declaration nests deeper than {} levels here, counting each nested Core expression: each statement, and each intermediate value an expression computes (a call, an operator, a record, variant or list); split it into helper functions",
                 una_core::depth::MAX_DEPTH
             ),
         );

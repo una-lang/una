@@ -1,4 +1,4 @@
--- test: a test's `given` and `do` lines share the constants they name, and each `expect` line shares those it names, so three references to a constant of 4,095 records, variants and lists in one line are under the cap of 4,096 and run (ADR 0126 rule 8, #2264)
+-- test: a test's `given` and `do` lines share the constants they name, and each `expect` line shares those it names, so references to a constant of 4,095 records, variants and lists in one line are under the cap of 4,096 and run, and 33 of them in one line nest one copy of its value in Core IR, not 33 copies past the depth bound of 131,072 (U0101); a constant in the `do` line and another in an `expect` line are two Core expressions, each under the cap (ADR 0126 rule 8, #2264)
 -- spec: spec/10 §8
 -- expect: ok
 -- expect: test-pass
@@ -38,6 +38,9 @@ pub capability Src
 handler three(a: Deep, b: Deep, c: Deep) for Src
   op get() = a.len + b.len + c.len
 
+handler many(values: List[Deep]) for Src
+  op get() = values.len
+
 pub id(x: Int) -> Int = x
 
 pub use_src() -> Int
@@ -53,3 +56,18 @@ test "three references in one given line"
   given @src = three(n11, b: n11, c: n11)
   do use_src()
   expect result == 6
+
+test "many references in one expect line"
+  do id(1)
+  expect n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len + n11.len == 66
+
+test "many references in one given line"
+  given @src = many([n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11,
+      n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11, n11
+    ])
+  do use_src()
+  expect result == 33
+
+test "the do line and an expect line apart"
+  do id(n11.len)
+  expect n10.len == 2

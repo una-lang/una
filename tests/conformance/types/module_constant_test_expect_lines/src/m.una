@@ -1,0 +1,67 @@
+-- test: a constant named in many `expect` lines counts once in each toward the cap of 10,000,000 elements, fields and characters that substitution builds in a package, since each `expect` line is a Core expression of its own that substitutes it: a list of 1,000 texts of 900 characters in 12 `expect` lines is U2041 at the eleventh (ADR 0126 rule 5, #1632, #2264)
+-- spec: spec/10 §8
+-- expect: error U2041 at src/m.una:66:10
+module m
+
+pub const t0: Text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+pub const t1: List[Text] = [t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0,
+  t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0, t0
+]
+
+pub id(x: Int) -> Int = x
+
+test "a large constant in many expect lines"
+  do id(1)
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000
+  expect t1.len == 1000

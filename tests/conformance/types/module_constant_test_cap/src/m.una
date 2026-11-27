@@ -1,6 +1,6 @@
--- test: the cap of 4,096 records, variants and lists that the constants one body names may hold together counts a whole test, its `expect` lines included: `n11` in the `do` line and `n10` in an `expect` line are U2041 at the second reference (ADR 0126 rule 8, #2264)
+-- test: the cap of 4,096 records, variants and lists that the constants one part of a test names may hold together counts each `expect` line as one part: `n11` and `n10` in one `expect` line are U2041 at the second reference (ADR 0126 rule 8, #2264)
 -- spec: spec/10 §8
--- expect: error U2041 at src/m.una:36:10
+-- expect: error U2041 at src/m.una:36:20
 module m
 
 pub const n0: List[Int] = [0, 1]
@@ -31,6 +31,6 @@ pub const n11: List[List[List[List[List[List[List[List[List[List[List[List[Int]]
 
 pub id(x: Int) -> Int = x
 
-test "the do and expect lines together"
-  do id(n11.len)
-  expect n10.len == 2
+test "two constants in one expect line"
+  do id(1)
+  expect n11.len + n10.len == 4

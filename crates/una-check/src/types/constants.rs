@@ -540,12 +540,13 @@ fn cycles(
     }
 }
 
-/// The cap on the size of the values a package's declarations substitute, together: a body
-/// (a function's, a handler operation's, a whole test's: its `given`, `do` and `expect` lines)
-/// counts once each constant it names, since it shares the value (ADR 0126 rule 8), and every
-/// other reference counts once, so the cap bounds the Core IR that substitution makes; a
-/// package past it is U2041 at the first reference that passes it. Ten times the cap of one
-/// value.
+/// The cap on the size of the values a package's declarations substitute, together: a part
+/// whose elaboration shares the constants it names (ADR 0126 rule 8) counts each of them once,
+/// and every other reference counts once, so the cap bounds the Core IR that substitution
+/// makes; a package past it is U2041 at the first reference that passes it. The parts are a
+/// function's body, each handler operation's body, a test's `given` and `do` lines together,
+/// and each `expect` line of a test on its own: a constant named in k `expect` lines counts k
+/// times, as elaboration substitutes it k times (#2264). Ten times the cap of one value.
 const MAX_SUBSTITUTED: u64 = 10 * MAX_SIZE;
 
 /// U2041 when the declarations of the package, together, substitute values larger than
@@ -583,16 +584,34 @@ pub(crate) fn substitution_budget(
                 continue;
             }
             let span = decl.span;
-            // The parts of the declaration whose elaboration shares the constants it names:
-            // a function's body, a handler operation's, and a whole test, whose `given` and
-            // `do` lines share them in one Core expression and each `expect` line in its own
-            // (#2264). Every other reference, in a clause, substitutes the value again.
-            let shared: Vec<Span> = match &decl.kind {
-                una_syntax::ast::DeclKind::Function(function) => vec![body_span(&function.body)],
-                una_syntax::ast::DeclKind::Handler(handler) => {
-                    handler.ops.iter().map(|op| body_span(&op.body)).collect()
+            // The parts of the declaration whose elaboration shares the constants it names,
+            // each span with the number of its part, exactly as elaboration shares them: a
+            // function's body, a handler operation's, a test's `given` and `do` lines, which
+            // share them in one Core expression, and each `expect` line, in its own (#2264).
+            // Every other reference, in a clause, substitutes the value again.
+            let shared: Vec<(Span, usize)> = match &decl.kind {
+                una_syntax::ast::DeclKind::Function(function) => {
+                    vec![(body_span(&function.body), 0)]
                 }
-                una_syntax::ast::DeclKind::Example(_) => vec![span],
+                una_syntax::ast::DeclKind::Handler(handler) => handler
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .map(|(part, op)| (body_span(&op.body), part))
+                    .collect(),
+                una_syntax::ast::DeclKind::Example(example) => example
+                    .givens
+                    .iter()
+                    .map(|given| (given.span, 0))
+                    .chain(std::iter::once((example.action.span, 0)))
+                    .chain(
+                        example
+                            .expectations
+                            .iter()
+                            .enumerate()
+                            .map(|(line, expectation)| (expectation.span, line + 1)),
+                    )
+                    .collect(),
                 _ => Vec::new(),
             };
             let from = Span::new(span.file, span.start, span.start);
@@ -610,7 +629,8 @@ pub(crate) fn substitution_budget(
                 // once per reference.
                 let part = shared
                     .iter()
-                    .position(|s| s.file == at.file && s.start <= at.start && at.end <= s.end);
+                    .find(|(s, _)| s.file == at.file && s.start <= at.start && at.end <= s.end)
+                    .map(|(_, part)| *part);
                 if let Some(part) = part
                     && !seen.insert((part, *id))
                 {
@@ -628,7 +648,11 @@ pub(crate) fn substitution_budget(
                         format!(
                             "the constants this {} names are too large together: their values hold more than {MAX_COMPOUND} records, variants and lists",
                             if matches!(decl.kind, una_syntax::ast::DeclKind::Example(_)) {
-                                "test"
+                                if part.is_some_and(|part| part > 0) {
+                                    "`expect` line"
+                                } else {
+                                    "test's `given` and `do` lines"
+                                }
                             } else if part.is_some() {
                                 "body"
                             } else {
@@ -645,7 +669,7 @@ pub(crate) fn substitution_budget(
                         Code::U2041,
                         *at,
                         format!(
-                            "the constants this package names are too large: their values, counted once in each body that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
+                            "the constants this package names are too large: their values, counted once in each body or test line that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
                         ),
                     );
                     return;
