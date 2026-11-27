@@ -109,7 +109,7 @@ fn end_by_the_signal(set: libc::sigset_t) {
 
 /// Ends the child when the wait itself fails, with status 4 and no answer, which the parent
 /// reports as a crash. A library crate does not print (conventions), so the status is the
-/// whole report; a confinement test exercises the wait on every target.
+/// whole report; the `limits` gate's processor-time case exercises the wait on each target.
 fn fail(_error: libc::c_int) -> ! {
     // SAFETY: `_exit` ends the process at once.
     unsafe { libc::_exit(4) }
