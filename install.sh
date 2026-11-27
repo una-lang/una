@@ -77,7 +77,7 @@ set -eu
 
 # The release this script installs by default; a test keeps it equal to the workspace version.
 # The release commit bumps it together with the README's pins.
-DEFAULT_VERSION=0.5.1
+DEFAULT_VERSION=0.5.2
 
 say() { printf '%s\n' "una install: $*"; }
 fail() {
