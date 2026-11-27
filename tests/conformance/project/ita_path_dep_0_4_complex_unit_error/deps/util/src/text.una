@@ -1,0 +1,5 @@
+module text
+
+pub count(a: Int of Complex) -> Int = 0
+
+pub twice(word: Text) -> Text = "{word}{word}"

@@ -1,0 +1,5 @@
+module text
+
+pub real(c: Complex) -> Int = 0
+
+pub twice(word: Text) -> Text = "{word}{word}"

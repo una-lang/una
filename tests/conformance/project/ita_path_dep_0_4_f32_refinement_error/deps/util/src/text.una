@@ -1,0 +1,5 @@
+module text
+
+pub kind Positive = F32 where it > 0
+
+pub twice(word: Text) -> Text = "{word}{word}"

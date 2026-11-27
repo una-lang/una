@@ -1,0 +1,7 @@
+module text
+
+pub narrow(x: Finite64) -> Finite32 = x
+
+pub count(modes: List[Rounding]) -> Int = modes.length()
+
+pub twice(word: Text) -> Text = "{word}{word}"
