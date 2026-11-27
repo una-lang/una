@@ -6,9 +6,11 @@
 //! `util/timeout.cpp`) that writes `timeout` through `std::cout`, takes a mutex and exits.
 //! None of that is async-signal-safe: a signal that lands while the solver is inside `malloc`
 //! can make the handler allocate in a heap whose lock and state are half-updated, and glibc
-//! then aborts (`sysmalloc: Assertion`, seen once in 69 runs on glibc 2.28, #2268). The
-//! outcome was a `crash`, never a proof, but a time-limited query must end the same way each
-//! time.
+//! then aborts (`sysmalloc: Assertion`, seen once in 69 runs on glibc 2.28, #2268), or the
+//! handler waits forever on a lock the interrupted code holds (about 1 in 100 runs of an
+//! allocation-heavy query under load, on glibc 2.28 and 2.39, #2268): a deadlocked child uses
+//! no processor time, so only the wall-clock guard ends it. The outcome was a `crash` or a
+//! `wallclock`, never a proof, but a time-limited query must end the same way each time.
 //!
 //! So no handler of `SIGXCPU` ever runs in the child. [`hold`] blocks the signal in the
 //! calling thread while the child is still single-threaded, before the limits are set, and
