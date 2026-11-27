@@ -71,8 +71,35 @@ mkdir -p "$out"
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$commit") || fail "reading the time of $commit"
 export SOURCE_DATE_EPOCH
 # The Linux builds' target directories, volumes kept between releases; the reproducible gate
-# builds a second time in volumes of its own, from cold (#679).
-volume=${UNA_LOCAL_RELEASE_VOLUME:-una-local-release-target}
+# builds a second time in volumes of its own, from cold (#679), named by UNA_LOCAL_RELEASE_VOLUME,
+# which is used as given (plus the architecture's suffix). The kept volume is named after the
+# release image (#2272): una-local-release-target-<image>, where <image> is the first 12 hex
+# digits of the ID of the image built from scripts/local-ci/Dockerfile.release for the toolchain,
+# so that a new image (another Dockerfile, toolchain or base layer) starts from a cold volume. A
+# volume kept through a change of image held fingerprints that outlived their rlibs, and the new
+# image took them as fresh (#2271: E0463, can't find crate for serde).
+volume_prefix=una-local-release-target
+volume_override=${UNA_LOCAL_RELEASE_VOLUME:-}
+
+# The kept volumes of an architecture other than `keep`: every volume named `$volume_prefix`
+# (the name before #2272) or `$volume_prefix-<anything>`, whose name ends with `suffix` (-arm64)
+# or, for no suffix, does not end with -arm64. `docker volume rm` refuses a volume in use, which
+# is left.
+stale_volumes() {
+    keep=$1 suffix=$2
+    docker volume ls --quiet | while IFS= read -r name; do
+        case $name in
+            "$volume_prefix" | "$volume_prefix"-*) ;;
+            *) continue ;;
+        esac
+        [ "$name" = "$keep" ] && continue
+        case $suffix in
+            '') case $name in *-arm64) continue ;; esac ;;
+            *) case $name in *"$suffix") ;; *) continue ;; esac ;;
+        esac
+        printf '%s\n' "$name"
+    done
+}
 
 # No standalone Z3 is installed (#1902): una embeds the Z3 library (ADR 0124), which
 # scripts/release.sh takes from the cache by the digest supply-chain/z3.lock records for each
@@ -110,14 +137,27 @@ linux_archive() {
     docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
         --file "$root/scripts/local-ci/Dockerfile.release" --tag "$image" \
         "$root/scripts/local-ci" || fail "the container image for linux/$arch did not build"
+    if [ -n "$volume_override" ]; then
+        volume="$volume_override$suffix"
+    else
+        image_id=$(docker image inspect --format '{{.Id}}' "$image") \
+            || fail "reading the ID of the image for linux/$arch"
+        image_id=${image_id#sha256:}
+        case $image_id in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) fail "the image for linux/$arch has no ID of hex digits: '$image_id'" ;;
+        esac
+        volume="$volume_prefix-$(printf '%s' "$image_id" | cut -c1-12)$suffix"
+    fi
+    echo "== the target volume of linux/$arch: $volume"
     name="una-$version-$target.tar.gz"
     # The image runs as an unprivileged user, uid 1000 (#1394); the volumes are handed to it first.
-    "$root/scripts/container-volumes.sh" "linux/$arch" "$image" "$volume$suffix:/work/target" \
+    "$root/scripts/container-volumes.sh" "linux/$arch" "$image" "$volume:/work/target" \
         una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
         || fail "handing the container's volumes to its user for linux/$arch"
     docker run --rm --platform "linux/$arch" \
         --volume "$checkout:/work" \
-        --volume "$volume$suffix:/work/target" \
+        --volume "$volume:/work/target" \
         --env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume "una-local-ci-z3-cache$suffix:/opt/z3-cache:ro" \
@@ -128,6 +168,17 @@ linux_archive() {
             scripts/check-release.sh $target
             cp target/release-archives/$name target/release-archives/$name.sha256 /out/" \
         || fail "the Linux archive of $target"
+    # Only the volume of the current image is kept: once its build passed, the run removes the
+    # architecture's other kept volumes, those of earlier images (#2272).
+    if [ -z "$volume_override" ]; then
+        for stale in $(stale_volumes "$volume" "$suffix"); do
+            if docker volume rm "$stale" > /dev/null 2>&1; then
+                echo "== removed the target volume of an earlier image: $stale"
+            else
+                echo "== left the target volume $stale (docker volume rm refused it)"
+            fi
+        done
+    fi
 }
 for target in $targets; do
     case $(release_target_platform "$target") in

@@ -1791,7 +1791,7 @@ fn local_release_builds_exactly_the_archives_of_the_shipped_targets() {
         ("CHANGELOG.md", "# Changelog\n\n## v9.9.9\n\n- A change.\n"),
         (
             "bin/docker",
-            "#!/bin/sh\n[ \"$1\" = run ] || exit 0\nfor a; do case $a in *:/out) out=${a%:/out} ;; esac; done\ntarget=$(printf '%s\\n' \"$@\" | sed -n 's/.*scripts\\/release.sh \\([a-z0-9_-]*\\).*/\\1/p' | head -n 1)\ncd \"$out\" || exit 1\nfor t in $target ${EXTRA:+x86_64-unknown-linux-gnu}; do echo \"$t\" > una-9.9.9-$t.tar.gz && shasum -a 256 una-9.9.9-$t.tar.gz > una-9.9.9-$t.tar.gz.sha256; done\n",
+            "#!/bin/sh\nlog=\"$(dirname \"$0\")/../docker.log\"\ncase \"$1 $2\" in\n'image inspect') echo \"${STUB_IMAGE_ID-sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}\"; exit 0 ;;\n'volume ls') printf 'una-local-release-target\\nuna-local-release-target-arm64\\nuna-local-release-target-aaaaaaaaaaaa-arm64\\nuna-local-release-target-0123456789ab-arm64\\nuna-local-release-target-bbbbbbbbbbbb\\nuna-local-release-again-arm64\\nuna-local-ci-target-arm64\\n'; exit 0 ;;\n'volume rm') echo \"rm $3\" >> \"$log\"; exit 0 ;;\nesac\n[ \"$1\" = run ] || exit 0\nfor a; do case $a in *:/out) out=${a%:/out} ;; *:/work/target) echo \"target $a\" >> \"$log\" ;; esac; done\ntarget=$(printf '%s\\n' \"$@\" | sed -n 's/.*scripts\\/release.sh \\([a-z0-9_-]*\\).*/\\1/p' | head -n 1)\ncd \"$out\" || exit 1\nfor t in $target ${EXTRA:+x86_64-unknown-linux-gnu}; do echo \"$t\" > una-9.9.9-$t.tar.gz && shasum -a 256 una-9.9.9-$t.tar.gz > una-9.9.9-$t.tar.gz.sha256; done\n",
         ),
     ];
     for (path, text) in stubs {
@@ -1852,6 +1852,54 @@ fn local_release_builds_exactly_the_archives_of_the_shipped_targets() {
             built.join(format!("una-9.9.9-{target}.tar.gz")).exists(),
             "{target}"
         );
+    }
+    // The kept target volume is named after the release image's ID (#2272), and once the build
+    // of linux/arm64 passed, the arm64 volumes of earlier images, the name of before #2272
+    // included, are removed; the volume of the current image, those of linux/amd64, the
+    // reproducible gate's and other scripts' are not.
+    let docker_log = dir.join("docker.log");
+    assert_eq!(
+        std::fs::read_to_string(&docker_log).unwrap(),
+        "target una-local-release-target-0123456789ab-arm64:/work/target\n\
+         rm una-local-release-target-arm64\n\
+         rm una-local-release-target-aaaaaaaaaaaa-arm64\n",
+        "{stdout}"
+    );
+    // A volume named by UNA_LOCAL_RELEASE_VOLUME, the reproducible gate's, is used as given,
+    // with the architecture's suffix, and nothing is removed.
+    std::fs::remove_file(&docker_log).unwrap();
+    let output = Command::new("sh")
+        .arg(dir.join("scripts/local-release.sh"))
+        .arg("v9.9.9")
+        .current_dir(&dir)
+        .env("PATH", format!("{}:{inherited}", dir.join("bin").display()))
+        .env("UNA_LOCAL_RELEASE_VOLUME", "una-local-release-again")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&docker_log).unwrap(),
+        "target una-local-release-again-arm64:/work/target\n"
+    );
+    // An image whose ID cannot be read, or is not hex digits, fails the release before any
+    // container runs.
+    for id in ["", "sha256:not-hex"] {
+        std::fs::remove_file(&docker_log).unwrap_or_default();
+        let output = Command::new("sh")
+            .arg(dir.join("scripts/local-release.sh"))
+            .arg("v9.9.9")
+            .current_dir(&dir)
+            .env("PATH", format!("{}:{inherited}", dir.join("bin").display()))
+            .env("STUB_IMAGE_ID", id)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{id:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("has no ID of hex digits"),
+            "{id:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!docker_log.exists(), "{id:?}");
     }
     // An archive of a target that is not listed fails the release, its digest correct or not.
     let output = run(true);
