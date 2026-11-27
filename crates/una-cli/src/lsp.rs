@@ -19,10 +19,12 @@ pub(crate) struct CliWorkspace {
 }
 
 impl Workspace for CliWorkspace {
+    /// The nearest directory above `file` with a manifest, `ita.una` (editions 0.4 and later)
+    /// or `una.toml`, which [`load_in`] reads as `una check` does (ADR 0122 rule 2, #2298).
     fn root(&self, file: &Path) -> PathBuf {
         file.ancestors()
             .skip(1)
-            .find(|dir| dir.join("una.toml").is_file())
+            .find(|dir| dir.join("ita.una").is_file() || dir.join("una.toml").is_file())
             .map_or_else(|| file.to_path_buf(), Path::to_path_buf)
     }
 

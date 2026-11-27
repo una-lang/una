@@ -54,7 +54,8 @@ fn repair_title(repair: &Repair) -> String {
 /// editor never disagrees with `una check` (ADR 0063 rule 8).
 pub trait Workspace: Send + Sync + 'static {
     /// The root of the package that `file` belongs to: the directory of the nearest
-    /// `una.toml` above it, or the file itself when there is none (ADR 0063 rule 10).
+    /// manifest above it, `ita.una` or `una.toml`, or the file itself when there is none
+    /// (ADR 0063 rule 10).
     fn root(&self, file: &Path) -> PathBuf;
 
     /// Checks the package at `root`, with the open buffers of `overlay` in place of their
