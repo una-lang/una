@@ -450,7 +450,7 @@
           ],
           "declaration": "edit s.pop() -> Option[T]\n  where s: Stack[T]\nedit q.pop() -> Option[T]\n  where q: Queue[T]\nedit q.pop() -> Option[T]\n  where q: PriorityQueue[T, P]",
           "docs": [
-            "Updates the receiver in place, written `let x = edit s.pop()`: it removes the top of",
+            "Updates the receiver in place, written `const x = edit s.pop()`: it removes the top of",
             "a `Stack` or the front of a `Queue` and gives it as `Some`, or gives `None` and",
             "leaves an empty one as it is, in O(1) amortized time (`spec/28 §5`). A",
             "`PriorityQueue` gives its item of the first priority, the one pushed first among",
@@ -543,7 +543,7 @@
           ],
           "declaration": "edit q.pop_back() -> Option[T]\n  where q: Queue[T]",
           "docs": [
-            "Updates a `Queue` in place, written `let x = edit q.pop_back()`: it removes the back",
+            "Updates a `Queue` in place, written `const x = edit q.pop_back()`: it removes the back",
             "and gives it as `Some`, or gives `None` when the queue is empty, in O(1) amortized",
             "time (`spec/28 §5`)."
           ]
@@ -804,7 +804,7 @@
           ],
           "declaration": "edit q.pop_ranked() -> Option[Ranked[T, P]]\n  where q: PriorityQueue[T, P]",
           "docs": [
-            "Updates a `PriorityQueue` in place, written `let r = edit q.pop_ranked()`: as `pop`,",
+            "Updates a `PriorityQueue` in place, written `const r = edit q.pop_ranked()`: as `pop`,",
             "with the priority, as `Some` of a `Ranked`, in O(log n) comparisons, amortized",
             "(`spec/28 §8`)."
           ]

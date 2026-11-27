@@ -2,7 +2,7 @@
 
 Status: Normative, edition `0.5` preview (ADR 0119, and its amendment of 2026-11-06: ADR 0139 moved it from edition `0.4`). This chapter grows with the implementation of ADR 0119: it holds the rules that have landed, and ADR 0119 holds the rest until they land.
 
-(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. Its Una blocks of edition `0.5` start with the line `-- edition 0.5` and use these words; its other blocks keep the words of their editions.
 
 ## 1. Keyed hashing
 
@@ -34,6 +34,7 @@ Status: Normative, edition `0.5` preview (ADR 0119, and its amendment of 2026-11
 6. **What it can break.** In a package of edition `0.4` raised to edition `0.5`, only the two errors of rule 5 and of `spec/21 §2` rule 5. Every other such package keeps its result: nothing of this chapter is in scope without an import, and the checker reads `std.collections` only for a package that imports it.
 
 ```una
+-- edition 0.5
 import std.collections (Stack)
 
 pub depth(history: Stack[Text]) -> Unit = unit
@@ -89,14 +90,15 @@ A `Stack[T]` gives back its last push first, and a `Queue[T]` its first, with bo
 8. **Equality and the Una form.** Two stacks, or two queues, are equal when they hold equal items in the same listing order (§3 rule 3). Their Una form is a list's, in listing order: `[1, 2, 3]` (§4).
 
 ```una
+-- edition 0.5
 import std.collections (Queue, empty_queue)
 
 pub serve(names: List[Text]) -> Option[Text]
 =
-  let edit line: Queue[Text] = empty_queue()
+  var line: Queue[Text] = empty_queue()
   for name in names
     edit line.push(item: name)
-  let first = edit line.pop()
+  const first = edit line.pop()
   first
 ```
 
@@ -140,11 +142,12 @@ The operations are a function of `std.collections`, `empty_set`, and built-in me
 6. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `s.len` and `s.has(item: x)` are in it. The other methods of a set are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 
 ```una
+-- edition 0.5
 import std.collections (Set, empty_set)
 
 pub passing(scores: List[Int]) -> List[Int]
 =
-  let edit seen: Set[Int] = empty_set()
+  var seen: Set[Int] = empty_set()
   for score in scores
     edit seen.add(item: score)
   seen.between(low: 80, high: 100)
@@ -205,11 +208,12 @@ The operations are functions of `std.collections`, `empty_hash_map` and `empty_h
 9. **Runs.** The interpreter runs both types. Native code reports them as not supported until their layout (ADR 0119 rule 19).
 
 ```una
+-- edition 0.5
 import std.collections (HashMap, empty_hash_map)
 
 pub count_words(words: List[Text]) -> HashMap[Text, Int]
 =
-  let edit counts: HashMap[Text, Int] = empty_hash_map()
+  var counts: HashMap[Text, Int] = empty_hash_map()
   for word in words
     edit counts.update(key: word, initial: 0, change: fn(n) -> n + 1)
   counts
@@ -249,15 +253,16 @@ The operations are the two functions and built-in methods resolved by the receiv
 10. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `q.len` is in it. The methods of a priority queue are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 
 ```una
+-- edition 0.5
 import std.collections (PriorityQueue, lowest_first)
 
 pub next_patient() -> Option[Text]
 =
-  let edit waiting: PriorityQueue[Text, Int] = lowest_first()
+  var waiting: PriorityQueue[Text, Int] = lowest_first()
   edit waiting.push(item: "sprained ankle", priority: 3)
   edit waiting.push(item: "chest pain", priority: 1)
   edit waiting.push(item: "fever", priority: 3)
-  let next = edit waiting.pop()
+  const next = edit waiting.pop()
   next
 ```
 
@@ -293,11 +298,12 @@ The operations are a function of `std.collections`, `empty_bit_set`, and built-i
 7. **The refinement language** (`spec/03 §3`, ADR 0119 V5). `b.len`, `b.size` and `b.has(item: i)` are in it, so `kind Hall = BitSet where it.size == 100` can be written. The other methods of a bit set are outside it: a contract, a `where` clause or a predicate that uses one is U2014.
 
 ```una
+-- edition 0.5
 import std.collections (BitSet, empty_bit_set)
 
 pub taken(seats: List[Int]) -> BitSet
 =
-  let edit hall = empty_bit_set(size: 100)
+  var hall = empty_bit_set(size: 100)
   edit hall.add(item: 12)
   for seat in seats
     if 0 <= seat and seat < hall.size
@@ -322,6 +328,7 @@ The conversions are functions of `std.collections`, called with method syntax on
 3. **Hash tables.** `to_hash_set` and `to_hash_map` make a new table with a key of its own, as `empty_hash_set` and `empty_hash_map` do (§1 rule 4), and fill it in the list's order: `to_hash_set` adds each element as `add` does, so a later equal element changes nothing, and `to_hash_map` sets each entry as `set` does, so a later entry of a present key replaces its value and keeps its place (§7 rule 2). n is the list's length, and |k| the size of the largest key's hash encoding (§1 rule 2).
 
 ```una
+-- edition 0.5
 import std.collections (HashSet, Queue, to_hash_set, to_queue, to_set)
 
 pub distinct(scores: List[Int]) -> List[Int] = scores.to_set().items()

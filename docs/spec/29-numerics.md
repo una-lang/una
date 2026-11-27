@@ -2,7 +2,7 @@
 
 Status: Normative, v0.3 preview (ADR 0114; the chapter of the numeric foundation, ADR 0121 rule 20); §16 to §19 edition 0.5 preview (ADR 0120, and its amendment of 2026-11-06: ADR 0139 moved them from edition `0.4`).
 
-(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged. A Core `let` (`spec/09`) stays. Its Una blocks of edition `0.5` start with the line `-- edition 0.5` and use these words; its other blocks keep the words of their editions.
 
 This chapter holds the numeric types beyond the integers of `spec/03` and `spec/18`. It opens with `F64`, IEEE 754 binary64, the rules of ADR 0114; the other types of the numeric foundation (ADR 0120) join it in later sections: the dense values `Array[T]` and `Matrix[T]` of edition `0.5` are §17, `F32` and the finite kinds §18, and the complex types `Complex[F64]` and `Complex[F32]` §19.
 
@@ -343,13 +343,14 @@ Edition `0.5` (ADR 0120 rules 26 to 54, V4, IF2 to IF8). Everything in this sect
 18. **The shape frame.** The length frame of `spec/17 §5` rule 3 extends to shapes: a dense binding that a loop updates keeps its shape when every completing path gives it a value whose callee ensures an unchanged shape, its length for an array, its rows and its columns for a matrix, and its rank, its element count and its length along each of the 8 axes for a tensor, as every `edit` method of this section does. The verifier then assumes the starting shape in the body and after the loop, so this loop proves every `get` and `set` in bounds:
 
     ```una
+    -- edition 0.5
     for i in 0..<m.rows
       for j in 0..<m.columns
-        let x = m.get(row: i, column: j)
+        const x = m.get(row: i, column: j)
         edit m.set(row: i, column: j, item: x * 2.0)
     ```
 
-    The read comes first, as its own `let`: a call that passes `m` by `edit` cannot read `m` in its other arguments (U2018, `spec/17 §3`).
+    The read comes first, as its own `const`: a call that passes `m` by `edit` cannot read `m` in its other arguments (U2018, `spec/17 §3`).
 
     The same loop over `0..m.rows`, which reaches `i == m.rows`, is refuted at `get`, U5001, with the counterexample `i == m.rows`.
 19. **What verifies:** the shape preconditions of a whole computation, products included; indices in loops over the shape; views and their shapes; same shape over tensors of every rank, which expands to the rank and, for each axis k from 0 to 7, `k < rank` implying equal lengths along k, at most 17 linear atoms; reshapes whose lengths are literals; a solve with the factorization of `lu()`. **What does not:** values of sums and products, facts over all the elements, which a program states at a checked boundary or tests with `all_finite()`, and reshapes whose lengths are products of values, which `spec/12 §6` reports as unknown unless the interpreted re-solve of ADR 0054 refutes them.

@@ -2452,3 +2452,141 @@ fn every_example_of_the_release_notes_is_checked() {
         }
     }
 }
+
+/// The `una` blocks of edition `0.5` of a page (ADR 0137, #1630): each block's 1-based line, its
+/// body, and the code of its leading `-- fails with` line. A block is of edition `0.5` when its
+/// leading `--` lines say `-- edition 0.5`, or when it is a file of a package (a block after a
+/// file path, as `blocks` groups them) whose `ita.una` names edition `0.5`. Fences may be
+/// indented, as in a numbered rule of the specification.
+fn edition_0_5_blocks(text: &str) -> Vec<(usize, String, Option<String>)> {
+    let mut editions: BTreeMap<usize, String> = BTreeMap::new();
+    let grouped = blocks(text);
+    for block in &grouped {
+        if let (Some(package), Some("ita.una")) = (block.package, block.path.as_deref()) {
+            let (manifest, _) = una_project::ita::parse_ita_manifest(&block.body);
+            editions.insert(package, manifest.edition.name().to_owned());
+        }
+    }
+    let packaged: BTreeMap<usize, usize> = grouped
+        .iter()
+        .filter_map(|block| Some((block.line, block.package?)))
+        .collect();
+    let mut out = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut at = 0;
+    while at < lines.len() {
+        let line = lines[at];
+        let indent = line.len() - line.trim_start().len();
+        let Some(lang) = line.trim_start().strip_prefix("```") else {
+            at += 1;
+            continue;
+        };
+        let start = at;
+        let fence = &line[..indent];
+        let mut body = String::new();
+        at += 1;
+        while at < lines.len() && !lines[at].starts_with(&format!("{fence}```")) {
+            body.push_str(lines[at].get(indent..).unwrap_or("").trim_end());
+            body.push('\n');
+            at += 1;
+        }
+        at += 1;
+        if lang.split_whitespace().next() != Some("una") {
+            continue;
+        }
+        let (fails, edition) = directives(&body);
+        let package = packaged
+            .get(&(start + 1))
+            .and_then(|package| editions.get(package));
+        if edition == "0.5" || package.is_some_and(|edition| edition == "0.5") {
+            out.push((start + 1, body.clone(), fails.map(str::to_owned)));
+        }
+    }
+    out
+}
+
+/// The lines of `body` that use the word `let` outside a `--` comment.
+fn lines_with_let(body: &str) -> Vec<String> {
+    body.lines()
+        .filter(|line| {
+            let code = line.split("--").next().unwrap_or("");
+            code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|word| word == "let")
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn lines_with_let_finds_the_word_outside_comments_only() {
+    let body = "-- edition 0.5\nconst x = 1\n  let edit y = 2\nlet_count + 1\nf() -- let\n";
+    assert_eq!(lines_with_let(body), vec!["  let edit y = 2".to_owned()]);
+}
+
+#[test]
+fn every_block_of_edition_0_5_in_the_documents_uses_its_binding_words() {
+    // ADR 0137 implementation plan step 3 (#1630): edition `0.5` writes `const` and `var`, so a
+    // `una` block of edition `0.5` in the specification, the guides, the release notes or the
+    // `una explain` texts never writes `let`, except where it shows U7007, the diagnostic of a
+    // `let` in edition `0.5`: the failing example of U7007's own text, or a block that fails
+    // with U7007. A chapter of the specification of edition `0.5` alone marks each of its
+    // blocks with `-- edition 0.5`, so none escapes this check.
+    let root = repository();
+    let mut pages = Vec::new();
+    for dir in [
+        "docs/spec",
+        "docs/guide",
+        "docs/release-notes",
+        "crates/una-explain/explain",
+    ] {
+        pages.extend(markdown_files(&root.join(dir)));
+    }
+    let mut checked = 0;
+    let mut problems = Vec::new();
+    for page in &pages {
+        let text = std::fs::read_to_string(page).unwrap();
+        let relative = page.strip_prefix(&root).unwrap().display().to_string();
+        let shows_u7007 = relative.ends_with("explain/U7007.md");
+        let failing_from = text
+            .find("## Failing example")
+            .map(|at| text[..at].lines().count());
+        let failing_to = text
+            .find("## Fixed example")
+            .map(|at| text[..at].lines().count());
+        for (line, body, fails) in edition_0_5_blocks(&text) {
+            checked += 1;
+            let in_failing = shows_u7007
+                && failing_from.is_some_and(|from| line > from)
+                && failing_to.is_none_or(|to| line < to);
+            if in_failing || fails.as_deref() == Some("U7007") {
+                continue;
+            }
+            for found in lines_with_let(&body) {
+                problems.push(format!("{relative}:{line}: `{}`", found.trim()));
+            }
+        }
+        if relative.starts_with("docs/spec/")
+            && text
+                .lines()
+                .any(|line| line.starts_with("Status: Normative, edition `0.5`"))
+        {
+            for (number, line) in text.lines().enumerate() {
+                if line.trim_start() == "```una" {
+                    let next = text.lines().nth(number + 1).unwrap_or("").trim_start();
+                    if next != "-- edition 0.5" {
+                        problems.push(format!(
+                            "{relative}:{}: a block of a chapter of edition 0.5 does not start with `-- edition 0.5`",
+                            number + 1
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "blocks of edition 0.5 that write `let` (ADR 0137):\n{}",
+        problems.join("\n")
+    );
+    assert!(checked >= 6, "only {checked} blocks of edition 0.5 found");
+}
