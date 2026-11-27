@@ -195,6 +195,50 @@ fn a_child_past_its_processor_time_ends_by_sigxcpu() {
     assert_eq!(ended, Ended::Signaled(libc::SIGXCPU), "{text}");
 }
 
+/// Whether `SIGXCPU` is blocked in the calling thread.
+fn processor_time_signal_blocked() -> bool {
+    // SAFETY: an all-zero `sigset_t` is a valid object for the call to fill.
+    let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: a null new set only reads the mask into `mask`, a valid, writable set.
+    let status = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &raw mut mask) };
+    assert_eq!(status, 0);
+    // SAFETY: `mask` was filled by the call.
+    unsafe { libc::sigismember(&raw const mask, libc::SIGXCPU) == 1 }
+}
+
+#[test]
+fn after_confining_sigxcpu_is_blocked_in_the_child_and_in_every_thread_it_starts() {
+    // No handler of `SIGXCPU`, such as Z3's front end installs, may run in the child (#2268):
+    // the signal is blocked in the thread that confines and in every thread started after,
+    // and the child's own waiting thread ends the process by it. That end, with the real
+    // front end and its handler installed, is the `limits` gate's case
+    // (`crates/una-cli/tests/solver_limits.rs`): here the test harness's own main thread,
+    // which this scenario cannot reach, would take a signal sent to the process.
+    if let Some(scenario) = scenario() {
+        if scenario != "cpu-mask" {
+            return;
+        }
+        let before = processor_time_signal_blocked();
+        let outcome = confine(&limits());
+        let after = processor_time_signal_blocked();
+        let started = std::thread::spawn(processor_time_signal_blocked)
+            .join()
+            .unwrap();
+        println!("outcome={outcome:?} before={before} after={after} started={started}");
+        std::process::exit(0);
+    }
+    let (ended, text) = run(
+        "cpu-mask",
+        "after_confining_sigxcpu_is_blocked_in_the_child_and_in_every_thread_it_starts",
+    );
+    assert_eq!(ended, Ended::Exited(0), "{text}");
+    assert!(text.contains("outcome=Ok("), "{text}");
+    assert!(
+        text.contains("before=false after=true started=true"),
+        "{text}"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn under_the_filter_an_unlisted_call_is_enosys_and_tripwires_kill() {
@@ -495,6 +539,7 @@ fn the_filter_allows_only_its_fixed_list_and_refuses_the_open_family_with_eacces
         libc::SYS_rt_sigaction,
         libc::SYS_rt_sigprocmask,
         libc::SYS_rt_sigreturn,
+        libc::SYS_rt_sigtimedwait,
         libc::SYS_restart_syscall,
         libc::SYS_clock_gettime,
         libc::SYS_clock_getres,
