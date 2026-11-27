@@ -1,0 +1,6 @@
+module text
+
+pub count(xs: List[Int]) -> Int
+=
+  let a = xs.array()
+  0

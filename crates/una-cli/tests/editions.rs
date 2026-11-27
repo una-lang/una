@@ -667,6 +667,41 @@ const EXPECTED_DIFFERENCES_0_5: &[Difference04] = &[
         added: &[("U1002", "src/text.una:3:5")],
         removed: &[],
     },
+    // The same rule by method syntax: `t.parse_decimal(scale: 2)`, `t.parse_f32()` and
+    // `xs.array()` find no function of edition 0.5 in a module of edition 0.4 (U1001).
+    Difference04 {
+        case: "project/ita_path_dep_0_4_array_method_error/deps/util",
+        added: &[],
+        removed: &[("U1001", "src/text.una:5:14")],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_parse_decimal_method_error/deps/util",
+        added: &[],
+        removed: &[("U1001", "src/text.una:5:27")],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_parse_f32_method_error/deps/util",
+        added: &[],
+        removed: &[("U1001", "src/text.una:5:27")],
+    },
+    // Kinds named `F32`, `Complex` and `Matrix`, valid in edition 0.4 and U1002 in edition 0.5;
+    // their root of edition 0.5 is U1002 at each import.
+    Difference04 {
+        case: "project/ita_path_dep_0_4_f32_kind_import_error/deps/util",
+        added: &[
+            ("U1002", "src/text.una:3:10"),
+            ("U1002", "src/text.una:5:10"),
+        ],
+        removed: &[],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_matrix_kind_import_error/deps/util",
+        added: &[
+            ("U1002", "src/text.una:3:10"),
+            ("U2003", "src/text.una:5:15"),
+        ],
+        removed: &[],
+    },
     // ADR 0122 rule 49: a root of edition 0.4 cannot depend on a package of edition 0.5 (U7012);
     // as edition 0.5 it can.
     Difference04 {

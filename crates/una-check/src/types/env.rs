@@ -14,7 +14,7 @@ use una_syntax::ast::{
     FunctionDecl, HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param,
     PolicyDecl, PredicateDecl, Type, TypeCore, UsesClause,
 };
-use una_syntax::{Interner, Span, Symbol};
+use una_syntax::{FileId, Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
@@ -40,6 +40,9 @@ pub(crate) struct Module<'a> {
     /// The edition it is checked under: its package's (ADR 0122 rule 49). A standard module's
     /// is the root package's.
     pub(crate) edition: Edition,
+    /// The file of a package module, the root's or a dependency's; `None` for the standard
+    /// modules, whose files are in a source database of their own.
+    pub(crate) file: Option<FileId>,
     pub(crate) upper: BTreeMap<&'a str, Entity>,
     pub(crate) lower: BTreeMap<&'a str, Entity>,
     /// Names imported explicitly.
@@ -356,6 +359,8 @@ pub(crate) struct Source<'a> {
     /// 0122 rule 49): a dependency's of an earlier edition. `None` for the root's modules and
     /// the standard ones.
     pub(crate) edition: Option<Edition>,
+    /// The file of a package module; `None` for the standard modules.
+    pub(crate) file: Option<FileId>,
 }
 
 /// How far the base of an alias has been lowered, to find aliases defined through themselves.
@@ -840,20 +845,15 @@ impl<'a> Env<'a> {
             .map_or(self.edition, |module| module.edition)
     }
 
-    /// The edition of the module of the file that `span` is in, as [`Env::edition_of`]; the
-    /// root's when no module is that file. O(modules), for a message's words.
+    /// The edition of the package module of the file that `span` is in, as
+    /// [`Env::edition_of`]. A package module is found by its file, header or none, so a
+    /// dependency's module never falls back to the root's edition; only a span in no package
+    /// module (a standard module's, which has the root's edition) gets the root's. O(modules),
+    /// for a message's words.
     pub(crate) fn edition_at(&self, span: Span) -> Edition {
         self.modules
             .iter()
-            .find(|module| {
-                module
-                    .tree
-                    .module
-                    .as_ref()
-                    .map(|header| header.span.file)
-                    .or_else(|| module.tree.decls.first().map(|decl| decl.span.file))
-                    == Some(span.file)
-            })
+            .find(|module| module.file == Some(span.file))
             .map_or(self.edition, |module| module.edition)
     }
 
@@ -891,6 +891,7 @@ impl<'a> Env<'a> {
             path,
             mount: source.mount,
             edition: source.edition.unwrap_or(self.edition),
+            file: source.file,
             upper: BTreeMap::new(),
             lower: BTreeMap::new(),
             imports: BTreeMap::new(),
@@ -1228,6 +1229,13 @@ impl<'a> Env<'a> {
                 // The prelude functions of dense methods are reached by their receiver only
                 // (`spec/29 §17`): no name in a program finds them.
                 if name.starts_with(prelude::DENSE_HIDDEN) {
+                    return None;
+                }
+                // ADR 0122 rule 49: the environment loads the root's prelude, so a module of
+                // an earlier edition (a dependency of edition 0.4 under a root of 0.5) finds
+                // only its own edition's prelude functions, by a name and by method syntax
+                // alike: `t.parse_decimal(scale: 2)` there is U1001, as it is alone.
+                if self.edition_of(module) < Edition::V0_5 && prelude::moved_to_0_5(name) {
                     return None;
                 }
                 self.modules

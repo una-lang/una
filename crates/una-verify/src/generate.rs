@@ -4717,7 +4717,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     F::op("ite", vec![had, with_key, without_key]),
                 ));
                 let has_now = has_of(&x.f, &key.f);
-                // ADR 0069, amendment of 2026-10-19: in edition `0.4`, the update keeps `has`
+                // ADR 0069, amendment of 2026-10-19: in edition `0.5` (the root's), the update keeps `has`
                 // and `get` at every other key (ADR 0119 V3); editions `0.2` and `0.3` keep M3
                 // and M8 as written.
                 if self.index.map_frames

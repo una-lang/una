@@ -231,6 +231,7 @@ mod tests {
                 reports: true,
                 mount: None,
                 edition: None,
+                file: Some(id),
             }],
             standard.source(&standard.prelude),
             standard.after_prelude(),

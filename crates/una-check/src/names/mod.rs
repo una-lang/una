@@ -1076,7 +1076,8 @@ impl<'p, 'a> Checker<'p, 'a> {
                     Found::Declared(declared, file) if !declared.public => {
                         self.private(ident.span, name, &path, &declared, file);
                     }
-                    Found::Declared(declared, _) => {
+                    Found::Declared(declared, file) => {
+                        self.built_in_import(ident.span, name, edition, &declared, file, &path);
                         if declared.what == What::Kind
                             && let Some(table) = tables.get_mut(index)
                         {
@@ -1097,6 +1098,53 @@ impl<'p, 'a> Checker<'p, 'a> {
                     Found::Standard | Found::Unknown => {}
                 }
                 self.import_name(tables, index, ident, name);
+            }
+        }
+    }
+
+    /// U1002 at an import, into a module of edition `edition`, of an upper-case declaration of
+    /// module `path` (file `file`) whose name, or the name of one of whose variants, that
+    /// edition builds in while the declaring module's edition does not (ADR 0122 rule 49):
+    /// a dependency of edition 0.4 may declare `kind F32`, and a module of edition 0.5 may not
+    /// import it, since no declaration takes the name there (ADR 0120 rule 3). When both
+    /// editions build the name in, the declaration is U1002 itself. O(variants).
+    fn built_in_import(
+        &mut self,
+        span: Span,
+        name: &str,
+        edition: Edition,
+        declared: &Declared<'a>,
+        file: FileId,
+        path: &str,
+    ) {
+        if !matches!(
+            declared.what,
+            What::Kind | What::Variant | What::Capability | What::Measure
+        ) {
+            return;
+        }
+        let own = self.edition(file);
+        let names = std::iter::once(name).chain(declared.variants.iter().copied());
+        for built in names {
+            let Some(from) = prelude::built_in_upper(built) else {
+                continue;
+            };
+            if edition >= from && own < from {
+                let what = if built == name {
+                    format!("{} `{name}`", declared.what.word())
+                } else {
+                    format!("variant `{built}` of kind `{name}`")
+                };
+                self.error(
+                    Code::U1002,
+                    span,
+                    format!(
+                        "`{built}` is a built-in name from edition {}, the edition of this module, so the {what} of module `{path}`, of edition {}, cannot be imported here",
+                        from.name(),
+                        own.name()
+                    ),
+                );
+                return;
             }
         }
     }

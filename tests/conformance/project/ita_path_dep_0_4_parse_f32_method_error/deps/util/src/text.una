@@ -1,0 +1,8 @@
+module text
+
+pub flt(t: Text) -> Text
+=
+  let outcome = attempt t.parse_f32()
+  when outcome
+    is Ok(x) -> "{x}"
+    is Err(failure) -> "bad"

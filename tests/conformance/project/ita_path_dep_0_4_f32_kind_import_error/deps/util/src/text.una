@@ -1,0 +1,7 @@
+module text
+
+pub kind F32 = Int in 0..10
+
+pub kind Complex = Int
+
+pub half(x: F32) -> F32 = x

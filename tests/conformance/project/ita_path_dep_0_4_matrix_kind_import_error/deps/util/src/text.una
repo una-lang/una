@@ -1,0 +1,5 @@
+module text
+
+pub kind Matrix = Int in 0..10
+
+pub make() -> Matrix = 2

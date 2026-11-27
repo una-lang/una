@@ -353,6 +353,46 @@ pub(crate) fn moved_to_0_5(name: &str) -> bool {
         || name == STD_COLLECTIONS
 }
 
+/// The edition from which `name` is an upper-case name built in ahead of every
+/// declaration, so that no kind, variant, capability or unit of a module of that edition takes
+/// it (U1002): the names that `names::Checker::declare` refuses, by the edition each rule
+/// starts in. `None` for a name that no edition builds in. O(1).
+pub(crate) fn built_in_upper(name: &str) -> Option<Edition> {
+    if una_core::IntType::from_name(name).is_some()
+        || matches!(
+            name,
+            "Int"
+                | "Nat"
+                | "Bool"
+                | "Text"
+                | "Unit"
+                | "Hashed"
+                | "List"
+                | "Option"
+                | "Result"
+                | "Map"
+                | "Entry"
+                | "Json"
+                | "JsonNumber"
+                | "JsonError"
+                | "Http"
+                | "Header"
+                | "Response"
+                | "HttpError"
+                | "Eq"
+                | "Ord"
+                | "Integer"
+        )
+    {
+        return Some(Edition::V0_2);
+    }
+    match name {
+        "F64" => Some(Edition::V0_3),
+        "Decimal" | "Array" | "Matrix" | "Tensor" | "Lu" | "F32" | "Complex" => Some(Edition::V0_5),
+        _ => None,
+    }
+}
+
 /// The advice of an unknown name or module that [`moved_to_0_5`] holds, in edition 0.4.
 pub(crate) fn moved_to_0_5_advice(name: &str) -> String {
     format!("`{name}` exists from edition 0.5 (ADR 0139): write `edition 0.5` in ita.una to use it")
@@ -429,6 +469,33 @@ mod tests {
             upper.remove(parameter);
         }
         (lower, upper)
+    }
+
+    #[test]
+    fn every_name_edition_0_5_adds_to_the_prelude_is_hidden_from_edition_0_4() {
+        // ADR 0122 rule 49: a module of edition 0.4 under a root of 0.5 shares the root's
+        // prelude, and `Env::lower` hides from it exactly the names `moved_to_0_5` holds, by a
+        // name and by method syntax. Every declaration `prelude_0_4.una` adds is one of them,
+        // or a function of dense methods that no name reaches (`DENSE_HIDDEN`).
+        let source = include_str!("../std/prelude_0_4.una");
+        let mut seen = 0;
+        for line in source.lines() {
+            let Some(rest) = line.strip_prefix("pub ") else {
+                continue;
+            };
+            let rest = rest.strip_prefix("kind ").unwrap_or(rest);
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            assert!(!name.is_empty(), "{line}");
+            seen += 1;
+            assert!(
+                name.starts_with(DENSE_HIDDEN) || moved_to_0_5(&name),
+                "`{name}` of prelude_0_4.una is reachable from a module of edition 0.4"
+            );
+        }
+        assert!(seen > 10, "{seen}");
     }
 
     #[test]

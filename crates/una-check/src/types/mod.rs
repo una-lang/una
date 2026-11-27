@@ -560,6 +560,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 mount: mount.map(|mount| mount.local.as_str()),
                 // ADR 0122 rule 49: a dependency's module is checked under its own edition.
                 edition: mount.map(|mount| mount.edition),
+                file: Some(module.id),
             }
         })
         .collect();
@@ -1581,6 +1582,7 @@ impl Standard {
             reports: false,
             mount: None,
             edition: None,
+            file: None,
         }
     }
 }
@@ -2344,6 +2346,7 @@ mod tests {
             reports: true,
             mount: None,
             edition: None,
+            file: None,
         };
         let mut env = Env::build(
             Vec::new(),

@@ -1,0 +1,8 @@
+-- test: a root of edition 0.5 that imports a kind named `Matrix` from a dependency of edition 0.4 is U1002 at the import, by the rule of the importing module's edition: the built-in dense type takes the name there, while the declaration is valid in its own edition (ADR 0122 rule 49, ADR 0120 rule 3)
+-- spec: spec/30 §12
+-- expect: error U1002 at src/main.una:6:22
+module main
+
+import strings.text (Matrix, make)
+
+pub rows() -> Int = 0

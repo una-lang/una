@@ -122,6 +122,19 @@ fn a_dependency_of_edition_0_4_has_no_names_of_edition_0_5_in_any_command() {
                 "U1001 at deps/util/src/text.una:3:21",
             ],
         ),
+        // Method syntax reaches no function that edition 0.5 adds to the prelude either.
+        (
+            "ita_path_dep_0_4_parse_decimal_method_error",
+            &["U1001 at deps/util/src/text.una:5:27"],
+        ),
+        (
+            "ita_path_dep_0_4_parse_f32_method_error",
+            &["U1001 at deps/util/src/text.una:5:27"],
+        ),
+        (
+            "ita_path_dep_0_4_array_method_error",
+            &["U1001 at deps/util/src/text.una:5:14"],
+        ),
     ] {
         for args in [&["check"][..], &["test"], &["run"], &["report"], &["build"]] {
             let work = fresh(name, args[0]);
