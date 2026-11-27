@@ -181,6 +181,12 @@ struct Running {
 /// The JSON-RPC error code of a request the server does not implement.
 const METHOD_NOT_FOUND: i64 = -32601;
 
+/// The stack of a thread that runs a tier 1 check: that of the threads on which `una` runs
+/// its commands and its checker (#2264), so that a program `una check` accepts, whose Core IR
+/// nests up to `una_core::depth::MAX_DEPTH` deep, is checked, indexed and dropped here too.
+/// The stack is reserved, not committed.
+const CHECK_STACK_BYTES: usize = 256 * 1024 * 1024;
+
 /// The server's state.
 pub struct Server<W: Workspace> {
     workspace: Arc<W>,
@@ -359,11 +365,37 @@ impl<W: Workspace> Server<W> {
                     let events = events.clone();
                     let workspace = Arc::clone(&self.workspace);
                     self.threads.retain(|thread| !thread.is_finished());
-                    self.threads.push(std::thread::spawn(move || {
-                        let checked = workspace.check(&root, &overlay, true, &cancel);
-                        // The loop may be gone; the result is then of no use.
-                        let _ = events.send(Event::Checked(root, run, checked));
-                    }));
+                    // The check runs on a thread of `CHECK_STACK_BYTES`, as every command
+                    // of `una` does (#2264): the analysis it indexes and drops holds Core
+                    // IR, whose passes recurse once per nested expression. If the system
+                    // cannot start the thread, the check runs in place.
+                    let job = Arc::new(std::sync::Mutex::new(Some((root, overlay, cancel))));
+                    let taken = Arc::clone(&job);
+                    let spawned = std::thread::Builder::new()
+                        .name("una-lsp-check".to_owned())
+                        .stack_size(CHECK_STACK_BYTES)
+                        .spawn(move || {
+                            let Some((root, overlay, cancel)) =
+                                taken.lock().ok().and_then(|mut job| job.take())
+                            else {
+                                return;
+                            };
+                            let checked = workspace.check(&root, &overlay, true, &cancel);
+                            // The loop may be gone; the result is then of no use.
+                            let _ = events.send(Event::Checked(root, run, checked));
+                        });
+                    match spawned {
+                        Ok(thread) => self.threads.push(thread),
+                        Err(_) => {
+                            if let Some((root, overlay, cancel)) =
+                                job.lock().ok().and_then(|mut job| job.take())
+                            {
+                                self.running.remove(&root);
+                                let checked = self.workspace.check(&root, &overlay, true, &cancel);
+                                out.extend(self.publish(&root, checked));
+                            }
+                        }
+                    }
                 }
                 _ => {
                     let checked = self.workspace.check(&root, &overlay, solve, &cancel);

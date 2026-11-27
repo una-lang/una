@@ -8,6 +8,7 @@ pub mod bigint;
 pub mod complex;
 pub mod decimal;
 pub mod dense;
+pub mod depth;
 mod descriptor;
 pub mod elementary;
 pub mod float;

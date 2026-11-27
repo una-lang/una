@@ -540,11 +540,15 @@ fn cycles(
     }
 }
 
-/// The cap on the size of the values a package's declarations substitute, together: a body
-/// (a function's, a handler operation's, a test's `do` line) counts once each constant it
-/// names, since it shares the value (ADR 0126 rule 8), and every other reference counts once,
-/// so the cap bounds the Core IR that substitution makes; a package past it is U2041 at the
-/// first reference that passes it. Ten times the cap of one value.
+/// The cap on the size of the values a package's declarations substitute, together: a part
+/// whose elaboration shares the constants it names (ADR 0126 rule 8) counts each of them once,
+/// and every other reference counts once, so the cap bounds the Core IR that substitution
+/// makes; a package past it is U2041 at the first reference that passes it. Only a record,
+/// variant or list is shared: a scalar value, such as a text, counts at every reference, in a
+/// part or not, since elaboration copies it each time (#2264 review 2). The parts are a
+/// function's body, each handler operation's body, a test's `given` and `do` lines together,
+/// and each `expect` line of a test on its own: a constant named in k `expect` lines counts k
+/// times, as elaboration substitutes it k times (#2264). Ten times the cap of one value.
 const MAX_SUBSTITUTED: u64 = 10 * MAX_SIZE;
 
 /// U2041 when the declarations of the package, together, substitute values larger than
@@ -582,15 +586,34 @@ pub(crate) fn substitution_budget(
                 continue;
             }
             let span = decl.span;
-            // The parts of the declaration whose elaboration shares the constants it names:
-            // a function's body, a handler operation's, a test's `do` line. Every other
-            // reference, in a clause or a `given` line, substitutes the value again.
-            let shared: Vec<Span> = match &decl.kind {
-                una_syntax::ast::DeclKind::Function(function) => vec![body_span(&function.body)],
-                una_syntax::ast::DeclKind::Handler(handler) => {
-                    handler.ops.iter().map(|op| body_span(&op.body)).collect()
+            // The parts of the declaration whose elaboration shares the constants it names,
+            // each span with the number of its part, exactly as elaboration shares them: a
+            // function's body, a handler operation's, a test's `given` and `do` lines, which
+            // share them in one Core expression, and each `expect` line, in its own (#2264).
+            // Every other reference, in a clause, substitutes the value again.
+            let shared: Vec<(Span, usize)> = match &decl.kind {
+                una_syntax::ast::DeclKind::Function(function) => {
+                    vec![(body_span(&function.body), 0)]
                 }
-                una_syntax::ast::DeclKind::Example(example) => vec![example.action.span],
+                una_syntax::ast::DeclKind::Handler(handler) => handler
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .map(|(part, op)| (body_span(&op.body), part))
+                    .collect(),
+                una_syntax::ast::DeclKind::Example(example) => example
+                    .givens
+                    .iter()
+                    .map(|given| (given.span, 0))
+                    .chain(std::iter::once((example.action.span, 0)))
+                    .chain(
+                        example
+                            .expectations
+                            .iter()
+                            .enumerate()
+                            .map(|(line, expectation)| (expectation.span, line + 1)),
+                    )
+                    .collect(),
                 _ => Vec::new(),
             };
             let from = Span::new(span.file, span.start, span.start);
@@ -605,29 +628,45 @@ pub(crate) fn substitution_budget(
                     continue;
                 }
                 // A shared reference counts once per part that shares it; any other counts
-                // once per reference.
+                // once per reference. Elaboration shares only a record, variant or list: a
+                // scalar value, such as a text, is folded and copied into Core IR at every
+                // reference, even in a shared part, so each of its references counts
+                // (`Fx::constant_atom`, #2264 review 2).
                 let part = shared
                     .iter()
-                    .position(|s| s.file == at.file && s.start <= at.start && at.end <= s.end);
+                    .find(|(s, _)| s.file == at.file && s.start <= at.start && at.end <= s.end)
+                    .map(|(_, part)| *part);
                 if let Some(part) = part
+                    && !scalar(env, evaluated, *id)
                     && !seen.insert((part, *id))
                 {
                     continue;
                 }
-                // The bindings a shared part binds before its body, together.
-                if let Some(part) = part {
-                    let chain = chains.entry(part).or_insert(0);
-                    *chain += evaluated.compound.get(id).copied().unwrap_or(0);
-                    if *chain > MAX_COMPOUND {
-                        report.error(
-                            Code::U2041,
-                            *at,
-                            format!(
-                                "the constants this body names are too large together: their values hold more than {MAX_COMPOUND} records, variants and lists"
-                            ),
-                        );
-                        return;
-                    }
+                // The bindings a shared part binds before its body, together; and those of
+                // every reference outside a shared part, each counted, since each substitutes
+                // the value again in one Core expression of the declaration (#2264).
+                let chain = chains.entry(part.unwrap_or(usize::MAX)).or_insert(0);
+                *chain += evaluated.compound.get(id).copied().unwrap_or(0);
+                if *chain > MAX_COMPOUND {
+                    report.error(
+                        Code::U2041,
+                        *at,
+                        format!(
+                            "the constants this {} names are too large together: their values hold more than {MAX_COMPOUND} records, variants and lists",
+                            if matches!(decl.kind, una_syntax::ast::DeclKind::Example(_)) {
+                                if part.is_some_and(|part| part > 0) {
+                                    "`expect` line"
+                                } else {
+                                    "test's `given` and `do` lines"
+                                }
+                            } else if part.is_some() {
+                                "body"
+                            } else {
+                                "declaration"
+                            }
+                        ),
+                    );
+                    return;
                 }
                 let size = evaluated.values.get(id).map_or(1, |(_, size, _)| *size);
                 total = total.saturating_add(size);
@@ -636,7 +675,7 @@ pub(crate) fn substitution_budget(
                         Code::U2041,
                         *at,
                         format!(
-                            "the constants this package names are too large: their values, counted once in each body that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
+                            "the constants this package names are too large: their values, counted once in each body or test line that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
                         ),
                     );
                     return;
@@ -644,6 +683,18 @@ pub(crate) fn substitution_budget(
             }
         }
     }
+}
+
+/// Whether constant `id`'s value is folded to one literal, which elaboration copies at every
+/// reference instead of sharing it (`Fx::constant_atom`): O(log n). A constant whose value is
+/// unknown here counts as scalar, so each of its references counts.
+fn scalar(env: &Env<'_>, evaluated: &Evaluated, id: usize) -> bool {
+    env.constants.get(id).is_none_or(|def| {
+        evaluated
+            .folded
+            .get(&id)
+            .is_none_or(|folded| folded.contains_key(&def.ast.value.span))
+    })
 }
 
 /// The span of a function's or a handler operation's body.
