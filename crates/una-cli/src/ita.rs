@@ -2198,17 +2198,19 @@ pub(crate) fn is_project_file(path: &Path) -> bool {
 /// canonical form, or with `--check` reports U7001 where it differs. A file whose grammar it
 /// does not meet is reported (U7008) and left untouched.
 pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Result<ExitStatus> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => return unreadable(path, &error, out),
-    };
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Read within its bound (spec/30 §1 rule 4, #2282), and decoded once, read as decoded
+    // (#2252).
+    let bound = una_project::project_file_bound(&name).unwrap_or(ita::MAX_MANIFEST_BYTES);
+    let read = match una_project::read_project_file(path, name.clone(), bound) {
+        Ok(read) => read,
+        Err(error) => return unreadable(path, &error, out),
+    };
     let mut sources = SourceDb::new();
-    let id = sources.add(name.clone(), &bytes);
-    // The file is decoded once, by the source database, and read as decoded (#2252).
+    let id = sources.insert(read);
     let file = sources.file(id);
     let syntax = if name == "itaty.una" {
         una_syntax::ita::parse_workspace(file).1
@@ -2362,13 +2364,13 @@ fn internal_error(out: Output<'_>, what: &str) -> io::Result<ExitStatus> {
 /// not need is a usage error. No network.
 pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
-    let text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
+    // The edit is made on the decoded text, `\r\n` read as `\n`, which the ranges of the
+    // grammar and of its lines index. The file is read within its bound (spec/30 §1 rule 4,
+    // #2282) and decoded once, here (#2252).
+    let decoded = match read_manifest(&manifest_path) {
+        Ok(decoded) => decoded,
         Err(error) => return unreadable(&manifest_path, &error, out),
     };
-    // The edit is made on the decoded text, `\r\n` read as `\n`, which the ranges of the
-    // grammar and of its lines index. The file is decoded once, here (#2252).
-    let decoded = SourceFile::new("ita.una", text.as_bytes());
     let (read, errors) = ita::parse_manifest(&decoded);
     if !errors.is_empty() {
         writeln!(
@@ -2580,11 +2582,11 @@ pub(crate) fn update_command<'a>(
 ) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
     if !names.is_empty() {
-        let text = match std::fs::read_to_string(&manifest_path) {
-            Ok(text) => text,
+        let file = match read_manifest(&manifest_path) {
+            Ok(file) => file,
             Err(error) => return unreadable(&manifest_path, &error, out),
         };
-        let (read, errors) = ita::parse_manifest(&text);
+        let (read, errors) = ita::parse_manifest(&file);
         if !errors.is_empty() {
             writeln!(
                 out.stderr,
@@ -2638,6 +2640,11 @@ const AFTER_NEEDS: [&str; 10] = [
     "drive",
     "serve",
 ];
+
+/// Reads `ita.una` at `path` within its bound (spec/30 §1 rule 4), decoded once.
+fn read_manifest(path: &Path) -> io::Result<SourceFile> {
+    una_project::read_project_file(path, "ita.una", ita::MAX_MANIFEST_BYTES)
+}
 
 /// `text` with `line` added as the last need: at the end of the `needs` section, or in a new
 /// one before the first section that follows it in the canonical order, or at the end. The
@@ -2810,10 +2817,13 @@ pub(crate) fn add_command(
     out: Output<'_>,
 ) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
-    let text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
+    // Read within its bound (spec/30 §1 rule 4, #2282) and decoded once (#2252); the edit is
+    // made on the decoded text, as `remove` makes it.
+    let file = match read_manifest(&manifest_path) {
+        Ok(file) => file,
         Err(error) => return unreadable(&manifest_path, &error, out),
     };
+    let text = file.text();
     let name_ok = match name.split_once('/') {
         Some((owner, short)) => is_lower_word(owner) && is_lower_word(short),
         None => is_lower_word(name),
@@ -2848,7 +2858,7 @@ pub(crate) fn add_command(
             return Ok(ExitStatus::Usage);
         }
     }
-    let (before, errors) = ita::parse_manifest(&text);
+    let (before, errors) = ita::parse_manifest(&file);
     if !errors.is_empty() {
         writeln!(
             out.stderr,
@@ -2885,17 +2895,21 @@ pub(crate) fn add_command(
                 .clone()
                 .unwrap_or_else(|| una_project::ita::ITATY.to_owned());
             // The lock's resolution point of the source, which the new point must extend.
-            let lock_floor = std::fs::read_to_string(path.join("ita.lock"))
-                .ok()
-                .and_then(|text| {
-                    parse_ita_lock(&text)
-                        .0
-                        .read
-                        .registries
-                        .iter()
-                        .find(|r| r.source.value == source)
-                        .map(|r| (r.checkpoint_size.value, r.checkpoint_hash.value.clone()))
-                });
+            let lock_floor = una_project::read_project_file(
+                &path.join("ita.lock"),
+                "ita.lock",
+                ita::MAX_LOCK_BYTES,
+            )
+            .ok()
+            .and_then(|lock| {
+                parse_ita_lock(&lock)
+                    .0
+                    .read
+                    .registries
+                    .iter()
+                    .find(|r| r.source.value == source)
+                    .map(|r| (r.checkpoint_size.value, r.checkpoint_hash.value.clone()))
+            });
             match newest_release(&before, lock_floor.as_ref(), &source, name, &options) {
                 Ok(version) => version.to_string(),
                 Err(error) => {
@@ -2914,7 +2928,7 @@ pub(crate) fn add_command(
     if let Some(from) = &from {
         line.push_str(&format!(" from {from}"));
     }
-    let edited = with_need(&text, &line);
+    let edited = with_need(text, &line);
     // The edit adds exactly one need, and nothing else.
     let (after, _) = ita::parse_manifest(&edited);
     if after.needs.len() != before.needs.len() + 1 {

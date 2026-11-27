@@ -485,6 +485,18 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     read_exactly(&handle, size, path)
 }
 
+/// [`read_unlinked`] within `limit` bytes: the bytes and their number, or, for a file over
+/// `limit`, no bytes and its size, so a project file over its bound is never read into memory
+/// (`spec/30 §1` rule 4).
+pub fn read_unlinked_within(path: &Path, limit: u64) -> Result<(Vec<u8>, u64), Refusal> {
+    let flags = flags()?;
+    let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
+    if size > limit {
+        return Ok((Vec::new(), size));
+    }
+    Ok((read_exactly(&handle, size, path)?, size))
+}
+
 /// A file the user names, as [`read_user_file`] read it.
 #[derive(Debug)]
 pub struct UserFile {

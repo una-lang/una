@@ -495,6 +495,95 @@ fn files_past_their_bound_are_refused_whole() {
     assert_eq!(errors[0].range, 0..0);
 }
 
+/// The bounds are measured on the bytes as written, on both entries (`spec/30 §1` rule 4,
+/// #2282): a file of more bytes than its bound whose `\r\n` line ends bring its decoded text
+/// under the bound is refused whole, decoded or not, with the one message that states its
+/// bytes. A file of exactly its bound in bytes is read.
+#[test]
+fn bounds_are_measured_on_the_bytes_on_both_entries() {
+    fn past(head: &str, bound: usize) -> Vec<u8> {
+        let mut text = head.replace('\n', "\r\n");
+        while text.len() <= bound {
+            text.push_str("-- x\r\n");
+        }
+        assert!(SourceFile::new("f", text.as_bytes()).text().len() <= bound);
+        text.into_bytes()
+    }
+    let message = |bytes: usize, bound: usize, what: &str| {
+        format!("the file holds {bytes} bytes, more than the {bound} {what}")
+    };
+    let manifest = past(
+        "ita x\n  version 0.1.0\n  edition 0.4\n",
+        ita::MAX_MANIFEST_BYTES,
+    );
+    let workspace = past("itaty\n  members\n    \"a\"\n", ita::MAX_MANIFEST_BYTES);
+    let lock = past("lock 1\n", ita::MAX_LOCK_BYTES);
+    let decoded = SourceFile::new("ita.una", &manifest);
+    let written = std::str::from_utf8(&manifest).unwrap();
+    for errors in [parse_manifest(&decoded).1, parse_manifest(written).1] {
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].range, 0..0);
+        assert_eq!(
+            errors[0].message,
+            message(
+                manifest.len(),
+                ita::MAX_MANIFEST_BYTES,
+                "a manifest may hold"
+            )
+        );
+    }
+    let decoded = SourceFile::new("itaty.una", &workspace);
+    let written = std::str::from_utf8(&workspace).unwrap();
+    for errors in [parse_workspace(&decoded).1, parse_workspace(written).1] {
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].message,
+            message(workspace.len(), ita::MAX_MANIFEST_BYTES, "it may hold")
+        );
+    }
+    let decoded = SourceFile::new("ita.lock", &lock);
+    let written = std::str::from_utf8(&lock).unwrap();
+    for errors in [parse_lock(&decoded).1, parse_lock(written).1] {
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].message,
+            message(lock.len(), ita::MAX_LOCK_BYTES, "a lock may hold")
+        );
+    }
+    // At the bound exactly, in bytes, the file is read.
+    let mut text = String::from("ita x\r\n  version 0.1.0\r\n  edition 0.4\r\n");
+    while text.len() + 6 <= ita::MAX_MANIFEST_BYTES {
+        text.push_str("-- x\r\n");
+    }
+    text.push_str(&"-".repeat(ita::MAX_MANIFEST_BYTES - text.len()));
+    assert_eq!(text.len(), ita::MAX_MANIFEST_BYTES);
+    let (_, errors) = parse_manifest(&SourceFile::new("ita.una", text.as_bytes()));
+    assert!(
+        errors
+            .iter()
+            .all(|error| !error.message.contains("bytes, more than"))
+    );
+}
+
+/// A file left unread past its bound keeps only its length, which the reader refuses with the
+/// message of the bound (#2282).
+#[test]
+fn an_unread_file_is_refused_by_its_length() {
+    let file = SourceFile::unread("ita.una", ita::MAX_MANIFEST_BYTES + 7);
+    assert_eq!(file.text(), "");
+    assert_eq!(file.raw_len(), ita::MAX_MANIFEST_BYTES + 7);
+    let (_, errors) = parse_manifest(&file);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].message,
+        format!(
+            "the file holds {} bytes, more than the {} a manifest may hold",
+            ita::MAX_MANIFEST_BYTES + 7,
+            ita::MAX_MANIFEST_BYTES
+        )
+    );
+}
+
 /// The lines of a `serve` grant become the items of its text spec, one per line, each with
 /// the range of its line (`spec/31 §2` rule 3).
 #[test]

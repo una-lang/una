@@ -62,6 +62,7 @@ pub struct SourceFile {
     line_starts: Vec<usize>,
     invalid: Vec<usize>,
     first_crlf: Option<usize>,
+    raw_len: usize,
 }
 
 impl SourceFile {
@@ -89,6 +90,21 @@ impl SourceFile {
             line_starts,
             invalid,
             first_crlf,
+            raw_len: bytes.len(),
+        }
+    }
+
+    /// A file left unread because it holds `raw_len` bytes, more than any reader of it takes
+    /// (`spec/30 §1` rule 4): its text is empty, and only its length on disk is kept, so the
+    /// reader refuses it by that length without the file ever being held in memory.
+    pub fn unread(path: impl Into<String>, raw_len: usize) -> SourceFile {
+        SourceFile {
+            path: path.into(),
+            text: String::new(),
+            line_starts: vec![0],
+            invalid: Vec::new(),
+            first_crlf: None,
+            raw_len,
         }
     }
 
@@ -100,6 +116,13 @@ impl SourceFile {
     /// The decoded text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The number of bytes the file holds as written, before decoding: each `\r\n` counts
+    /// two bytes, and an ill-formed sequence counts its own bytes. The size bounds of project
+    /// files are measured on this length (`spec/30 §1` rule 4).
+    pub fn raw_len(&self) -> usize {
+        self.raw_len
     }
 
     /// The offset of each line's first character, in order; the first line starts at 0.
@@ -157,7 +180,12 @@ impl SourceDb {
 
     /// Adds the file at `path` with contents `bytes`, and returns its id.
     pub fn add(&mut self, path: impl Into<String>, bytes: &[u8]) -> FileId {
-        self.files.push(SourceFile::new(path, bytes));
+        self.insert(SourceFile::new(path, bytes))
+    }
+
+    /// Adds a file already decoded, such as [`SourceFile::unread`], and returns its id.
+    pub fn insert(&mut self, file: SourceFile) -> FileId {
+        self.files.push(file);
         FileId(self.files.len() - 1)
     }
 

@@ -581,12 +581,14 @@ pub(crate) fn yank_command(
             &format!("`{version}` is not a full version, such as `0.3.1`"),
         );
     };
-    let text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
-        Err(error) => return usage(out, &format!("cannot read ita.una: {error}")),
-    };
+    // Read within its bound (spec/30 §1 rule 4, #2282), decoded once.
+    let file =
+        match una_project::read_project_file(&manifest_path, "ita.una", ita::MAX_MANIFEST_BYTES) {
+            Ok(file) => file,
+            Err(error) => return usage(out, &format!("cannot read ita.una: {error}")),
+        };
     let mut sources = SourceDb::new();
-    let id = sources.add("ita.una".to_owned(), text.as_bytes());
+    let id = sources.insert(file);
     let (manifest, errors) = parse_ita_manifest(sources.file(id));
     let mut diagnostics = located(&sources, id, errors);
     let Some(read) = manifest.ita.as_deref().filter(|_| diagnostics.is_empty()) else {
@@ -1030,8 +1032,10 @@ pub(crate) fn audit_codes(
 /// The declaration of `source` for `una ita watch` in `dir`: the one `ita.una`'s `sources`
 /// gives, else the one of the workspace that lists the package ([`submit::declared_source`]).
 fn find_source(dir: &Path, source: &str) -> Result<ita::Source, String> {
-    if let Ok(text) = std::fs::read_to_string(dir.join("ita.una")) {
-        let (read, _) = ita::parse_manifest(&text);
+    if let Ok(file) =
+        una_project::read_project_file(&dir.join("ita.una"), "ita.una", ita::MAX_MANIFEST_BYTES)
+    {
+        let (read, _) = ita::parse_manifest(&file);
         if let Some(declared) = read.sources.iter().find(|s| s.name.value == source) {
             return Ok(declared.clone());
         }

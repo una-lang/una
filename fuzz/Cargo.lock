@@ -636,6 +636,7 @@ dependencies = [
  "una-link",
  "una-project",
  "una-rt",
+ "una-syntax",
 ]
 
 [[package]]

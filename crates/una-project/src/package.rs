@@ -1,7 +1,11 @@
 //! Finding the files of a package (ADR 0021 rule 1, ADR 0122 rule 2).
 
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+use una_syntax::SourceFile;
+use una_syntax::ita::{MAX_LOCK_BYTES, MAX_MANIFEST_BYTES};
 
 use crate::manifest::Format;
 
@@ -62,10 +66,75 @@ pub struct LoadedFile {
     pub name: String,
     /// Its path on disk.
     pub path: PathBuf,
-    /// Its contents.
+    /// Its contents; empty for a project file left unread because it holds more than its
+    /// bound (`spec/30 §1` rule 4).
     pub bytes: Vec<u8>,
+    /// The number of bytes the file held when it was read: the length of `bytes`, or, for a
+    /// project file left unread, the length that put it over its bound.
+    pub len: u64,
     /// What it is.
     pub role: Role,
+}
+
+impl LoadedFile {
+    /// The file decoded once (`spec/01 §1`), or, when it was left unread over its bound, a
+    /// [`SourceFile::unread`] that keeps its length, which its reader refuses.
+    pub fn decode(&self) -> SourceFile {
+        decode(self.name.clone(), &self.bytes, self.len)
+    }
+}
+
+fn decode(name: String, bytes: &[u8], len: u64) -> SourceFile {
+    if u64::try_from(bytes.len()).ok() == Some(len) {
+        SourceFile::new(name, bytes)
+    } else {
+        SourceFile::unread(name, usize::try_from(len).unwrap_or(usize::MAX))
+    }
+}
+
+/// Reads the project file at `path`, `ita.una`, `ita.lock` or `itaty.una`, named `name`, with
+/// its bound of `limit` bytes applied while reading (`spec/30 §1` rule 4): at most `limit + 1`
+/// bytes are ever read, so a file of any size costs at most that much memory. The file is
+/// decoded once; one that holds more than `limit` bytes is a [`SourceFile::unread`] with its
+/// raw length, which the reader of the file refuses with the one message of the bound.
+pub fn read_project_file(
+    path: &Path,
+    name: impl Into<String>,
+    limit: usize,
+) -> std::io::Result<SourceFile> {
+    let (bytes, len) = read_bounded(path, limit)?;
+    Ok(decode(name.into(), &bytes, len))
+}
+
+/// The bound of the project file named `name` (its last component), if it is one: 1 MiB for
+/// `ita.una` and `itaty.una`, 16 MiB for `ita.lock` (`spec/30 §1` rule 4).
+pub fn project_file_bound(name: &str) -> Option<usize> {
+    match name.rsplit('/').next() {
+        Some("ita.una" | "itaty.una") => Some(MAX_MANIFEST_BYTES),
+        Some("ita.lock") => Some(MAX_LOCK_BYTES),
+        _ => None,
+    }
+}
+
+/// Reads at most `limit + 1` bytes of the file at `path`: its bytes and their number, or, for
+/// a file over `limit` (by its size when opened, or because it grew while read), no bytes and
+/// the length that put it over. O(min(size, limit)).
+fn read_bounded(path: &Path, limit: usize) -> std::io::Result<(Vec<u8>, u64)> {
+    let limit = u64::try_from(limit).unwrap_or(u64::MAX);
+    let handle = std::fs::File::open(path)?;
+    let size = handle.metadata()?.len();
+    if size > limit {
+        return Ok((Vec::new(), size));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+    handle
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if len > limit {
+        return Ok((Vec::new(), len));
+    }
+    Ok((bytes, len))
 }
 
 /// The files of a package: its manifest and lock when it has them, then its modules in path
@@ -96,12 +165,7 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
             single: true,
             format: Format::Toml,
             both_manifests: false,
-            files: vec![LoadedFile {
-                name,
-                path: path.to_path_buf(),
-                bytes: read(path)?,
-                role: Role::Module,
-            }],
+            files: vec![loaded(name, path.to_path_buf(), read(path)?, Role::Module)],
         });
     }
     if !path.is_dir() {
@@ -122,17 +186,35 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     if !src.is_dir() {
         return Err(LoadError::NoSourceDirectory(path.to_path_buf()));
     }
+    // `ita.una` and `ita.lock` are read within their bounds (spec/30 §1 rule 4); `una.toml`
+    // and `verification.lock` have none.
+    let read_project = |file: &Path, name: &str| -> Result<(Vec<u8>, u64), LoadError> {
+        match (format, project_file_bound(name)) {
+            (Format::Ita, Some(limit)) => {
+                read_bounded(file, limit).map_err(|error| unreadable(file, &error))
+            }
+            _ => read(file).map(|bytes| {
+                let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                (bytes, len)
+            }),
+        }
+    };
+    let manifest_name = format.file().to_owned();
+    let (bytes, len) = read_project(&manifest, &manifest_name)?;
     let mut files = vec![LoadedFile {
-        name: format.file().to_owned(),
-        bytes: read(&manifest)?,
+        name: manifest_name,
+        bytes,
+        len,
         path: manifest,
         role: Role::Manifest,
     }];
     let lock = path.join(lock_name);
     if lock.is_file() {
+        let (bytes, len) = read_project(&lock, lock_name)?;
         files.push(LoadedFile {
             name: lock_name.to_owned(),
-            bytes: read(&lock)?,
+            bytes,
+            len,
             path: lock,
             role: Role::Lock,
         });
@@ -141,12 +223,8 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     collect(&src, "src", &mut modules)?;
     modules.sort();
     for (name, file) in modules {
-        files.push(LoadedFile {
-            name,
-            bytes: read(&file)?,
-            path: file,
-            role: Role::Module,
-        });
+        let bytes = read(&file)?;
+        files.push(loaded(name, file, bytes, Role::Module));
     }
     Ok(Loaded {
         single: false,
@@ -183,9 +261,16 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
         return Err(LoadError::NoSourceDirectory(dir.to_path_buf()));
     }
     not_followed(&src)?;
+    // The manifest is read within its bound (spec/30 §1 rule 4).
+    let (bytes, len) = crate::tree::read_unlinked_within(&manifest, MAX_MANIFEST_BYTES as u64)
+        .map_err(|reason| LoadError::Unreadable {
+            path: manifest.clone(),
+            reason,
+        })?;
     let mut files = vec![LoadedFile {
         name: format!("{written}/ita.una"),
-        bytes: read_unlinked(&manifest)?,
+        bytes,
+        len,
         path: manifest,
         role: Role::Manifest,
     }];
@@ -193,12 +278,8 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
     collect_no_links(&src, &format!("{written}/src"), &mut modules)?;
     modules.sort();
     for (name, file) in modules {
-        files.push(LoadedFile {
-            name,
-            bytes: read_unlinked(&file)?,
-            path: file,
-            role: Role::Module,
-        });
+        let bytes = read_unlinked(&file)?;
+        files.push(loaded(name, file, bytes, Role::Module));
     }
     Ok(Loaded {
         single: false,
@@ -265,6 +346,17 @@ fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>) -> Resu
 /// files) are not sources, as for conformance discovery (ADR 0013 D6).
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
+}
+
+/// A file read whole.
+fn loaded(name: String, path: PathBuf, bytes: Vec<u8>, role: Role) -> LoadedFile {
+    LoadedFile {
+        name,
+        path,
+        len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        bytes,
+        role,
+    }
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, LoadError> {

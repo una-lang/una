@@ -13,7 +13,7 @@ From edition `0.4`, a package describes itself in `ita.una`, a declarative file 
    - **Text without interpolation.** A text literal MUST NOT contain `{` or `}` other than as `\{` and `\}`: nothing is interpolated.
 2. **No keywords.** No word of these files is a keyword or a reserved word: `from`, `in`, `trusted` and `profile` are words of the grammar where it names them. No word of these files becomes a keyword of a module.
 3. **Nothing runs.** There are no expressions, no interpolation, no conditions, no includes and no environment variables, and nothing else runs when a package is read, checked or built: there are no install scripts, build scripts or hooks of any kind.
-4. **Bounds.** `ita.una` and `itaty.una` hold at most 1 MiB, and `ita.lock` at most 16 MiB; past that, the file is refused whole, at its start.
+4. **Bounds.** `ita.una` and `itaty.una` hold at most 1 MiB, and `ita.lock` at most 16 MiB; past that, the file is refused whole, at its start. A bound is measured on the bytes of the file as written, before it is decoded: each `\r\n` counts two bytes, so a file whose `\r\n` line ends would bring its decoded text under the bound is still past it. Every command that reads the file applies the bound in the same way, before or while it reads the file, so a file past its bound is never held whole in memory, and refuses it with the same message, which states the number of bytes the file holds.
 
 ## 2. `ita.una`
 

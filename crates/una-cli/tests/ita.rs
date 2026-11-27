@@ -767,6 +767,114 @@ fn a_lone_carriage_return_before_a_line_end_is_reported_everywhere() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), manifest);
 }
 
+/// Appends `-- x\r\n` comment lines to `text` until it holds more than `bound` bytes while its
+/// decoded text, each `\r\n` read as `\n`, stays within `bound`.
+fn past_in_bytes_only(mut text: String, bound: usize) -> String {
+    while text.len() <= bound {
+        text.push_str("-- x\r\n");
+    }
+    assert!(text.len() - text.matches("\r\n").count() <= bound);
+    text
+}
+
+/// An `ita.una` of more than 1 MiB of bytes whose `\r\n` line ends bring its decoded text under
+/// 1 MiB is past its bound (`spec/30 §1` rule 4, #2282): every command measures the bytes and
+/// refuses it, with the one message that states them, and writes nothing.
+#[test]
+fn a_manifest_past_its_bound_in_bytes_only_is_refused_everywhere() {
+    let dir = with_two_dependencies("crlf-bound", "\r\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    let file = dir.join("ita.una");
+    let lock = std::fs::read_to_string(dir.join("ita.lock")).unwrap();
+    let manifest = past_in_bytes_only(std::fs::read_to_string(&file).unwrap(), 1 << 20);
+    std::fs::write(&file, &manifest).unwrap();
+    let message = format!(
+        "the file holds {} bytes, more than the 1048576 a manifest may hold",
+        manifest.len()
+    );
+    let refused = |out: &str| {
+        let document: serde_json::Value = serde_json::from_str(out).unwrap();
+        let diagnostics = document["diagnostics"].as_array().unwrap().clone();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d["code"] == "U7008" && d["message"] == message.as_str()),
+            "{out}"
+        );
+    };
+    let (code, out, _) = una(&["una", "--json", "check", path(&dir)]);
+    assert_eq!(code, 1, "{out}");
+    refused(&out);
+    let (code, out, _) = una(&["una", "--json", "fmt", file.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}");
+    refused(&out);
+    let (code, out, _) = una(&["una", "--json", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1, "{out}");
+    refused(&out);
+    let (code, _, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("does not parse"), "{err}");
+    let (code, _, err) = una_at(&dir, &["ita", "update", "util"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("does not parse"), "{err}");
+    let (code, _, err) = una_at(&dir, &["ita", "add", "json", "2.1"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("does not parse"), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), manifest);
+    assert_eq!(std::fs::read_to_string(dir.join("ita.lock")).unwrap(), lock);
+}
+
+/// An `ita.lock` of more than 16 MiB of bytes whose `\r\n` line ends bring its decoded text
+/// under 16 MiB is past its bound (`spec/30 §1` rule 4, #2282), and `una check` refuses it
+/// (U7009) with the message that states its bytes.
+#[test]
+fn a_lock_past_its_bound_in_bytes_only_is_refused() {
+    let dir = with_two_dependencies("crlf-lock-bound", "\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    let lock = std::fs::read_to_string(dir.join("ita.lock"))
+        .unwrap()
+        .replace('\n', "\r\n");
+    let lock = past_in_bytes_only(lock, 16 << 20);
+    std::fs::write(dir.join("ita.lock"), &lock).unwrap();
+    let (code, out, _) = una(&["una", "--json", "check", path(&dir)]);
+    assert_eq!(code, 1, "{out}");
+    let message = format!(
+        "the file holds {} bytes, more than the 16777216 a lock may hold",
+        lock.len()
+    );
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "U7009" && d["message"] == message.as_str()),
+        "{out}"
+    );
+}
+
+/// A project file far past its bound is refused by the length it holds, read no further than
+/// one byte past the bound (#2282).
+#[test]
+fn a_manifest_far_past_its_bound_is_refused_by_its_length() {
+    let dir = package("far-past-bound", MANIFEST);
+    let file = dir.join("ita.una");
+    let handle = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap();
+    // A sparse file: 64 MiB of length, none of it written.
+    handle.set_len(64 << 20).unwrap();
+    let (code, out, _) = una(&["una", "--json", "check", path(&dir)]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("the file holds 67108864 bytes, more than the 1048576 a manifest may hold"),
+        "{out}"
+    );
+}
+
 /// An ill-formed UTF-8 sequence in `ita.una` is reported (U7008) where it is: the file is
 /// decoded once, by the source database, and read as decoded (#2252).
 #[test]

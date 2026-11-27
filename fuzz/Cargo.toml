@@ -22,6 +22,8 @@ una-core = { path = "../crates/una-core" }
 # The readers of the package manager's documents and the parsers of the documents a registry
 # serves (ADR 0122 rules 29 to 39), in pure Rust.
 una-project = { path = "../crates/una-project" }
+# The decoded entry of the project-file readers, `SourceFile`, which every command uses (#2282).
+una-syntax = { path = "../crates/una-syntax" }
 # Signs fuzzed documents with fixed test keys, so the targets reach past the signatures.
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
 una-rt = { path = "../crates/una-rt" }

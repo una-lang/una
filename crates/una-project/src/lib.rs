@@ -45,7 +45,10 @@ pub use manifest::{
     MAX_MEMORY_CAP, MAX_SERVE_MILLISECONDS, Manifest, Mount, Profile, Serve, is_grant,
     is_module_path, parse_manifest,
 };
-pub use package::{LoadError, Loaded, LoadedFile, Role, discover, discover_dependency};
+pub use package::{
+    LoadError, Loaded, LoadedFile, Role, discover, discover_dependency, project_file_bound,
+    read_project_file,
+};
 
 /// A problem in a project file, located by byte offsets into its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
