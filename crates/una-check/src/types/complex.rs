@@ -143,7 +143,7 @@ impl Checker<'_, '_, '_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         let def = self.env.functions.get(id)?;
@@ -343,7 +343,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         // A measured receiver (ADR 0120 rule 64): `conj` keeps its unit, `scale(by:)`
@@ -511,7 +511,7 @@ impl Checker<'_, '_, '_> {
     /// is chosen by its arguments' type at each call (ADR 0120 rule 22), which a function value
     /// cannot carry.
     pub(crate) fn complex_function_value(&mut self, id: usize, span: Span) {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return;
         }
         let Some(def) = self.env.functions.get(id) else {

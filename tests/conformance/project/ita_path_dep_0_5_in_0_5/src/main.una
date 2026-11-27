@@ -1,0 +1,11 @@
+-- test: a dependency of edition 0.5 under a root of edition 0.5 has every name and rule of edition 0.5: `Array`, `F32`, `const` and `var` (ADR 0122 rule 49)
+-- spec: spec/30 §12
+-- expect: ok
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  const line = twice("hello")
+  line

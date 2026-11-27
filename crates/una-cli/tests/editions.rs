@@ -641,6 +641,39 @@ const EXPECTED_DIFFERENCES_0_5: &[Difference04] = &[
             ("U0103", "src/simd04.una:10:3"),
         ],
     },
+    // ADR 0122 rule 49 (#2260): the dependencies of edition 0.4 of the cases of a root of
+    // edition 0.5, each checked alone here, use or clash with names of edition 0.5; under their
+    // root they keep their own edition's result, which the cases expect.
+    Difference04 {
+        case: "project/ita_path_dep_0_4_array_in_0_5_error/deps/util",
+        added: &[],
+        removed: &[("U2002", "src/text.una:3:13")],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_f32_in_0_5_error/deps/util",
+        added: &[],
+        removed: &[
+            ("U1001", "src/text.una:3:13"),
+            ("U1001", "src/text.una:3:21"),
+        ],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_in_0_5_own_rules/deps/util",
+        added: &[("U1002", "src/text.una:3:5"), ("U1002", "src/text.una:5:5")],
+        removed: &[],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_to_decimal_import_error/deps/util",
+        added: &[("U1002", "src/text.una:3:5")],
+        removed: &[],
+    },
+    // ADR 0122 rule 49: a root of edition 0.4 cannot depend on a package of edition 0.5 (U7012);
+    // as edition 0.5 it can.
+    Difference04 {
+        case: "project/ita_path_dep_0_5_in_0_4_error",
+        added: &[],
+        removed: &[("U7012", "ita.una:6:3")],
+    },
     // ADR 0120 (`spec/29 §17`): `Matrix`, `Tensor` and `Lu` are built in from edition 0.5.
     Difference04 {
         case: "types/dense_edition_0_4",

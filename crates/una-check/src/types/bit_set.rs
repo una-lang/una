@@ -42,7 +42,7 @@ impl Checker<'_, '_, '_> {
     /// top label, since the size is part of its shape (ADR 0119 IF2); `None` otherwise. In the
     /// refinement language (ADR 0119 V5).
     pub(crate) fn bit_set_size(&mut self, target_ty: &Ty, field: &str, span: Span) -> Option<Ty> {
-        if field != "size" || self.env.edition < Edition::V0_5 {
+        if field != "size" || self.edition() < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);
@@ -68,7 +68,7 @@ impl Checker<'_, '_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_5 {
+        if self.edition() < Edition::V0_5 {
             return None;
         }
         let labeled = self.labeled(target_ty);

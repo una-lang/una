@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use una_core::Coll;
 use una_diag::Code;
+use una_project::Edition;
 use una_syntax::Span;
 
 use super::Report;
@@ -139,18 +140,28 @@ fn listed(types: &[&str]) -> String {
 /// name (ADR 0119 rule 0), and each `update` whose first parameter is a `Map` (rule 18); then
 /// each import of such a function, at the imported name. A built-in method resolves ahead of a
 /// function of the same name (`spec/04 §3`), so method syntax would never reach it. Linear in
-/// the functions and the imports.
+/// the functions and the imports. Each rule is the edition's of the module that declares or
+/// imports the function (ADR 0122 rule 49): a dependency of edition 0.4 may declare `update` on
+/// a `Map`, and a module of edition 0.5 that imports it is U1002 at the import.
 pub(crate) fn method_names(env: &Env<'_>, report: &mut Report<'_>) {
+    let hidden_of = |def: &super::env::FnDef<'_>| {
+        def.params
+            .first()
+            .map_or_else(Vec::new, |first| hidden(def.name, &first.ty.base))
+    };
     let mut flagged: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
     for (id, def) in env.functions.iter().enumerate() {
         if !env.in_package(def.module) || !env.reports(def.module) {
             continue;
         }
-        let Some(first) = def.params.first() else {
-            continue;
-        };
-        let types = hidden(def.name, &first.ty.base);
+        let types = hidden_of(def);
         if types.is_empty() {
+            continue;
+        }
+        // A function declared in a module of an earlier edition is not U1002 there, and its
+        // imports into a module of edition 0.5 are.
+        if env.edition_of(def.module) < Edition::V0_5 {
+            flagged.insert(id, types);
             continue;
         }
         let span = name_span(def.ast);
@@ -169,7 +180,7 @@ pub(crate) fn method_names(env: &Env<'_>, report: &mut Report<'_>) {
         return;
     }
     for (index, module) in env.modules.iter().enumerate().take(env.prelude) {
-        if !env.reports(index) {
+        if !env.reports(index) || module.edition < Edition::V0_5 {
             continue;
         }
         for import in &module.tree.imports {

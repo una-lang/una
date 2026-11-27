@@ -1,0 +1,11 @@
+module text
+
+pub size(a: Array[Int]) -> Int = a.len
+
+pub half(x: F32) -> F32 = x
+
+pub twice(word: Text) -> Text
+=
+  var both = word
+  both = "{both}{word}"
+  both

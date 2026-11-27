@@ -252,12 +252,12 @@ impl Checker<'_, '_, '_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Option<Ty> {
-        if self.env.edition < Edition::V0_2 {
+        if self.edition() < Edition::V0_2 {
             return None;
         }
         // ADR 0104 rule 4: in edition 0.3, these three are built in, ahead of a function of
         // the same name, when called with no argument.
-        if self.env.edition >= Edition::V0_3
+        if self.edition() >= Edition::V0_3
             && args.is_empty()
             && matches!(method, "measured" | "magnitude" | "convert")
         {

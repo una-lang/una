@@ -230,6 +230,7 @@ mod tests {
                 interner: &interner,
                 reports: true,
                 mount: None,
+                edition: None,
             }],
             standard.source(&standard.prelude),
             standard.after_prelude(),

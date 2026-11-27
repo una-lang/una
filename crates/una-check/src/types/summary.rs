@@ -17,7 +17,7 @@ impl Checker<'_, '_, '_> {
     /// the rounds of their least fixpoint, in edition 0.2, a function declared outside the
     /// prelude with type parameters, whose return is `name`.
     fn summarized(&self, name: &str) -> Option<usize> {
-        if self.pass != Pass::Collect || self.env.edition < Edition::V0_2 {
+        if self.pass != Pass::Collect || self.edition() < Edition::V0_2 {
             return None;
         }
         let id = self.current?;
@@ -67,7 +67,7 @@ impl Checker<'_, '_, '_> {
     /// decisions `decided` on its own type parameters (`ℓ*_T`), which its callers' arguments
     /// then run under (ADR 0067 amendment, #234).
     pub(crate) fn raise_of(&mut self, index: usize, decided: &Label) {
-        if self.pass != Pass::Collect || self.env.edition < Edition::V0_2 {
+        if self.pass != Pass::Collect || self.edition() < Edition::V0_2 {
             return;
         }
         let Some(id) = self.current else {

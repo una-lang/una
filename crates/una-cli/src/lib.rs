@@ -223,23 +223,15 @@ fn analyze_and(
         .modules
         .iter()
         .map(|&id| (id, manifest.edition))
-        .chain(
-            package
-                .dependencies
+        .chain(package.dependencies.iter().flat_map(|dependency| {
+            let src = format!("{}/src/", dependency.dir);
+            manifest
+                .mounts
                 .iter()
-                .filter(|dependency| {
-                    manifest
-                        .mounts
-                        .iter()
-                        .any(|mount| mount.src == format!("{}/src/", dependency.dir))
-                })
-                .flat_map(|dependency| {
-                    let edition = dependency
-                        .edition(&package.sources)
-                        .unwrap_or(manifest.edition);
-                    dependency.modules.iter().map(move |&id| (id, edition))
-                }),
-        )
+                .find(|mount| mount.src == src)
+                .into_iter()
+                .flat_map(|mount| dependency.modules.iter().map(|&id| (id, mount.edition)))
+        }))
         .collect();
     let keyed: Vec<(FileId, KeywordSet)> = editions
         .iter()
@@ -338,7 +330,8 @@ fn analyze_and(
         );
     }
     // ADR 0137 rule 10: the messages of a package of edition 0.5 name its binding words; a
-    // diagnostic in a module of a dependency of an earlier edition keeps that edition's words.
+    // text about a module of a dependency of an earlier edition keeps that edition's words,
+    // decided for the main location and for each related note on its own.
     if manifest.edition >= una_project::Edition::V0_5 {
         let earlier: std::collections::BTreeSet<&str> = editions
             .iter()
@@ -346,9 +339,9 @@ fn analyze_and(
             .map(|(id, _)| package.sources.file(*id).path())
             .collect();
         for diagnostic in &mut diagnostics {
-            if !earlier.contains(diagnostic.primary.file.as_str()) {
-                una_diag::binding_words::in_edition_0_5(diagnostic);
-            }
+            una_diag::binding_words::in_edition_0_5_where(diagnostic, |file| {
+                !earlier.contains(file)
+            });
         }
     }
     let analysis = Analysis {

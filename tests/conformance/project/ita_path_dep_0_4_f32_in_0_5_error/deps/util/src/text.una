@@ -1,0 +1,5 @@
+module text
+
+pub half(x: F32) -> F32 = x
+
+pub twice(word: Text) -> Text = "{word}{word}"

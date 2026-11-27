@@ -1,0 +1,9 @@
+-- test: a root of edition 0.4 cannot depend on a package of edition 0.5, U7012 at the need, so no dependency opts it into a preview it did not name; the dependency is not checked, and its `const` is never read under edition 0.4 (ADR 0122 rule 49)
+-- spec: spec/30 §12
+-- expect: error U7012 at ita.una:6:3
+module main
+
+pub greet() -> Text
+=
+  let line = "hello"
+  line

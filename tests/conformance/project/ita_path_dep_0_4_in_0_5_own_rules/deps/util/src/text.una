@@ -1,0 +1,16 @@
+module text
+
+pub to_decimal(n: Int) -> Int = n + 1
+
+pub update(m: Map[Text, Int], key: Text) -> Map[Text, Int] = m
+
+pub twice(word: Text) -> Text
+=
+  let edit both = word
+  both = "{both}{word}"
+  both
+
+pub bump(n: Int) -> Int
+=
+  let next = to_decimal(n)
+  next
