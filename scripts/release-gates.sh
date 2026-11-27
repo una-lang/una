@@ -61,7 +61,8 @@
 #   docs         scripts/doc-links.py: its self-test, then every link of the repository's
 #                documents names a tracked file and every fragment a heading (#708). Then (#584)
 #                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
-#                product's `una` (#2254), its files checked against the neutrality pattern. The
+#                una of this run's macOS release archive, or without it with the product's
+#                `una` (#2254, #2256), its files checked against the neutrality pattern. The
 #                gate was named `site` before #2081, when it also built the website from that
 #                bundle; the website is now validated by its own repository's flow against a
 #                published bundle, and no step of this run clones, installs or builds it. A
@@ -399,15 +400,20 @@ unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCA
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 # The product (#2254, docs/release-gates.md §2 "The product"): the release build of the gated
-# commit exactly as it ships its code, `cargo build --locked --release -p una-cli -p una-rt`
-# with the solver library of `run`, which the build gate copies, right after that build and
-# before any test build, into OUT/product: `una` and the `libuna_rt.a` it links native programs
-# with (beside it, as a Cargo build leaves it), their SHA256SUMS and the commit. A later
+# commit without test features, with the solver, `cargo build --locked --release -p una-cli
+# -p una-rt` with the solver library of `run`. It is not the archive build of scripts/release.sh
+# (no runtime built into it, no path remapping, so `una --version` says "development build";
+# #2256). The build gate copies it, right after that build and before any test build, into
+# OUT/product: `una` and the `libuna_rt.a` it links native programs with (beside it, as a Cargo
+# build leaves it) and their SHA256SUMS; the commit is written last, once every step of the
+# build gate passed (#2256), so a product whose build gate failed is never valid. A later
 # `cargo test --release` relinks target/release/una with the features of the dev-dependencies
 # (the `test-hooks` of una-cli, una-http and una-hash, the `counters` of una-core), so no gate
 # that runs `una` as the product reads target/release: each runs the copy through
 # `with_product`, which first checks it (`product_verify`) and fails the gate when the copy is
-# missing, is another commit's, does not match its digests or holds a test hook's name.
+# missing, is another commit's or unsealed, does not match its digests or holds a test hook's
+# name. The name check guards `una`, which a test build relinks; `libuna_rt.a` holds no hook name
+# in either build, so it is guarded by its copy before any test build and by its digest (#2256).
 PRODUCT=$OUT/product
 PRODUCT_FILES="una libuna_rt.a"
 # A test build's names: the markers that the `test-hooks` features of una-cli
@@ -449,22 +455,43 @@ product_save() {
             || { rm -rf "${PRODUCT:?}"; return 1; }
     done
     # shellcheck disable=SC2086
-    (cd "$PRODUCT" && shasum -a 256 $PRODUCT_FILES > SHA256SUMS) && printf '%s\n' "$SHA" > "$PRODUCT/commit" \
+    # No `commit` yet: `product_seal` writes it once the build gate's other steps passed (#2256).
+    (cd "$PRODUCT" && shasum -a 256 $PRODUCT_FILES > SHA256SUMS) \
         || { rm -rf "${PRODUCT:?}"; return 1; }
-    echo "release gates: the product of $SHA, in $PRODUCT (#2254):"
+    echo "release gates: the product of $SHA, in $PRODUCT, unsealed until the build gate passes (#2254):"
     cat "$PRODUCT/SHA256SUMS"
+}
+
+# Seals the product, at the end of a build gate whose steps all passed (#2256): its files are
+# checked again, then the commit is written, which `product_verify` requires.
+product_seal() {
+    product_files_verify || { rm -rf "${PRODUCT:?}"; return 1; }
+    printf '%s\n' "$SHA" > "$PRODUCT/commit" || { rm -rf "${PRODUCT:?}"; return 1; }
+    echo "release gates: the product of $SHA is sealed (#2256)"
 }
 
 # Whether OUT/product is the build gate's copy for this commit: its files regular, their digests
 # those SHA256SUMS recorded (and it lists exactly them), and no test name in either.
 product_verify() {
-    local file listed
     if [ ! -d "$PRODUCT" ] || [ -L "$PRODUCT" ]; then
         echo "release gates: FAIL: no product at $PRODUCT; the build gate saves it (#2254)"
         return 1
     fi
+    # The commit is written only when the build gate passed (#2256): a copy without it is a
+    # product whose build gate failed or is still running.
     if [ "$(cat "$PRODUCT/commit" 2> /dev/null)" != "$SHA" ]; then
-        echo "release gates: FAIL: the product at $PRODUCT is not the build of $SHA; run the build gate (#2254)"
+        echo "release gates: FAIL: the product at $PRODUCT is not the build of $SHA, or its build gate did not pass; run the build gate (#2254, #2256)"
+        return 1
+    fi
+    product_files_verify
+}
+
+# The product's files, with or without its commit: regular, exactly those of SHA256SUMS, matching
+# their digests, and without a test build's name.
+product_files_verify() {
+    local file listed
+    if [ ! -d "$PRODUCT" ] || [ -L "$PRODUCT" ]; then
+        echo "release gates: FAIL: no product at $PRODUCT; the build gate saves it (#2254)"
         return 1
     fi
     for file in $PRODUCT_FILES; do
@@ -650,8 +677,12 @@ gate_build() {
 }
 
 # The build gate's steps (#2254): the release build, then its copy as the product, before the
-# test build, then the checks of the product's files themselves.
+# test build, then the checks of the product's files themselves; the product is sealed only
+# when all pass, and removed when one fails (#2256).
 build_steps() {
+    build_steps_in_order || { rm -rf "${PRODUCT:?}"; return 1; }
+}
+build_steps_in_order() {
     cargo build --locked --release -p una-cli -p una-rt || return 1
     product_save || return 1
     # The product holds the solver (ADR 0124, #1996): it checks every package of examples/ at
@@ -676,8 +707,8 @@ build_steps() {
             && scripts/no-libm.sh "$una" "$runtime" "$no_libm/executables" "$no_libm/una-without-solver" \
             && scripts/load-commands-test.sh \
             && scripts/load-commands.sh "$una"' sh "$PRODUCT/una" "$PRODUCT/libuna_rt.a" || return 1
-    # What the checks read is still what the build gate saved.
-    product_verify
+    # What the checks read is still what the build gate saved; only now is it sealed (#2256).
+    product_seal
 }
 
 gate_solver-identity() {
@@ -910,13 +941,25 @@ gate_hunt-linux-arm64() {
 
 gate_docs() {
     # The documents and the docs bundle, the two products of this repository that the website
-    # reads (#2081): the link check, then the bundle, built with the product's `una` (#2254).
+    # reads (#2081): the link check, then the bundle. The bundle holds `una --version` and the
+    # help texts, so it is built with the una that ships (#2256): the una of the macOS archive
+    # that this run's release gate built, checked against its .sha256 and unpacked in
+    # OUT/docs-una, when the run has it; its version.txt must then not say "development build".
+    # Without that archive (a run without the release gate) the bundle is built with the
+    # product's `una` (#2254), which says "development build", and the log says so; a release's
+    # bundle comes from a run of every gate, where the release gate runs before this one.
     # The website itself is built and checked by its own repository's flow against a published
     # bundle, never here: this gate clones, installs and builds nothing of it.
     # The neutrality pattern reaches this one command on file descriptor 3 (`run`), never in
     # its environment or arguments; the command reads it into a variable, closes the
     # descriptor, and hands it to the bundle step on a pipe of its own.
+    local version mac="" target
+    version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
+    for target in $TARGETS; do
+        if [ "$(release_target_platform "$target")" = macos ]; then mac=$target; break; fi
+    done
     run docs with_product sh -c '
+        out=$1 version=$2 mac=$3
         unset neutrality
         neutrality=
         if [ -n "${UNA_NEUTRALITY_PATTERN_FD:-}" ]; then
@@ -932,9 +975,31 @@ gate_docs() {
                 "$@"
             fi
         }
+        bundle_una=$UNA_PRODUCT shipped=no
+        built=target/local-release/v$version name=una-$version-$mac
+        if [ -n "$mac" ] && [ -f "$built/$name.tar.gz" ]; then
+            (cd "$built" && shasum -a 256 -c "$name.tar.gz.sha256") || exit 1
+            rm -rf "${out:?}/docs-una"
+            mkdir -p "$out/docs-una" && tar -xzf "$built/$name.tar.gz" -C "$out/docs-una" || exit 1
+            bundle_una=$out/docs-una/$name/una
+            [ -f "$bundle_una" ] && [ -x "$bundle_una" ] \
+                || { echo "release gates: FAIL: $built/$name.tar.gz holds no una (#2256)"; exit 1; }
+            shipped=yes
+            echo "release gates: the docs bundle is built with the una of $built/$name.tar.gz (#2256)"
+        else
+            echo "release gates: no archive $built/$name.tar.gz in this run: the docs bundle is built with the product, which says \"development build\"; a release takes its bundle from a run with the release gate (#2256)"
+        fi
         scripts/doc-links.py --self-test \
             && scripts/doc-links.py \
-            && with_pattern env UNA_BIN="$UNA_PRODUCT" scripts/site-bundle.sh "'"$OUT"'/site-bundle"'
+            && with_pattern env UNA_BIN="$bundle_una" scripts/site-bundle.sh "$out/site-bundle" || exit 1
+        if [ "$shipped" = yes ]; then
+            for file in "$out"/site-bundle/una-docs-*/version.txt; do
+                if [ ! -f "$file" ] || grep -q "development build" "$file"; then
+                    echo "release gates: FAIL: the docs bundle of the archive una says \"development build\" or has no version.txt (#2256)"
+                    exit 1
+                fi
+            done
+        fi' sh "$OUT" "$version" "$mac"
 }
 gate_formal() { run formal scripts/formal.sh; }
 
