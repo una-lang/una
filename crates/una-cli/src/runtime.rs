@@ -1665,28 +1665,30 @@ pub(crate) fn test_command(
     // `una test` runs the examples of the root's modules only: a dependency's examples are
     // checked as its own, and never run with the root's authority (ADR 0122 rule 52).
     let mounts = crate::package::project(&package).0.mounts;
-    let mut tested = analysis.program.clone();
-    for module in &mut tested.modules {
-        let dependency = mounts.iter().any(|mount| {
-            module
-                .path
-                .strip_prefix(mount.local.as_str())
-                .is_some_and(|rest| rest.starts_with('.'))
-        });
-        if dependency {
-            module.examples.clear();
-        }
-    }
-    let program = &tested;
+    let program = &analysis.program;
     let max_depth = options.max_depth;
     let limits = limits(&options, None);
     let ceiling = Ceiling::raise(&options);
     let evaluated = std::thread::scope(|scope| {
+        // The copy of the program is made, run and dropped on the evaluator's stack: the
+        // derived `Clone` and `Drop` of Core IR recurse once per nested expression (#2264).
         let worker = std::thread::Builder::new()
             .name("una-test".to_owned())
             .stack_size(stack)
             .spawn_scoped(scope, move || {
-                una_interp::run_examples(program, limits, redact)
+                let mut tested = program.clone();
+                for module in &mut tested.modules {
+                    let dependency = mounts.iter().any(|mount| {
+                        module
+                            .path
+                            .strip_prefix(mount.local.as_str())
+                            .is_some_and(|rest| rest.starts_with('.'))
+                    });
+                    if dependency {
+                        module.examples.clear();
+                    }
+                }
+                una_interp::run_examples(&tested, limits, redact)
             })?;
         Ok::<_, io::Error>(
             worker

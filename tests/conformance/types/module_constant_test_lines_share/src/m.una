@@ -1,0 +1,55 @@
+-- test: a test's `given` and `do` lines share the constants they name, and each `expect` line shares those it names, so three references to a constant of 4,095 records, variants and lists in one line are under the cap of 4,096 and run (ADR 0126 rule 8, #2264)
+-- spec: spec/10 §8
+-- expect: ok
+-- expect: test-pass
+module m
+
+pub const n0: List[Int] = [0, 1]
+
+pub const n1: List[List[Int]] = [n0, n0]
+
+pub const n2: List[List[List[Int]]] = [n1, n1]
+
+pub const n3: List[List[List[List[Int]]]] = [n2, n2]
+
+pub const n4: List[List[List[List[List[Int]]]]] = [n3, n3]
+
+pub const n5: List[List[List[List[List[List[Int]]]]]] = [n4, n4]
+
+pub const n6: List[List[List[List[List[List[List[Int]]]]]]] = [n5, n5]
+
+pub const n7: List[List[List[List[List[List[List[List[Int]]]]]]]] = [n6, n6]
+
+pub const n8: List[List[List[List[List[List[List[List[List[Int]]]]]]]]] = [n7, n7]
+
+pub const n9: List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]] = [n8, n8]
+
+pub const n10: List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]] = [n9, n9]
+
+pub const n11: List[List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]]] = [n10,
+  n10
+]
+
+pub kind Deep = List[List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]]]
+
+pub capability Src
+  op get() -> Int
+
+handler three(a: Deep, b: Deep, c: Deep) for Src
+  op get() = a.len + b.len + c.len
+
+pub id(x: Int) -> Int = x
+
+pub use_src() -> Int
+  uses @src: Src[get]
+=
+  @src.get()
+
+test "three references in one expect line"
+  do id(1)
+  expect n11.len + n11.len + n11.len == 6
+
+test "three references in one given line"
+  given @src = three(n11, b: n11, c: n11)
+  do use_src()
+  expect result == 6

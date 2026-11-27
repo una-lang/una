@@ -698,7 +698,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if !scalar {
                     let name = def.name;
                     self.outside_rl(ident.span, || {
-                        format!("the record or list constant `{name}`")
+                        format!("the record, variant or list constant `{name}`")
                     });
                 }
                 self.env.top_refined(&def.declared)

@@ -1,0 +1,36 @@
+-- test: the cap of 4,096 records, variants and lists that the constants one body names may hold together counts a whole test, its `expect` lines included: `n11` in the `do` line and `n10` in an `expect` line are U2041 at the second reference (ADR 0126 rule 8, #2264)
+-- spec: spec/10 §8
+-- expect: error U2041 at src/m.una:36:10
+module m
+
+pub const n0: List[Int] = [0, 1]
+
+pub const n1: List[List[Int]] = [n0, n0]
+
+pub const n2: List[List[List[Int]]] = [n1, n1]
+
+pub const n3: List[List[List[List[Int]]]] = [n2, n2]
+
+pub const n4: List[List[List[List[List[Int]]]]] = [n3, n3]
+
+pub const n5: List[List[List[List[List[List[Int]]]]]] = [n4, n4]
+
+pub const n6: List[List[List[List[List[List[List[Int]]]]]]] = [n5, n5]
+
+pub const n7: List[List[List[List[List[List[List[List[Int]]]]]]]] = [n6, n6]
+
+pub const n8: List[List[List[List[List[List[List[List[List[Int]]]]]]]]] = [n7, n7]
+
+pub const n9: List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]] = [n8, n8]
+
+pub const n10: List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]] = [n9, n9]
+
+pub const n11: List[List[List[List[List[List[List[List[List[List[List[List[Int]]]]]]]]]]]] = [n10,
+  n10
+]
+
+pub id(x: Int) -> Int = x
+
+test "the do and expect lines together"
+  do id(n11.len)
+  expect n10.len == 2

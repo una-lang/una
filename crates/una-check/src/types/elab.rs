@@ -107,6 +107,10 @@ pub(crate) struct Gaps {
     /// kind did not elaborate, by span in the standard sources (#1050): a call into one would
     /// be verified without its `requires`.
     pub(crate) standard: Vec<(Span, &'static str)>,
+    /// The positions at which a declaration of the package elaborates to Core expressions
+    /// nested deeper than [`una_core::depth::MAX_DEPTH`] (#2264): the declaration is left out
+    /// of the program, so that no later pass recurses that deep, and the checker rejects it.
+    pub(crate) deep: Vec<Span>,
 }
 
 /// Elaborates the package's modules, in path order, and the contracts of the standard
@@ -124,7 +128,7 @@ pub(crate) fn program(
     let mut gaps = Gaps::default();
     let mut modules: Vec<CoreModule> = (0..env.prelude)
         .filter(|module| env.reports(*module))
-        .map(|module| elaborate_module(env, findings, dbs, module, &mut gaps.lost))
+        .map(|module| elaborate_module(env, findings, dbs, module, &mut gaps.lost, &mut gaps.deep))
         .collect();
     if let Some(kinds) = prelude_kinds(env, findings, dbs, &mut gaps.standard) {
         modules.push(kinds);
@@ -553,6 +557,7 @@ fn elaborate_module(
     dbs: Dbs<'_>,
     module: usize,
     lost: &mut Vec<(Span, String)>,
+    deep: &mut Vec<Span>,
 ) -> CoreModule {
     let mut out = CoreModule {
         path: env
@@ -570,20 +575,56 @@ fn elaborate_module(
             continue;
         }
         let mut fx = Fx::new(env, findings, dbs, module);
+        // #2264: a declaration whose Core IR nests deeper than the passes after elaboration
+        // can recurse is rejected, and left out, so nothing walks it.
+        let mut shallow = |exprs: &mut dyn Iterator<Item = &CoreExpr>| {
+            let mut found = None;
+            for expr in exprs {
+                found = una_core::depth::deeper_than(expr, una_core::depth::MAX_DEPTH, decl.span);
+                if found.is_some() {
+                    break;
+                }
+            }
+            match found {
+                Some(span) => {
+                    deep.push(span);
+                    false
+                }
+                None => true,
+            }
+        };
         match (&decl.kind, entity) {
             (DeclKind::Example(example), _) => {
                 if let Some(example) = fx.example(example) {
-                    out.examples.push(example);
+                    let checks = example.expectations.iter().filter_map(|e| match e {
+                        Expectation::Holds { check, .. } => Some(check),
+                        _ => None,
+                    });
+                    if shallow(&mut std::iter::once(&example.body).chain(checks)) {
+                        out.examples.push(example);
+                    }
                 }
             }
             (DeclKind::Const(_), Some(Entity::Const(id))) => {
-                if let Some(check) = fx.constant_check(id) {
+                if let Some(check) = fx.constant_check(id)
+                    && shallow(&mut std::iter::once(&check.body))
+                {
                     out.constants.push(check);
                 }
             }
             (_, Some(entity)) => {
                 if let Some(core) = fx.decl(&decl.kind, entity) {
-                    out.decls.push(core);
+                    let keep = match &core {
+                        una_core::Decl::Fun(fun) => shallow(&mut std::iter::once(&fun.body)),
+                        una_core::Decl::Pred { body, .. } => shallow(&mut std::iter::once(body)),
+                        una_core::Decl::Handler { ops, .. } => {
+                            shallow(&mut ops.iter().map(|op| &op.body))
+                        }
+                        _ => true,
+                    };
+                    if keep {
+                        out.decls.push(core);
+                    }
                 }
             }
             _ => {}
@@ -734,15 +775,23 @@ impl<'e, 'a> Fx<'e, 'a> {
     /// binding them first changes no result, and a lambda or a task of the body refers to them
     /// as to any binder in scope.
     fn shared_body(&mut self, elaborate: impl FnOnce(&mut Self) -> CoreExpr) -> CoreExpr {
+        let (body, hoisted) = self.sharing(elaborate);
+        close(hoisted, body)
+    }
+
+    /// Runs `elaborate` with sharing of the constants it names, as [`Fx::shared_body`] does,
+    /// and returns its result with the bindings of the shared values, which the caller closes
+    /// over the Core expression that names them.
+    fn sharing<R>(&mut self, elaborate: impl FnOnce(&mut Self) -> R) -> (R, Vec<Let>) {
         let saved = (
             std::mem::replace(&mut self.sharing, true),
             std::mem::take(&mut self.shared),
             std::mem::take(&mut self.hoisted),
         );
-        let body = elaborate(self);
+        let result = elaborate(self);
         let hoisted = std::mem::take(&mut self.hoisted);
         (self.sharing, self.shared, self.hoisted) = saved;
-        close(hoisted, body)
+        (result, hoisted)
     }
 
     /// A reference to constant `id` (ADR 0126 rule 8): its value, substituted; when sharing,
@@ -2205,43 +2254,11 @@ impl<'e, 'a> Fx<'e, 'a> {
         if hook::breaks(&name) {
             self.broken.set(true);
         }
-        let mut lets = Vec::new();
-        let mut givens = Vec::new();
-        for given in &example.givens {
-            let handler = match self.res(given.handler.span) {
-                Some(Res::Handler { id }) => id,
-                _ => return None,
-            };
-            let (args, arg_spans) =
-                self.call_args(&mut lets, given.handler.span, &given.handler.args);
-            let handler_name = self.name(&given.handler.name);
-            let module = self
-                .env
-                .handlers
-                .get(handler)
-                .map_or(self.module, |h| h.module);
-            givens.push((
-                self.name(&given.cap).to_owned(),
-                Source::Handler {
-                    handler: self.path(module, handler_name),
-                    args,
-                    arg_spans,
-                    given: true,
-                    span: given.handler.span,
-                },
-            ));
-        }
-        // The `do` line shares the constants it names, as a function body does (ADR 0126
-        // rule 8, #1632 review 2).
-        let mut body = self.shared_body(|fx| fx.expr(&example.action));
-        for (cap, source) in givens.into_iter().rev() {
-            body = CoreExpr::With {
-                cap,
-                source,
-                body: Box::new(body),
-            };
-        }
-        let body = close(lets, body);
+        // The `given` lines and the `do` line share the constants they name, in one Core
+        // expression, as a function body does (ADR 0126 rule 8, #1632 review 2, #2264): the
+        // values are bound once, before the handlers are installed.
+        let (body, hoisted) = self.sharing(|fx| fx.example_body(example));
+        let body = close(hoisted, body?);
         let result = "result".to_owned();
         let mut expectations = Vec::new();
         for expectation in &example.expectations {
@@ -2250,7 +2267,9 @@ impl<'e, 'a> Fx<'e, 'a> {
             expectations.push(match &expectation.kind {
                 ExpectationKind::Holds(expr) => {
                     let outer = self.result.replace(result.clone());
-                    let check = self.expr(expr);
+                    // Each `expect` line is a Core expression of its own, which shares the
+                    // constants it names (#2264).
+                    let check = self.shared_body(|fx| fx.expr(expr));
                     self.result = outer;
                     Expectation::Holds {
                         result: result.clone(),
@@ -2279,6 +2298,47 @@ impl<'e, 'a> Fx<'e, 'a> {
             expectations,
             stop_after: example.stop_after.as_ref().map(|line| line.iterations),
         })
+    }
+
+    /// The `given` lines and the `do` line of a test, as one Core expression: the handlers'
+    /// arguments, then the handlers installed around the `do` line. `None` when a `given`
+    /// line names no handler.
+    fn example_body(&mut self, example: &'a ExampleDecl) -> Option<CoreExpr> {
+        let mut lets = Vec::new();
+        let mut givens = Vec::new();
+        for given in &example.givens {
+            let handler = match self.res(given.handler.span) {
+                Some(Res::Handler { id }) => id,
+                _ => return None,
+            };
+            let (args, arg_spans) =
+                self.call_args(&mut lets, given.handler.span, &given.handler.args);
+            let handler_name = self.name(&given.handler.name);
+            let module = self
+                .env
+                .handlers
+                .get(handler)
+                .map_or(self.module, |h| h.module);
+            givens.push((
+                self.name(&given.cap).to_owned(),
+                Source::Handler {
+                    handler: self.path(module, handler_name),
+                    args,
+                    arg_spans,
+                    given: true,
+                    span: given.handler.span,
+                },
+            ));
+        }
+        let mut body = self.expr(&example.action);
+        for (cap, source) in givens.into_iter().rev() {
+            body = CoreExpr::With {
+                cap,
+                source,
+                body: Box::new(body),
+            };
+        }
+        Some(close(lets, body))
     }
 
     /// The source text at `span`, in the database of the current module.
