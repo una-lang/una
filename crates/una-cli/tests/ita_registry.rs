@@ -406,6 +406,81 @@ fn publish_and_yank_send_only_where_the_source_is_declared() {
     assert!(err.contains("full version"), "{err}");
 }
 
+/// `una ita yank` reads an `ita.una` with `\r\n` line ends as the one with `\n`, and decodes
+/// it once: a lone `\r` just before a `\r\n` is reported (U7008), at the `\r`, and nothing is
+/// sent (#2252).
+#[test]
+fn yank_reads_crlf_line_ends_and_reports_a_lone_carriage_return() {
+    let store = scratch("ita-registry-store", "yank-crlf");
+    let dir = package_outside_git("yank-crlf", &published("itaty").replace('\n', "\r\n"));
+    let (status, out, err) = una_in(&["una", "ita", "lock", path(&dir)], &store);
+    assert_eq!(status, 0, "{out}{err}");
+    let (status, out, _) = una_in(
+        &["una", "--json", "ita", "yank", "0.1.0", path(&dir)],
+        &store,
+    );
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7013"], "{out}");
+    assert!(out.contains("no https transport yet"), "{out}");
+    let lone = published("itaty").replacen('\n', "\r\r\n", 1);
+    std::fs::write(dir.join("ita.una"), &lone).unwrap();
+    let (status, out, _) = una_in(
+        &["una", "--json", "ita", "yank", "0.1.0", path(&dir)],
+        &store,
+    );
+    assert_eq!(status, 1, "{out}");
+    assert_eq!(codes_of(&out), ["U7008"], "{out}");
+    let document: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let diagnostic = &document["diagnostics"][0];
+    assert_eq!(
+        diagnostic["message"],
+        "carriage return not followed by a line feed"
+    );
+    assert_eq!(
+        diagnostic["primary"]["start"],
+        serde_json::json!({"line": 1, "col": 14}),
+        "{out}"
+    );
+    assert_eq!(
+        diagnostic["primary"]["end"],
+        serde_json::json!({"line": 1, "col": 15}),
+        "{out}"
+    );
+}
+
+/// `una ita add` on an `ita.una` with `\r\n` line ends writes the same file as on the one
+/// with `\n` alone: the text decoded once, `\n` line ends, and the new need (#2252).
+#[test]
+fn add_edits_an_ita_una_with_crlf_line_ends() {
+    let (registry, _, _) = published_registry("add-crlf");
+    let mut written = Vec::new();
+    for (name, line_end) in [("add-lf", "\n"), ("add-crlf", "\r\n")] {
+        let (dir, _, itaoca) = project(name, &registry);
+        let manifest = std::fs::read_to_string(dir.join("ita.una")).unwrap();
+        let (head, _) = manifest.split_once("\nneeds\n").unwrap();
+        std::fs::write(
+            dir.join("ita.una"),
+            format!("{head}\n").replace('\n', line_end),
+        )
+        .unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+            .current_dir(&dir)
+            .args(["ita", "add", "acme/ledger", "0.3"])
+            .env("UNA_ITAOCA", &itaoca)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{name}: {output:?}");
+        written.push(std::fs::read_to_string(dir.join("ita.una")).unwrap());
+    }
+    assert!(!written[1].contains('\r'), "{:?}", written[1]);
+    assert!(
+        written[1].contains("\nneeds\n  acme/ledger 0.3"),
+        "{}",
+        written[1]
+    );
+    assert_eq!(written[1], written[0]);
+}
+
 // --- end to end: publish, lock and fetch through mirrors.una, yank, audit ------------------
 
 /// A release published into a directory registry is locked and fetched through `mirrors.una`;

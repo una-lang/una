@@ -310,7 +310,7 @@ pub(crate) fn publish_command(
     let Some(manifest_id) = package.manifest else {
         return Ok(ExitStatus::Usage);
     };
-    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id));
     let mut diagnostics = located(sources, manifest_id, errors);
     let Some(read) = manifest.ita.as_deref() else {
         return finish("publish", &[], &[], &diagnostics, sources, out);
@@ -587,7 +587,7 @@ pub(crate) fn yank_command(
     };
     let mut sources = SourceDb::new();
     let id = sources.add("ita.una".to_owned(), text.as_bytes());
-    let (manifest, errors) = parse_ita_manifest(sources.file(id).text());
+    let (manifest, errors) = parse_ita_manifest(sources.file(id));
     let mut diagnostics = located(&sources, id, errors);
     let Some(read) = manifest.ita.as_deref().filter(|_| diagnostics.is_empty()) else {
         return finish("yank", &[], &[], &diagnostics, &sources, out);
@@ -693,7 +693,7 @@ fn project(path: &Path) -> Result<Project, Ended> {
     let Some(manifest_id) = package.manifest else {
         return Err(Ended::Usage(not_a_package(path)));
     };
-    let (manifest, errors) = parse_ita_manifest(package.sources.file(manifest_id).text());
+    let (manifest, errors) = parse_ita_manifest(package.sources.file(manifest_id));
     let mut diagnostics = located(&package.sources, manifest_id, errors);
     let Some(lock_id) = package.lock else {
         diagnostics.extend(located(
@@ -707,7 +707,7 @@ fn project(path: &Path) -> Result<Project, Ended> {
         ));
         return Err(Ended::Diagnostics(diagnostics, package.sources));
     };
-    let (lock, errors) = parse_ita_lock(package.sources.file(lock_id).text());
+    let (lock, errors) = parse_ita_lock(package.sources.file(lock_id));
     diagnostics.extend(located(&package.sources, lock_id, errors));
     if !diagnostics.is_empty() {
         return Err(Ended::Diagnostics(diagnostics, package.sources));

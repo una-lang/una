@@ -142,7 +142,8 @@ pub fn local_name(need: &ita::Need) -> At<String> {
 /// [`Format::Ita`], whose `ita` holds what only `ita.una` writes, and every problem as U7008
 /// (U1005 and U1002 for categories, as `una.toml` reports them). O(n) in the file's size, and
 /// O(k log k) for the k entries of a section that are compared with each other.
-pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
+pub fn parse_ita_manifest<'a>(text: impl Into<ita::Text<'a>>) -> (Manifest, Vec<ProjectError>) {
+    let text = text.into();
     let code = Code::U7008;
     let (read, syntax) = ita::parse_manifest(text);
     let mut errors: Vec<ProjectError> = syntax
@@ -275,7 +276,11 @@ pub fn parse_ita_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
                 capability: cap.capability.clone(),
                 ops: cap.ops.iter().map(|op| op.value.clone()).collect(),
                 at: Located {
-                    value: text.get(cap.range.clone()).unwrap_or("").to_owned(),
+                    value: text
+                        .as_str()
+                        .get(cap.range.clone())
+                        .unwrap_or("")
+                        .to_owned(),
                     range: cap.range.clone(),
                 },
             });
@@ -960,7 +965,7 @@ pub struct ItaLock {
 /// Reads `ita.lock` (ADR 0122 rules 16 and 18): every problem is U7009, a solver of another
 /// version excepted, which is U5003 where the solver runs. O(n), and O(p log p) for the order
 /// of its p packages.
-pub fn parse_ita_lock(text: &str) -> (ItaLock, Vec<ProjectError>) {
+pub fn parse_ita_lock<'a>(text: impl Into<ita::Text<'a>>) -> (ItaLock, Vec<ProjectError>) {
     let code = Code::U7009;
     let (read, syntax) = ita::parse_lock(text);
     let mut errors: Vec<ProjectError> = syntax
@@ -1395,7 +1400,7 @@ pub struct Consistency {
 
 /// Reads `itaty.una` (ADR 0122 rule 19): every problem is U7008. A member is a relative
 /// directory without `..`, listed once.
-pub fn parse_workspace(text: &str) -> (ita::Workspace, Vec<ProjectError>) {
+pub fn parse_workspace<'a>(text: impl Into<ita::Text<'a>>) -> (ita::Workspace, Vec<ProjectError>) {
     let code = Code::U7008;
     let (read, syntax) = ita::parse_workspace(text);
     let mut errors: Vec<ProjectError> = syntax

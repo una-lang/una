@@ -5,6 +5,7 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use pretty_assertions::assert_eq;
+use una_syntax::SourceFile;
 use una_syntax::ita::{
     self, Item, LockOrigin, Origin, format, lines, parse_lock, parse_manifest, parse_workspace,
 };
@@ -692,6 +693,64 @@ fn ranges_index_the_text_with_crlf_line_ends() {
         assert_eq!(values(a), values(b));
     }
     assert_eq!(format(&MANIFEST.replace('\n', "\r\n")), format(MANIFEST));
+}
+
+/// A file decoded once, by the source database, is read as it is and never decoded again
+/// (#2252): a lone `\r` just before a `\r\n` decodes to a `\r\n`, which is the lone `\r`
+/// reported, never one more line end. Each reader reports it, and its range names the `\r`
+/// in the text it indexes, decoded or as written.
+#[test]
+fn a_decoded_file_is_never_decoded_again() {
+    let lone = "carriage return not followed by a line feed".to_owned();
+    for (name, written) in [
+        ("ita.lock", "lock 1\r\r\n"),
+        (
+            "ita.una",
+            "ita demo\r\r\n  version 0.1.0\r\n  edition 0.4\r\n",
+        ),
+        ("itaty.una", "itaty\r\r\n"),
+    ] {
+        let file = SourceFile::new(name, written.as_bytes());
+        assert!(file.text().contains("\r\n"), "{:?}", file.text());
+        for read in [lines(&file), lines(written)] {
+            assert_eq!(messages(&read.errors), vec![lone.clone()], "{name}");
+            assert_eq!(read.text.get(read.errors[0].range.clone()), Some("\r"));
+        }
+        let errors = match name {
+            "ita.lock" => parse_lock(&file).1,
+            "ita.una" => parse_manifest(&file).1,
+            _ => parse_workspace(&file).1,
+        };
+        assert!(messages(&errors).contains(&lone), "{name}: {errors:?}");
+        assert_eq!(file.text().get(errors[0].range.clone()), Some("\r"));
+    }
+    let manifest = "ita demo\r\r\n  version 0.1.0\n  edition 0.4\n";
+    assert_eq!(
+        format(&SourceFile::new("ita.una", manifest.as_bytes())),
+        None
+    );
+    assert_eq!(format(manifest), None);
+    // The canonical form of a file with `\r\n` line ends is the same, decoded or written.
+    let crlf = MANIFEST.replace('\n', "\r\n");
+    let file = SourceFile::new("ita.una", crlf.as_bytes());
+    assert_eq!(format(&file), format(MANIFEST));
+    assert_eq!(format(&crlf), format(MANIFEST));
+}
+
+/// A decoded file keeps what its decoding found: an ill-formed UTF-8 sequence, read as
+/// U+FFFD, is reported where it is, as `una check` reports it in a module (#2252).
+#[test]
+fn a_decoded_file_reports_an_ill_formed_sequence() {
+    let file = SourceFile::new(
+        "ita.una",
+        b"ita demo\n  version 0.1.0\n  edition 0.4\n  about \"a\xffb\"\n",
+    );
+    let (_, errors) = parse_manifest(&file);
+    assert_eq!(
+        messages(&errors),
+        vec!["invalid UTF-8 byte sequence".to_owned()]
+    );
+    assert_eq!(file.text().get(errors[0].range.clone()), Some("\u{fffd}"));
 }
 
 /// An error's range indexes the text as written too: an empty range at the end of a line ends

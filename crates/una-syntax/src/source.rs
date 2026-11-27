@@ -6,7 +6,7 @@ use una_diag::{Location, Position};
 
 /// Identifies a file of a [`SourceDb`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FileId(usize);
+pub struct FileId(pub(crate) usize);
 
 /// A range of a file's decoded text, in byte offsets; `end` is exclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
