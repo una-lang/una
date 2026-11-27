@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
@@ -145,10 +145,28 @@ impl Drop for SimSocket {
     }
 }
 
-struct SimReadiness;
+/// The simulator's readiness: every interest holds, except the write registrations that
+/// [`Sim::fail_write_registrations`] makes fail.
+struct SimReadiness(Arc<AtomicUsize>);
 
 impl Readiness for SimReadiness {
-    fn set(&mut self, _token: u64, _socket: &dyn Socket, _read: bool, _write: bool) {}
+    fn set(
+        &mut self,
+        _token: u64,
+        _socket: &dyn Socket,
+        _read: bool,
+        write: bool,
+    ) -> io::Result<()> {
+        if write
+            && self
+                .0
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        Ok(())
+    }
 
     fn forget(&mut self, _token: u64, _socket: &dyn Socket) {}
 }
@@ -183,6 +201,8 @@ pub struct Sim {
     pub refused: Vec<(u64, AcceptRefusal, u64)>,
     /// Wakes sent to the serve threads, over all of them.
     pub wakes: Arc<AtomicU64>,
+    /// Write registrations still to fail, over all the threads.
+    write_faults: Arc<AtomicUsize>,
 }
 
 impl Sim {
@@ -205,8 +225,12 @@ impl Sim {
             .collect();
         let key = SipKey::from_bytes([0x42; 16]);
         let (shared, inboxes) = Shared::new(grants, threads, key, clock.clone(), wakers);
+        let write_faults = Arc::new(AtomicUsize::new(0));
         let threads = (0..shared.threads)
-            .map(|index| Thread::new(index, shared.clone(), Box::new(SimReadiness), 0))
+            .map(|index| {
+                let readiness = SimReadiness(Arc::clone(&write_faults));
+                Thread::new(index, shared.clone(), Box::new(readiness), 0)
+            })
             .collect();
         Sim {
             shared,
@@ -217,6 +241,7 @@ impl Sim {
             by_address: BTreeMap::new(),
             refused: Vec::new(),
             wakes,
+            write_faults,
         }
     }
 
@@ -523,6 +548,12 @@ impl Sim {
         if let Some(serve) = self.threads.get_mut(thread) {
             serve.fault_in_adopt();
         }
+    }
+
+    /// The next `n` registrations of a connection's write interest fail, on any thread, as a
+    /// refused `kevent` or `epoll_ctl` would (#2279).
+    pub fn fail_write_registrations(&mut self, n: usize) {
+        self.write_faults.store(n, Ordering::SeqCst);
     }
 
     /// The next timer a connection of serve thread `thread` arms fails, as with a full wheel.
