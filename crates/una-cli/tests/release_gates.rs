@@ -2713,9 +2713,9 @@ fn the_limits_leg_refuses_emulation_and_counts_its_cases() {
         ("1", "", "3", "14", "0", "", 1, ""),
         ("", "", "3", "14", "0", "", 1, ""),
         // A case missing, or one more than counted, fails the gate.
-        ("0", "", "2", "13", "0", "", 1, limits),
+        ("0", "", "2", "14", "0", "", 1, limits),
         ("0", "", "3", "13", "0", "", 1, &both),
-        ("0", "", "4", "13", "0", "", 1, limits),
+        ("0", "", "4", "14", "0", "", 1, limits),
         ("0", "", "3", "15", "0", "", 1, &both),
         // A failing run fails the gate, and so does output with two result lines.
         ("0", "", "3", "14", "101", "", 1, limits),

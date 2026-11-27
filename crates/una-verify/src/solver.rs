@@ -62,6 +62,11 @@ pub enum Ended {
     Cancelled,
     /// Killed by the parent past the memory limit (macOS, by the footprint).
     Memory,
+    /// Killed by the kernel past the processor-time limit: a `SIGKILL` the parent did not send,
+    /// from a child that had used at least its soft processor-time limit, the hard limit one
+    /// second later (`RLIMIT_CPU`). It is what a child whose own end by `SIGXCPU` came too late
+    /// gives (#2321): `cpu`, as `SIGXCPU` is.
+    ProcessorTime,
 }
 
 /// Why no answer could be made of what the child wrote.
@@ -218,7 +223,7 @@ pub(crate) fn answer(raw: &Raw, values: usize) -> Result<Answer, Refused> {
                     .to_owned(),
             ));
         }
-        Ended::Signaled(SIGXCPU) => return unknown("cpu", None),
+        Ended::Signaled(SIGXCPU) | Ended::ProcessorTime => return unknown("cpu", None),
         Ended::Signaled(signal) => {
             return unknown(
                 "crash",
@@ -693,6 +698,8 @@ mod tests {
             (Ended::Cancelled, "cancelled"),
             (Ended::Memory, "memout"),
             (Ended::Signaled(SIGXCPU), "cpu"),
+            (Ended::ProcessorTime, "cpu"),
+            (Ended::Signaled(9), "crash"),
             (Ended::Signaled(11), "crash"),
         ];
         for (ended, reason) in cases {
