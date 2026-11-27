@@ -59,7 +59,8 @@ impl fmt::Display for InstallError {
 impl std::error::Error for InstallError {}
 
 /// The calls the front end needs: reading and writing its pipes, memory, threads, signals to
-/// itself, clocks, randomness, the processor count, and exit. The numbers are the C library's
+/// itself (and `rt_sigtimedwait`, by which the child's own thread takes its `SIGXCPU`,
+/// [`crate::solver::processor_time`]: it only dequeues a signal sent to this process), clocks, randomness, the processor count, and exit. The numbers are the C library's
 /// declarations for this architecture. Not here, by design, and decided by probe P6 if a C
 /// library turns out to need them: `newfstatat` and `statx`, which take a path the caller
 /// chooses and would leak the metadata of any file; `membarrier`, whose global command is a
@@ -89,6 +90,7 @@ mod numbers {
         libc::SYS_rt_sigaction,
         libc::SYS_rt_sigprocmask,
         libc::SYS_rt_sigreturn,
+        libc::SYS_rt_sigtimedwait,
         libc::SYS_restart_syscall,
         libc::SYS_clock_gettime,
         libc::SYS_clock_getres,

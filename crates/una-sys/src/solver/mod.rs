@@ -1,12 +1,14 @@
 //! The solver child's confinement, limits, spawn attributes and footprint reading (ADR 0124
 //! rules 5 to 7 and 35), behind the feature `solver`, which only `una-cli` and `una-z3` enable.
 //! `una __solver` calls [`confine`] before it reads the query, in this order: the process
-//! refuses to go on as root, whose capabilities no filter removes; the working directory
+//! blocks `SIGXCPU` ([`processor_time`]); it refuses to go on as root, whose capabilities no
+//! filter removes; the working directory
 //! becomes `/`; every descriptor above the three standard ones is closed ([`descriptors`]);
 //! the limits of rule 6 are set ([`limits`]); on Linux the personality bit that would make
 //! every mapping executable is cleared and what the C library reads from files for the
 //! processor count is read once; the process confines itself (the seccomp filter of
-//! [`seccomp`] on Linux, the sandbox profile of [`sandbox`] on macOS); and only then is the
+//! [`seccomp`] on Linux, the sandbox profile of [`sandbox`] on macOS); the thread that ends the
+//! process by `SIGXCPU` starts; and only then is the
 //! confinement recorded, which `una-z3` requires before it calls Z3's front end. A step that
 //! fails ends the attempt: there is no unconfined fallback. The parent uses [`spawn`] to start
 //! the child with an empty environment and only its three pipes, and on macOS [`footprint`]
@@ -21,6 +23,7 @@ pub mod descriptors;
 #[cfg(target_os = "macos")]
 pub mod footprint;
 pub mod limits;
+pub mod processor_time;
 #[cfg(target_os = "macos")]
 pub mod sandbox;
 #[cfg(target_os = "linux")]
@@ -75,6 +78,9 @@ pub enum ConfineError {
     Descriptors(io::Error),
     /// A limit of rule 6 could not be set; the name is the resource's.
     Limit(&'static str, io::Error),
+    /// `SIGXCPU` could not be blocked, or its waiting thread not started
+    /// ([`processor_time`]).
+    ProcessorTime(io::Error),
     /// The personality could not be read or cleared (Linux).
     #[cfg(target_os = "linux")]
     Personality(io::Error),
@@ -93,6 +99,9 @@ impl fmt::Display for ConfineError {
             Self::WorkingDirectory(e) => write!(f, "cannot make `/` the working directory: {e}"),
             Self::Descriptors(e) => write!(f, "cannot close the inherited descriptors: {e}"),
             Self::Limit(name, e) => write!(f, "cannot set the {name} limit: {e}"),
+            Self::ProcessorTime(e) => {
+                write!(f, "cannot take over the processor-time signal: {e}")
+            }
             #[cfg(target_os = "linux")]
             Self::Personality(e) => write!(f, "cannot clear the execution personality: {e}"),
             #[cfg(target_os = "linux")]
@@ -125,6 +134,9 @@ impl std::error::Error for ConfineError {}
 /// The first step that fails, with no step taken back: a process that reaches an error here
 /// writes no handshake and exits.
 pub fn confine(limits: &Limits) -> Result<Confinement, ConfineError> {
+    // First, while the process has one thread and before the processor-time limit exists:
+    // no handler of `SIGXCPU` may ever run in the child (#2268).
+    processor_time::hold().map_err(ConfineError::ProcessorTime)?;
     // SAFETY: `geteuid` has no arguments and cannot fail.
     if unsafe { libc::geteuid() } == 0 {
         return Err(ConfineError::Root);
@@ -133,6 +145,8 @@ pub fn confine(limits: &Limits) -> Result<Confinement, ConfineError> {
     descriptors::close_above_stdio().map_err(ConfineError::Descriptors)?;
     limits::apply(limits).map_err(|(name, e)| ConfineError::Limit(name, e))?;
     let confinement = platform_confine()?;
+    // The thread that ends the child by `SIGXCPU`, started under the confinement.
+    processor_time::watch().map_err(ConfineError::ProcessorTime)?;
     record_confined();
     Ok(confinement)
 }

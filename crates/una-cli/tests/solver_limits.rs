@@ -1,5 +1,5 @@
 //! The `limits` gate (ADR 0124 rule 31): a query past the solver's memory limit ends as
-//! `memout`, one past the processor-time limit as `cpu`, one past the wall-clock guard as
+//! `memout`, one past the processor-time limit as `cpu` (by `SIGXCPU`), one past the wall-clock guard as
 //! `wallclock`, each with the parent intact; and a limit is never U8001. The children are
 //! `una __solver` itself, so the tests need the built library and run in the gate only:
 //! `cargo test --release --locked -p una-cli --test solver_limits -- --ignored --nocapture`.
@@ -135,7 +135,7 @@ fn a_query_past_the_memory_limit_is_memout_and_the_parent_lives() {
 
 #[test]
 #[ignore = "the limits release gate: needs the built solver"]
-fn a_query_past_the_processor_time_ends_by_z3s_handler_of_sigxcpu() {
+fn a_query_past_the_processor_time_ends_by_sigxcpu_and_no_handler_runs() {
     // A linked solver records its library's digest (una-z3's build script).
     assert_eq!(
         una_z3::BUILD.library_sha256.len(),
@@ -147,18 +147,19 @@ fn a_query_past_the_processor_time_ends_by_z3s_handler_of_sigxcpu() {
     assert!(p < 1 << 64 && q < 1 << 64);
     assert_eq!(p.checked_mul(q), Some(PRODUCT));
     assert!(HARD.contains(&format!("#x{PRODUCT:032x}")));
-    // Past one second of processor time the kernel sends `SIGXCPU`, which Z3 5.1.0's front end
-    // handles itself (`util/timeout.cpp`): it prints `timeout` and exits with status 0, so the
-    // child never ends by the signal (#2008), and the verifier reads that word as `cpu`
-    // (`una_verify::solver`). Its stdout is the handshake, then that word alone: no answer,
-    // since the query cannot be solved within the limit, and nothing on stderr.
+    // Past one second of processor time the kernel sends `SIGXCPU`. Z3 5.1.0's front end
+    // installs a handler of it (`util/timeout.cpp`) that prints `timeout` and exits with 0, and
+    // that is not async-signal-safe: once in 69 runs on glibc 2.28 it aborted inside `malloc`
+    // (#2268). The child blocks the signal and takes it on a thread of its own, which ends the
+    // process by the signal with its default action (`una_sys::solver::processor_time`), so the
+    // front end's handler never runs, and the verifier reads the signal as `cpu`
+    // (`una_verify::solver`). Its stdout is the handshake alone and stderr is empty.
     let (code, signal, stdout, stderr) = solver_child(1, 4096, HARD);
-    assert_eq!(signal, None, "stdout {stdout:?} stderr {stderr:?}");
-    assert_eq!(code, Some(0), "stdout {stdout:?} stderr {stderr:?}");
+    assert_eq!(signal, Some(24), "stdout {stdout:?} stderr {stderr:?}");
+    assert_eq!(code, None, "stdout {stdout:?} stderr {stderr:?}");
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 2, "{stdout:?}");
+    assert_eq!(lines.len(), 1, "{stdout:?}");
     assert!(lines[0].starts_with("una-solver 1 z3 "), "{stdout:?}");
-    assert_eq!(lines[1], "timeout", "{stdout:?}");
     assert_eq!(stderr, "", "{stderr:?}");
 }
 

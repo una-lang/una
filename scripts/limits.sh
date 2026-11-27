@@ -31,8 +31,8 @@ fail() {
 # solver_confinement.rs that this system compiles (the common ones, and those of its cfg).
 LIMITS_CASES=3
 case $(uname -s) in
-    Darwin) CONFINEMENT_CASES=13 ;;
-    Linux) CONFINEMENT_CASES=9 ;;
+    Darwin) CONFINEMENT_CASES=14 ;;
+    Linux) CONFINEMENT_CASES=10 ;;
     *) fail "no count of the confinement cases is known for $(uname -s)" ;;
 esac
 
