@@ -185,8 +185,10 @@ struct RealReadiness {
 }
 
 impl Readiness for RealReadiness {
-    fn set(&mut self, token: u64, socket: &dyn Socket, read: bool, write: bool) {
-        let Some(fd) = socket.fd() else { return };
+    fn set(&mut self, token: u64, socket: &dyn Socket, read: bool, write: bool) -> io::Result<()> {
+        let Some(fd) = socket.fd() else {
+            return Ok(());
+        };
         let mut armed = lock(&self.armed.0);
         let wanted = if write {
             Some(Interest::Write)
@@ -199,17 +201,35 @@ impl Readiness for RealReadiness {
         if let (Some((old, false)), Some(new)) = (had, wanted)
             && old == new
         {
-            return;
+            return Ok(());
         }
         if let Some((old, _)) = had {
             // On Linux a fired registration stays, disabled, until it is deleted.
             let _ = self.poller.delete(fd, old);
             armed.remove(&token);
         }
-        if let Some(interest) = wanted
-            && self.poller.add(fd, interest, token).is_ok()
-        {
-            armed.insert(token, (interest, false));
+        let Some(interest) = wanted else {
+            return Ok(());
+        };
+        // A failed `add` is never dropped (#2279): the connection would wait, registered
+        // nowhere, until its timer cut it. A signal is retried; any other error is returned,
+        // and the thread closes the connection.
+        let mut tries = 0;
+        loop {
+            let added = match connection_registration_fault(interest) {
+                Some(error) => Err(error),
+                None => self.poller.add(fd, interest, token),
+            };
+            match added {
+                Ok(()) => {
+                    armed.insert(token, (interest, false));
+                    return Ok(());
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted && tries < 3 => {
+                    tries += 1;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -287,6 +307,39 @@ fn registration_fault() -> bool {
     #[cfg(not(feature = "test-hooks"))]
     {
         false
+    }
+}
+
+/// Write registrations of a connection that fail, for a test of #2279: a process-wide count,
+/// so its test runs alone in its binary.
+#[cfg(feature = "test-hooks")]
+static WRITE_REGISTRATION_FAULTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Makes the next `n` registrations of a connection's write interest fail, as a refused
+/// `kevent` or `epoll_ctl` would, for a test.
+#[cfg(feature = "test-hooks")]
+pub fn fail_write_registrations(n: usize) {
+    WRITE_REGISTRATION_FAULTS.store(n, Ordering::SeqCst);
+}
+
+/// The error a test's fault gives a connection's registration of `interest`, if any.
+fn connection_registration_fault(interest: Interest) -> Option<io::Error> {
+    #[cfg(feature = "test-hooks")]
+    {
+        if interest == Interest::Write
+            && WRITE_REGISTRATION_FAULTS
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            return Some(io::Error::from(io::ErrorKind::OutOfMemory));
+        }
+        None
+    }
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        let _ = interest;
+        None
     }
 }
 

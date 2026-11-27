@@ -151,7 +151,9 @@ struct Conn {
 }
 
 /// What ended a connection while it was writing (#2273): read only by the placement probe of
-/// the toolchain's tests, which records it for a connection that closes with a reply pending.
+/// the toolchain's tests, which records it for a connection that closes with a reply pending,
+/// with a reply that was discarded, or with bytes of a host answer (`100 Continue`, a refusal)
+/// not written.
 #[derive(Clone, Copy, Debug)]
 // Its fields are read through `Debug` only, which the lint does not count.
 #[allow(dead_code)]
@@ -166,13 +168,17 @@ enum Cut {
     WriteTimer,
     /// The hard stop.
     HardStop,
-    /// A close asked by the program's side (`Exchange::close`, a reply larger than `replies`,
-    /// a victim of reply pressure).
+    /// A close asked by the program's side (`Exchange::close`) while the connection's pending
+    /// reply was not discarded. A reply larger than `replies` and a victim of reply pressure
+    /// are discarded first, so their close is recorded as [`Cut::Discarded`].
     Asked,
     /// A contained fault in one of the connection's steps.
     Fault,
     /// The serve thread ended.
     Abandoned,
+    /// The readiness refused to register what the connection waits for, with this error
+    /// (#2279): nothing would ever report the socket, so the connection closes at once.
+    Unregistered(io::ErrorKind, Option<i32>),
 }
 
 impl Cut {
@@ -311,7 +317,15 @@ impl Thread {
             }
             Msg::Close(conn) => {
                 self.with_conn(&conn, now, |core, c, now| {
-                    c.cut.get_or_insert(Cut::Asked);
+                    // A victim of reply pressure, or a reply larger than `replies`, was
+                    // discarded before this message: its reply was cut (#2279, review of #2277
+                    // L1), whichever of this message and a write readiness comes first.
+                    let cause = if c.shared.is_dead() {
+                        Cut::Discarded
+                    } else {
+                        Cut::Asked
+                    };
+                    c.cut.get_or_insert(cause);
                     core.close(c, now);
                 });
             }
@@ -719,10 +733,11 @@ impl Core {
         self.shared.contain(Some(&conn.grant), Site::Accept);
     }
 
-    fn tell(&mut self, c: &Conn, interest: Interest) {
+    /// Registers what the connection waits for; the readiness's error when it could not.
+    fn tell(&mut self, c: &Conn, interest: Interest) -> io::Result<()> {
         self.critical += 1;
         let loud = Loud::enter();
-        self.readiness.set(
+        let told = self.readiness.set(
             token(c.slot, c.generation),
             &*c.sock,
             interest.read,
@@ -730,6 +745,7 @@ impl Core {
         );
         drop(loud);
         self.critical -= 1;
+        told
     }
 
     /// Arms the connection's one timer, replacing the one it had.
@@ -785,10 +801,15 @@ impl Core {
     }
 
     /// Does everything the connection can do now, then says what it waits for.
+    /// A connection whose interest cannot be registered closes at once (#2279): nothing would
+    /// report its socket, and it would wait, its reply pending, until its timer cut it.
     fn pump(&mut self, c: &mut Conn, now: u64) {
         let interest = self.pump_steps(c, now);
-        if !c.closed {
-            self.tell(c, interest);
+        if !c.closed
+            && let Err(error) = self.tell(c, interest)
+        {
+            c.cut = Some(Cut::Unregistered(error.kind(), error.raw_os_error()));
+            self.close(c, now);
         }
     }
 
@@ -1321,7 +1342,10 @@ impl Core {
             // The toolchain's tests: a reply cut short is recorded with its cause (#2273).
             #[cfg(feature = "test-hooks")]
             {
-                let left = c.shared.bytes_left();
+                // Bytes of the program's reply and of the host's own answer not written
+                // (#2279, review of #2277 L2).
+                let own = c.own.len().saturating_sub(c.own_off) as u64;
+                let left = c.shared.bytes_left().saturating_add(own);
                 if left > 0 || matches!(c.cut, Some(Cut::Discarded)) {
                     super::place::probe::cut(c.shared.address, left, &format!("{:?}", c.cut));
                 }

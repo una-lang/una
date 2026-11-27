@@ -45,8 +45,10 @@ impl Socket for TcpStream {
 /// each event it handles, what the connection still waits for; the implementation registers
 /// that interest once, one-shot, and forgets a socket before the engine drops it.
 pub trait Readiness: Send {
-    /// The connection `token` waits to read and/or to write; both false means neither.
-    fn set(&mut self, token: u64, socket: &dyn Socket, read: bool, write: bool);
+    /// The connection `token` waits to read and/or to write; both false means neither. An error
+    /// means the interest is not registered, so nothing would ever report the socket: the
+    /// thread closes the connection at once (#2279).
+    fn set(&mut self, token: u64, socket: &dyn Socket, read: bool, write: bool) -> io::Result<()>;
     /// The connection `token` is closing.
     fn forget(&mut self, token: u64, socket: &dyn Socket);
 }

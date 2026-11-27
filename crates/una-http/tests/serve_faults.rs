@@ -491,6 +491,40 @@ fn a_connection_whose_timer_fails_leaves_no_dead_entry_in_a_queue() {
 }
 
 #[test]
+fn a_connection_whose_write_interest_cannot_be_registered_closes_at_once() {
+    // #2279: a failed `kevent` or `epoll_ctl` add left the connection registered nowhere, so
+    // nothing woke it until its `write` timer (30 s) cut its reply. It now closes at once and
+    // gives back what it held; the next connection is served as usual.
+    let mut sim = Sim::new(&[GRANT], 1);
+    assert!(sim.connect(1, 0, &addr(1), Reads::Paced));
+    sim.send(1, &get("/a"));
+    let mut exchange = sim.deliver().unwrap();
+    sim.fail_write_registrations(1);
+    exchange.reply(&ok("pending")).unwrap();
+    sim.flush();
+    assert!(
+        sim.closed(1),
+        "the connection waits for a readiness that never comes"
+    );
+    assert_eq!(sim.wire(1).unwrap().closed_at, Some(0));
+    assert_eq!(sim.open(), 0);
+    assert_eq!(sim.timers(), 0);
+    assert!(
+        sim.shared.is_quiet(),
+        "{:?}",
+        sim.shared.grants[0].counters()
+    );
+    assert!(sim.connect(2, 0, &addr(2), Reads::Paced));
+    sim.send(2, &get("/b"));
+    sim.deliver().unwrap().reply(&ok("served")).unwrap();
+    sim.flush();
+    assert!(!sim.closed(2));
+    sim.allow(2, u64::MAX);
+    sim.flush();
+    assert!(String::from_utf8_lossy(&sim.received(2)).ends_with("served"));
+}
+
+#[test]
 fn a_second_registration_of_a_callback_is_a_defined_error() {
     let sim = Sim::new(&[GRANT], 1);
     let first = Arc::new(AtomicUsize::new(0));
