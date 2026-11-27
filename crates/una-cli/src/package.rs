@@ -12,7 +12,7 @@ use una_project::{
     Edition, Format, Manifest, ProjectError, Role, discover, parse_lock, parse_manifest,
 };
 use una_syntax::ita;
-use una_syntax::{FileId, SourceDb, Span};
+use una_syntax::{FileId, SourceDb, SourceFile, Span};
 
 pub use una_project::LoadError;
 
@@ -91,7 +91,7 @@ impl Dependency {
     /// (ADR 0122 rules 48 and 49); `None` when it has no manifest.
     pub fn edition(&self, sources: &SourceDb) -> Option<Edition> {
         let manifest = self.manifest?;
-        Some(parse_ita_manifest(sources.file(manifest).text()).0.edition)
+        Some(parse_ita_manifest(sources.file(manifest)).0.edition)
     }
 }
 
@@ -163,11 +163,12 @@ pub fn load_in(
     if package.format == Format::Ita
         && let Some(id) = package.manifest
     {
-        let text = package.sources.file(id).text().to_owned();
-        load_dependencies(path, &text, overlay, &mut package);
+        // The files as decoded once, by the source database (#2252).
+        let manifest = package.sources.file(id).clone();
+        load_dependencies(path, &manifest, overlay, &mut package);
         if let Some(lock) = package.lock {
-            let lock = package.sources.file(lock).text().to_owned();
-            load_registry(path, &text, &lock, itaoca, &mut package);
+            let lock = package.sources.file(lock).clone();
+            load_registry(path, &manifest, &lock, itaoca, &mut package);
         }
     }
     Ok(package)
@@ -180,8 +181,8 @@ pub fn load_in(
 /// or `itaoca/<source>/<release>/` in the source database, which [`project`] mounts.
 fn load_registry(
     root: &Path,
-    manifest: &str,
-    lock: &str,
+    manifest: &SourceFile,
+    lock: &SourceFile,
     itaoca: Option<&Itaoca>,
     package: &mut Package,
 ) {
@@ -338,7 +339,7 @@ fn enclosing_edition(path: &Path) -> Option<Edition> {
         if ita.is_file() {
             let text = std::fs::read(&ita).ok()?;
             return Some(
-                parse_ita_manifest(&String::from_utf8_lossy(&text))
+                parse_ita_manifest(&SourceFile::new("ita.una", &text))
                     .0
                     .edition,
             );
@@ -358,7 +359,7 @@ fn enclosing_edition(path: &Path) -> Option<Edition> {
 /// reports at its need. O(files of the dependencies).
 fn load_dependencies(
     root: &Path,
-    manifest: &str,
+    manifest: &SourceFile,
     overlay: &BTreeMap<PathBuf, String>,
     package: &mut Package,
 ) {
@@ -459,7 +460,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
     if package.format == Format::Ita {
         let mut manifest = match package.manifest {
             Some(id) => {
-                let (manifest, errors) = parse_ita_manifest(package.sources.file(id).text());
+                let (manifest, errors) = parse_ita_manifest(package.sources.file(id));
                 located(id, errors);
                 if package.both_manifests {
                     located(
@@ -488,7 +489,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
         // The lock as written, for the consents to trust; its errors are reported below.
         let lock_read = package
             .lock
-            .map(|id| parse_ita_lock(package.sources.file(id).text()).0);
+            .map(|id| parse_ita_lock(package.sources.file(id)).0);
         // The path dependencies: checked, then mounted with their package extents.
         let mut versions: BTreeMap<String, String> = BTreeMap::new();
         for (index, need) in needs.iter().enumerate() {
@@ -543,8 +544,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
             let Some(dependency_manifest) = dependency.manifest else {
                 continue;
             };
-            let (settings, errors) =
-                parse_ita_manifest(package.sources.file(dependency_manifest).text());
+            let (settings, errors) = parse_ita_manifest(package.sources.file(dependency_manifest));
             let invalid = !errors.is_empty();
             located(dependency_manifest, errors);
             let mut problems =
@@ -695,7 +695,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
         located(manifest_id, reaching);
         match package.lock {
             Some(id) => {
-                let (lock, errors) = parse_ita_lock(package.sources.file(id).text());
+                let (lock, errors) = parse_ita_lock(package.sources.file(id));
                 let invalid = !errors.is_empty();
                 located(id, errors);
                 if !invalid && let Some(read) = read.as_deref() {

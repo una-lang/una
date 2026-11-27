@@ -731,6 +731,62 @@ fn remove_edits_an_ita_una_with_crlf_line_ends() {
     );
 }
 
+/// A lone `\r` just before a `\r\n` decodes to a `\r\n` that is the lone `\r`, never one
+/// more line end: `ita.una` is decoded once (#2252), so `una check` and `una fmt` report it
+/// (U7008) at the `\r`, and `una ita remove` refuses the file and writes nothing.
+#[test]
+fn a_lone_carriage_return_before_a_line_end_is_reported_everywhere() {
+    let dir = with_two_dependencies("lone-cr", "\r\n");
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 0, "{err}");
+    let manifest = std::fs::read_to_string(dir.join("ita.una"))
+        .unwrap()
+        .replacen("\r\n", "\r\r\n", 1);
+    std::fs::write(dir.join("ita.una"), &manifest).unwrap();
+    let lone = |out: &str| {
+        let document: serde_json::Value = serde_json::from_str(out).unwrap();
+        let diagnostics = document["diagnostics"].as_array().unwrap().clone();
+        assert!(
+            diagnostics.iter().any(|d| d["code"] == "U7008"
+                && d["message"] == "carriage return not followed by a line feed"
+                && d["primary"]["start"] == serde_json::json!({"line": 1, "col": 9})
+                && d["primary"]["end"] == serde_json::json!({"line": 1, "col": 10})),
+            "{out}"
+        );
+    };
+    let (code, out, _) = una(&["una", "--json", "check", path(&dir)]);
+    assert_eq!(code, 1, "{out}");
+    lone(&out);
+    let file = dir.join("ita.una");
+    let (code, out, _) = una(&["una", "--json", "fmt", file.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}");
+    lone(&out);
+    let (code, _, err) = una(&["una", "ita", "remove", "util", path(&dir)]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("does not parse"), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), manifest);
+}
+
+/// An ill-formed UTF-8 sequence in `ita.una` is reported (U7008) where it is: the file is
+/// decoded once, by the source database, and read as decoded (#2252).
+#[test]
+fn an_ill_formed_sequence_in_ita_una_is_reported() {
+    let dir = package("ill-formed", "");
+    std::fs::write(
+        dir.join("ita.una"),
+        b"ita demo\n  version 0.1.0\n  edition 0.4\n  about \"a\xffb\"\n",
+    )
+    .unwrap();
+    let (code, _, err) = una(&["una", "ita", "lock", path(&dir)]);
+    assert_eq!(code, 1, "{err}");
+    let (code, out, _) = una(&["una", "--json", "check", path(&dir)]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("invalid UTF-8 byte sequence") && out.contains("U7008"),
+        "{out}"
+    );
+}
+
 /// A write that fails exits with code 1 and a message, never a usage error, and changes
 /// neither file.
 #[cfg(unix)]

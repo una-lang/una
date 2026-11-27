@@ -77,9 +77,10 @@ pub fn location(url: &str) -> Result<Location, String> {
 /// more than [`MAX_PER_SOURCE`] of them, and a location that [`location`] refuses, plain
 /// `http://` included, are each U7008 at their line; the file is refused whole above
 /// [`MAX_BYTES`]. O(n).
-pub fn parse(text: &str) -> (Mirrors, Vec<ProjectError>) {
+pub fn parse<'a>(text: impl Into<ita::Text<'a>>) -> (Mirrors, Vec<ProjectError>) {
+    let text = text.into();
     let mut mirrors = Mirrors::default();
-    if text.len() > MAX_BYTES {
+    if text.as_str().len() > MAX_BYTES {
         return (
             mirrors,
             vec![refusal(

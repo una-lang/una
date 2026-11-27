@@ -1719,7 +1719,7 @@ pub(crate) fn dependencies(
     // The lock, for a registry release's line and its key.
     let lock = package
         .lock
-        .map(|id| una_project::ita::parse_ita_lock(package.sources.file(id).text()).0);
+        .map(|id| una_project::ita::parse_ita_lock(package.sources.file(id)).0);
     let mut out = Vec::new();
     for mount in &manifest.mounts {
         let Some(dependency) = package
@@ -1734,7 +1734,7 @@ pub(crate) fn dependencies(
         };
         let settings = dependency
             .manifest
-            .map(|id| una_project::ita::parse_ita_manifest(package.sources.file(id).text()).0);
+            .map(|id| una_project::ita::parse_ita_manifest(package.sources.file(id)).0);
         let version = settings
             .as_ref()
             .and_then(|s| s.version.as_ref())
@@ -1897,7 +1897,7 @@ fn registries_of(package: &Package, manifest: &una_project::Manifest) -> Vec<Reg
     let Some(id) = package.lock else {
         return Vec::new();
     };
-    let lock = una_project::ita::parse_ita_lock(package.sources.file(id).text()).0;
+    let lock = una_project::ita::parse_ita_lock(package.sources.file(id)).0;
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     for dependency in &package.dependencies {
         let Some(origin) = &dependency.registry else {

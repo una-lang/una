@@ -22,7 +22,7 @@ use una_project::migrate::text;
 use una_project::version::Version;
 use una_project::{Lock, ProjectError};
 use una_syntax::ita;
-use una_syntax::{FileId, SourceDb, Span};
+use una_syntax::{FileId, SourceDb, SourceFile, Span};
 
 use crate::ExitStatus;
 
@@ -550,10 +550,10 @@ fn resolve_and_lock(
             out,
         );
     };
-    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id));
     let mut diagnostics = located(sources, manifest_id, errors);
     let existing = package.lock.map(|id| {
-        let (lock, errors) = parse_ita_lock(sources.file(id).text());
+        let (lock, errors) = parse_ita_lock(sources.file(id));
         (id, lock, errors)
     });
     let solver = match &existing {
@@ -754,7 +754,7 @@ fn resolve_and_lock(
             ));
             continue;
         };
-        let (settings, errors) = parse_ita_manifest(sources.file(dependency_manifest).text());
+        let (settings, errors) = parse_ita_manifest(sources.file(dependency_manifest));
         let invalid = !errors.is_empty();
         diagnostics.extend(located(sources, dependency_manifest, errors));
         let problems = crate::package::dependency_problems(need, &settings, &manifest, true);
@@ -2208,11 +2208,12 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
         .unwrap_or_default();
     let mut sources = SourceDb::new();
     let id = sources.add(name.clone(), &bytes);
-    let text = sources.file(id).text().to_owned();
+    // The file is decoded once, by the source database, and read as decoded (#2252).
+    let file = sources.file(id);
     let syntax = if name == "itaty.una" {
-        una_syntax::ita::parse_workspace(&text).1
+        una_syntax::ita::parse_workspace(file).1
     } else {
-        una_syntax::ita::parse_manifest(&text).1
+        una_syntax::ita::parse_manifest(file).1
     };
     let errors: Vec<ProjectError> = syntax
         .into_iter()
@@ -2224,7 +2225,7 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
         .collect();
     let mut diagnostics = located(&sources, id, errors);
     let canonical = if diagnostics.is_empty() {
-        una_syntax::ita::format(&text)
+        una_syntax::ita::format(sources.file(id))
     } else {
         None
     };
@@ -2240,7 +2241,7 @@ pub(crate) fn fmt_command(path: &Path, check: bool, out: Output<'_>) -> io::Resu
     };
     if check {
         diagnostics.extend(una_fmt::differences(&sources, id, &canonical));
-    } else if text != canonical || sources.file(id).first_crlf().is_some() {
+    } else if sources.file(id).text() != canonical || sources.file(id).first_crlf().is_some() {
         let target: PathBuf = path.to_path_buf();
         if let Err(error) =
             crate::write_through_rename(&crate::write_root(path), &target, &canonical)
@@ -2356,8 +2357,9 @@ fn internal_error(out: Output<'_>, what: &str) -> io::Result<ExitStatus> {
 /// `ita.una`, its indented lines with it, and the `needs` section when it empties; then
 /// resolves as `una ita lock` does, and writes the lock, then `ita.una`, only when the
 /// resolution succeeds, each through a temporary file and a rename. The edit is made on the
-/// decoded text, `\r\n` read as `\n`, which the ranges of the grammar index. A name the root
-/// does not need is a usage error. No network.
+/// decoded text, `\r\n` read as `\n`, which the ranges of the grammar index; the file is
+/// decoded once, so a lone `\r` refuses it as `una check` does (#2252). A name the root does
+/// not need is a usage error. No network.
 pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Result<ExitStatus> {
     let manifest_path = path.join("ita.una");
     let text = match std::fs::read_to_string(&manifest_path) {
@@ -2365,8 +2367,8 @@ pub(crate) fn remove_command(name: &str, path: &Path, out: Output<'_>) -> io::Re
         Err(error) => return unreadable(&manifest_path, &error, out),
     };
     // The edit is made on the decoded text, `\r\n` read as `\n`, which the ranges of the
-    // grammar and of its lines index.
-    let decoded = text.replace("\r\n", "\n");
+    // grammar and of its lines index. The file is decoded once, here (#2252).
+    let decoded = SourceFile::new("ita.una", text.as_bytes());
     let (read, errors) = ita::parse_manifest(&decoded);
     if !errors.is_empty() {
         writeln!(
@@ -2491,7 +2493,7 @@ pub(crate) fn vendor_command(
     let Some(manifest_id) = package.manifest else {
         return Ok(ExitStatus::Usage);
     };
-    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id));
     let mut diagnostics = located(sources, manifest_id, errors);
     let Some(lock_id) = package.lock else {
         diagnostics.extend(located(
@@ -2505,7 +2507,7 @@ pub(crate) fn vendor_command(
         ));
         return finish("vendor", &[], &[], &diagnostics, sources, out);
     };
-    let (lock, errors) = parse_ita_lock(sources.file(lock_id).text());
+    let (lock, errors) = parse_ita_lock(sources.file(lock_id));
     diagnostics.extend(located(sources, lock_id, errors));
     if !diagnostics.is_empty() {
         return finish("vendor", &[], &[], &diagnostics, sources, out);
@@ -2638,9 +2640,10 @@ const AFTER_NEEDS: [&str; 10] = [
 ];
 
 /// `text` with `line` added as the last need: at the end of the `needs` section, or in a new
-/// one before the first section that follows it in the canonical order, or at the end.
+/// one before the first section that follows it in the canonical order, or at the end. The
+/// edit is made on the text decoded once, `\r\n` read as `\n` (#2252).
 fn with_need(text: &str, line: &str) -> String {
-    let decoded = text.replace("\r\n", "\n");
+    let decoded = SourceFile::new("ita.una", text.as_bytes());
     let read = ita::lines(&decoded);
     let text = read.text.as_str();
     let line_start = |offset: usize| {
@@ -2973,13 +2976,13 @@ pub(crate) fn verify_command(
         )?;
         return Ok(ExitStatus::Internal);
     };
-    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id));
     let mut diagnostics = located(sources, manifest_id, errors);
     let Some(lock_id) = package.lock else {
         diagnostics.extend(located(sources, manifest_id, vec![missing_lock()]));
         return finish("verify", &[], &[], &diagnostics, sources, out);
     };
-    let (lock, errors) = parse_ita_lock(sources.file(lock_id).text());
+    let (lock, errors) = parse_ita_lock(sources.file(lock_id));
     diagnostics.extend(located(sources, lock_id, errors));
     if !diagnostics.is_empty() {
         return finish("verify", &[], &[], &diagnostics, sources, out);
@@ -3138,13 +3141,13 @@ pub(crate) fn fetch_command(
     let Some(manifest_id) = package.manifest else {
         return Ok(ExitStatus::Usage);
     };
-    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id).text());
+    let (manifest, errors) = parse_ita_manifest(sources.file(manifest_id));
     let mut diagnostics = located(sources, manifest_id, errors);
     let Some(lock_id) = package.lock else {
         diagnostics.extend(located(sources, manifest_id, vec![missing_lock()]));
         return finish("fetch", &[], &[], &diagnostics, sources, out);
     };
-    let (lock, errors) = parse_ita_lock(sources.file(lock_id).text());
+    let (lock, errors) = parse_ita_lock(sources.file(lock_id));
     diagnostics.extend(located(sources, lock_id, errors));
     let mirrors = match crate::registry::load_mirrors(Some(itaoca)) {
         Ok(mirrors) => mirrors,
@@ -3397,7 +3400,7 @@ fn archive_authority(
     let mut need_lines: Vec<una_diag::Location> = Vec::new();
     let mut locals: Vec<String> = Vec::new();
     if let Some(id) = package.manifest {
-        let (read, _) = una_syntax::ita::parse_manifest(package.sources.file(id).text());
+        let (read, _) = una_syntax::ita::parse_manifest(package.sources.file(id));
         for need in &read.needs {
             need_lines.push(package.sources.location(Span::new(
                 id,

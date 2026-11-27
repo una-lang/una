@@ -14,7 +14,7 @@ use std::ops::Range;
 
 use crate::intern::Interner;
 use crate::lexer::lex_project;
-use crate::source::SourceDb;
+use crate::source::{FileId, SourceFile};
 use crate::token::TokenKind;
 
 /// The largest `ita.una` or `itaty.una`, in bytes (ADR 0122 rule 3).
@@ -147,20 +147,90 @@ pub struct Lines {
     pub text: String,
 }
 
+/// The text of a project file, as its readers take it: written, or decoded already (#2252).
+///
+/// A file is decoded exactly once (`spec/01 §1`): `\r\n` read as `\n`, a lone `\r` kept for
+/// the lexer to report. Decoding a decoded text again would read a `\r\n` that a written
+/// `\r\r\n` decodes to as one more line end, and the lone `\r` would go unreported; so a
+/// reader decodes a [`Text::Written`] text once, and reads a [`Text::Decoded`] file as it is.
+#[derive(Clone, Copy, Debug)]
+pub enum Text<'a> {
+    /// The text as written, which the reader decodes; every range indexes this text.
+    Written(&'a str),
+    /// A file decoded once by [`SourceFile::new`]; every range indexes its decoded text, which
+    /// is what a [`crate::SourceDb`] locates diagnostics against.
+    Decoded(&'a SourceFile),
+}
+
+impl<'a> Text<'a> {
+    /// The text that every range of its reading indexes: the written text, or the decoded
+    /// text of the decoded file.
+    pub fn as_str(self) -> &'a str {
+        match self {
+            Text::Written(text) => text,
+            Text::Decoded(file) => file.text(),
+        }
+    }
+
+    /// The length of the text the ranges index, in bytes.
+    fn len(self) -> usize {
+        self.as_str().len()
+    }
+}
+
+impl<'a> From<&'a str> for Text<'a> {
+    fn from(text: &'a str) -> Text<'a> {
+        Text::Written(text)
+    }
+}
+
+impl<'a> From<&'a String> for Text<'a> {
+    fn from(text: &'a String) -> Text<'a> {
+        Text::Written(text)
+    }
+}
+
+impl<'a, 'b: 'a> From<&'a std::borrow::Cow<'b, str>> for Text<'a> {
+    fn from(text: &'a std::borrow::Cow<'b, str>) -> Text<'a> {
+        Text::Written(text)
+    }
+}
+
+impl<'a> From<&'a SourceFile> for Text<'a> {
+    fn from(file: &'a SourceFile) -> Text<'a> {
+        Text::Decoded(file)
+    }
+}
+
 /// Reads `text` into lines (ADR 0122 rule 4): the lexer's project mode, then one tree of lines
-/// by indentation. Every range indexes `text` itself: the lexer reads the decoded text, where
-/// each `\r\n` is one `\n`, and its offsets are mapped back to `text` at the end (#2249).
-/// O(n), and O(r log c) for the r ranges of a text with c `\r\n` line ends.
-pub fn lines(text: &str) -> Lines {
-    let given = text;
-    let mut sources = SourceDb::new();
-    let file = sources.add("project", text.as_bytes());
+/// by indentation. A written text is decoded once, the lexer reads the decoded text, where each
+/// `\r\n` is one `\n`, and its offsets are mapped back to the written text at the end, so
+/// every range indexes the text as written (#2249). A decoded file is read as it is, never
+/// decoded again, and every range indexes its decoded text (#2252). O(n), and O(r log c) for
+/// the r ranges of a written text with c `\r\n` line ends.
+pub fn lines<'a>(text: impl Into<Text<'a>>) -> Lines {
+    match text.into() {
+        Text::Written(given) => {
+            let file = SourceFile::new("project", given.as_bytes());
+            let mut out = read_lines(&file);
+            out.text = given.to_owned();
+            let crlf = Crlf::of(given);
+            if !crlf.is_empty() {
+                crlf.lines(&mut out);
+            }
+            out
+        }
+        Text::Decoded(file) => read_lines(file),
+    }
+}
+
+/// Reads a decoded file into lines; every range indexes its decoded text. O(n).
+fn read_lines(file: &SourceFile) -> Lines {
     let mut interner = Interner::new();
-    let lexed = lex_project(sources.file(file), file, &mut interner);
-    let decoded = sources.file(file).text().to_owned();
-    let text = decoded.as_str();
+    let lexed = lex_project(file, FileId(0), &mut interner);
+    let text = file.text();
     let mut out = Lines {
-        text: given.to_owned(),
+        text: text.to_owned(),
         errors: lexed
             .errors
             .iter()
@@ -270,10 +340,6 @@ pub fn lines(text: &str) -> Lines {
     out.comments_after = pending_comments;
     out.comments_after
         .extend(comments.map(|comment| comment.start..comment.end));
-    let crlf = Crlf::of(given);
-    if !crlf.is_empty() {
-        crlf.lines(&mut out);
-    }
     out
 }
 
@@ -930,7 +996,8 @@ pub struct Manifest {
 
 /// Reads `ita.una` by the closed grammar of ADR 0122 rule 5. Every line that has none of its
 /// forms is an error at the line; reading goes on with the next line. O(n).
-pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
+pub fn parse_manifest<'a>(text: impl Into<Text<'a>>) -> (Manifest, Vec<Error>) {
+    let text = text.into();
     let mut manifest = Manifest::default();
     if text.len() > MAX_MANIFEST_BYTES {
         return (
@@ -946,6 +1013,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
     }
     let read = lines(text);
     let written = read.text.as_str();
+    let decoded = matches!(text, Text::Decoded(_));
     let mut errors = read.errors.clone();
     let mut lines = read.lines.iter();
     match lines.next() {
@@ -1015,11 +1083,14 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<Error>) {
     }
     for contract in &mut manifest.contracts {
         for clause in &mut contract.clauses {
-            // The clause as written, a `\r\n` within it read as `\n`.
-            clause.value = written
-                .get(clause.range.clone())
-                .unwrap_or("")
-                .replace("\r\n", "\n");
+            // The clause as written, a `\r\n` within it read as `\n`: decoded here for a
+            // written text, never twice for a decoded one (#2252).
+            let value = written.get(clause.range.clone()).unwrap_or("");
+            clause.value = if decoded {
+                value.to_owned()
+            } else {
+                value.replace("\r\n", "\n")
+            };
         }
     }
     (manifest, errors)
@@ -2151,7 +2222,8 @@ pub struct Lock {
 pub const LOCK_FORMAT: u64 = 1;
 
 /// Reads `ita.lock` by the grammar of ADR 0122 rule 16. O(n).
-pub fn parse_lock(text: &str) -> (Lock, Vec<Error>) {
+pub fn parse_lock<'a>(text: impl Into<Text<'a>>) -> (Lock, Vec<Error>) {
+    let text = text.into();
     let mut lock = Lock::default();
     if text.len() > MAX_LOCK_BYTES {
         return (
@@ -2689,7 +2761,8 @@ pub struct Workspace {
 }
 
 /// Reads `itaty.una` by the grammar of ADR 0122 rule 19. O(n).
-pub fn parse_workspace(text: &str) -> (Workspace, Vec<Error>) {
+pub fn parse_workspace<'a>(text: impl Into<Text<'a>>) -> (Workspace, Vec<Error>) {
+    let text = text.into();
     let mut workspace = Workspace::default();
     if text.len() > MAX_MANIFEST_BYTES {
         return (
@@ -2783,11 +2856,19 @@ pub fn parse_workspace(text: &str) -> (Workspace, Vec<Error>) {
 /// and comments kept with the line they precede or end. `None` when the file has a lexical
 /// or layout error, which the formatter does not repair. O(n log n) for the head's sort, O(n)
 /// otherwise.
-pub fn format(text: &str) -> Option<String> {
+pub fn format<'a>(text: impl Into<Text<'a>>) -> Option<String> {
     // The canonical form ends its lines with `\n` alone; reading the decoded text keeps every
-    // token and comment free of a `\r` of a `\r\n` line end.
-    let decoded = text.replace("\r\n", "\n");
-    let read = lines(&decoded);
+    // token and comment free of a `\r` of a `\r\n` line end. A written text is decoded once
+    // here, a decoded one is read as it is (#2252).
+    let written;
+    let file = match text.into() {
+        Text::Written(text) => {
+            written = SourceFile::new("project", text.as_bytes());
+            &written
+        }
+        Text::Decoded(file) => file,
+    };
+    let read = lines(file);
     if !read.errors.is_empty() {
         return None;
     }
