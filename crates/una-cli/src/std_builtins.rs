@@ -427,7 +427,7 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "comparisons, amortized (`spec/28 §8`).",
         ],
         "pop" => &[
-            "Updates the receiver in place, written `let x = edit s.pop()`: it removes the top of",
+            "Updates the receiver in place, written `const x = edit s.pop()`: it removes the top of",
             "a `Stack` or the front of a `Queue` and gives it as `Some`, or gives `None` and",
             "leaves an empty one as it is, in O(1) amortized time (`spec/28 §5`). A",
             "`PriorityQueue` gives its item of the first priority, the one pushed first among",
@@ -439,7 +439,7 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "`PriorityQueue`, the item `pop` would give, in O(1) time (`spec/28 §8`).",
         ],
         "pop_ranked" => &[
-            "Updates a `PriorityQueue` in place, written `let r = edit q.pop_ranked()`: as `pop`,",
+            "Updates a `PriorityQueue` in place, written `const r = edit q.pop_ranked()`: as `pop`,",
             "with the priority, as `Some` of a `Ranked`, in O(log n) comparisons, amortized",
             "(`spec/28 §8`).",
         ],
@@ -460,7 +460,7 @@ pub fn builtin_docs(name: &str) -> &'static [&'static str] {
             "front, so `peek` gives it, in O(1) amortized time (`spec/28 §5`).",
         ],
         "pop_back" => &[
-            "Updates a `Queue` in place, written `let x = edit q.pop_back()`: it removes the back",
+            "Updates a `Queue` in place, written `const x = edit q.pop_back()`: it removes the back",
             "and gives it as `Some`, or gives `None` when the queue is empty, in O(1) amortized",
             "time (`spec/28 §5`).",
         ],

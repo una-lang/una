@@ -2,7 +2,7 @@
 
 Status: Draft (ADR 0127, accepted on 2026-11-02 with ADRs 0128, 0129 and 0131, whose decisions of acceptance this text follows). Each section becomes normative with the phase that implements it (ADR 0127 rule 34), with its fixtures; until then nothing in this chapter is normative.
 
-(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged: rule 3 of the matching of functions (§3) reads "a contiguous run of `const` and `var` statements"; its table of costs and its operators name Core forms and stay. A Core `let` (`spec/09`) stays. The chapter's Una blocks keep the words of edition `0.4` until issue #1630 moves those of edition `0.5`.
+(v0.5, ADR 0137.) **Binding words.** In edition `0.5`, a binding of the surface language that this chapter writes `let` is written `const`, and one it writes `let edit` is written `var` (`spec/02 §6`, `spec/17 §2`); the rules are unchanged: rule 3 of the matching of functions (§3) reads "a contiguous run of `const` and `var` statements"; its table of costs and its operators name Core forms and stay. A Core `let` (`spec/09`) stays. Its Una blocks of edition `0.5` start with the line `-- edition 0.5` and use these words; its other blocks keep the words of their editions.
 
 Not implemented in release 0.4.0: `una` has no `quality` and no `diff` command, and none of the reports, rules or gates of this chapter.
 
