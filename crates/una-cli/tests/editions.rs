@@ -657,6 +657,27 @@ const EXPECTED_DIFFERENCES_0_5: &[Difference04] = &[
             ("U1001", "src/text.una:3:21"),
         ],
     },
+    // #2295: the type checker of a module of edition 0.4 has none of the upper-case names of
+    // edition 0.5 either; in edition 0.5 they are the built-ins, with their own errors.
+    Difference04 {
+        case: "project/ita_path_dep_0_4_complex_arity_error/deps/util",
+        added: &[("U2003", "src/text.una:3:13")],
+        removed: &[("U1001", "src/text.una:3:13")],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_f32_refinement_error/deps/util",
+        added: &[("U2001", "src/text.una:3:36")],
+        removed: &[("U1001", "src/text.una:3:21")],
+    },
+    Difference04 {
+        case: "project/ita_path_dep_0_4_finite_rounding_error/deps/util",
+        added: &[("U2001", "src/text.una:3:39")],
+        removed: &[
+            ("U1001", "src/text.una:3:15"),
+            ("U1001", "src/text.una:3:28"),
+            ("U1001", "src/text.una:5:23"),
+        ],
+    },
     Difference04 {
         case: "project/ita_path_dep_0_4_in_0_5_own_rules/deps/util",
         added: &[("U1002", "src/text.una:3:5"), ("U1002", "src/text.una:5:5")],
