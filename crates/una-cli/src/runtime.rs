@@ -1669,26 +1669,31 @@ pub(crate) fn test_command(
     let max_depth = options.max_depth;
     let limits = limits(&options, None);
     let ceiling = Ceiling::raise(&options);
+    // The copy of the program is made, and dropped, on a thread of `CHECK_STACK_BYTES`, never
+    // on the evaluator's, whose stack `--max-depth` sizes: the derived `Clone` and `Drop` of
+    // Core IR recurse once per nested expression, which the checker bounds (#2264).
+    let tested = on_large_stack(|| {
+        let mut tested = program.clone();
+        for module in &mut tested.modules {
+            let dependency = mounts.iter().any(|mount| {
+                module
+                    .path
+                    .strip_prefix(mount.local.as_str())
+                    .is_some_and(|rest| rest.starts_with('.'))
+            });
+            if dependency {
+                module.examples.clear();
+            }
+        }
+        tested
+    });
+    let shared = &tested;
     let evaluated = std::thread::scope(|scope| {
-        // The copy of the program is made, run and dropped on the evaluator's stack: the
-        // derived `Clone` and `Drop` of Core IR recurse once per nested expression (#2264).
         let worker = std::thread::Builder::new()
             .name("una-test".to_owned())
             .stack_size(stack)
             .spawn_scoped(scope, move || {
-                let mut tested = program.clone();
-                for module in &mut tested.modules {
-                    let dependency = mounts.iter().any(|mount| {
-                        module
-                            .path
-                            .strip_prefix(mount.local.as_str())
-                            .is_some_and(|rest| rest.starts_with('.'))
-                    });
-                    if dependency {
-                        module.examples.clear();
-                    }
-                }
-                una_interp::run_examples(&tested, limits, redact)
+                una_interp::run_examples(shared, limits, redact)
             })?;
         Ok::<_, io::Error>(
             worker
@@ -1696,6 +1701,8 @@ pub(crate) fn test_command(
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
         )
     });
+    let copy = std::sync::Mutex::new(Some(tested));
+    on_large_stack(|| drop(copy.lock().ok().and_then(|mut copy| copy.take())));
     drop(ceiling);
     let runs = match evaluated {
         Ok(runs) => runs,

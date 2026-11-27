@@ -3,6 +3,8 @@
 //! expression, which every later pass walks by recursion. A body at the bound passes every
 //! command in a real `una` process; one past it is U0101 at check time, never a stack
 //! overflow, wherever it is: a function body, an `expect` line, or a block of statements.
+//! The size of what substitution of module constants builds is bounded too (U2041), with
+//! every reference to a text constant counted, since elaboration copies a text at each one.
 //! Each command runs as a child process, so the stack is the one `una` really has, `una lsp`
 //! included, whose tier 1 check runs on a thread of its own.
 
@@ -101,6 +103,9 @@ fn a_body_just_under_the_bound_passes_every_command() {
     for args in [
         &["check"][..],
         &["test"],
+        // The evaluator's stack follows `--max-depth`; the copy of the program does not
+        // (#2264 review 2).
+        &["test", "--max-depth", "1"],
         &["run"],
         &["core"],
         &["core", "--json"],
@@ -263,5 +268,45 @@ fn a_body_past_the_bound_is_u0101_in_every_command_never_a_stack_overflow() {
                 "{name}: una {args:?}: {all}"
             );
         }
+    }
+}
+
+/// A text constant of 900,000 characters, named 12 times in one line: in an `expect` line, in
+/// the `do` line, and in a function body. Elaboration copies a scalar value at every
+/// reference, even in a part that shares records and lists, so the 12 copies, 10,800,000
+/// characters, pass the cap of 10,000,000 on what substitution builds: U2041, not gigabytes
+/// of Core IR (#2264 review 2 M1).
+#[test]
+fn a_text_constant_counts_at_every_reference_in_one_line() {
+    let text = "a".repeat(900_000);
+    let list = ["big"; 12].join(", ");
+    let header =
+        format!("module m\n\npub const big: Text = \"{text}\"\n\npub id(x: Int) -> Int = x\n");
+    for (name, rest) in [
+        (
+            "text-expect",
+            format!("\ntest \"t\"\n  do id(1)\n  expect [{list}].len == 12\n"),
+        ),
+        (
+            "text-do",
+            format!("\ntest \"t\"\n  do id([{list}].len)\n  expect result == 12\n"),
+        ),
+        (
+            "text-body",
+            format!("\npub twelve() -> Int = [{list}].len\n"),
+        ),
+    ] {
+        let dir = package(name, &format!("{header}{rest}"));
+        let output = una(&dir, &["check", "--tier", "0"]);
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_ne!(output.status.code(), Some(0), "{name}: {all}");
+        assert!(
+            all.contains("U2041") && all.contains("more than 10000000"),
+            "{name}: {all}"
+        );
     }
 }

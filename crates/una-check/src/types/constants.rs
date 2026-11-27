@@ -543,7 +543,9 @@ fn cycles(
 /// The cap on the size of the values a package's declarations substitute, together: a part
 /// whose elaboration shares the constants it names (ADR 0126 rule 8) counts each of them once,
 /// and every other reference counts once, so the cap bounds the Core IR that substitution
-/// makes; a package past it is U2041 at the first reference that passes it. The parts are a
+/// makes; a package past it is U2041 at the first reference that passes it. Only a record,
+/// variant or list is shared: a scalar value, such as a text, counts at every reference, in a
+/// part or not, since elaboration copies it each time (#2264 review 2). The parts are a
 /// function's body, each handler operation's body, a test's `given` and `do` lines together,
 /// and each `expect` line of a test on its own: a constant named in k `expect` lines counts k
 /// times, as elaboration substitutes it k times (#2264). Ten times the cap of one value.
@@ -626,12 +628,16 @@ pub(crate) fn substitution_budget(
                     continue;
                 }
                 // A shared reference counts once per part that shares it; any other counts
-                // once per reference.
+                // once per reference. Elaboration shares only a record, variant or list: a
+                // scalar value, such as a text, is folded and copied into Core IR at every
+                // reference, even in a shared part, so each of its references counts
+                // (`Fx::constant_atom`, #2264 review 2).
                 let part = shared
                     .iter()
                     .find(|(s, _)| s.file == at.file && s.start <= at.start && at.end <= s.end)
                     .map(|(_, part)| *part);
                 if let Some(part) = part
+                    && !scalar(env, evaluated, *id)
                     && !seen.insert((part, *id))
                 {
                     continue;
@@ -677,6 +683,18 @@ pub(crate) fn substitution_budget(
             }
         }
     }
+}
+
+/// Whether constant `id`'s value is folded to one literal, which elaboration copies at every
+/// reference instead of sharing it (`Fx::constant_atom`): O(log n). A constant whose value is
+/// unknown here counts as scalar, so each of its references counts.
+fn scalar(env: &Env<'_>, evaluated: &Evaluated, id: usize) -> bool {
+    env.constants.get(id).is_none_or(|def| {
+        evaluated
+            .folded
+            .get(&id)
+            .is_none_or(|folded| folded.contains_key(&def.ast.value.span))
+    })
 }
 
 /// The span of a function's or a handler operation's body.
