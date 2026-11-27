@@ -229,10 +229,16 @@ ISOLATED_GATE=sanitize
 BESIDE_ISOLATED=" build deps "
 # ISOLATED=1 when this run runs the isolated gate beside another: in parallel mode, with that
 # gate and at least one of the gates it runs beside named. ISOLATED_INDEX is its first position.
-ISOLATED=0 ISOLATED_INDEX="" beside=0 index=0
+# BESIDE_NAMED: the gates of this run that it runs beside, for the messages (#2250).
+ISOLATED=0 ISOLATED_INDEX="" beside=0 index=0 BESIDE_NAMED=""
 for gate in "${GATES[@]}"; do
     [ "$gate" = "$ISOLATED_GATE" ] && [ -z "$ISOLATED_INDEX" ] && ISOLATED_INDEX=$index
-    case "$BESIDE_ISOLATED" in *" $gate "*) beside=1 ;; esac
+    case "$BESIDE_ISOLATED" in
+        *" $gate "*)
+            beside=1
+            case "$BESIDE_NAMED " in *" $gate "*) ;; *) BESIDE_NAMED="$BESIDE_NAMED $gate" ;; esac
+            ;;
+    esac
     index=$((index + 1))
 done
 [ $PARALLEL = 1 ] && [ -n "$ISOLATED_INDEX" ] && [ $beside = 1 ] && ISOLATED=1
@@ -346,9 +352,20 @@ OUT=$(CDPATH='' cd -P -- "$OUT" && pwd -P)
 # release tag as a release, and undo that live tag at its start. The lock holds this run's pid,
 # is released at its exit, and a lock whose run is gone (killed with SIGKILL) is taken over.
 gates_lock "$OUT" || exit 2
-# A run stopped by a signal waits for the isolated gate as for the gate in progress (#2181), and
-# keeps the rows of every gate that ended, in their order.
-ROWS=$OUT/rows ISOLATED_PID="" ISOLATED_WAITED=0 FLUSHED=0
+# A run stopped by a signal (TERM, HUP or INT) stops the isolated gate's process group, waits for
+# it as for the gate in progress (#2181, #2250), and keeps the rows of every gate that ended, in
+# their order; the isolated gate, stopped without its row, is a FAIL. The rows are this run's
+# own directory, OUT/rows.<pid> (#2250): a job of an earlier run that survived a `kill -9` of its
+# run writes only into that run's directory, which this run removed and never reads.
+ROWS=$OUT/rows.$$ ISOLATED_PID="" ISOLATED_WAITED=0 FLUSHED=0
+# Sends TERM to the isolated gate's process group (its job, sanitize.sh and their children),
+# once, when it is still running.
+stop_isolated() {
+    [ -n "$ISOLATED_PID" ] && [ $ISOLATED_WAITED = 0 ] || return 0
+    if kill -TERM -- "-$ISOLATED_PID" 2> /dev/null; then
+        echo "release gates: the run was stopped; stopped the $ISOLATED_GATE gate's process group $ISOLATED_PID (#2250)" >> "$OUT/logs/$ISOLATED_GATE.log"
+    fi
+}
 gates_finish() {
     if [ $ISOLATED = 1 ]; then
         [ -z "$ISOLATED_PID" ] || wait_isolated
@@ -358,13 +375,15 @@ gates_finish() {
     gates_unlock "$OUT"
 }
 trap gates_finish EXIT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+trap 'stop_isolated; exit 143' TERM
+trap 'stop_isolated; exit 129' HUP
+trap 'stop_isolated; exit 130' INT
 CLONE=$OUT/clone
 RESULTS=$OUT/results.tsv
 printf 'gate\tsha\tresult\tseconds\tlog_sha256\n' > "$RESULTS"
+# The rows of earlier runs on this OUT (#2250), whatever their pid.
+rm -rf "${OUT:?}/rows" "${OUT:?}"/rows.[0-9]*
 if [ $ISOLATED = 1 ]; then
-    rm -rf "${ROWS:?}"
     mkdir -p "$ROWS" || exit 2
 fi
 # A tag that an earlier run made in this clone and could not undo, killed in the middle of the
@@ -560,11 +579,15 @@ flush_rows() {
 # deleted; when it fails, all but target/debug is kept (the fuzzer's inputs, the logs of target/sanitize).
 start_isolated() {
     local isolated=$OUT/clone-$ISOLATED_GATE prepared=$OUT/logs/clone-$ISOLATED_GATE.log
-    echo "== $ISOLATED_GATE: started in $isolated, beside${BESIDE_ISOLATED% } (#2181)"
+    echo "== $ISOLATED_GATE: started in $isolated, beside$BESIDE_NAMED (#2181)"
     # The cache first, here, before either gate starts: a failure is the gates' to report.
     { exact && (cd "$CLONE" && scripts/z3-library.sh); } > "$prepared" 2>&1
+    # In a process group of its own (job control, `set -m`, for this one job), so that a stop
+    # of the run reaches sanitize.sh and its children, not only the job's shell (#2250); its
+    # input is /dev/null, since a job outside the terminal's group must not read it.
+    set -m
     (
-        trap - EXIT TERM HUP
+        trap - EXIT TERM HUP INT
         CURRENT_INDEX=$ISOLATED_INDEX
         {
             rm -rf "${isolated:?}"
@@ -583,8 +606,9 @@ start_isolated() {
         else
             rm -rf "${isolated:?}/target/debug"
         fi
-    ) &
+    ) < /dev/null &
     ISOLATED_PID=$!
+    set +m
 }
 
 # Waits for the isolated gate, once; a gate that ended without its row (killed) is a FAIL.
@@ -592,7 +616,8 @@ wait_isolated() {
     [ -n "$ISOLATED_PID" ] && [ $ISOLATED_WAITED = 0 ] || return 0
     wait "$ISOLATED_PID"
     ISOLATED_WAITED=1
-    if [ ! -f "$ROWS/$ISOLATED_INDEX" ]; then
+    if [ "$(cut -f2 "$ROWS/$ISOLATED_INDEX" 2> /dev/null)" != "$SHA" ]; then
+        rm -f "$ROWS/$ISOLATED_INDEX"
         echo "release gates: the $ISOLATED_GATE gate ended without a result" >> "$OUT/logs/$ISOLATED_GATE.log"
         CURRENT_INDEX=$ISOLATED_INDEX record "$ISOLATED_GATE" FAIL 0
     fi
@@ -645,6 +670,9 @@ gate_clone() {
     [ -e "$CLONE" ] && rm -rf "${CLONE:?}"
     # A new clone has no product until its build gate saves one (#2254).
     rm -rf "${PRODUCT:?}"
+    # Nor an isolated clone that an earlier run's failed sanitize kept (#2250), several GB; one
+    # that this run's own sanitize kept, named before the clone gate, stays for its reader.
+    [ -n "$ISOLATED_PID" ] || rm -rf "${OUT:?}/clone-$ISOLATED_GATE"
     {
         echo "source: $SOURCE"
         git clone --quiet --no-checkout "$SOURCE" "$CLONE" \
@@ -1037,7 +1065,7 @@ gate_sanitize() { run sanitize scripts/sanitize.sh; }
 # The gates, in order; with ISOLATED (#2181), the isolated gate starts at its own position or at
 # the first gate it runs beside, whichever comes first, and any other gate waits for it to end.
 if [ $ISOLATED = 1 ]; then
-    echo "release gates: the parallel plan (#2181): $ISOLATED_GATE beside${BESIDE_ISOLATED% }, every other gate alone; UNA_GATES_PARALLEL=0 runs them in sequence"
+    echo "release gates: the parallel plan (#2181): $ISOLATED_GATE beside$BESIDE_NAMED, every other gate alone; UNA_GATES_PARALLEL=0 runs them in sequence"
 fi
 CURRENT_INDEX=0
 for gate in "${GATES[@]}"; do

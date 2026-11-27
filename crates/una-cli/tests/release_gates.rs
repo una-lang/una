@@ -3062,14 +3062,18 @@ fn every_gate_that_reaches_cargo_is_a_solver_gate_or_a_known_exception() {
 /// which writes a file under target/debug and fails when `STUB_SANITIZE_FAIL` is set) and
 /// local-ci.sh (`mac`). With `STUB_PARALLEL`, deps and sanitize each pass only when the other
 /// has started too (files in `STUB_DIR`), so a pass shows they ran at once, and sanitize ends a
-/// second after deps. Then a copy of the gate script and a run of its clone gate into
+/// second after deps. With `STUB_SANITIZE_HANG`, sanitize writes its pid to `STUB_DIR/sanitize.pid`
+/// and runs for 300 s; with `STUB_SANITIZE_NO_ROW` it kills its gate's process group, the job
+/// included, with SIGKILL, so the gate ends with no row; with `STUB_DEPS_SIGNAL`, deps waits for that pid and then sends TERM
+/// to the run's pid (`main`), or runs up to 120 s more (`wait`) while the test sends the signal
+/// (#2250). Then a copy of the gate script and a run of its clone gate into
 /// `dir/out`. Gives the script, the commit and `out`.
 fn schedule_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
     let source = dir.join("source");
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(source.join("scripts")).unwrap();
-    // Waits up to 60 s for the file STUB_DIR/$1.
-    let await_other = "await() { i=0; while [ ! -e \"$STUB_DIR/$1\" ]; do i=$((i + 1)); [ $i -lt 600 ] || { echo \"$1 never came\"; exit 1; }; sleep 0.1; done; }\n";
+    // Waits up to 120 s for the file STUB_DIR/$1.
+    let await_other = "await() { i=0; while [ ! -e \"$STUB_DIR/$1\" ]; do i=$((i + 1)); [ $i -lt 1200 ] || { echo \"$1 never came\"; exit 1; }; sleep 0.1; done; }\n";
     let start = |name: &str| {
         format!(
             "echo \"{name} start $(pwd -P) $(git rev-parse HEAD) [$(git status --porcelain --untracked-files=all)]\" >> \"$STUB_LOG\"\n"
@@ -3085,14 +3089,14 @@ fn schedule_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
         (
             "scripts/deps-audit.sh",
             format!(
-                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/deps\"; await sanitize; fi\necho \"deps end\" >> \"$STUB_LOG\"\n",
+                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/deps\"; await sanitize; fi\nif [ -n \"${{STUB_DEPS_SIGNAL:-}}\" ]; then await sanitize.pid; case $STUB_DEPS_SIGNAL in main) kill -TERM $(cat ../release-gates.lock/pid) ;; wait) i=0; while [ $i -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done ;; esac; sleep 1; fi\necho \"deps end\" >> \"$STUB_LOG\"\n",
                 start("deps")
             ),
         ),
         (
             "scripts/sanitize.sh",
             format!(
-                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/sanitize\"; await deps; sleep 1; fi\nmkdir -p target/debug && echo built > target/debug/una\necho \"sanitize end\" >> \"$STUB_LOG\"\n[ -z \"${{STUB_SANITIZE_FAIL:-}}\" ]\n",
+                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_SANITIZE_HANG:-}}\" ]; then echo $$ > \"$STUB_DIR/sanitize.pid\"; i=0; while [ $i -lt 3000 ]; do sleep 0.1; i=$((i + 1)); done; exit 0; fi\nif [ -n \"${{STUB_SANITIZE_NO_ROW:-}}\" ]; then kill -9 -- -$(ps -o pgid= -p $$ | tr -d ' '); exit 1; fi\nif [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/sanitize\"; await deps; sleep 1; fi\nmkdir -p target/debug && echo built > target/debug/una\necho \"sanitize end\" >> \"$STUB_LOG\"\n[ -z \"${{STUB_SANITIZE_FAIL:-}}\" ]\n",
                 start("sanitize")
             ),
         ),
@@ -3272,6 +3276,7 @@ fn sanitize_runs_in_its_own_clone_beside_build_and_deps_and_every_other_gate_alo
                 assert!(!physical.join("clone-sanitize/target/debug").exists());
             }
             assert!(!physical.join("rows").exists());
+            assert!(no_rows_directory(&physical), "{ran}");
         }
         // The run's own clone holds nothing the isolated gate wrote.
         assert_eq!(
@@ -3824,5 +3829,178 @@ fn the_gates_that_run_the_product_pass_with_it_and_a_failed_build_leaves_none() 
         let text = std::fs::read_to_string(out.join(format!("logs/{gate}.log"))).unwrap();
         assert!(text.contains("no product at"), "{gate}: {text}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether `out` holds no rows directory of a run (`rows` or `rows.<pid>`, #2250).
+fn no_rows_directory(out: &Path) -> bool {
+    std::fs::read_dir(out).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name();
+        let name = name.to_string_lossy();
+        name != "rows" && !name.starts_with("rows.")
+    })
+}
+
+#[test]
+fn a_stopped_run_stops_sanitize_and_a_sanitize_without_its_row_is_a_fail() {
+    if head().is_none() {
+        return;
+    }
+    // #2250 (L1, L3, L4 of the review of #2248): a TERM to the run's pid, or the disk
+    // watchdog's `pkill -f`, while sanitize runs beside deps stops sanitize's whole process
+    // group, sanitize.sh included, and the run ends with 143 and no record; a sanitize whose
+    // job dies with no row is a FAIL.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-schedule-stop");
+    let stub = dir.join("stub");
+    let log = dir.join("stub.log");
+    let log_path = log.display().to_string();
+    let stub_path = stub.display().to_string();
+    // `pkill` as the nightly's disk watchdog sends it, `pkill -TERM -f "release-gates.sh <sha>"`,
+    // from outside the run (pkill of macOS skips its own ancestors, so the run cannot send it).
+    for signal in ["main", "pkill"] {
+        let (script, sha, out) = schedule_fixture(&dir);
+        std::fs::create_dir_all(&stub).unwrap();
+        // The clone gate's run left a record; a stopped run writes none.
+        std::fs::remove_file(out.join("record.md")).unwrap();
+        // A rows directory of an earlier run, which this run removes and never reads.
+        std::fs::create_dir_all(out.join("rows.1")).unwrap();
+        std::fs::write(
+            out.join("rows.1/1"),
+            format!("sanitize\t{sha}\tPASS\t1\t0\n"),
+        )
+        .unwrap();
+        let env = [
+            ("STUB_LOG", log_path.as_str()),
+            ("STUB_DIR", stub_path.as_str()),
+            ("STUB_SANITIZE_HANG", "1"),
+            (
+                "STUB_DEPS_SIGNAL",
+                if signal == "main" { "main" } else { "wait" },
+            ),
+        ];
+        let watchdog = (signal == "pkill").then(|| {
+            let pid_file = stub.join("sanitize.pid");
+            // The run's OUT too, so that no other test's run of the same commit matches.
+            let pattern = format!("release-gates.sh {sha} {}", out.display());
+            std::thread::spawn(move || {
+                // Up to 120 s: the whole suite runs at once, so sanitize may start late.
+                for _ in 0..1200 {
+                    if pid_file.exists() {
+                        let _ = Command::new("pkill")
+                            .args(["-TERM", "-f", &pattern])
+                            .status();
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+        });
+        let started = std::time::Instant::now();
+        let output = gates_of(
+            &script,
+            &sha,
+            &out,
+            &["deps", "sanitize", "mac"],
+            &dir.join("source"),
+            &env,
+        );
+        if let Some(thread) = watchdog {
+            thread.join().unwrap();
+        }
+        let context = format!(
+            "{signal}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(143), "{context}");
+        // Stopped, not ended: the stub would run for 300 s.
+        assert!(started.elapsed().as_secs() < 240, "{context}");
+        assert!(!out.join("record.md").exists(), "{context}");
+        let pid = std::fs::read_to_string(stub.join("sanitize.pid")).unwrap();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = Command::new("kill")
+                .args(["-0", pid.trim()])
+                .status()
+                .unwrap()
+                .success();
+            if !alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            !alive,
+            "{signal}: sanitize.sh {pid} still runs after the run ended"
+        );
+        let sanitize = std::fs::read_to_string(out.join("logs/sanitize.log")).unwrap_or_default();
+        if signal == "main" {
+            assert!(
+                sanitize.contains("stopped the sanitize gate's process group"),
+                "{sanitize}"
+            );
+        }
+        let got: Vec<String> = rows(&out)
+            .iter()
+            .map(|row| format!("{} {}", row[0], row[2]))
+            .collect();
+        assert!(
+            !got.iter().any(|row| row == "sanitize PASS"),
+            "{signal}: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|row| row.starts_with("mac")),
+            "{signal}: {got:?}"
+        );
+        assert!(no_rows_directory(&out.canonicalize().unwrap()), "{signal}");
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_dir_all(&stub);
+    }
+
+    // A sanitize whose job is killed before it writes its row is a FAIL, in its place.
+    let (script, sha, out) = schedule_fixture(&dir);
+    std::fs::create_dir_all(&stub).unwrap();
+    let env = [
+        ("STUB_LOG", log_path.as_str()),
+        ("STUB_DIR", stub_path.as_str()),
+        ("STUB_SANITIZE_NO_ROW", "1"),
+    ];
+    let output = gates_of(
+        &script,
+        &sha,
+        &out,
+        &["deps", "sanitize"],
+        &dir.join("source"),
+        &env,
+    );
+    let context = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(1), "{context}");
+    let got: Vec<String> = rows(&out)
+        .iter()
+        .map(|row| format!("{} {}", row[0], row[2]))
+        .collect();
+    assert_eq!(got.join(","), "deps PASS,sanitize FAIL", "{context}");
+    let sanitize = std::fs::read_to_string(out.join("logs/sanitize.log")).unwrap();
+    assert!(
+        sanitize.contains("the sanitize gate ended without a result"),
+        "{sanitize}"
+    );
+    let record = std::fs::read_to_string(out.join("record.md")).unwrap();
+    assert!(record.contains("Verdict: FAIL (sanitize)"), "{record}");
+    // The start message names only the gates of the run that sanitize runs beside (L5).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("sanitize beside deps, every other gate alone"),
+        "{stdout}"
+    );
+    // A later run's clone gate removes the isolated clone that the failed sanitize kept (L5).
+    assert!(out.join("clone-sanitize").exists());
+    let output = gates_of(&script, &sha, &out, &["clone"], &dir.join("source"), &env);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!out.join("clone-sanitize").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
