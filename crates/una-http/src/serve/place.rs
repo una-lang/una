@@ -98,6 +98,19 @@ pub mod probe {
             let _ = writeln!(file, "{peer} {owner}");
         }
     }
+
+    /// Writes that the connection from `peer` closed with `left` bytes of its reply not
+    /// written, for `cause`, when the probe logs: one line `cut <peer> <left> <cause>`, which
+    /// the oracle prints when a probe's reply is cut short (#2273). Its first word is no
+    /// address, so a reader of the placements passes over it.
+    pub(crate) fn cut(peer: SocketAddr, left: u64, cause: &str) {
+        if let Some(log) = PROBE.get().and_then(|probe| probe.log.as_ref()) {
+            let mut file = log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = writeln!(file, "cut {peer} {left} {cause}");
+        }
+    }
 }
 
 #[cfg(test)]
