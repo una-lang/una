@@ -128,6 +128,7 @@ pub fn load_in(
     for file in &mut loaded.files {
         if let Some(text) = overlay.get(&file.path) {
             file.bytes = text.as_bytes().to_vec();
+            file.len = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
         }
     }
     let mut package = Package {
@@ -149,7 +150,9 @@ pub fn load_in(
         registry: Vec::new(),
     };
     for file in loaded.files {
-        let id = package.sources.add(file.name, &file.bytes);
+        // A project file over its bound was left unread and keeps only its length, which its
+        // reader refuses (spec/30 §1 rule 4).
+        let id = package.sources.insert(file.decode());
         package.disk_paths.insert(id, file.path);
         match file.role {
             Role::Manifest => package.manifest = Some(id),
@@ -337,12 +340,10 @@ fn enclosing_edition(path: &Path) -> Option<Edition> {
     for dir in absolute.ancestors().skip(1) {
         let ita = dir.join("ita.una");
         if ita.is_file() {
-            let text = std::fs::read(&ita).ok()?;
-            return Some(
-                parse_ita_manifest(&SourceFile::new("ita.una", &text))
-                    .0
-                    .edition,
-            );
+            // Read within its bound (spec/30 §1 rule 4).
+            let file =
+                una_project::read_project_file(&ita, "ita.una", ita::MAX_MANIFEST_BYTES).ok()?;
+            return Some(parse_ita_manifest(&file).0.edition);
         }
         let toml = dir.join("una.toml");
         if toml.is_file() {
@@ -415,13 +416,14 @@ fn load_dependencies(
                 for mut file in loaded.files {
                     if let Some(text) = overlay.get(&file.path) {
                         file.bytes = text.as_bytes().to_vec();
+                        file.len = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
                     }
                     let relative = file
                         .name
                         .strip_prefix(&format!("{written}/"))
                         .unwrap_or(&file.name)
                         .to_owned();
-                    let id = package.sources.add(file.name, &file.bytes);
+                    let id = package.sources.insert(file.decode());
                     package.disk_paths.insert(id, file.path);
                     match file.role {
                         Role::Manifest => dependency.manifest = Some(id),

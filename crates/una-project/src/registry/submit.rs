@@ -139,9 +139,10 @@ pub fn declared_source(dir: &Path, source: &str) -> Result<ita::Source, Undeclar
         if !file.is_file() {
             continue;
         }
-        let text = std::fs::read_to_string(&file).map_err(|error| {
-            Undeclared::Unreadable(format!("cannot read `{}`: {error}", file.display()))
-        })?;
+        // Read within its bound (spec/30 §1 rule 4, #2282), decoded once.
+        let text = crate::read_project_file(&file, "itaty.una", ita::MAX_MANIFEST_BYTES).map_err(
+            |error| Undeclared::Unreadable(format!("cannot read `{}`: {error}", file.display())),
+        )?;
         let (workspace, errors) = crate::ita::parse_workspace(&text);
         if let Some(error) = errors.first() {
             return Err(Undeclared::Unreadable(format!(

@@ -172,9 +172,14 @@ impl<'a> Text<'a> {
         }
     }
 
-    /// The length of the text the ranges index, in bytes.
-    fn len(self) -> usize {
-        self.as_str().len()
+    /// The number of bytes the file holds as written, which the size bounds measure
+    /// (`spec/30 §1` rule 4): the length of a written text, and the raw length of a decoded
+    /// file ([`SourceFile::raw_len`]), never the length after `\r\n` became `\n`.
+    pub fn raw_len(self) -> usize {
+        match self {
+            Text::Written(text) => text.len(),
+            Text::Decoded(file) => file.raw_len(),
+        }
     }
 }
 
@@ -999,14 +1004,14 @@ pub struct Manifest {
 pub fn parse_manifest<'a>(text: impl Into<Text<'a>>) -> (Manifest, Vec<Error>) {
     let text = text.into();
     let mut manifest = Manifest::default();
-    if text.len() > MAX_MANIFEST_BYTES {
+    if text.raw_len() > MAX_MANIFEST_BYTES {
         return (
             manifest,
             vec![Error::new(
                 0..0,
                 format!(
                     "the file holds {} bytes, more than the {MAX_MANIFEST_BYTES} a manifest may hold",
-                    text.len()
+                    text.raw_len()
                 ),
             )],
         );
@@ -2225,14 +2230,14 @@ pub const LOCK_FORMAT: u64 = 1;
 pub fn parse_lock<'a>(text: impl Into<Text<'a>>) -> (Lock, Vec<Error>) {
     let text = text.into();
     let mut lock = Lock::default();
-    if text.len() > MAX_LOCK_BYTES {
+    if text.raw_len() > MAX_LOCK_BYTES {
         return (
             lock,
             vec![Error::new(
                 0..0,
                 format!(
                     "the file holds {} bytes, more than the {MAX_LOCK_BYTES} a lock may hold",
-                    text.len()
+                    text.raw_len()
                 ),
             )],
         );
@@ -2764,14 +2769,14 @@ pub struct Workspace {
 pub fn parse_workspace<'a>(text: impl Into<Text<'a>>) -> (Workspace, Vec<Error>) {
     let text = text.into();
     let mut workspace = Workspace::default();
-    if text.len() > MAX_MANIFEST_BYTES {
+    if text.raw_len() > MAX_MANIFEST_BYTES {
         return (
             workspace,
             vec![Error::new(
                 0..0,
                 format!(
                     "the file holds {} bytes, more than the {MAX_MANIFEST_BYTES} it may hold",
-                    text.len()
+                    text.raw_len()
                 ),
             )],
         );

@@ -236,6 +236,59 @@ fn scratch(name: &str) -> PathBuf {
     root
 }
 
+/// `ita.una` and `ita.lock` are read within their bounds (`spec/30 §1` rule 4, #2282): a file
+/// past its bound is left unread, its bytes never held, and keeps its length, which its reader
+/// refuses; a file within it is read whole. The bound is on the bytes, so `\r\n` counts two.
+#[test]
+fn project_files_are_read_within_their_bounds() {
+    let root = scratch("discover-bounds");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    let manifest = "ita a\r\n  version 0.1.0\r\n  edition 0.4\r\n".to_owned()
+        + &"-- x\r\n".repeat((1 << 20) / 6 + 1);
+    std::fs::write(root.join("ita.una"), &manifest).unwrap();
+    // A sparse lock of 32 MiB, none of it written.
+    let lock = std::fs::File::create(root.join("ita.lock")).unwrap();
+    lock.set_len(32 << 20).unwrap();
+    let loaded = discover(&root).unwrap();
+    let sizes: Vec<(&str, usize, u64)> = loaded
+        .files
+        .iter()
+        .map(|file| (file.name.as_str(), file.bytes.len(), file.len))
+        .collect();
+    assert_eq!(
+        sizes,
+        [
+            ("ita.una", 0, manifest.len() as u64),
+            ("ita.lock", 0, 32 << 20),
+            ("src/a.una", 9, 9),
+        ]
+    );
+    let decoded = loaded.files[0].decode();
+    assert_eq!(decoded.raw_len(), manifest.len());
+    let (_, errors) = una_project::ita::parse_ita_manifest(&decoded);
+    assert_eq!(
+        errors[0].message,
+        format!(
+            "the file holds {} bytes, more than the 1048576 a manifest may hold",
+            manifest.len()
+        )
+    );
+    let file =
+        una_project::read_project_file(&root.join("ita.lock"), "ita.lock", 16 << 20).unwrap();
+    assert_eq!((file.text(), file.raw_len()), ("", 32 << 20));
+    // Within the bound, the file is read whole and decoded once.
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\r\n  version 0.1.0\r\n  edition 0.4\r\n",
+    )
+    .unwrap();
+    let file = una_project::read_project_file(&root.join("ita.una"), "ita.una", 1 << 20).unwrap();
+    assert_eq!(file.text(), "ita a\n  version 0.1.0\n  edition 0.4\n");
+    assert_eq!(file.raw_len(), 39);
+    assert_eq!(una_project::ita::parse_ita_manifest(&file).1, vec![]);
+}
+
 #[test]
 fn a_package_is_a_directory_with_una_toml_and_src() {
     let root = scratch("discover-package");
