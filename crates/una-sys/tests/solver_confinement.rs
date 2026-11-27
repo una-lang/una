@@ -200,8 +200,7 @@ fn processor_time_signal_blocked() -> bool {
     // SAFETY: an all-zero `sigset_t` is a valid object for the call to fill.
     let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
     // SAFETY: a null new set only reads the mask into `mask`, a valid, writable set.
-    let status =
-        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &raw mut mask) };
+    let status = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &raw mut mask) };
     assert_eq!(status, 0);
     // SAFETY: `mask` was filled by the call.
     unsafe { libc::sigismember(&raw const mask, libc::SIGXCPU) == 1 }
