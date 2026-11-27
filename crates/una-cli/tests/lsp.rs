@@ -53,6 +53,34 @@ fn package_in(name: &str, edition: &str, text: &str) -> PathBuf {
     dir
 }
 
+/// A fresh package of `edition` (`0.4` or later) named `name`, as such an edition declares
+/// it: `ita.una`, the lock `ita.lock` of a conformance case, and the modules `files` under
+/// `src/`, by their names there (ADR 0122 rule 2).
+fn ita_package(name: &str, edition: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("una-lsp-{name}-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("ita.una"),
+        format!(
+            "ita {}\n  version 0.1.0\n  edition {edition}\n",
+            name.replace('-', "_")
+        ),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("tests/conformance/types/float_edition_0_4/ita.lock"),
+        dir.join("ita.lock"),
+    )
+    .unwrap();
+    for (file, text) in files {
+        std::fs::write(dir.join("src").join(file), text).unwrap();
+    }
+    dir
+}
+
 fn uri(path: &Path) -> String {
     una_lsp::uri_of(path)
 }
@@ -666,6 +694,69 @@ fn tier_1_on_open_equals_una_check_with_its_counterexample() {
     assert_eq!(target["uri"], uri(&file));
     assert_eq!(target["range"]["start"], position(2, 9));
     session.finish();
+}
+
+/// The modules of a clean package whose `app` imports from `util`: only a check of the whole
+/// package, found through its manifest, resolves the import.
+const CLEAN_APP: &str = "module app\n\nimport util (twice)\n\npub four() -> Int = twice(2)\n";
+const CLEAN_UTIL: &str = "module util\n\npub twice(n: Int) -> Int = n + n\n";
+
+#[test]
+fn a_package_of_edition_0_4_or_0_5_is_found_through_ita_una_at_tier_0() {
+    // #2298: the server found a package only through `una.toml`, which these editions refuse,
+    // and checked each file alone, so the import of `util` did not resolve.
+    for edition in ["0.4", "0.5"] {
+        let name = format!("ita-tier0-{}", edition.replace('.', "-"));
+        let dir = ita_package(
+            &name,
+            edition,
+            &[("app.una", CLEAN_APP), ("util.una", CLEAN_UTIL)],
+        );
+        let file = dir.join("src/app.una");
+        let cli = cli_check(&dir);
+        assert_eq!(cli["diagnostics"], json!([]), "{edition}: {cli}");
+        let mut session = Session::start(None);
+        session.open(&file, CLEAN_APP);
+        assert_eq!(session.published(&file), json!([]), "{edition}");
+
+        // An unsaved change with an unknown name: the diagnostics of `una check`.
+        let broken = "module app\n\nimport util (twice)\n\npub four() -> Int = twice(missing)\n";
+        session.change(&file, 2, broken);
+        let published = session.published(&file);
+        std::fs::write(&file, broken).unwrap();
+        let cli = cli_check(&dir);
+        assert_eq!(cli["diagnostics"][0]["code"], "U1001", "{edition}: {cli}");
+        assert_eq!(published, converted(&dir, &cli["diagnostics"]), "{edition}");
+        session.finish();
+    }
+}
+
+#[test]
+fn a_package_of_edition_0_4_or_0_5_is_found_through_ita_una_at_tier_1() {
+    let text = "module app\n\nimport util (twice)\n\npub kind Pos = Int where it > 0\n\npub half(n: Pos) -> Pos = n - 1\n\npub next(n: Pos) -> Pos = twice(n)\n";
+    for edition in ["0.4", "0.5"] {
+        let name = format!("ita-tier1-{}", edition.replace('.', "-"));
+        let dir = ita_package(
+            &name,
+            edition,
+            &[("app.una", text), ("util.una", CLEAN_UTIL)],
+        );
+        let file = dir.join("src/app.una");
+        let cli = cli_check(&dir);
+        assert_eq!(cli["diagnostics"][0]["code"], "U5001", "{edition}: {cli}");
+        let mut session = Session::start(None);
+        session.open(&file, text);
+        let published = session.published(&file);
+        assert_eq!(published, converted(&dir, &cli["diagnostics"]), "{edition}");
+        assert!(
+            published[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("counterexample: n = 1, result = 0"),
+            "{edition}: {published}"
+        );
+        session.finish();
+    }
 }
 
 /// A newer change cancels a running tier 1 check and kills its solver (ADR 0063 rule 4): a
