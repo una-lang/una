@@ -83,8 +83,10 @@ const SIGXCPU: i32 = 24;
 /// What Z3 5.1.0's front end writes on stdout when its processor-time limit (`RLIMIT_CPU`)
 /// sends `SIGXCPU`: the SMT-LIB front end registers a handler for that signal
 /// (`register_on_timeout_proc` in Z3's `util/timeout.cpp`) that prints this word on a line of
-/// its own and ends the process with `_Exit(0)`, so the child never ends by the signal
-/// (#2008). Pinned for the pinned version, like the memout exit, and read as a top-level atom
+/// its own and ends the process with `_Exit(0)` (#2008). Since #2268 the child blocks the
+/// signal so that handler never runs, and ends by `SIGXCPU` itself
+/// (`una_sys::solver::processor_time`), whose fallback writes the same word; the word stays
+/// read as `cpu` either way. Pinned for the pinned version, like the memout exit, and read as a top-level atom
 /// anywhere in stdout: no answer of a query has it there, since a status word, a model and
 /// values are the only top-level items.
 const CPU_LIMIT_WORD: &str = "timeout";
