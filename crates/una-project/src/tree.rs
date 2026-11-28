@@ -350,12 +350,16 @@ pub fn open_lock_file(path: &Path) -> Result<fs::File, Refusal> {
 }
 
 fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
+    open_reading(path, custom, "open, without following a link,")
+}
+
+/// Opens `path` for reading with the platform flags `custom`; `what` names the open in the
+/// refusal.
+fn open_reading(path: &Path, custom: i32, what: &str) -> Result<fs::File, Refusal> {
     let mut options = OpenOptions::new();
     options.read(true);
     with_flags(&mut options, custom);
-    options
-        .open(path)
-        .map_err(|e| cannot("open, without following a link,", path, &e))
+    options.open(path).map_err(|e| cannot(what, path, &e))
 }
 
 /// What [`open_regular`] found at a path.
@@ -510,10 +514,7 @@ pub fn read_regular_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<U
     if !listed.is_file() {
         return Err(not_regular());
     }
-    let mut options = OpenOptions::new();
-    options.read(true);
-    with_flags(&mut options, FLAGS.map_or(0, |flags| flags.non_block));
-    let handle = options.open(path).map_err(|e| cannot("open", path, &e))?;
+    let handle = open_reading(path, FLAGS.map_or(0, |flags| flags.non_block), "open")?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
     if !opened.is_file() {
         return Err(not_regular());
