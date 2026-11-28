@@ -13,10 +13,31 @@ use una_syntax::Span;
 use crate::{Bound, Expr, LoopSource, Rhs};
 
 /// The deepest nesting of Core expressions a body may have: 2^17, eight times the 16,000
-/// statements that the project's scaling tests check and run in one body. `una` runs each
-/// command, and the checker, on threads of 256 MiB (reserved, not committed), which an
-/// unoptimized build needs at about 1 KiB per level for its deepest pass outside the checker.
+/// statements that the project's scaling tests check and run in one body. Every thread that
+/// walks Core IR by recursion has [`STACK_BYTES`] of stack, sized from this bound.
 pub const MAX_DEPTH: usize = 131_072;
+
+/// The stack that one level of Core IR may take in the deepest recursive pass, with a margin
+/// of two (#2339). Measured in an unoptimized build (opt-level 0, the build of the release
+/// gates) on aarch64, as the smallest stack each command needs at 63,000 and at 126,000
+/// levels: `una core`'s printer takes about 4 KiB per level (244 and 487 MiB), the copy of the
+/// program `una test` makes about 2.2 KiB (142 and 280 MiB), `una report` about 1.2 KiB,
+/// `una build` and `una core --json` about 0.5 KiB, and the checker, the verifier and the
+/// evaluator less than 0.1 KiB. The frames of these passes on x86-64 are within 5% of those on
+/// aarch64, at opt-level 0 and 1; opt-level 1 takes about half. A pass whose frame would take
+/// more walks its chains of `let`s in a loop, as `una core --json` does.
+pub const STACK_PER_LEVEL: usize = 8 * 1024;
+
+/// The stack below the passes over Core IR: the passes over the syntax tree, whose nesting the
+/// parser bounds at 256 levels of up to about 40 KiB each in an unoptimized build, and the
+/// frames of the command around them.
+pub const STACK_BASE: usize = 64 * 1024 * 1024;
+
+/// The stack of every thread of `una` that walks Core IR by recursion, at the deepest Core IR
+/// the checker accepts ([`MAX_DEPTH`]): the command's own thread, the checker's, the verifier's,
+/// the copy of the program for `una test` and the tier 1 check of `una lsp` (#2264, #2339).
+/// 1,088 MiB, reserved, not committed: a thread touches only the pages its recursion reaches.
+pub const STACK_BYTES: usize = MAX_DEPTH * STACK_PER_LEVEL + STACK_BASE;
 
 /// The first position, in a depth-first walk, at which `expr` nests deeper than `limit` Core
 /// expressions, or `None` when it is no deeper. Each `let`, branch, handled body, loop body,
