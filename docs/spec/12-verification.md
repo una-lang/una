@@ -106,7 +106,7 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | Field of a variant of a sum kind | `u!f!<field>!<Variant>!<Sort>`, so variants that share a field name with different types have distinct functions |
 | Variant tag, length | `i!tag!<Sort>`, `i!len!<Sort>` |
 | Prelude fields (`value`, `failure`) | `i!f!<field>!<Sort>` |
-| Uninterpreted arithmetic and text functions | `i!div!Int`, `i!mod!Int`, `i!mul!Int`, `i!lt!Text`, `i!le!Text`, `i!gt!Text`, `i!ge!Text` |
+| Uninterpreted arithmetic and text functions | `i!div!Int`, `i!mod!Int`, `i!mul!Int`, `i!lt!Text`, `i!le!Text`, `i!gt!Text`, `i!ge!Text`. (Proposed, ADR 0033 amendment of 2026-11-28, #838: each application `i!mul!Int(a, b)` outside a definition would add the ground fact `(=> (and (>= a 0) (>= b 0)) (>= (i!mul!Int a b) 0))`; until it is accepted, no fact is added.) |
 | Text literal constants | `i!lit!<hex>`, the UTF-8 bytes of the literal in hexadecimal |
 | Predicates | `u!p!<qualified name>` |
 | Binders of the program (parameters, `result`, `let`s, pattern variables, the temporaries of Core IR) | `u!v!<name>` |

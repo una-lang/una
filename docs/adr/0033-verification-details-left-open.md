@@ -40,3 +40,57 @@ Decision log entries: D-111 to D-121, and D-131 from M10 (`docs/history/v0.1/ope
 - **Formulas as A-normal Core expressions:** one representation for code and formulas, but the encoder would rebuild trees from temporaries, and goals could not be printed as written.
 - **One obligation per return path:** simpler queries, but identical ids for the paths of one clause, and a listing that repeats every `ensures` once per path.
 - **An interactive solver session:** fewer processes, but a hang in one query would block the others, and a script written at once is the query the cache keys.
+
+## Amendment (2026-11-28, Proposed): the sign of a product of two values
+
+- Status: Proposed, for the project to accept (card #838). Nothing in it is implemented. The accepted text of this record above this amendment is unchanged; once accepted, this amendment governs where the two differ.
+- Amends: rule 4 (ground facts) and rule 5 (the uninterpreted `mul!Int`); and the consequence of ADR 0054 that "a product of two `Nat`s that is negative" stays `unknown`.
+
+**Context.** Rule 5 makes the product of two values that are not literals the uninterpreted `i!mul!Int`, since QF_UFLIA has no nonlinear terms, and rule 4 gives it no ground fact. So a query cannot use the sign of a product. `line_cents(quantity: Nat, unit: Cents) -> Cents = quantity * unit` is `unknown` (U5002): the solver picks a negative value for `i!mul!Int(quantity, unit)`, which no run has, and ADR 0054 leaves the obligation `unknown`. Quantity times price is a common shape in business code. Its workaround, widening the result to `Int`, loses the guarantee the type states.
+
+**Decision.**
+1. **The sign lemma, as a ground fact.** For each application `i!mul!Int(a, b)` that occurs in a query's assertions, outside the body of a definition, the query holds the ground fact `(=> (and (>= a 0) (>= b 0)) (>= (i!mul!Int a b) 0))`. Here `a` and `b` are the application's own argument terms, as written.
+   - The fact is an implication, so it constrains a product only when the query proves both factors non-negative, whatever the source of those facts: a refinement such as `Nat` or `Cents`, a `requires` clause, a guard, or a `len`.
+   - It is a ground fact, with no quantifier, like `len ≥ 0` (`spec/12 §2`: "Axioms that would need quantifiers are instantiated as ground facts for the terms that occur in the query").
+   - It is added once per distinct application, in the order the applications first occur, so the query stays deterministic (`spec/12 §10`).
+2. **Only the non-negative case.** No other lemma is added: no sign rule for negative factors, no zero rule, and no monotonicity or bound. Each would be its own proposal, with its own argument and twins.
+3. **Inside a definition**, such as a reflect predicate's `define-fun` body, an application gets no fact: its arguments are bound variables, and a ground fact cannot name them. Such queries are unchanged, and ADR 0053 still counts their models as unchecked.
+4. **Every edition.** The fact is part of the encoding, which is not per edition. It can make an `unknown` obligation `proven` or `refuted`, but never changes a `proven` or `refuted` one (the soundness argument below). Before v1.0 the project keeps no compatibility, and accepting more correct programs needs no edition.
+5. **`spec/12 §4`**, the row of the uninterpreted arithmetic functions, states the fact on acceptance. Until then, it carries a Proposed note.
+
+**Soundness.** The intended meaning of `i!mul!Int` is the product of mathematical integers. ADR 0054 defines it so in its second query (`(define-fun i!mul!Int ((x Int) (y Int)) Int (* x y))`), and every use of the symbol means that product:
+- **`Int` is unbounded** (`spec/11 §7`), so `a * b` in Una is the integer product, and a refinement of the result constrains that product.
+- **Fixed-width integers.** A plain `*` is the integer product, and its `overflow` obligation (`spec/18 §3`) checks that the product fits. `wrapping_mul` and `saturating_mul` apply `i!mul!Int` to their operands and then wrap or clamp the result (`wrapped(arithmetic(Mul, a, b))`, `clamped(...)` in the encoder). The fact speaks of the inner product, never of the wrapped or clamped value. A wrapped product of two non-negative `I32` values can be negative, and the fact does not say otherwise.
+- **`Decimal`** multiplies the coefficients with `i!mul!Int`. The sign of a decimal is the sign of its coefficient, and any rescaling or rounding after the product is its own term. The fact applies to the exact coefficient product.
+- **`F64` and `F32`** use `fp.mul`, which is not this symbol, so they are unaffected.
+
+For all integers `a` and `b`, `a ≥ 0 ∧ b ≥ 0 → a·b ≥ 0`. So each added fact is true in the standard model, the one in which `i!mul!Int` is `*`.
+- **Proven stays sound.** A query that holds the facts and is unsatisfiable is unsatisfiable in the standard model too. So a `proven` obligation stays proven relative to the model of `spec/12`.
+- **Refuted stays sound.** A model of the query with the facts is a model of the query without them. Every model that ADR 0053 accepts as agreeing, where each application equals the real product, satisfies the facts. So refutation keeps its real counterexamples, and a counterexample never contradicts the fact.
+- **Nothing proven or refuted changes status.** A `proven` query stays unsatisfiable with more facts. A `refuted` one has an agreeing model, which satisfies the facts. Only an `unknown` one can change, to `proven` when the facts close it, or to `refuted` when they lead the solver to an agreeing model.
+
+**Refuted twins, for the tests on implementation.** Each proven case has a twin that must stay refuted, with a real counterexample, or `unknown`, never `proven`:
+
+| Proven with the fact | Twin, refuted |
+| --- | --- |
+| `quantity: Nat`, `unit: Cents`: `quantity * unit` as `Cents` | `quantity: Int`, `unit: Cents`: `quantity * unit` as `Cents` (`quantity = -1, unit = 1`) |
+| `a: Nat`, `b: Nat`: `ensures result >= 0` for `a * b` | `ensures result > 0` (`a = 0`), and `ensures result >= 1` (`a = 0`) |
+| `a: Nat`, `b: Nat`, `requires a >= 0` (redundant): `a * b >= 0` | `a: Int`, `b: Int`: `a * b >= 0` (`a = -1, b = 1`) |
+| `xs.len * k >= 0` with `k: Nat` | `xs.len * k >= 0` with `k: Int` (`k = -1`, `xs.len = 1`) |
+
+In addition, there are two kinds of negative test:
+- **Wrapping.** `a: I32`, `b: I32`, both `>= 0`: `a.wrapping_mul(b) >= 0` stays refuted (`a = b = 46341`, whose product 2,147,488,281 wraps to -2,147,479,015).
+- **Counterexamples agree with the fact.** A refuted product query whose factors are non-negative in the model never shows a negative product.
+
+**Consequences.**
+- `line_cents` and the shapes above are `proven`.
+- The consequence of ADR 0054 that a negative product of two `Nat`s stays `unknown` no longer applies: that obligation is `proven`.
+- Queries without a product of two non-literal values are byte-identical, so their proof cache entries stay valid.
+- A query with such a product gains one assertion per distinct application. Its text and its cache key change, so it is solved once more.
+- Cost: O(1) per application, in the encoder and in the query. The facts are linear in the product's term, and the logic stays QF_UFLIA.
+
+**Alternatives considered.**
+- **Interpret the product (QF_UFNIA) in the first query.** Not chosen: it leaves the decidable fragment of `spec/12 §2`, and nonlinear integer arithmetic is undecidable, so the solver can give `unknown` or run out of time where it now answers.
+- **Add the fact only when both factors are known non-negative at encoding time**, from their refinements. Not chosen: the encoder would have to decide which facts hold, while the implication form lets the solver decide. It is valid whatever the factors, and it covers facts from guards and `requires` too.
+- **A quantified axiom** `∀ a b. a ≥ 0 ∧ b ≥ 0 → mul(a, b) ≥ 0`. Not chosen: queries are quantifier-free (`spec/12 §2`).
+- **Also add monotonicity** (`b ≥ 1 → mul(a, b) ≥ a`, for `a ≥ 0`). Left to its own proposal. The card asks for it only as a possibility, and each lemma needs its own twins.
