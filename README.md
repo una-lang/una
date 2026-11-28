@@ -32,7 +32,7 @@ Una is a verification-first programming language for software that AI agents wri
 
 ## Status
 
-**v0.3.0 is the Beta**, and v0.5.2, the third increment of release R0.5 (in the edition 0.5 preview, `const` and `var` and module constants; an `Int` of any size written as text; Linux on glibc 2.28 and later), is the current release. It has:
+**The compiler release is v0.5.2**, a Beta and the third increment of release R0.5 (in the edition 0.5 preview, `const` and `var` and module constants; an `Int` of any size written as text; Linux on glibc 2.28 and later). It serves editions 0.1 and 0.2, which are stable, and editions 0.3, 0.4 and 0.5, which are previews: `una --version` prints both lists. The Beta began with v0.3.0. It has:
 - the verifier and the reference interpreter;
 - the native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
 - in edition 0.2, a standard library for real programs: maps, text operations, JSON and an HTTP client, every result labeled;
@@ -48,7 +48,7 @@ Una is a verification-first programming language for software that AI agents wri
 
 Releases, compiler versions and editions follow one number (ADR 0139): increment R0.N.k of release R0.N ships `una` v0.N.k, the first being R0.N.0 (amendment of 2026-11-20), and edition 0.N is named by that release. v0.4.0 ships edition 0.4, with long-running programs, tasks, HTTP servers and the core of Itá, as a preview: it may still change under the terms of ADR 0121, and a later release makes it stable (ADR 0139, amendment of 2026-11-10, accepted). Edition 0.5 follows with collections, numerics, module constants and `const` and `var`. The plan by release is kept by the maintainers.
 
-Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. Edition 0.4, the edition of v0.4.0, is a preview (ADR 0121): a later release may ask for edits to a package of edition 0.4. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md); what this release proves, tests and assumes is in [Known limits](docs/guide/known-limits.md#assurance-in-this-release).
+Before its tag, every area of v0.3.0, the first Beta, was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. Edition 0.4, the edition of v0.4.0, is a preview (ADR 0121): a later release may ask for edits to a package of edition 0.4. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md); what this release proves, tests and assumes is in [Known limits](docs/guide/known-limits.md#assurance-in-this-release).
 
 ## Install
 
