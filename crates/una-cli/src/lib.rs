@@ -716,7 +716,7 @@ fn partial_of(
 /// about 40 KiB of stack per level. The passes over Core IR, the verifier's included, recurse
 /// once per nested Core expression, which the checker bounds (`una_core::depth::MAX_DEPTH`,
 /// #2264). The stack is reserved, not committed.
-const CHECK_STACK_BYTES: usize = 256 * 1024 * 1024;
+const CHECK_STACK_BYTES: usize = una_core::depth::STACK_BYTES;
 
 /// Runs `work` on a thread with [`CHECK_STACK_BYTES`] of stack, or on the current thread when
 /// the operating system cannot start one.

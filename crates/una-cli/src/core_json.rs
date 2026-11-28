@@ -770,41 +770,71 @@ impl Writer<'_> {
         }
     }
 
+    /// The node of `expr`. A chain of `let`s, which is what makes Core IR deep (a statement
+    /// or an intermediate value is one `let` whose body is the rest), is walked in a loop and
+    /// its nodes are folded from the innermost body out, so the stack this takes does not grow
+    /// with the chain (#2339): the frame of [`Writer::expr_node`] is about 10 KiB in an
+    /// unoptimized build, which a recursion per `let` would take at every level.
     fn expr(&self, expr: &Expr) -> J {
+        let mut chain = Vec::new();
+        let mut inner = expr;
+        while let Expr::Let { body, .. } = inner {
+            chain.push(inner);
+            inner = body;
+        }
+        let mut node = self.expr_node(inner);
+        for outer in chain.into_iter().rev() {
+            node = self.let_node(outer, node);
+        }
+        node
+    }
+
+    /// The node of a `let`, whose body's node is `body`; any other expression unchanged.
+    fn let_node(&self, expr: &Expr, body: J) -> J {
+        let Expr::Let {
+            name,
+            ty,
+            value,
+            span,
+            written,
+            ..
+        } = expr
+        else {
+            return body;
+        };
+        let mut node = node!(Let,
+            "name" => s(name),
+            "ty" => self.ty(ty),
+            "value" => self.bound(value),
+            "body" => body,
+            "span" => self.span(*span),
+            "written" => J::Bool(*written),
+        );
+        // A lambda given to an `of` parameter has a function type without its effects,
+        // which are its caller's (ADR 0062): the let that binds it says what they are.
+        if let (Bound::Rhs(Rhs::Lambda { .. }), Some(&(effects, fails)), J::Obj(fields)) =
+            (value.as_ref(), self.of_lambdas.get(span), &mut node)
+        {
+            fields.push((
+                "of_lambda",
+                J::Obj(vec![
+                    ("effects", J::Bool(effects)),
+                    ("fails", J::Bool(fails)),
+                ]),
+            ));
+        }
+        node
+    }
+
+    /// The node of `expr`, by its kind; [`Writer::expr`] gives a `let` its node.
+    fn expr_node(&self, expr: &Expr) -> J {
         match expr {
             Expr::Atom { atom, span } => {
                 node!(Atom, "atom" => self.atom(atom), "span" => self.span(*span))
             }
-            Expr::Let {
-                name,
-                ty,
-                value,
-                body,
-                span,
-                written,
-            } => {
-                let mut node = node!(Let,
-                    "name" => s(name),
-                    "ty" => self.ty(ty),
-                    "value" => self.bound(value),
-                    "body" => self.expr(body),
-                    "span" => self.span(*span),
-                    "written" => J::Bool(*written),
-                );
-                // A lambda given to an `of` parameter has a function type without its effects,
-                // which are its caller's (ADR 0062): the let that binds it says what they are.
-                if let (Bound::Rhs(Rhs::Lambda { .. }), Some(&(effects, fails)), J::Obj(fields)) =
-                    (value.as_ref(), self.of_lambdas.get(span), &mut node)
-                {
-                    fields.push((
-                        "of_lambda",
-                        J::Obj(vec![
-                            ("effects", J::Bool(effects)),
-                            ("fails", J::Bool(fails)),
-                        ]),
-                    ));
-                }
-                node
+            Expr::Let { body, .. } => {
+                let body = self.expr(body);
+                self.let_node(expr, body)
             }
             Expr::LetTuple {
                 names,

@@ -19,6 +19,10 @@ pub(crate) struct CliWorkspace {
 }
 
 impl Workspace for CliWorkspace {
+    fn check_stack_bytes(&self) -> usize {
+        una_core::depth::STACK_BYTES
+    }
+
     /// The nearest directory above `file` with a manifest, `ita.una` (editions 0.4 and later)
     /// or `una.toml`, which [`load_in`] reads as `una check` does (ADR 0122 rule 2, #2298).
     fn root(&self, file: &Path) -> PathBuf {
