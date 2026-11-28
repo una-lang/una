@@ -156,6 +156,7 @@ archive() {
             scripts/release.sh x86_64-unknown-linux-gnu
             cp target/release-archives/$name target/release-archives/$name.sha256 /out/
             cp target/release-remapped/una.link-trace /out/una.link-trace
+            chmod 644 /out/$name /out/$name.sha256 /out/una.link-trace
             echo \"packed: \$(cat target/release-archives/$name.sha256)\"
             scripts/check-release.sh x86_64-unknown-linux-gnu" || return 1
     (cd "$out" && sha256sum --check "$name.sha256") || return 1
