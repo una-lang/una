@@ -1688,8 +1688,8 @@ fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
 fn naming(item: &Item) -> (bool, bool, bool) {
     let declaration = &item.variants.last().unwrap().declaration;
     match item.kind {
-        // A kind or a capability is named as a type, never called.
-        "kind" | "capability" => (false, true, false),
+        // A kind or a capability is named as a type, and a constant as a value, never called.
+        "kind" | "capability" | "constant" => (false, true, false),
         "method" => (
             declaration.contains(&format!(".{}(", item.name)),
             false,
@@ -3024,6 +3024,14 @@ fn the_reference_agrees_with_the_listing() {
 /// nothing more.
 const EXAMPLE_MANIFEST: &str = "[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"shop\"\ngrants = [\"console\"]\n";
 
+/// The manifest of an example of an item that edition 0.2 does not have, from edition 0.4
+/// (#904): a package `shop` of the item's first edition, `<edition>`, whose `main` may print.
+const EXAMPLE_ITA: &str =
+    "ita shop\n  version 0.1.0\n  edition <edition>\n\nrun\n  entry shop\n  grants\n    console\n";
+
+/// The lock of such an example, as `una ita lock` writes it: the solver pins and nothing else.
+const EXAMPLE_ITA_LOCK: &str = "-- Written by `una ita`; do not edit.\nlock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
+
 /// The one key an example may add to `EXAMPLE_MANIFEST`, and only when its code uses `checked`
 /// exactly once: an opaque predicate is called only there (`spec/03 §4`, ADR 0042), and the
 /// escape budget is 0 by default.
@@ -3085,31 +3093,64 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
             let _ = fs::remove_dir_all(&copy);
             copy_tree(&source, &copy);
             // The manifest grants no more than printing, and allows one `checked` only to an
-            // example that uses exactly one.
-            let manifest = fs::read_to_string(source.join("una.toml")).unwrap_or_default();
+            // example that uses exactly one. It is of edition 0.2, or of the item's first edition
+            // when the item is newer (#904): from edition 0.4 an `ita.una` with its `ita.lock`
+            // (ADR 0122), which allow no `checked`.
+            let first = items
+                .iter()
+                .find(|item| item.module == module && item.name == name)
+                .and_then(|item| editions(item).into_iter().min_by_key(|e| edition_order(e)))
+                .unwrap_or("0.2");
+            let edition = if edition_order(first) <= edition_order("0.2") {
+                "0.2"
+            } else {
+                first
+            };
             let checks: usize = sources(&source)
                 .iter()
                 .map(|(_, src)| {
                     occurrences(src, &code_bytes(src), "checked", true, true, false).len()
                 })
                 .sum();
-            let allowed = if checks == 1 {
-                format!("{EXAMPLE_MANIFEST}{CHECKED_BUDGET}")
+            let read = |file: &str| fs::read_to_string(source.join(file)).ok();
+            if edition_order(edition) < edition_order("0.4") {
+                let manifest = read("una.toml").unwrap_or_default();
+                let base = EXAMPLE_MANIFEST
+                    .replace("edition = \"0.2\"", &format!("edition = \"{edition}\""));
+                let allowed = if checks == 1 {
+                    format!("{base}{CHECKED_BUDGET}")
+                } else {
+                    base
+                };
+                if manifest != allowed {
+                    problems.push(format!(
+                        "{example}: una.toml is not the examples' manifest of edition {edition}{}, with {checks} uses of `checked`: {manifest:?}",
+                        if checks == 1 { " with the budget of one `checked`" } else { "" }
+                    ));
+                }
+                // The verification lock is the repository's own: the solver pins and nothing else.
+                let lock = read("verification.lock").unwrap_or_default();
+                if lock != fs::read_to_string(root().join("verification.lock")).unwrap() {
+                    problems.push(format!(
+                        "{example}: verification.lock is not the repository's: {lock:?}"
+                    ));
+                }
             } else {
-                EXAMPLE_MANIFEST.to_owned()
-            };
-            if manifest != allowed {
-                problems.push(format!(
-                    "{example}: una.toml is not the examples' manifest{}, with {checks} uses of `checked`: {manifest:?}",
-                    if checks == 1 { " with the budget of one `checked`" } else { "" }
-                ));
-            }
-            // The verification lock is the repository's own: the solver pins and nothing else.
-            let lock = fs::read_to_string(source.join("verification.lock")).unwrap_or_default();
-            if lock != fs::read_to_string(root().join("verification.lock")).unwrap() {
-                problems.push(format!(
-                    "{example}: verification.lock is not the repository's: {lock:?}"
-                ));
+                let manifest = read("ita.una").unwrap_or_default();
+                let allowed = EXAMPLE_ITA.replace("<edition>", edition);
+                if manifest != allowed || checks != 0 {
+                    problems.push(format!(
+                        "{example}: ita.una is not the examples' manifest of edition {edition}, with {checks} uses of `checked`: {manifest:?}"
+                    ));
+                }
+                if read("ita.lock").as_deref() != Some(EXAMPLE_ITA_LOCK) {
+                    problems.push(format!("{example}: ita.lock is not the examples' lock"));
+                }
+                for other in ["una.toml", "verification.lock"] {
+                    if read(other).is_some() {
+                        problems.push(format!("{example}: an `ita.una` package has no {other}"));
+                    }
+                }
             }
             let formatted = una(&copy, &["fmt", "--check", "."]);
             if !formatted.status.success() {

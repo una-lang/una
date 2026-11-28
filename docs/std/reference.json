@@ -45,19 +45,13 @@
   "prelude array",
   "prelude array_filled",
   "prelude as_decimal",
-  "prelude as_f64",
   "prelude f32_from_bits",
-  "prelude f64_from_bits",
-  "prelude infinity",
   "prelude json_decimal",
-  "prelude json_number",
   "prelude matrix",
   "prelude matrix_diagonal",
   "prelude matrix_filled",
-  "prelude nan",
   "prelude parse_decimal",
   "prelude parse_f32",
-  "prelude parse_f64",
   "prelude tensor",
   "prelude tensor_filled",
   "std.host Exchange",
@@ -71,10 +65,7 @@
   "std.testing TestRequestError",
   "std.testing elapse",
   "std.testing test_exchange",
-  "std.testing test_request",
-  "std.time millisecond",
-  "std.time minute",
-  "std.time second"
+  "std.testing test_request"
  ],
  "entries": [
   {
@@ -3566,6 +3557,161 @@
     "prelude Keys"
    ],
    "example": "docs/std/examples/std.testing/fake_hash"
+  },
+  {
+   "module": "prelude",
+   "name": "nan",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "F64",
+    "meaning": "the one NaN of `F64`, the canonical `0x7FF8000000000000`; `x.is_nan()` tells it apart, since NaN is not equal to itself"
+   },
+   "see_also": [
+    "prelude infinity"
+   ],
+   "example": "docs/std/examples/prelude/nan"
+  },
+  {
+   "module": "prelude",
+   "name": "infinity",
+   "area": "numbers",
+   "params": [],
+   "returns": {
+    "type": "F64",
+    "meaning": "the positive infinity of `F64`; `-infinity()` is the negative one"
+   },
+   "see_also": [
+    "prelude nan"
+   ],
+   "example": "docs/std/examples/prelude/infinity"
+  },
+  {
+   "module": "prelude",
+   "name": "f64_from_bits",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "bits",
+     "meaning": "the 64 bits of an IEEE 754 binary64 value"
+    }
+   ],
+   "returns": {
+    "type": "F64",
+    "meaning": "the `F64` with those bits; any NaN gives the canonical NaN"
+   },
+   "see_also": [
+    "prelude nan"
+   ],
+   "example": "docs/std/examples/prelude/f64_from_bits"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_f64",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text: a JSON number, `nan`, `inf` or `-inf`, with no space around it"
+    }
+   ],
+   "returns": {
+    "type": "F64",
+    "meaning": "the value nearest the number `t` writes, ties to even, with the sign of the text; a number beyond the range gives an infinity"
+   },
+   "fails": [
+    {
+     "variant": "Empty",
+     "when": "`t` is empty"
+    },
+    {
+     "variant": "NotADigit",
+     "when": "at the first position, in scalar values, at which no accepted text can continue, or at the length of a text that ends where one could still continue"
+    },
+    {
+     "variant": "NoDigits",
+     "when": "`t` is `-` alone"
+    },
+    {
+     "variant": "TooLong",
+     "when": "never: `parse_f64` reads any number of digits and any exponent"
+    }
+   ],
+   "see_also": [
+    "prelude ParseError",
+    "prelude parse_int"
+   ],
+   "example": "docs/std/examples/prelude/parse_f64"
+  },
+  {
+   "module": "prelude",
+   "name": "as_f64",
+   "area": "json",
+   "params": [
+    {
+     "name": "j",
+     "meaning": "the JSON value"
+    }
+   ],
+   "returns": {
+    "type": "Option[F64]",
+    "meaning": "the `F64` nearest a JSON number, `Number` or `Decimal`, as `Some`, an infinity for a number beyond the range, and `None` for any other `Json`"
+   },
+   "see_also": [
+    "prelude json_number",
+    "prelude Json"
+   ],
+   "example": "docs/std/examples/prelude/as_f64"
+  },
+  {
+   "module": "prelude",
+   "name": "json_number",
+   "area": "json",
+   "params": [
+    {
+     "name": "x",
+     "meaning": "the number"
+    }
+   ],
+   "returns": {
+    "type": "Option[Json]",
+    "meaning": "`x` as a JSON `Decimal` written as `to_text` writes it, as `Some`, and `None` for NaN and the infinities, which JSON cannot write; `as_f64` reads it back bit for bit"
+   },
+   "see_also": [
+    "prelude as_f64",
+    "prelude to_json"
+   ],
+   "example": "docs/std/examples/prelude/json_number"
+  },
+  {
+   "module": "std.time",
+   "name": "millisecond",
+   "area": "clock",
+   "see_also": [
+    "std.time second",
+    "std.time minute"
+   ],
+   "example": "docs/std/examples/std.time/millisecond"
+  },
+  {
+   "module": "std.time",
+   "name": "second",
+   "area": "clock",
+   "see_also": [
+    "std.time millisecond",
+    "std.time minute"
+   ],
+   "example": "docs/std/examples/std.time/second"
+  },
+  {
+   "module": "std.time",
+   "name": "minute",
+   "area": "clock",
+   "see_also": [
+    "std.time millisecond",
+    "std.time second"
+   ],
+   "example": "docs/std/examples/std.time/minute"
   }
  ]
 }

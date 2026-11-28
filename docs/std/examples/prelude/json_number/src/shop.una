@@ -1,0 +1,14 @@
+module shop
+
+--- A measured weight as JSON, or `null` when it is not a finite number.
+weight_json(kilograms: F64) -> Text
+=
+  when json_number(kilograms)
+    is Some(j) -> to_json(j)
+    is None -> "null"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(weight_json(2.5))
+  @console.print(weight_json(nan()))
