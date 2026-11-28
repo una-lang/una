@@ -64,8 +64,6 @@ struct Flags {
     no_follow_any: i32,
     /// `O_DIRECTORY`.
     directory: i32,
-    /// `O_NONBLOCK`, so that opening a FIFO swapped in never blocks.
-    non_block: i32,
 }
 
 impl Flags {
@@ -81,17 +79,16 @@ impl Flags {
     }
 }
 
-/// macOS: `O_NOFOLLOW` 0x100 and `O_NOFOLLOW_ANY` 0x20000000, `O_DIRECTORY` 0x100000,
-/// `O_NONBLOCK` 0x4 (`<sys/fcntl.h>`).
+/// macOS: `O_NOFOLLOW` 0x100 and `O_NOFOLLOW_ANY` 0x20000000, `O_DIRECTORY` 0x100000
+/// (`<sys/fcntl.h>`).
 #[cfg(target_os = "macos")]
 const FLAGS: Option<Flags> = Some(Flags {
     no_follow: 0x0100,
     no_follow_any: 0x2000_0000,
     directory: 0x0010_0000,
-    non_block: 0x0004,
 });
 
-/// Linux on x86-64: `O_NOFOLLOW` 0o400000, `O_DIRECTORY` 0o200000, `O_NONBLOCK` 0o4000.
+/// Linux on x86-64: `O_NOFOLLOW` 0o400000, `O_DIRECTORY` 0o200000.
 ///
 /// Linux has no `O_NOFOLLOW_ANY`: a component above the last one is checked by
 /// `symlink_metadata` when the package is listed, and a swap of it for a link between that check
@@ -104,16 +101,14 @@ const FLAGS: Option<Flags> = Some(Flags {
     no_follow: 0x2_0000,
     no_follow_any: 0,
     directory: 0x1_0000,
-    non_block: 0x0800,
 });
 
-/// Linux on AArch64: `O_NOFOLLOW` 0o100000, `O_DIRECTORY` 0o40000, `O_NONBLOCK` 0o4000.
+/// Linux on AArch64: `O_NOFOLLOW` 0o100000, `O_DIRECTORY` 0o40000.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const FLAGS: Option<Flags> = Some(Flags {
     no_follow: 0x8000,
     no_follow_any: 0,
     directory: 0x4000,
-    non_block: 0x0800,
 });
 
 /// Any other platform: every read and write is refused.
@@ -125,6 +120,70 @@ const FLAGS: Option<Flags> = Some(Flags {
     )
 )))]
 const FLAGS: Option<Flags> = None;
+
+/// The flags every open of a file here adds, by their values on this platform: `O_NONBLOCK`, so
+/// that opening a FIFO swapped in for a file between its check and its open returns at once
+/// rather than wait for a writer, and `O_NOCTTY`, so that opening a terminal swapped in never
+/// makes it the controlling terminal of the process. The type is then checked on the opened
+/// descriptor, so either is refused before anything is read (`spec/30 §1` rule 4).
+///
+/// They are known on macOS (`O_NONBLOCK` 0x4, `O_NOCTTY` 0x20000), on Linux and Android on the
+/// architectures with the generic values (`O_NONBLOCK` 0o4000, `O_NOCTTY` 0o400: x86, x86-64,
+/// Arm, AArch64, RISC-V, PowerPC, s390x and LoongArch), and on FreeBSD, DragonFly, NetBSD and
+/// OpenBSD (`O_NONBLOCK` 0x4, `O_NOCTTY` 0x8000). Elsewhere, Windows and every other target,
+/// they are 0: a file that is not regular when it is checked
+/// is still refused before it is opened, but one swapped in between that check and the open may
+/// block the open (a FIFO) or be opened (a terminal) before the check on the descriptor refuses
+/// it.
+#[cfg(target_os = "macos")]
+pub const OPEN_FLAGS: i32 = 0x0004 | 0x0002_0000;
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "arm",
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+        target_arch = "powerpc",
+        target_arch = "powerpc64",
+        target_arch = "s390x",
+        target_arch = "loongarch64"
+    )
+))]
+pub const OPEN_FLAGS: i32 = 0o4000 | 0o400;
+
+#[cfg(any(
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+pub const OPEN_FLAGS: i32 = 0x0004 | 0x8000;
+
+#[cfg(not(any(
+    target_os = "macos",
+    all(
+        any(target_os = "linux", target_os = "android"),
+        any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "s390x",
+            target_arch = "loongarch64"
+        )
+    ),
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd"
+)))]
+pub const OPEN_FLAGS: i32 = 0;
 
 fn flags() -> Result<Flags, Refusal> {
     FLAGS.ok_or_else(|| {
@@ -343,7 +402,7 @@ pub fn open_lock_file(path: &Path) -> Result<fs::File, Refusal> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     with_private_mode(&mut options);
-    with_flags(&mut options, flags.no_follow);
+    with_flags(&mut options, flags.no_follow | OPEN_FLAGS);
     options
         .open(path)
         .map_err(|e| cannot("open, without following a link,", path, &e))
@@ -353,12 +412,12 @@ fn open(path: &Path, custom: i32) -> Result<fs::File, Refusal> {
     open_reading(path, custom, "open, without following a link,")
 }
 
-/// Opens `path` for reading with the platform flags `custom`; `what` names the open in the
-/// refusal.
+/// Opens `path` for reading with the platform flags `custom` and [`OPEN_FLAGS`]; `what` names
+/// the open in the refusal.
 fn open_reading(path: &Path, custom: i32, what: &str) -> Result<fs::File, Refusal> {
     let mut options = OpenOptions::new();
     options.read(true);
-    with_flags(&mut options, custom);
+    with_flags(&mut options, custom | OPEN_FLAGS);
     options.open(path).map_err(|e| cannot(what, path, &e))
 }
 
@@ -376,12 +435,12 @@ enum Opened {
 /// be a regular file before and after it is opened, the same one, and, when `single`, a file
 /// with exactly one link: a second link is refused, and a file left with none, or another entry
 /// than the one listed, is [`Opened::Replaced`].
-fn open_regular(path: &Path, flags: Flags, refuse: i32, single: bool) -> Result<Opened, Refusal> {
+fn open_regular(path: &Path, refuse: i32, single: bool) -> Result<Opened, Refusal> {
     let listed = fs::symlink_metadata(path).map_err(|e| cannot("read", path, &e))?;
     if !listed.file_type().is_file() {
         return Err(format!("`{}` is not a regular file", path.display()));
     }
-    let handle = open(path, refuse | flags.non_block)?;
+    let handle = open(path, refuse)?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
     if !opened.is_file() {
         return Err(format!("`{}` changed while it was opened", path.display()));
@@ -406,13 +465,8 @@ fn open_regular(path: &Path, flags: Flags, refuse: i32, single: bool) -> Result<
 
 /// [`open_regular`], for an entry that is never replaced while it is read: a replacement is a
 /// refusal.
-fn open_stable(
-    path: &Path,
-    flags: Flags,
-    refuse: i32,
-    single: bool,
-) -> Result<(fs::File, u64), Refusal> {
-    match open_regular(path, flags, refuse, single)? {
+fn open_stable(path: &Path, refuse: i32, single: bool) -> Result<(fs::File, u64), Refusal> {
+    match open_regular(path, refuse, single)? {
         Opened::File(handle, size) => Ok((handle, size)),
         Opened::Replaced => Err(format!("`{}` changed while it was opened", path.display())),
     }
@@ -451,7 +505,7 @@ pub fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, Refusal> {
     // the path named when it was opened.
     let mut tries = 0;
     let (handle, size) = loop {
-        match open_regular(path, flags, flags.no_link(), true)? {
+        match open_regular(path, flags.no_link(), true)? {
             Opened::File(handle, size) => break (handle, size),
             Opened::Replaced => {
                 tries += 1;
@@ -481,7 +535,7 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     let flags = flags()?;
     // The path dependency's directory may lie below a link the user chose, such as macOS's
     // `/tmp`, so only the last component is refused here; the caller walked the rest.
-    let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
+    let (handle, size) = open_stable(path, flags.no_follow, false)?;
     if size > MAX_BYTES {
         return Err(format!(
             "`{}` holds more than {MAX_BYTES} bytes",
@@ -491,22 +545,23 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     read_exactly(&handle, size, path)
 }
 
-/// [`read_unlinked`] within `limit` bytes: the bytes, or, for a file past `limit`, no bytes and
-/// its size, so a project file past its bound is never read into memory (`spec/30 §1` rule 4).
+/// [`read_unlinked`] within `limit` bytes, through [`read_capped`]: the bytes, or, for a file
+/// past `limit`, no bytes and its size, or, for one that grew past `limit` while it was read,
+/// no bytes and [`Unread::MoreThan`] `limit`, so a project file past its bound is never read
+/// into memory and is refused with the message of its bound (`spec/30 §1` rule 4).
+/// O(min(n, limit)).
 pub fn read_unlinked_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<Unread>), Refusal> {
     let flags = flags()?;
-    let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
-    if size > limit {
-        return Ok((Vec::new(), Some(Unread::Holds(to_usize(size)))));
-    }
-    Ok((read_exactly(&handle, size, path)?, None))
+    let (handle, size) = open_stable(path, flags.no_follow, false)?;
+    read_capped(&handle, size, limit).map_err(|e| cannot("read", path, &e))
 }
 
 /// Reads the regular file at `path`, which the user's own package holds, within `limit` bytes
 /// (`spec/30 §1` rule 4). A link is followed, as for any file of the user's own directory; what
 /// it names must be a regular file, checked before the open and again on the opened descriptor,
-/// so a FIFO, a device or a directory is refused before anything is read, and the open never
-/// blocks (`O_NONBLOCK` where the platform has it). Then [`read_capped`]: the bytes, or, for a
+/// so a FIFO, a device or a directory is refused before anything is read; where the platform's
+/// [`OPEN_FLAGS`] are known, the open never blocks nor takes a controlling terminal, even for
+/// one swapped in between the check and the open. Then [`read_capped`]: the bytes, or, for a
 /// file past `limit`, no bytes and what is known of its length. O(min(n, limit)).
 pub fn read_regular_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<Unread>), Refusal> {
     let not_regular = || format!("`{}` is not a regular file", path.display());
@@ -514,7 +569,7 @@ pub fn read_regular_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<U
     if !listed.is_file() {
         return Err(not_regular());
     }
-    let handle = open_reading(path, FLAGS.map_or(0, |flags| flags.non_block), "open")?;
+    let handle = open_reading(path, 0, "open")?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
     if !opened.is_file() {
         return Err(not_regular());
@@ -567,7 +622,7 @@ pub struct UserFile {
 /// from the same descriptor.
 pub fn read_user_file(path: &Path, limit: u64) -> Result<UserFile, Refusal> {
     let flags = flags()?;
-    let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
+    let (handle, size) = open_stable(path, flags.no_follow, false)?;
     let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
     if size > limit {
         return Err(format!(
@@ -755,7 +810,7 @@ impl Listing {
         let refuse = self.flags.no_link();
         let mut files = Vec::with_capacity(self.files.len());
         for listed in self.files {
-            let (handle, size) = open_stable(&listed.disk, self.flags, refuse, true)?;
+            let (handle, size) = open_stable(&listed.disk, refuse, true)?;
             let now = handle
                 .metadata()
                 .map_err(|e| cannot("read", &listed.disk, &e))?;
@@ -1312,7 +1367,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("real/file"), dir.join("link")).unwrap();
         std::os::unix::fs::symlink(dir.join("real"), dir.join("dirlink")).unwrap();
         let any = flags.no_link();
-        assert!(open(&dir.join("real/file"), any | flags.non_block).is_ok());
+        assert!(open(&dir.join("real/file"), any).is_ok());
         assert!(open(&dir.join("real"), any | flags.directory).is_ok());
         assert!(open(&dir.join("link"), flags.no_follow).is_err());
         assert!(open(&dir.join("link"), any).is_err());
@@ -1447,6 +1502,53 @@ mod tests {
         let _ = fresh.discard(refusal);
         assert!(!path.exists());
         assert!(dir.join("keep").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A path dependency's manifest that grows while it is read is refused as more than its
+    /// bound, the message of `spec/30 §1` rule 4, never as a file that changed while it was
+    /// read (#2349). A writer appends to the file while it is read again and again, from empty
+    /// to past the bound: every read gives the bytes within the bound, its size past it, or
+    /// more than the bound, and at most `limit + 1` bytes are ever held.
+    #[test]
+    fn a_path_dependency_manifest_that_grows_while_read_is_past_its_bound() {
+        let dir = scratch("growing");
+        let path = dir.join("ita.una");
+        fs::write(&path, b"").unwrap();
+        let limit: u64 = 1 << 16;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+                let mut written = 0u64;
+                while !stop.load(Ordering::Relaxed) && written <= 4 * limit {
+                    file.write_all(&[b'-'; 16]).unwrap();
+                    written += 16;
+                }
+            })
+        };
+        let mut reads = 0;
+        loop {
+            let (bytes, unread) = read_unlinked_within(&path, limit).unwrap_or_else(|reason| {
+                stop.store(true, Ordering::Relaxed);
+                panic!("read {reads}: {reason}")
+            });
+            reads += 1;
+            match unread {
+                None => assert!(bytes.len() as u64 <= limit),
+                Some(Unread::MoreThan(more)) => {
+                    assert_eq!((bytes.len(), more as u64), (0, limit));
+                }
+                Some(Unread::Holds(size)) => {
+                    assert_eq!(bytes.len(), 0);
+                    assert!(size as u64 > limit);
+                    break;
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 }

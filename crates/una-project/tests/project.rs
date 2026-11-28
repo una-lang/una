@@ -360,6 +360,106 @@ fn a_project_file_that_is_not_a_regular_file_is_refused_before_it_is_read() {
     assert_eq!(file.text(), "ita a\n");
 }
 
+/// The open flags of `tree` are known on the platforms this is tested on, and they are the ones
+/// that keep an open from blocking: a FIFO with no writer, which a plain open waits on, opens
+/// at once with them; a project file read there is refused as not a regular file (#2350).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn opening_a_fifo_with_the_open_flags_never_waits() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = una_project::tree::OPEN_FLAGS;
+    assert_ne!(flags, 0);
+    let root = scratch("fifo-open-flags");
+    let fifo = root.join("ita.una");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let opened = |flags: i32| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            let opened = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(&fifo);
+            let _ = done.send(opened.is_ok());
+        });
+        wait.recv_timeout(std::time::Duration::from_millis(500))
+    };
+    assert_eq!(opened(flags), Ok(true), "the open waited");
+    // Without them the open waits for a writer; one opened here releases it.
+    assert!(opened(0).is_err(), "a plain open of a FIFO did not wait");
+    drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
+    let error = una_project::read_project_file(&fifo, "ita.una", 1 << 20).unwrap_err();
+    assert!(
+        error.to_string().contains("is not a regular file"),
+        "{error}"
+    );
+}
+
+/// An `ita.lock` that is there but is not a regular file, a FIFO with no writer, a link to a
+/// device, or a directory, refuses the package as not a regular file, before anything is read
+/// and without blocking, rather than leave it with no lock (#2348). A missing lock, and a link
+/// that names nothing, are no lock; a link to a regular lock is read.
+#[cfg(unix)]
+#[test]
+fn an_ita_lock_that_is_not_a_regular_file_is_refused_not_missing() {
+    let root = scratch("discover-lock-kinds");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let lock = root.join("ita.lock");
+    let discovered = |root: &Path| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(discover(&root));
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("discover blocked")
+    };
+    let has_lock =
+        |loaded: &una_project::Loaded| loaded.files.iter().any(|file| file.role == Role::Lock);
+    // No lock: the package has none.
+    assert!(!has_lock(&discovered(&root).unwrap()));
+    let refused = |root: &Path| match discovered(root) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, root.join("ita.lock"));
+            assert!(reason.contains("is not a regular file"), "{reason}");
+        }
+        other => panic!("a lock that is not a regular file was not refused: {other:?}"),
+    };
+    let made = std::process::Command::new("mkfifo")
+        .arg(&lock)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    refused(&root);
+    std::fs::remove_file(&lock).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &lock).unwrap();
+    refused(&root);
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    refused(&root);
+    std::fs::remove_dir(&lock).unwrap();
+    // A link that names nothing is no lock.
+    std::os::unix::fs::symlink(root.join("gone"), &lock).unwrap();
+    assert!(!has_lock(&discovered(&root).unwrap()));
+    std::fs::remove_file(&lock).unwrap();
+    // A link to a regular lock is read.
+    std::fs::write(root.join("real.lock"), "lock\n").unwrap();
+    std::os::unix::fs::symlink(root.join("real.lock"), &lock).unwrap();
+    let loaded = discovered(&root).unwrap();
+    let read = loaded.files.iter().find(|file| file.role == Role::Lock);
+    assert_eq!(read.map(|file| file.bytes.as_slice()), Some(&b"lock\n"[..]));
+}
+
 #[test]
 fn a_package_is_a_directory_with_una_toml_and_src() {
     let root = scratch("discover-package");

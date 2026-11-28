@@ -937,6 +937,38 @@ fn a_fifo_at_ita_una_is_refused_and_never_blocks() {
     }
 }
 
+/// A FIFO or a directory at `ita.lock` is not a regular file: `una check` and `una ita verify`
+/// refuse it as such, at once, and never report it as a missing lock (#2348).
+#[cfg(unix)]
+#[test]
+fn an_ita_lock_that_is_not_a_regular_file_is_refused_not_missing() {
+    let dir = package("fifo-lock", MANIFEST);
+    let lock = dir.join("ita.lock");
+    let commands = [&["check", "."][..], &["ita", "verify", "."]];
+    // With no lock at all, `verify` reports the missing lock.
+    let (code, err) = una_ends(&dir, &["ita", "verify", "."]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("has no ita.lock"), "{err}");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&lock)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let refused = |what: &str| {
+        for args in commands {
+            let (code, err) = una_ends(&dir, args);
+            let shown = format!("`una {}` with a {what} at ita.lock: {err}", args.join(" "));
+            assert_ne!(code, 0, "{shown}");
+            assert!(err.contains("is not a regular file"), "{shown}");
+            assert!(!err.contains("has no ita.lock"), "{shown}");
+        }
+    };
+    refused("FIFO");
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    refused("directory");
+}
+
 /// An ill-formed UTF-8 sequence in `ita.una` is reported (U7008) where it is: the file is
 /// decoded once, by the source database, and read as decoded (#2252).
 #[test]

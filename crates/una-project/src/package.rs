@@ -189,7 +189,15 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
         role: Role::Manifest,
     }];
     let lock = path.join(lock_name);
-    if lock.is_file() {
+    // An `ita.lock` that is there but is not a regular file, such as a FIFO, a device or a
+    // directory, is refused by its read before anything is read (spec/30 §1 rule 4), never
+    // taken for a missing lock; a link is followed, and one that names nothing is no lock.
+    // `verification.lock` keeps its check for a regular file.
+    let has_lock = match format {
+        Format::Ita => !matches!(lock.try_exists(), Ok(false)),
+        Format::Toml => lock.is_file(),
+    };
+    if has_lock {
         let (bytes, unread) = read_project(&lock, lock_name)?;
         files.push(LoadedFile {
             name: lock_name.to_owned(),
