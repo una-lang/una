@@ -406,8 +406,9 @@ fn a_link_back_into_src_refuses_the_walk_at_once() {
     assert_eq!(names, ["ita.una", "src/a.una", "src/shared/b.una"]);
 }
 
-/// The walk of `src/` refuses a module more than 32 segments below the package's directory,
-/// and more than 10,000 modules (#2397); 32 segments, and 10,000 modules, are read.
+/// The walk of `src/` refuses a module more than 32 segments below the package's directory
+/// (#2397), and a package of more than 10,000 files, its manifest and its `README.md` counted
+/// as publishing counts them (#2400); 32 segments, and 10,000 files, are read.
 #[test]
 fn the_walk_of_src_is_bounded_in_depth_and_modules() {
     let root = scratch("discover-src-bounds");
@@ -434,17 +435,22 @@ fn the_walk_of_src_is_bounded_in_depth_and_modules() {
     }
     std::fs::remove_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("src/m")).unwrap();
-    for at in 0..10_000 {
+    std::fs::write(root.join("README.md"), "# a\n").unwrap();
+    // `ita.una`, `README.md` and 9,998 modules: 10,000 files.
+    for at in 0..9_998 {
         std::fs::write(root.join(format!("src/m/m{at}.una")), "").unwrap();
     }
-    assert_eq!(discover(&root).unwrap().files.len(), 10_001);
+    assert_eq!(discover(&root).unwrap().files.len(), 9_999);
     std::fs::write(root.join("src/m/one-more.una"), "").unwrap();
     match discover(&root) {
         Err(LoadError::Unreadable { reason, .. }) => {
-            assert!(reason.contains("more than 10000 modules"), "{reason}");
+            assert!(reason.contains("more than 10000 files"), "{reason}");
         }
-        other => panic!("10,001 modules were not refused: {other:?}"),
+        other => panic!("10,001 files were not refused: {other:?}"),
     }
+    // Without `README.md` the same modules are 10,000 files again.
+    std::fs::remove_file(root.join("README.md")).unwrap();
+    assert_eq!(discover(&root).unwrap().files.len(), 10_000);
 }
 
 /// The manifest and the modules of a package share its bound of 256 MiB (§9 rule 1): two
@@ -477,6 +483,37 @@ fn the_modules_of_a_package_share_its_bound() {
             );
         }
         other => panic!("a package past its bound was read: {other:?}"),
+    }
+}
+
+/// Path dependencies share one bound with what was read before them (#2401): a dependency
+/// read within the bytes left takes them, and the next one, past what is left, is refused at
+/// its module, never read whole.
+#[test]
+fn path_dependencies_share_one_bound() {
+    let root = scratch("dependency-budget");
+    for dep in ["one", "two"] {
+        let dir = root.join(dep);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("ita.una"),
+            format!("ita {dep}\n  version 0.1.0\n  edition 0.4\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/m.una"), [b'-'; 4096]).unwrap();
+    }
+    // Room for one dependency, a 38-byte manifest and a 4,096-byte module, and not for two.
+    let mut left = 8192;
+    let one = una_project::discover_dependency_within(&root.join("one"), "one", &mut left).unwrap();
+    assert_eq!(one.files.len(), 2);
+    assert_eq!(left, 8192 - 4096 - 38);
+    match una_project::discover_dependency_within(&root.join("two"), "two", &mut left) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, root.join("two/src/m.una"));
+            assert!(reason.contains("may hold together"), "{reason}");
+        }
+        Ok(_) => panic!("a dependency past the shared bound was read"),
+        Err(other) => panic!("{other}"),
     }
 }
 

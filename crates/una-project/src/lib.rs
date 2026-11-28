@@ -46,8 +46,8 @@ pub use manifest::{
     is_module_path, parse_manifest,
 };
 pub use package::{
-    LoadError, Loaded, LoadedFile, Role, discover, discover_dependency, project_file_bound,
-    read_project_file,
+    LoadError, Loaded, LoadedFile, Role, discover, discover_dependency, discover_dependency_within,
+    project_file_bound, read_project_file,
 };
 
 /// A problem in a project file, located by byte offsets into its text.

@@ -218,7 +218,8 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
             role: Role::Lock,
         });
     }
-    let mut walk = Walk::new(&src, true)?;
+    // The manifest and the top files a package publishes count against its 10,000 files.
+    let mut walk = Walk::new(&src, true, 1 + top_files(path, format))?;
     walk.directory(&src, "src", 1)?;
     let mut modules = walk.files;
     modules.sort();
@@ -247,6 +248,20 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
 /// one refuses the dependency, so a package never reads a file outside it through a link.
 /// Its lock is not read (rule 23).
 pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadError> {
+    let mut left = content::MAX_BYTES;
+    discover_dependency_within(dir, written, &mut left)
+}
+
+/// [`discover_dependency`] within the `left` bytes that the root's package and the path
+/// dependencies loaded before it have not taken, which it takes from `left` (spec/30 §1 rule
+/// 4): the root and every path dependency it names share one bound of 256 MiB, so a check
+/// holds at most that much of their files, whatever the number of dependencies. The
+/// dependency that would pass it is refused, its modules never read whole.
+pub fn discover_dependency_within(
+    dir: &Path,
+    written: &str,
+    left: &mut u64,
+) -> Result<Loaded, LoadError> {
     let not_followed = |path: &Path| -> Result<(), LoadError> {
         match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_symlink() => Err(LoadError::Unreadable {
@@ -281,7 +296,7 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
         path: manifest,
         role: Role::Manifest,
     }];
-    let mut walk = Walk::new(&src, false)?;
+    let mut walk = Walk::new(&src, false, 1 + top_files(dir, Format::Ita))?;
     walk.directory(&src, &format!("{written}/src"), 1)?;
     let mut modules = walk.files;
     modules.sort();
@@ -290,9 +305,12 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
         .filter(|file| file.role == Role::Manifest)
         .map(|file| file.bytes.len() as u64)
         .sum::<u64>();
-    let mut left = content::MAX_BYTES.saturating_sub(held);
+    if held > *left {
+        return Err(past_total(&dir.join("ita.una")));
+    }
+    *left -= held;
     for (name, file) in modules {
-        let bytes = read_counted(&file, &mut left, true)?;
+        let bytes = read_counted(&file, left, true)?;
         files.push(loaded(name, file, bytes, Role::Module));
     }
     Ok(Loaded {
@@ -304,7 +322,7 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
 }
 
 /// The walk of a package's `src/` (spec/30 §1 rule 4): its `.una` files, named after the
-/// path the package writes, at most [`content::MAX_FILES`] of them among at most
+/// path the package writes, at most [`content::MAX_FILES`] with the package's other files, among at most
 /// [`tree::MAX_ENTRIES`] entries listed, none deeper than [`content::MAX_SEGMENTS`] segments,
 /// and each directory reached once. For the root's own package (`follow`) a link is followed,
 /// to a file or to a directory, but a directory reached a second time, through a link back to
@@ -314,17 +332,21 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
 /// [`tree::MAX_ENTRIES`]: crate::tree::MAX_ENTRIES
 struct Walk {
     files: Vec<(String, PathBuf)>,
+    /// The files of the package outside `src/`: its manifest and its top files.
+    held: usize,
     follow: bool,
     entries: usize,
     seen: std::collections::HashSet<DirKey>,
 }
 
 impl Walk {
-    fn new(src: &Path, follow: bool) -> Result<Walk, LoadError> {
+    /// The walk of `src`, whose package already holds `held` files outside it.
+    fn new(src: &Path, follow: bool, held: usize) -> Result<Walk, LoadError> {
         let mut seen = std::collections::HashSet::new();
         seen.insert(dir_key(src)?);
         Ok(Walk {
             files: Vec::new(),
+            held,
             follow,
             entries: 0,
             seen,
@@ -390,11 +412,11 @@ impl Walk {
                 }
                 self.directory(&path, &relative, depth + 1)?;
             } else if is_file && name.ends_with(".una") {
-                if self.files.len() >= content::MAX_FILES {
+                if self.held + self.files.len() >= content::MAX_FILES {
                     return Err(refused(
                         &path,
                         format!(
-                            "the package's `src/` holds more than {} modules",
+                            "with it the package holds more than {} files, its manifest and top files included",
                             content::MAX_FILES
                         ),
                     ));
@@ -405,6 +427,32 @@ impl Walk {
         }
         Ok(())
     }
+}
+
+/// The refusal of the file at `path` that would take the files read past their bound.
+fn past_total(path: &Path) -> LoadError {
+    refused(
+        path,
+        format!(
+            "with it the package's files hold more than the {} bytes that a package and its path dependencies may hold together",
+            content::MAX_BYTES
+        ),
+    )
+}
+
+/// How many of the files a package publishes beside its manifest and modules, its
+/// `README.md`, `CHANGELOG.md` and license files, are at the top of the directory `dir` (§9
+/// rule 1): they count against its 10,000 files. A `una.toml` package publishes none.
+fn top_files(dir: &Path, format: Format) -> usize {
+    if format != Format::Ita {
+        return 0;
+    }
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| name != "ita.una" && content::is_package_file(name))
+            .count()
+    })
 }
 
 /// A directory's identity: its device and inode on Unix, its canonical path elsewhere.
@@ -480,13 +528,7 @@ fn read_counted(path: &Path, left: &mut u64, unlinked: bool) -> Result<Vec<u8>, 
             *left = left.saturating_sub(bytes.len() as u64);
             Ok(bytes)
         }
-        (_, Some(_)) => Err(refused(
-            path,
-            format!(
-                "with it the package's files hold more than the {} bytes a package may hold",
-                content::MAX_BYTES
-            ),
-        )),
+        (_, Some(_)) => Err(past_total(path)),
     }
 }
 
