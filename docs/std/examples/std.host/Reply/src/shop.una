@@ -1,0 +1,9 @@
+module shop
+
+import std.host (Reply)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let found = Reply(status: 200, headers: [], body: "lamp: 3")
+  @console.print("a reply names its status, headers and body")

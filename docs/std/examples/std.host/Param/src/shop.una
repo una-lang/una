@@ -1,0 +1,9 @@
+module shop
+
+import std.host (Param)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let search = Param(name: "q", value: "lamp")
+  @console.print("a query parameter is a name and a value, both internal")

@@ -1,0 +1,18 @@
+module shop
+
+import std.host (Exchange, Method, Request)
+import std.testing (test_exchange)
+
+--- The target of an exchange's request.
+target(e: Exchange) -> internal Text = e.request.target
+
+test "an exchange carries its request"
+  do target(test_exchange(Request(method: Get, target: "/lamps", segments: ["lamps"], params: [],
+        headers: [], body: "", peer: "192.0.2.1", listener: "test"
+      )))
+  expect result == "/lamps"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("the test of target runs with `una test`")

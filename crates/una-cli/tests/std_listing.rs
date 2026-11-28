@@ -1943,7 +1943,9 @@ fn the_grant_forms_are_read_from_the_spec_and_refuse_others() {
 /// the label of its `accepts` line, and its grant, a grant spec of `spec/13 §5`. That the grant
 /// gives the operation, and is the narrowest that does, is the checker's to say:
 /// `each_operation_is_given_by_its_grant_and_by_no_narrower_one`.
+#[allow(clippy::too_many_arguments)]
 fn check_operations<'i>(
+    module: &str,
     entry: &serde_json::Value,
     declaration: &str,
     described: &[&str],
@@ -2029,7 +2031,8 @@ fn check_operations<'i>(
                     .map(|edition| {
                         (
                             *edition,
-                            listed("prelude", kind)
+                            listed(module, kind)
+                                .or_else(|| listed("prelude", kind))
                                 .and_then(|k| failure_variants(k, &[edition]))
                                 .unwrap_or_default(),
                         )
@@ -2085,30 +2088,80 @@ fn grant_instance(form: &str) -> String {
     form.replace("<path>", "data")
         .replace("<keyfile>", "keys.toml")
         .replace("<origin>", "https://stock.example")
+        .replace("<scheme>", "http")
+        .replace("<address>", "127.0.0.1")
+        .replace("<port>", "8080")
 }
 
-/// Whether `una check` of `main` with `uses @c: capability[op]` and `[run] grants` reports
-/// U3012, in a package of edition 0.2 at `dir`.
-fn needs_grant(dir: &Path, grants: &[String], capability: &str, op: &str) -> bool {
+/// The `run grants` line of `ita.una` for a grant spec: a bare word as it is, and a `serve:`
+/// spec as `serve "<address>"` (`spec/13 §5`); `None` for the forms an `ita.una` writes with
+/// items of their own, which a probe of edition 0.4 does not need.
+fn ita_grant(spec: &str) -> Option<String> {
+    if let Some(address) = spec.strip_prefix("serve:") {
+        Some(format!("serve \"{address}\""))
+    } else if spec.chars().all(|c| c.is_ascii_lowercase()) {
+        Some(spec.to_owned())
+    } else {
+        None
+    }
+}
+
+/// Whether `una check` of `main` with `uses @c: capability[op]` and its grants reports U3012,
+/// in a package at `dir` of `edition`: `[run] grants` of `una.toml` before edition 0.4, `run
+/// grants` of `ita.una` from it, where an empty list is written as `console` alone, which
+/// grants no capability of the probes. A capability of `std.host` that the prelude does not
+/// hold is imported.
+fn needs_grant(
+    dir: &Path,
+    edition: &str,
+    grants: &[String],
+    module: &str,
+    capability: &str,
+    op: &str,
+) -> bool {
     let _ = fs::remove_dir_all(dir);
     fs::create_dir_all(dir.join("src")).unwrap();
-    let listed: Vec<String> = grants.iter().map(|g| format!("\"{g}\"")).collect();
-    fs::write(
-        dir.join("una.toml"),
-        format!(
-            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"probe\"\ngrants = [{}]\n",
-            listed.join(", ")
-        ),
-    )
-    .unwrap();
+    if edition_order(edition) < edition_order("0.4") {
+        let listed: Vec<String> = grants.iter().map(|g| format!("\"{g}\"")).collect();
+        fs::write(
+            dir.join("una.toml"),
+            format!(
+                "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n\n[run]\nentry = \"probe\"\ngrants = [{}]\n",
+                listed.join(", ")
+            ),
+        )
+        .unwrap();
+        fs::copy(
+            root().join("verification.lock"),
+            dir.join("verification.lock"),
+        )
+        .unwrap();
+    } else {
+        let mut lines: Vec<String> = grants.iter().filter_map(|g| ita_grant(g)).collect();
+        if lines.is_empty() {
+            lines.push("console".to_owned());
+        }
+        let lines: Vec<String> = lines.iter().map(|l| format!("    {l}\n")).collect();
+        fs::write(
+            dir.join("ita.una"),
+            format!(
+                "ita probe\n  version 0.1.0\n  edition {edition}\n\nrun\n  entry probe\n  grants\n{}",
+                lines.concat()
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join("ita.lock"), EXAMPLE_ITA_LOCK).unwrap();
+    }
+    let import = if module == "prelude" {
+        String::new()
+    } else {
+        format!("import {module} ({capability})\n\n")
+    };
     fs::write(
         dir.join("src/probe.una"),
-        format!("module probe\n\npub main() -> Unit\n  uses @c: {capability}[{op}]\n=\n  unit\n"),
-    )
-    .unwrap();
-    fs::copy(
-        root().join("verification.lock"),
-        dir.join("verification.lock"),
+        format!(
+            "module probe\n\n{import}pub main() -> Unit\n  uses @c: {capability}[{op}]\n=\n  unit\n"
+        ),
     )
     .unwrap();
     let output = una(dir, &["--json", "check", "--tier", "0", "."]);
@@ -2141,21 +2194,45 @@ fn each_operation_is_given_by_its_grant_and_by_no_narrower_one() {
     for form in &forms {
         match form.strip_suffix("<methods>") {
             Some(prefix) => specs.extend(methods.iter().map(|m| format!("{prefix}{m}"))),
-            // `serve:` grants a capability of its own, of edition 0.4 only (`spec/31 §2`).
-            None if form.starts_with("serve:") => {}
             None => specs.push(form.clone()),
         }
     }
-    let mut ops: Vec<(String, String, String)> = Vec::new();
+    // Each operation with its capability's module and first edition, the edition its probe
+    // is of (#904): `HttpServer`, of `std.host` from edition 0.4, is probed in an `ita.una`.
+    let items: Vec<Item> = std_items();
+    let mut ops: Vec<(String, String, String, String, &'static str)> = Vec::new();
     for entry in reference["entries"].as_array().unwrap() {
+        let module = entry["module"].as_str().unwrap();
+        let name = entry["name"].as_str().unwrap();
+        let first = items
+            .iter()
+            .find(|item| item.module == module && item.name == name)
+            .and_then(|item| editions(item).into_iter().min_by_key(|e| edition_order(e)))
+            .unwrap_or("0.2");
+        let edition = if edition_order(first) <= edition_order("0.2") {
+            "0.2"
+        } else {
+            first
+        };
         for op in entry["operations"].as_array().into_iter().flatten() {
             ops.push((
-                entry["name"].as_str().unwrap().to_owned(),
+                module.to_owned(),
+                name.to_owned(),
                 op["name"].as_str().unwrap().to_owned(),
                 op["grant"].as_str().unwrap().to_owned(),
+                edition,
             ));
         }
     }
+    // A spec is probed in the editions it can be written in: a `serve:` spec only in an
+    // `ita.una` (edition 0.4 on), and in an `ita.una` only the specs `ita_grant` writes.
+    let writable = |spec: &str, edition: &str| {
+        if edition_order(edition) < edition_order("0.4") {
+            !spec.starts_with("serve:")
+        } else {
+            ita_grant(spec).is_some()
+        }
+    };
     assert!(!ops.is_empty() && !specs.is_empty(), "{ops:?} {specs:?}");
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("std-grants");
     // What each spec gives: the operations it lets `main` use.
@@ -2163,15 +2240,18 @@ fn each_operation_is_given_by_its_grant_and_by_no_narrower_one() {
     for spec in &specs {
         let given = ops
             .iter()
-            .filter(|(cap, op, _)| !needs_grant(&dir, &[grant_instance(spec)], cap, op))
-            .map(|(cap, op, _)| format!("{cap}.{op}"))
+            .filter(|(module, cap, op, _, edition)| {
+                writable(spec, edition)
+                    && !needs_grant(&dir, edition, &[grant_instance(spec)], module, cap, op)
+            })
+            .map(|(_, cap, op, _, _)| format!("{cap}.{op}"))
             .collect();
         gives.push((spec.clone(), given));
     }
     let mut problems = Vec::new();
-    for (cap, op, grant) in &ops {
+    for (module, cap, op, grant, edition) in &ops {
         let name = format!("{cap}.{op}");
-        if !needs_grant(&dir, &[], cap, op) {
+        if !needs_grant(&dir, edition, &[], module, cap, op) {
             problems.push(format!("{name}: `main` uses it with no grant and no U3012"));
         }
         let Some((_, by_grant)) = gives.iter().find(|(spec, _)| {
@@ -2549,7 +2629,8 @@ fn the_reference_agrees_with_the_listing() {
             // The failure kind as it is declared in the editions the entry describes.
             let declared: Vec<String> = match sig.fails.as_deref() {
                 None => Vec::new(),
-                Some(kind) => match listed("prelude", kind)
+                Some(kind) => match listed(module, kind)
+                    .or_else(|| listed("prelude", kind))
                     .and_then(|kind| failure_variants(kind, &described_editions))
                 {
                     Some(variants) => variants,
@@ -2780,6 +2861,7 @@ fn the_reference_agrees_with_the_listing() {
         } else if item.kind == "capability" {
             only(&["operations"], &mut problems);
             check_operations(
+                module,
                 entry,
                 declaration,
                 &described_editions,
@@ -3017,7 +3099,9 @@ fn the_reference_agrees_with_the_listing() {
                 // `std.testing` is called only by examples and by the handlers that only they
                 // install (`spec/14 §4`), never from `main`: its example uses it anywhere in its
                 // code, and `each_example_of_the_reference_...` requires that `una test` passes.
-                let ranges = if module == "std.testing" {
+                let ranges = if module == "std.testing"
+                    || EXAMPLE_ONLY.contains(&format!("{module} {name}").as_str())
+                {
                     std::iter::once(0..src.len()).collect()
                 } else {
                     reached_from_main(src, &code)
@@ -3075,6 +3159,12 @@ const EXAMPLE_ITA: &str =
 
 /// The lock of such an example, as `una ita lock` writes it: the solver pins and nothing else.
 const EXAMPLE_ITA_LOCK: &str = "-- Written by `una ita`; do not edit.\nlock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
+
+/// The items whose example shows them in a test of its own, as for `std.testing`, since `main`
+/// cannot reach them under the examples' manifest (#904): only a `serve` grant gives
+/// `HttpServer`, and a value of `Exchange` holds a reply right that only the host, or
+/// `std.testing`'s `test_exchange` in a test, makes (`spec/31 §1`).
+const EXAMPLE_ONLY: [&str; 2] = ["std.host HttpServer", "std.host Exchange"];
 
 /// The one key an example may add to `EXAMPLE_MANIFEST`, and only when its code uses `checked`
 /// exactly once: an opaque predicate is called only there (`spec/03 §4`, ADR 0042), and the
@@ -3212,7 +3302,9 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
                 continue;
             }
             // An example of `std.testing` uses it in an example of its own, which passes.
-            if module == "std.testing" {
+            if module == "std.testing"
+                || EXAMPLE_ONLY.contains(&format!("{module} {name}").as_str())
+            {
                 let tested = una(&copy, &["--color", "never", "test", "."]);
                 let out = String::from_utf8_lossy(&tested.stdout);
                 if !tested.status.success()

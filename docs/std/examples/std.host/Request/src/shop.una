@@ -1,0 +1,11 @@
+module shop
+
+import std.host (Method, Request)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let request = Request(method: Get, target: "/lamps", segments: ["lamps"], params: [], headers: [],
+    body: "", peer: "192.0.2.1", listener: "test"
+  )
+  @console.print("a request holds what the host read, all internal")

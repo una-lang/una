@@ -1,0 +1,3 @@
+the server was closed
+the reply right was not this task's
+the host refused the reply

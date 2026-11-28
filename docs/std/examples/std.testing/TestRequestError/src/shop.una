@@ -1,0 +1,19 @@
+module shop
+
+import std.host (Method)
+import std.testing (TestRequestError, test_request)
+
+--- Why a request was refused, for a test report.
+reason(failure: TestRequestError) -> Text
+=
+  when failure
+    is Refused -> "the host would answer 400"
+
+test "a target that is not in origin-form is refused"
+  do test_request(Get, target: "lamps", body: "")
+  expect fails Refused
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("the test of test_request's refusal runs with `una test`")
