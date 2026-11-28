@@ -148,8 +148,13 @@ fn index(
         ));
     }
     // A module constant's type and value (ADR 0126 rule 11).
+    // The text is shared by the constant's references, and copied only when shown (#2316).
     for (span, text) in &analysis.index.constants {
-        checked.hovers.push((location(*span), text.clone().into()));
+        let text = std::sync::Arc::clone(text);
+        checked.hovers.push((
+            location(*span),
+            una_lsp::HoverText::Lazy(std::sync::Arc::new(move || text.to_string())),
+        ));
     }
     // The contract of each function a call or a name refers to, as `una contract` prints it.
     let modules = crate::contract::Modules {

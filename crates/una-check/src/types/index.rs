@@ -27,8 +27,10 @@ pub struct Index {
     /// module path and its name.
     pub functions: Vec<(Span, String, String)>,
     /// Each reference to a module constant (ADR 0126 rule 11): its span, and the hover text
-    /// that shows the constant's declared type and, for a scalar, its value.
-    pub constants: Vec<(Span, String)>,
+    /// that shows the constant's declared type and, for a scalar, its value. The text is made
+    /// once per constant and shared by its references: a value of thousands of digits named
+    /// at thousands of references is one text, not one per reference (#2316).
+    pub constants: Vec<(Span, Arc<str>)>,
 }
 
 /// The span of the name that declares the kind `kind`, or its variant `variant`, when a
@@ -75,9 +77,15 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             .map_or_else(|| Arc::clone(&none), |(_, params)| Arc::clone(params))
     };
     let records = &findings.records;
+    let mut constant_texts: std::collections::BTreeMap<usize, Arc<str>> =
+        std::collections::BTreeMap::new();
     for (span, res) in &records.res {
         // ADR 0126 rule 11: a constant's hover shows its type and value.
         if let Res::Const(id) = res
+            && let Some(text) = constant_texts.get(id)
+        {
+            index.constants.push((*span, Arc::clone(text)));
+        } else if let Res::Const(id) = res
             && let Some(def) = env.constants.get(*id)
         {
             let evaluated = if def.module >= env.prelude {
@@ -95,6 +103,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
                 Some(value) => format!("```una\nconst {}: {ty} = {value}\n```", def.name),
                 None => format!("```una\nconst {}: {ty}\n```", def.name),
             };
+            let text: Arc<str> = Arc::from(text);
+            constant_texts.insert(*id, Arc::clone(&text));
             index.constants.push((*span, text));
         }
         let target = match res {

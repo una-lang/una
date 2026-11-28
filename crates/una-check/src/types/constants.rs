@@ -45,6 +45,10 @@ pub(crate) struct Evaluated {
     /// The constructors and lists of each value, as elaboration expands it: each is one Core
     /// binding of the chain that substitutes the value.
     compound: BTreeMap<usize, u64>,
+    /// What substituting each value writes into Core IR, its shared parts counted at each use:
+    /// one per element and field, the characters of a text and the decimal digits of an
+    /// integer or a decimal's coefficient (#2317). The substitution budget counts this.
+    weight: BTreeMap<usize, u64>,
 }
 
 /// The cap on the constructors and lists of one constant's value, and of the values one body
@@ -76,6 +80,43 @@ fn compound_count(value: &Value, limit: u64) -> u64 {
         }
     }
     count
+}
+
+/// What substituting `value` writes into Core IR, as [`Evaluated::weight`] counts it; O(that
+/// count), which stops past `limit`.
+fn substituted_weight(value: &Value, limit: u64) -> u64 {
+    let mut weight: u64 = 0;
+    let mut stack: Vec<&Value> = vec![value];
+    while let Some(value) = stack.pop() {
+        weight = weight.saturating_add(match value {
+            Value::Int(n) | Value::Decimal(n, _) => digits(n),
+            Value::Text(text) => u64::try_from(text.chars().count())
+                .unwrap_or(u64::MAX)
+                .max(1),
+            Value::Ctor { fields, .. } => {
+                stack.extend(fields.iter());
+                1
+            }
+            Value::List(items) => {
+                stack.extend(items.iter());
+                1
+            }
+            Value::F64(_) | Value::F32(_) | Value::Bool(_) | Value::Unit => 1,
+        });
+        if weight > limit {
+            break;
+        }
+    }
+    weight
+}
+
+/// The decimal digits of `n`, at most one more than the exact count, and one for its sign:
+/// from its bit length, O(1). log10(2) < 30103/100000.
+fn digits(n: &BigInt) -> u64 {
+    let sign = u64::from(n.sign() == Sign::Minus);
+    (n.bits().saturating_mul(30_103) / 100_000)
+        .saturating_add(1)
+        .saturating_add(sign)
 }
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -394,9 +435,11 @@ pub(crate) fn evaluate(
                 continue;
             }
             let folded = eval.folded;
+            let weight = substituted_weight(&value.0, MAX_SUBSTITUTED);
             values.insert(id, value);
             evaluated.folded.insert(id, folded);
             evaluated.compound.insert(id, count);
+            evaluated.weight.insert(id, weight);
         }
     }
     values.retain(|id, _| wanted.contains(id));
@@ -548,19 +591,28 @@ fn cycles(
 /// part or not, since elaboration copies it each time (#2264 review 2). The parts are a
 /// function's body, each handler operation's body, a test's `given` and `do` lines together,
 /// and each `expect` line of a test on its own: a constant named in k `expect` lines counts k
-/// times, as elaboration substitutes it k times (#2264). Ten times the cap of one value.
+/// times, as elaboration substitutes it k times (#2264). A value counts what substitution
+/// writes: each element and field, each character of a text and each decimal digit of an
+/// integer or a decimal's coefficient (#2317), which rule 5's size counts as one element. Ten
+/// times the cap of one value.
 const MAX_SUBSTITUTED: u64 = 10 * MAX_SIZE;
 
 /// U2041 when the declarations of the package, together, substitute values larger than
-/// [`MAX_SUBSTITUTED`]: one O(log n) range query of the resolutions per declaration, and
-/// O(1) per reference.
+/// [`MAX_SUBSTITUTED`], or when one part names more than [`MAX_COMPOUND`] records, variants
+/// and lists: one O(log n) range query of the resolutions per declaration, and O(1) per
+/// reference. Returns the declarations, by span, that the caps reject: the one past a cap and
+/// every later one that names a constant once the package is past [`MAX_SUBSTITUTED`].
+/// Elaboration leaves them out, so a rejected package never builds the Core IR the caps
+/// refuse (#2316). One diagnostic is reported, at the first reference past a cap.
 pub(crate) fn substitution_budget(
     env: &Env<'_>,
     records: &Records,
     evaluated: &Evaluated,
     report: &mut Report<'_>,
-) {
+) -> BTreeSet<Span> {
     let mut total: u64 = 0;
+    let mut oversized: BTreeSet<Span> = BTreeSet::new();
+    let mut reported = false;
     for module in 0..env.prelude {
         if !env.reports(module) {
             continue;
@@ -569,19 +621,21 @@ pub(crate) fn substitution_budget(
             continue;
         };
         for (decl, entity) in m.tree.decls.iter().zip(m.decls.iter()) {
-            // A constant's own check elaborates its whole value, unshared: its size.
+            // A constant's own check elaborates its whole value, unshared: its weight.
             if let Some(Entity::Const(id)) = entity {
-                let size = evaluated.values.get(id).map_or(1, |(_, size, _)| *size);
-                total = total.saturating_add(size);
+                total = total.saturating_add(weight(evaluated, *id));
                 if total > MAX_SUBSTITUTED {
-                    report.error(
-                        Code::U2041,
-                        decl.span,
-                        format!(
-                            "the constants of this package are too large: their values hold more than {MAX_SUBSTITUTED} elements, fields and characters together"
-                        ),
-                    );
-                    return;
+                    if !reported {
+                        reported = true;
+                        report.error(
+                            Code::U2041,
+                            decl.span,
+                            format!(
+                                "the constants of this package are too large: their values hold more than {MAX_SUBSTITUTED} elements, fields, characters and digits together"
+                            ),
+                        );
+                    }
+                    oversized.insert(decl.span);
                 }
                 continue;
             }
@@ -648,6 +702,11 @@ pub(crate) fn substitution_budget(
                 let chain = chains.entry(part.unwrap_or(usize::MAX)).or_insert(0);
                 *chain += evaluated.compound.get(id).copied().unwrap_or(0);
                 if *chain > MAX_COMPOUND {
+                    oversized.insert(span);
+                    if reported {
+                        break;
+                    }
+                    reported = true;
                     report.error(
                         Code::U2041,
                         *at,
@@ -666,23 +725,34 @@ pub(crate) fn substitution_budget(
                             }
                         ),
                     );
-                    return;
+                    break;
                 }
-                let size = evaluated.values.get(id).map_or(1, |(_, size, _)| *size);
-                total = total.saturating_add(size);
+                total = total.saturating_add(weight(evaluated, *id));
                 if total > MAX_SUBSTITUTED {
+                    oversized.insert(span);
+                    if reported {
+                        break;
+                    }
+                    reported = true;
                     report.error(
                         Code::U2041,
                         *at,
                         format!(
-                            "the constants this package names are too large: their values, counted once in each body or test line that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields and characters"
+                            "the constants this package names are too large: their values, counted once in each body or test line that names them and once per reference elsewhere, hold more than {MAX_SUBSTITUTED} elements, fields, characters and digits"
                         ),
                     );
-                    return;
+                    break;
                 }
             }
         }
     }
+    oversized
+}
+
+/// What substituting constant `id` writes into Core IR ([`Evaluated::weight`]); 1 when its
+/// value is unknown, which is then not substituted.
+fn weight(evaluated: &Evaluated, id: usize) -> u64 {
+    evaluated.weight.get(&id).copied().unwrap_or(1)
 }
 
 /// Whether constant `id`'s value is folded to one literal, which elaboration copies at every
@@ -835,6 +905,7 @@ impl Eval<'_, '_, '_, '_> {
                 let mut values = Vec::with_capacity(items.len());
                 let mut size: u64 = 1;
                 let mut depth: u32 = 0;
+                let mut weight: u64 = 1;
                 for item in items {
                     let (value, item_size, item_depth) = self.expr(item)?;
                     size = size.saturating_add(item_size);
@@ -842,6 +913,7 @@ impl Eval<'_, '_, '_, '_> {
                     if size > MAX_SIZE {
                         return self.too_large(span);
                     }
+                    weight = self.weigh(span, weight, &value)?;
                     values.push(value);
                 }
                 self.nested(span, depth)?;
@@ -870,6 +942,7 @@ impl Eval<'_, '_, '_, '_> {
                 let mut fields: Vec<Option<Value>> = vec![None; args.len()];
                 let mut size: u64 = 1;
                 let mut depth: u32 = 0;
+                let mut weight: u64 = 1;
                 for (position, arg) in args.iter().enumerate() {
                     let (value, field_size, field_depth) = self.expr(&arg.value)?;
                     size = size.saturating_add(field_size);
@@ -877,6 +950,7 @@ impl Eval<'_, '_, '_, '_> {
                     if size > MAX_SIZE {
                         return self.too_large(span);
                     }
+                    weight = self.weigh(span, weight, &value)?;
                     let at = order.get(position).copied().flatten().unwrap_or(position);
                     if let Some(slot) = fields.get_mut(at) {
                         *slot = Some(value);
@@ -897,6 +971,27 @@ impl Eval<'_, '_, '_, '_> {
             }
             _ => Err(Stop),
         }
+    }
+
+    /// `weight`, the substitution weight of a list or record so far ([`Evaluated::weight`]),
+    /// with that of its next part `value`; U2041 past [`MAX_SUBSTITUTED`] (#2317). A value
+    /// that heavy is refused by the substitution budget at its own check whatever else the
+    /// package holds, so stopping here changes no verdict: it only stops the evaluation from
+    /// building, element by element, what the budget refuses. O(the part's weight), stopping
+    /// at the cap.
+    fn weigh(&mut self, span: Span, weight: u64, value: &Value) -> Result<u64, Stop> {
+        let left = MAX_SUBSTITUTED.saturating_sub(weight);
+        let weight = weight.saturating_add(substituted_weight(value, left));
+        if weight > MAX_SUBSTITUTED {
+            let name = self.name;
+            self.fail(
+                span,
+                format!(
+                    "the constant is too large: substituting the value of `{name}` writes more than {MAX_SUBSTITUTED} elements, fields, characters and digits, more than the constants of a whole package may"
+                ),
+            )?;
+        }
+        Ok(weight)
     }
 
     fn too_large(&mut self, span: Span) -> Result<Sized, Stop> {
