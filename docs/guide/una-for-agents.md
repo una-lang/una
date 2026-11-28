@@ -4,6 +4,35 @@ A compact reference for writing Una in packages of edition `0.2`, written for th
 
 How to read the blocks: every `una` block is a whole module that `una check` accepts in canonical form, as the only module of a package of edition `0.2`, unless its first line is `-- fails with U####`, in which case checking it yields that code and no other. A block whose first line is `-- edition 0.1` is checked in a package of edition `0.1`. A block preceded by a file path belongs to a package with the other files named around it. Every `json` block is a document the CLI prints, and every `sh` block runs from the repository root, or in a fresh copy of the directory its `# copy` comment names. `crates/una-cli/tests/guide.rs` checks all of them.
 
+## Editions
+
+`una --version` prints the editions the installed compiler serves and which of them are previews (ADR 0139, ADR 0121). A package names its edition in `ita.una` (`edition 0.4` or `edition 0.5`) or in `una.toml` (`edition = "0.2"`); a single file is edition `0.1`.
+
+| Edition | Status | Where it is taught |
+| --- | --- | --- |
+| `0.1` | stable | §21 of this guide, and the blocks that start with `-- edition 0.1` |
+| `0.2` | stable | this guide, §1 to §20 |
+| `0.3` | preview | [edition reference](configure/package/edition.md); this guide notes where it differs |
+| `0.4` | preview | §22 of this guide, [Tasks and time](tasks-and-time.md), [Serving HTTP](serving-http.md), [Driven programs](driven-programs.md), [Itá](configure/ita/manifest.md) |
+| `0.5` | preview | not taught in this guide: reference in the [edition reference](configure/package/edition.md), [`const` and `var`](language/types/const.md), [collections](../spec/28-collections.md) and [numerics](../spec/29-numerics.md) |
+
+A preview edition may still change under the terms of ADR 0121: a later release may ask for edits to a package of a preview edition.
+
+## Index by task
+
+- Install `una`: [Getting started, §1](getting-started.md#1-install).
+- First check of a package: [§1, the loop](#1-the-loop).
+- Fix a diagnostic: [§1, the loop](#1-the-loop), step 3 (`una fix`, `una explain`), and [§7, failures](#7-failures).
+- Dependencies and Itá: [§22](#22-migrating-to-edition-04), which moves a package to `ita.una`, and the [Itá reference](configure/ita/manifest.md).
+- Proofs and limits: [§6, contracts and proofs](#6-contracts-and-proofs) and [Known limits](known-limits.md#assurance-in-this-release).
+
+## First route
+
+1. Detect what you were given: a directory with `ita.una` (edition `0.4` or later), a directory with `una.toml`, or a single `.una` file.
+2. Run `una --version`. It prints the release and the editions it serves, for example `editions: 0.1, 0.2, 0.3, 0.4, 0.5` and `preview: 0.3, 0.4, 0.5`.
+3. Read the `edition` line of the manifest and pick the guide for it in the table above. A single file is edition `0.1`.
+4. Run `una fmt <path>`, `una check <path>` and `una fix <path>`: the loop of §1.
+
 ## 1. The loop
 
 1. Write or edit `.una` files, then run `una fmt <path>`. The canonical form is part of the language: `una check` reports any other layout as U7001, so generated code goes through `una fmt` before `una check`.
