@@ -262,10 +262,11 @@ pub fn serve(args: &[String]) -> u8 {
 }
 
 /// How a child the parent did not kill ended, from its wait status and the processor time it
-/// used: a `SIGKILL` from a child that used at least its soft processor-time limit
-/// (`cpu_seconds`) is the kernel's at the hard limit, one second later, which a child gets
-/// when its own end by `SIGXCPU` came too late (#2321), and is [`Ended::ProcessorTime`]. Any
-/// other `SIGKILL` is a crash, as before. Neither is ever an answer.
+/// used: a `SIGKILL` the parent did not send, from a child at or past its soft processor-time
+/// limit (`cpu_seconds`), is read as the hard limit's, one second later, which a child gets
+/// when its own end by `SIGXCPU` came too late (#2321), and is [`Ended::ProcessorTime`]; a
+/// coincident outside kill of such a child (OOM, jetsam, `kill -9`) reads the same (#2372).
+/// Any other `SIGKILL` is a crash, as before. Neither is ever an answer.
 fn kernel_end(spawned: Spawned, used: Duration, cpu_seconds: u64) -> Ended {
     match spawned {
         Spawned::Exited(status) => Ended::Exited(status),

@@ -62,10 +62,12 @@ pub enum Ended {
     Cancelled,
     /// Killed by the parent past the memory limit (macOS, by the footprint).
     Memory,
-    /// Killed by the kernel past the processor-time limit: a `SIGKILL` the parent did not send,
-    /// from a child that had used at least its soft processor-time limit, the hard limit one
-    /// second later (`RLIMIT_CPU`). It is what a child whose own end by `SIGXCPU` came too late
-    /// gives (#2321): `cpu`, as `SIGXCPU` is.
+    /// A `SIGKILL` the parent did not send, from a child at or past its soft processor-time
+    /// limit, read as the hard limit's (`RLIMIT_CPU`, one second later): what a child whose own
+    /// end by `SIGXCPU` came too late gives (#2321), `cpu`, as `SIGXCPU` is. The parent cannot
+    /// tell it from a coincident outside kill of such a child (the OOM killer, a cgroup's OOM,
+    /// macOS jetsam, a `kill -9`), which is read the same way; the child is past its limit
+    /// either way, and the outcome is `unknown`, never a proof (#2372).
     ProcessorTime,
 }
 
