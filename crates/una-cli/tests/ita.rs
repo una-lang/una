@@ -875,6 +875,68 @@ fn a_manifest_far_past_its_bound_is_refused_by_its_length() {
     );
 }
 
+/// Runs `una` in `dir` with `args`, and fails rather than waits if it has not ended within
+/// 20 seconds: the exit code and stderr.
+#[cfg(unix)]
+fn una_ends(dir: &Path, args: &[&str]) -> (u8, String) {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
+        .current_dir(dir)
+        .args(args)
+        .env_remove("UNA_ITAOCA")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        let blocked = start.elapsed() > std::time::Duration::from_secs(20);
+        if blocked {
+            let _ = child.kill();
+        }
+        assert!(!blocked, "`una {}` blocked on a FIFO", args.join(" "));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    (u8::try_from(status.code().unwrap()).unwrap(), err)
+}
+
+/// A FIFO at `ita.una` is not a regular file: every command that reads it refuses it at once,
+/// before reading, and none blocks waiting for a writer (#2313).
+#[cfg(unix)]
+#[test]
+fn a_fifo_at_ita_una_is_refused_and_never_blocks() {
+    let dir = package("fifo-manifest", MANIFEST);
+    let manifest = dir.join("ita.una");
+    std::fs::remove_file(&manifest).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(&manifest)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    for args in [
+        &["ita", "remove", "util"][..],
+        &["ita", "add", "json", "2.1"],
+        &["ita", "update", "util"],
+    ] {
+        let (code, err) = una_ends(&dir, args);
+        assert_ne!(code, 0, "`una {}`: {err}", args.join(" "));
+        assert!(
+            err.contains("is not a regular file"),
+            "`una {}`: {err}",
+            args.join(" ")
+        );
+    }
+    // `yank` and `fmt` look for a regular `ita.una` before they read one, as `una check` does.
+    for args in [&["ita", "yank", "0.1.0"][..], &["fmt", "ita.una"]] {
+        let (code, err) = una_ends(&dir, args);
+        assert_eq!(code, 2, "`una {}`: {err}", args.join(" "));
+    }
+}
+
 /// An ill-formed UTF-8 sequence in `ita.una` is reported (U7008) where it is: the file is
 /// decoded once, by the source database, and read as decoded (#2252).
 #[test]

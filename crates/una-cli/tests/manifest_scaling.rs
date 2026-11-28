@@ -38,7 +38,9 @@ fn toml_text(n: usize) -> String {
 
 /// Reads `ita.una` text, keeping the result from the optimizer.
 fn read_ita(text: &str) {
-    drop(std::hint::black_box(parse_ita_manifest(text)));
+    drop(std::hint::black_box(parse_ita_manifest(
+        una_syntax::ita::Text::Written(text),
+    )));
 }
 
 /// Reads `una.toml` text, keeping the result from the optimizer.

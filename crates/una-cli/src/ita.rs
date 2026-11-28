@@ -2646,12 +2646,11 @@ fn read_manifest(path: &Path) -> io::Result<SourceFile> {
     una_project::read_project_file(path, "ita.una", ita::MAX_MANIFEST_BYTES)
 }
 
-/// `text` with `line` added as the last need: at the end of the `needs` section, or in a new
+/// The text of `file` with `line` added as the last need: at the end of the `needs` section, or in a new
 /// one before the first section that follows it in the canonical order, or at the end. The
 /// edit is made on the text decoded once, `\r\n` read as `\n` (#2252).
-fn with_need(text: &str, line: &str) -> String {
-    let decoded = SourceFile::new("ita.una", text.as_bytes());
-    let read = ita::lines(&decoded);
+fn with_need(file: &SourceFile, line: &str) -> String {
+    let read = ita::lines(file);
     let text = read.text.as_str();
     let line_start = |offset: usize| {
         text.get(..offset)
@@ -2823,7 +2822,6 @@ pub(crate) fn add_command(
         Ok(file) => file,
         Err(error) => return unreadable(&manifest_path, &error, out),
     };
-    let text = file.text();
     let name_ok = match name.split_once('/') {
         Some((owner, short)) => is_lower_word(owner) && is_lower_word(short),
         None => is_lower_word(name),
@@ -2914,7 +2912,7 @@ pub(crate) fn add_command(
                 Ok(version) => version.to_string(),
                 Err(error) => {
                     let mut sources = SourceDb::new();
-                    let id = sources.add("ita.una".to_owned(), text.as_bytes());
+                    let id = sources.insert(file.clone());
                     let diagnostics = located(&sources, id, vec![error]);
                     return finish_resolved("add", &[], &[], &[], &diagnostics, &sources, out);
                 }
@@ -2928,7 +2926,7 @@ pub(crate) fn add_command(
     if let Some(from) = &from {
         line.push_str(&format!(" from {from}"));
     }
-    let edited = with_need(text, &line);
+    let edited = with_need(&file, &line);
     // The edit adds exactly one need, and nothing else.
     let (after, _) = ita::parse_manifest(&edited);
     if after.needs.len() != before.needs.len() + 1 {

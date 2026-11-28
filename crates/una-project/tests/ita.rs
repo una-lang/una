@@ -10,6 +10,7 @@ use una_project::ita::{
     check_lock_consistency, parse_ita_lock, parse_ita_manifest, parse_workspace,
 };
 use una_project::{Edition, Format, Profile, ProjectError};
+use una_syntax::ita::Text;
 
 const HEAD: &str = "ita case\n  version 0.1.0\n  edition 0.4\n";
 const LOCK: &str = "lock 1\n\nsolver\n  encoding \"una-smt-1\"\n  name \"z3\"\n  version \"5.1.0\"\n  logic \"QF_UFLIA\"\n  steps 5000000\n  seed 0\n";
@@ -17,7 +18,7 @@ const DIGEST: &str = "sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3
 
 /// The errors of `ita.una` text as "code message".
 fn errors(text: &str) -> Vec<String> {
-    render(&parse_ita_manifest(text).1)
+    render(&parse_ita_manifest(Text::Written(text)).1)
 }
 
 fn render(errors: &[ProjectError]) -> Vec<String> {
@@ -789,7 +790,7 @@ fn edition_0_5_is_named_in_ita_una() {
 /// What the `ita_lock` fuzz target checks (#997), and that a package's name and version name
 /// the bytes they are read from: every range lies within the text as given (#2249).
 fn ranges_lie_within(text: &str) {
-    let (lock, errors) = parse_ita_lock(text);
+    let (lock, errors) = parse_ita_lock(Text::Written(text));
     for error in &errors {
         assert!(
             error.range.start <= error.range.end && error.range.end <= text.len(),

@@ -45,6 +45,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use una_syntax::Unread;
+
 use crate::content::{self, File, MAX_BYTES, MAX_FILES, MAX_SEGMENTS};
 
 /// Why files cannot be read or written: one sentence.
@@ -485,16 +487,64 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
     read_exactly(&handle, size, path)
 }
 
-/// [`read_unlinked`] within `limit` bytes: the bytes and their number, or, for a file over
-/// `limit`, no bytes and its size, so a project file over its bound is never read into memory
-/// (`spec/30 §1` rule 4).
-pub fn read_unlinked_within(path: &Path, limit: u64) -> Result<(Vec<u8>, u64), Refusal> {
+/// [`read_unlinked`] within `limit` bytes: the bytes, or, for a file past `limit`, no bytes and
+/// its size, so a project file past its bound is never read into memory (`spec/30 §1` rule 4).
+pub fn read_unlinked_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<Unread>), Refusal> {
     let flags = flags()?;
     let (handle, size) = open_stable(path, flags, flags.no_follow, false)?;
     if size > limit {
-        return Ok((Vec::new(), size));
+        return Ok((Vec::new(), Some(Unread::Holds(to_usize(size)))));
     }
-    Ok((read_exactly(&handle, size, path)?, size))
+    Ok((read_exactly(&handle, size, path)?, None))
+}
+
+/// Reads the regular file at `path`, which the user's own package holds, within `limit` bytes
+/// (`spec/30 §1` rule 4). A link is followed, as for any file of the user's own directory; what
+/// it names must be a regular file, checked before the open and again on the opened descriptor,
+/// so a FIFO, a device or a directory is refused before anything is read, and the open never
+/// blocks (`O_NONBLOCK` where the platform has it). Then [`read_capped`]: the bytes, or, for a
+/// file past `limit`, no bytes and what is known of its length. O(min(n, limit)).
+pub fn read_regular_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<Unread>), Refusal> {
+    let not_regular = || format!("`{}` is not a regular file", path.display());
+    let listed = fs::metadata(path).map_err(|e| cannot("read", path, &e))?;
+    if !listed.is_file() {
+        return Err(not_regular());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    with_flags(&mut options, FLAGS.map_or(0, |flags| flags.non_block));
+    let handle = options.open(path).map_err(|e| cannot("open", path, &e))?;
+    let opened = handle.metadata().map_err(|e| cannot("read", path, &e))?;
+    if !opened.is_file() {
+        return Err(not_regular());
+    }
+    read_capped(&handle, opened.len(), limit).map_err(|e| cannot("read", path, &e))
+}
+
+/// Reads at most `limit + 1` bytes from `source`, a file of `size` bytes when it was opened:
+/// the bytes, or no bytes and [`Unread::Holds`] its size when `size` is past `limit`, or no
+/// bytes and [`Unread::MoreThan`] `limit` when the read passes it (the file grew while read).
+/// Never more than `limit + 1` bytes are read or held. O(min(n, limit)).
+pub fn read_capped(
+    source: impl Read,
+    size: u64,
+    limit: u64,
+) -> std::io::Result<(Vec<u8>, Option<Unread>)> {
+    if size > limit {
+        return Ok((Vec::new(), Some(Unread::Holds(to_usize(size)))));
+    }
+    let mut bytes = Vec::with_capacity(to_usize(size));
+    source
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Ok((Vec::new(), Some(Unread::MoreThan(to_usize(limit)))));
+    }
+    Ok((bytes, None))
+}
+
+fn to_usize(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 /// A file the user names, as [`read_user_file`] read it.
@@ -1219,6 +1269,34 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The read stops one byte past the bound whatever the size the file had when opened, so a
+    /// file that grows while read, or a source that never ends, costs at most `limit + 1` bytes,
+    /// and is reported as more than the bound, never as a length it does not have (#2309,
+    /// #2310). A source of exactly the bound is read whole; a size past it reads nothing.
+    #[test]
+    fn a_capped_read_stops_one_byte_past_the_bound() {
+        let limit = 1 << 20;
+        // A source of 64 MiB that claimed 0 bytes when opened.
+        let mut source = std::io::repeat(7).take(64 << 20);
+        let (bytes, unread) = read_capped(&mut source, 0, limit).unwrap();
+        assert_eq!((bytes.len(), unread), (0, Some(Unread::MoreThan(1 << 20))));
+        assert_eq!((64 << 20) - source.limit(), limit + 1, "read past the cap");
+        let mut source = std::io::repeat(7).take(limit);
+        let (bytes, unread) = read_capped(&mut source, limit, limit).unwrap();
+        assert_eq!((bytes.len() as u64, unread), (limit, None));
+        let mut source = std::io::repeat(7).take(64 << 20);
+        let (bytes, unread) = read_capped(&mut source, limit + 1, limit).unwrap();
+        assert_eq!(
+            (bytes.len(), unread),
+            (0, Some(Unread::Holds((1 << 20) + 1)))
+        );
+        assert_eq!(
+            source.limit(),
+            64 << 20,
+            "a size past the bound reads nothing"
+        );
     }
 
     /// The flag values are this module's own constants: opening a link with them must fail, and

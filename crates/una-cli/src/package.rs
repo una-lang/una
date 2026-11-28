@@ -128,7 +128,7 @@ pub fn load_in(
     for file in &mut loaded.files {
         if let Some(text) = overlay.get(&file.path) {
             file.bytes = text.as_bytes().to_vec();
-            file.len = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
+            file.unread = None;
         }
     }
     let mut package = Package {
@@ -416,7 +416,7 @@ fn load_dependencies(
                 for mut file in loaded.files {
                     if let Some(text) = overlay.get(&file.path) {
                         file.bytes = text.as_bytes().to_vec();
-                        file.len = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
+                        file.unread = None;
                     }
                     let relative = file
                         .name
