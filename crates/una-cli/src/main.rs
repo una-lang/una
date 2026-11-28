@@ -70,7 +70,7 @@ fn main() -> ExitCode {
 /// that run outside the checker's own thread (`una core`, the Core export, the report, the
 /// native backend, the copies and drops of the program) at the deepest Core IR the checker
 /// accepts.
-const MAIN_STACK_BYTES: usize = 256 * 1024 * 1024;
+const MAIN_STACK_BYTES: usize = una_core::depth::STACK_BYTES;
 
 /// A variable of the process environment, for programs that `una run` grants `env`
 /// (`spec/14 §3`). The binary reads it, so that the library never does

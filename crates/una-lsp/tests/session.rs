@@ -46,6 +46,10 @@ fn lazy(made: &Arc<Mutex<Vec<&'static str>>>, name: &'static str, text: &'static
 }
 
 impl Workspace for Stub {
+    fn check_stack_bytes(&self) -> usize {
+        2 * 1024 * 1024
+    }
+
     fn root(&self, _file: &Path) -> PathBuf {
         PathBuf::from("/pkg")
     }
