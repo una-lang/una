@@ -153,6 +153,7 @@ pub const OPEN_FLAGS: i32 = 0x0004 | 0x0002_0000;
         target_arch = "loongarch64"
     )
 ))]
+/// The flags of [`OPEN_FLAGS`] on Linux and Android with the generic values (see the macOS definition).
 pub const OPEN_FLAGS: i32 = 0o4000 | 0o400;
 
 #[cfg(any(
@@ -161,6 +162,7 @@ pub const OPEN_FLAGS: i32 = 0o4000 | 0o400;
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
+/// The flags of [`OPEN_FLAGS`] on FreeBSD, DragonFly, NetBSD and OpenBSD (see the macOS definition).
 pub const OPEN_FLAGS: i32 = 0x0004 | 0x8000;
 
 #[cfg(not(any(
@@ -185,6 +187,7 @@ pub const OPEN_FLAGS: i32 = 0x0004 | 0x8000;
     target_os = "netbsd",
     target_os = "openbsd"
 )))]
+/// No flags elsewhere, Windows included (see the macOS definition for what that leaves open).
 pub const OPEN_FLAGS: i32 = 0;
 
 fn flags() -> Result<Flags, Refusal> {

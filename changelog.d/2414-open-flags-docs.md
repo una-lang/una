@@ -1,0 +1,1 @@
+- **una-project builds again off macOS** (#2414). The open flags of project files (#2350) carried their doc comment on the macOS definition only, and the crate denies `missing_docs`, so `una-project` did not compile on Linux, the BSDs or elsewhere. Each definition now has its comment.
