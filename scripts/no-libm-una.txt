@@ -61,3 +61,32 @@ linux remainder hwf.cpp.o
 # refer to them in the trace of the shipped `una` of 2026-11-25.
 linux-builtins ceil pdd_solver.cpp.o
 linux-builtins sqrt hwf.cpp.o sls_arith_lookahead.cpp.o sls_bv_engine.cpp.o sls_bv_lookahead.cpp.o
+#
+# x86-64 Linux (#2106; the Owner's decisions of 2026-11-27, recorded in the release's decisions,
+# card #2354), each scoped to x86-64 by `@x86_64` (`uname -m`, #2365): on aarch64 each of these is
+# an instruction or inlined, and none is allowed there; on the x86-64 baseline
+# (no SSE4.1, no FMA at build time, ADR 0114 rule 6.5) the compiler calls the function.
+# `nearbyint`: Z3's hardware floating-point numbers (hwf.cpp.o) call it, and the link binds it to
+# the platform's libm, as `remainder` above: a solver import, in `una` only (decision (a)).
+linux@x86_64 nearbyint hwf.cpp.o
+# `fma`: hwf.cpp's `hwf_manager::fma` calls it, and the link binds it to the toolchain's
+# compiler_builtins, whose hardware paths ADR 0120's amendment of 2026-11-27 allows (decision (b)).
+linux-builtins@x86_64 fma hwf.cpp.o
+#
+# `linux-rust-builtins`: Rust objects of the release graph, each by its exact member name (the
+# crate, its metadata hash and its codegen unit, so that another build of the crate fails closed
+# until this list names it), whose references to a name resolve to the toolchain's
+# compiler_builtins, never to the platform's libm: in the link trace of `una` (the definition
+# must be compiler_builtins' and `una` may not import the name) and in `libuna_rt.a` (only where
+# the same archive defines the name in a compiler_builtins member). An executable that `una build`
+# links stays strict. The toml crate's object takes `%` of an f64 and of an f32, which the x86-64
+# baseline lowers to calls of `fmod` and `fmodf` (decision (c)).
+linux-rust-builtins@x86_64 fmod toml-a2ec2fe2cccba1d6.toml.a72671b9309b829-cgu.14.rcgu.o
+linux-rust-builtins@x86_64 fmodf toml-a2ec2fe2cccba1d6.toml.a72671b9309b829-cgu.14.rcgu.o
+#
+# `linux-rt-builtins NAME FUNCTION`: a reference to NAME, in `libuna_rt.a` only, by the member of
+# the toolchain's compiler_builtins that defines FUNCTION (its role, never its file name, which
+# carries a hash), and only where the same archive defines NAME in a compiler_builtins member.
+# Rust's port of `cbrt` in compiler_builtins calls `fma`, which binds to compiler_builtins' own
+# weak `fma` (decision (d), the coordinator's under the Owner's (b) and (c), for confirmation).
+linux-rt-builtins@x86_64 fma compiler_builtins::math::libm_math::cbrt::cbrt

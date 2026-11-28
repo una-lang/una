@@ -596,13 +596,16 @@ fn the_release_image_installs_the_toolchain_the_lock_records() {
         .lines()
         .map(|line| line.trim().trim_end_matches('\\').trim())
         .collect();
-    let packages = table(&lock, "toolchain.aarch64-unknown-linux-gnu");
-    assert!(!packages.is_empty());
-    for (name, version) in packages {
-        let pinned = format!("{name}-{version}");
-        assert!(
-            installed.contains(&pinned.as_str()),
-            "Dockerfile.release does not install {pinned}"
-        );
+    // One image for both architectures (#2106): each Linux target's table is checked.
+    for target in ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] {
+        let packages = table(&lock, &format!("toolchain.{target}"));
+        assert!(!packages.is_empty(), "{target}");
+        for (name, version) in packages {
+            let pinned = format!("{name}-{version}");
+            assert!(
+                installed.contains(&pinned.as_str()),
+                "Dockerfile.release does not install {pinned} ({target})"
+            );
+        }
     }
 }

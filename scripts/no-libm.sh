@@ -35,7 +35,11 @@
 # object (a member of libstdc++.a, of a Rust library, the binary's own code) is a finding. A
 # definition of one of those names outside a shared library (a math library linked in
 # statically) is a finding too, except one by the pinned toolchain's compiler_builtins of a name
-# of the list's `linux-builtins` entries, which only Z3's listed objects may refer to. Each
+# of the list's `linux-builtins` entries, which only Z3's listed objects may refer to, or of its
+# `linux-rust-builtins` entries, which only the Rust objects they name exactly may refer to
+# (#2354). The runtime's `linux-rust-builtins` references, and its `linux-rt-builtins` ones by
+# the compiler_builtins member that defines the function the entry names, are allowed only where
+# the same archive defines the name in a compiler_builtins member (#2354). Each
 # solver name `una` imports must have such a reference. The trace names each object, so this mode needs no
 # `una` built without the solver; it has no UNA_WITHOUT_SOLVER argument.
 #
@@ -154,7 +158,7 @@ list() {
 check() {
     : > "$tmp/solver"
     awk -v artifact="$1" -v mode="${2:-binary}" -v os="$os" -v denyfile="$deny" \
-        -v solverfile="$tmp/names" -v solverout="$tmp/solver" '
+        -v solverfile="$tmp/names" -v solverout="$tmp/solver" -v rtfile="${3:-/dev/null}" '
         function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
         function name(s) {
             sub(/@.*/, "", s)
@@ -174,6 +178,10 @@ check() {
                 }
                 close(solverfile)
             }
+            if (mode == "archive") {
+                while ((getline line < rtfile) > 0) if (line != "") rtallowed[line] = 1
+                close(rtfile)
+            }
             prefix = artifact ":"
         }
         /^[ \t]*$/ { next }
@@ -192,6 +200,7 @@ check() {
             s = name(w[k])
             if (!(s in denied)) next
             if (mode == "una" && (s in solver)) { print s > solverout; next }
+            if (mode == "archive" && ((s " " substr(where, length(artifact) + 2, length(where) - length(artifact) - 2)) in rtallowed)) next
             print "no-libm: " where ": " s
             bad = 1
         }
@@ -208,8 +217,8 @@ findings=0
 # and on Linux $tmp/builtins `name object` for each object of the `linux-builtins` entries: the
 # references of Z3 objects that the link resolves to the pinned toolchain's compiler_builtins,
 # which only the trace mode reads; `una` may not import those names.
-awk -v os="$os" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allowed" -v names="$tmp/names" \
-    -v builtins="$tmp/builtins" '
+awk -v os="$os" -v arch="$(uname -m)" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allowed" -v names="$tmp/names" \
+    -v builtins="$tmp/builtins" -v rustbuiltins="$tmp/rustbuiltins" -v rtbuiltins="$tmp/rtbuiltins" '
     function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
     BEGIN {
         while ((getline line < denyfile) > 0) {
@@ -220,21 +229,38 @@ awk -v os="$os" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allow
         printf "" > allowed
         printf "" > names
         printf "" > builtins
+        printf "" > rustbuiltins
+        printf "" > rtbuiltins
     }
     {
         line = trim($0)
         if (line == "") next
         n = split(line, w, /[ \t]+/)
-        if (n < 3 || (w[1] != "macos" && w[1] != "linux" && w[1] != "linux-builtins")) {
+        # A platform may be scoped to one processor, `PLATFORM@MACHINE` (`uname -m`), #2365.
+        entry = w[1]
+        machine = ""
+        if (index(w[1], "@") > 0) { machine = substr(w[1], index(w[1], "@") + 1); w[1] = substr(w[1], 1, index(w[1], "@") - 1) }
+        if (n < 3 || (w[1] != "macos" && w[1] != "linux" && w[1] != "linux-builtins" && w[1] != "linux-rust-builtins" && w[1] != "linux-rt-builtins") \
+            || (index(entry, "@") > 0 && machine !~ /^(x86_64|aarch64|arm64)$/)) {
             print "no-libm: " listfile ": an entry that is not a platform, a name and its objects: " $0
             bad = 1
             next
         }
         if (!(w[2] in denied)) { print "no-libm: " listfile ": " w[2] " is not a name of " denyfile; bad = 1; next }
-        if ((w[1] " " w[2]) in seen) { print "no-libm: " listfile ": " w[2] " is listed twice for " w[1]; bad = 1; next }
-        seen[w[1] " " w[2]] = 1
+        if ((entry " " w[2]) in seen) { print "no-libm: " listfile ": " w[2] " is listed twice for " entry; bad = 1; next }
+        seen[entry " " w[2]] = 1
+        if (machine != "" && machine != arch) next
         if (w[1] == "linux-builtins") {
             if (os == "linux") for (i = 3; i <= n; i++) print w[2] " " w[i] > builtins
+            next
+        }
+        if (w[1] == "linux-rust-builtins") {
+            if (os == "linux") for (i = 3; i <= n; i++) print w[2] " " w[i] > rustbuiltins
+            next
+        }
+        if (w[1] == "linux-rt-builtins") {
+            if (n != 3) { print "no-libm: " listfile ": a linux-rt-builtins entry names one function that its member defines: " $0; bad = 1; next }
+            if (os == "linux") print w[2] " " w[3] > rtbuiltins
             next
         }
         if (w[1] != os) next
@@ -362,7 +388,7 @@ if [ -n "$trace" ]; then
     fi
     : > "$tmp/referenced"
     awk -v trace="$trace" -v denyfile="$tmp/deny" -v allowedfile="$tmp/allowed" \
-        -v builtinsfile="$tmp/builtins" -v membersfile="$tmp/z3members" -v cb="$builtins_prefix" \
+        -v builtinsfile="$tmp/builtins" -v rustfile="$tmp/rustbuiltins" -v membersfile="$tmp/z3members" -v cb="$builtins_prefix" \
         -v referenced="$tmp/referenced" '
         BEGIN {
             while ((getline line < denyfile) > 0) denied[line] = 1
@@ -375,6 +401,14 @@ if [ -n "$trace" ]; then
                 builtin_name[bw[1]] = 1
             }
             close(builtinsfile)
+            # The `linux-rust-builtins` entries (#2354): Rust objects, by their exact member
+            # names, whose references to a name resolve to compiler_builtins.
+            while ((getline line < rustfile) > 0) {
+                rust[line] = 1
+                split(line, rw, " ")
+                builtin_name[rw[1]] = 1
+            }
+            close(rustfile)
             while ((getline line < membersfile) > 0) z3member[line] = 1
             close(membersfile)
         }
@@ -402,6 +436,16 @@ if [ -n "$trace" ]; then
                 member = substr(file, RSTART + 1, RLENGTH - 2)
                 ok = ((sym " " member) in allowed) || ((sym " " member) in builtin)
             }
+            if (!ok && match(file, /\([^()]*\)$/)) {
+                # A `linux-rust-builtins` member, inside the rlib of its own crate (#2364): the
+                # member `<crate>-<hash>.<...>.rcgu.o` of `.../lib<crate>-<hash>.rlib`.
+                member = substr(file, RSTART + 1, RLENGTH - 2)
+                library = substr(file, 1, RSTART - 1)
+                sub(/.*\//, "", library)
+                crate = member
+                sub(/\..*/, "", crate)
+                ok = ((sym " " member) in rust) && library == ("lib" crate ".rlib")
+            }
             if (ok) { print sym > referenced; next }
             print "no-libm: " trace ": " file " references " sym ", and is not, byte for byte, an object of the Z3 library that scripts/no-libm-una.txt names for it"
             bad = 1
@@ -428,9 +472,54 @@ if [ -z "$trace" ]; then
     fi
 fi
 
+: > "$tmp/rtallowed"
+if [ "$os" = linux ] && { [ -s "$tmp/rustbuiltins" ] || [ -s "$tmp/rtbuiltins" ]; }; then
+    # The runtime's references that the Owner's decisions of 2026-11-27 allow (#2354), each only
+    # where the same archive defines the name in a member of the toolchain's compiler_builtins,
+    # so that a link of the archive binds it there and never to the platform's libm:
+    # `linux-rust-builtins` names exact members (a Rust crate's object), `linux-rt-builtins` a
+    # compiler_builtins member by the function it defines (its role), never by its file name.
+    : > "$tmp/out"
+    if list -A -C --defined-only "$archive"; then
+        awk -v lib="$archive" -v rustfile="$tmp/rustbuiltins" -v rtfile="$tmp/rtbuiltins" -v out="$tmp/rtallowed" '
+            BEGIN {
+                while ((getline line < rustfile) > 0) if (line != "") rust[line] = 1
+                close(rustfile)
+                while ((getline line < rtfile) > 0) if (line != "") { split(line, w, " "); role[w[2]] = role[w[2]] " " w[1] }
+                close(rtfile)
+                prefix = lib ":"
+            }
+            index($0, prefix) == 1 {
+                rest = substr($0, length(prefix) + 1)
+                colon = index(rest, ":")
+                if (colon == 0) next
+                member = substr(rest, 1, colon - 1)
+                rest = substr(rest, colon + 1)
+                sub(/^[0-9a-fA-F]* +/, "", rest)
+                kind = substr(rest, 1, 1)
+                sym = substr(rest, 3)
+                gsub(/\[[0-9a-f]+\]/, "", sym)
+                if (kind != "T" && kind != "W") next
+                if (index(member, "compiler_builtins-") == 1) {
+                    cbdef[sym] = 1
+                    if (sym in role) roles[member] = roles[member] role[sym]
+                }
+            }
+            END {
+                for (pair in rust) { split(pair, p, " "); if (p[1] in cbdef) print pair > out }
+                for (member in roles) {
+                    k = split(roles[member], names, " ")
+                    for (i = 1; i <= k; i++) if (names[i] in cbdef) print names[i] " " member > out
+                }
+            }
+        ' "$tmp/out" || findings=1
+    else
+        findings=1
+    fi
+fi
 : > "$tmp/out"
 if list -A -u "$archive"; then
-    check "$archive" archive || findings=1
+    check "$archive" archive "$tmp/rtallowed" || findings=1
 else
     findings=1
 fi

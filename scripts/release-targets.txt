@@ -4,7 +4,9 @@
 # which fails closed. scripts/local-release.sh builds an archive of each and no other,
 # scripts/release.sh and scripts/check-release.sh refuse any other target, and the tests of
 # supply-chain/z3.lock and install.sh read it. A target added here also needs its [library] line
-# in supply-chain/z3.lock and the native evidence of ADR 0124 rule 31; x86_64-unknown-linux-gnu
-# needs a native x86-64 Linux host for that (#1442), so it is not listed.
+# in supply-chain/z3.lock and the native evidence of ADR 0124 rule 31; for x86_64-unknown-linux-gnu
+# that evidence comes from a GitHub-hosted x86-64 Linux runner (#2106, ADR 0124's amendment of
+# 2026-11-27, .github/workflows/linux-x86-64.yml).
 aarch64-apple-darwin
 aarch64-unknown-linux-gnu
+x86_64-unknown-linux-gnu

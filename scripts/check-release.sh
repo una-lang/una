@@ -331,7 +331,9 @@ done
 if [ "$#" -eq 0 ]; then
     echo "note: no fma_allowlist in the report of the packed una; scripts/check-fma.sh uses its own"
 fi
-scripts/check-fma.sh "$@" "$una" "$runtime"
+# The shipped `una` and `libuna_rt.a` also allow the four exact names of the toolchain's `fma`
+# and `fmaf` (ADR 0120's amendment of 2026-11-27, #2106); the programs `una build` writes do not.
+scripts/check-fma.sh "$@" --toolchain-fma "$una" "$runtime"
 limited 300 "$tmp/step" "$una" test examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
 limited 300 "$tmp/step" "$una" run examples/hello || { cat "$tmp/step.err" >&2; exit 1; }
 greeting=$(cat "$tmp/step")
@@ -458,6 +460,15 @@ case $target in
         done
         scripts/no-libm-test.sh
         UNA_Z3_LIB=$z3_lib scripts/no-libm.sh --link-trace "$link_trace" "$una" "$runtime" "$tmp/no-libm-executables"
+        # The programs that the packed `una` built keep the FMA allowlist alone (ADR 0120's
+        # amendment of 2026-11-27, #2366): no --toolchain-fma, so compiler_builtins' fma paths,
+        # which libuna_rt.a carries, fail here if a program ever pulls them in. On AArch64 the
+        # scan prints that it is not applicable.
+        set --
+        for prefix in $allowlist; do
+            set -- "$@" --allow "$prefix"
+        done
+        scripts/check-fma.sh "$@" "$tmp/no-libm-executables"/*
         ;;
 esac
 # The release una reads no variable and no file for its runtime (ADR 0124 rules 14 and 15):

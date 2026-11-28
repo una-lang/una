@@ -23,8 +23,9 @@
 #                advisory database fetched now (advisories, licenses, bans, crates.io only), and
 #                the supply-chain review record; the database's commit goes into the record
 #   mac          scripts/local-ci.sh
-#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64, emulated unless the Docker
-#                engine is x86-64); required only when
+#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64) where the Docker engine is
+#                x86-64; elsewhere the hosted x86-64 runner's evidence of SHA, checked by
+#                scripts/hosted-evidence.sh into OUT/hosted (#2106); required only when
 #                x86_64-unknown-linux-gnu is shipped (#1903)
 #   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
 #   release      scripts/local-release.sh for the archive of each shipped target
@@ -82,7 +83,8 @@
 #                Landlock confines each run. Its summary is OUT/hunt-linux-arm64/summary.json
 #   solver-identity, limits, toolchain-free
 #                ADR 0124 rule 31 (docs/release-gates.md); limits-linux-arm64 and limits-linux are
-#                the limits gate natively in the Linux container of that architecture (Docker)
+#                the limits gate natively in the Linux container of that architecture (Docker),
+#                limits-linux from the hosted x86-64 runner's evidence as linux is (#2106)
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, record.md, the full validation record, and, when the record names its
@@ -762,10 +764,23 @@ gate_limits() {
 
 gate_limits-linux-arm64() { run limits-linux-arm64 scripts/local-ci.sh --linux-arm64 --limits; }
 
-# Emulated on the gate machine, where scripts/limits.sh refuses to run: it can pass only where the
-# Docker engine is x86-64 (the native-host mode of scripts/local-ci.sh --linux, #1939) and
-# scripts/emulation.sh finds the container native (ADR 0124 rule 31, #1442).
-gate_limits-linux() { run limits-linux scripts/local-ci.sh --linux --limits; }
+# The x86_64-unknown-linux-gnu legs (#2106, ADR 0124 rule 31 as its amendment of 2026-11-27
+# reads it): where the Docker engine is x86-64 (the native-host mode of scripts/local-ci.sh
+# --linux, #1939) they run here; elsewhere, on the gate machine, whose linux/amd64 container is
+# emulated and installs no seccomp filter (#1442), the gate is the hosted runner's evidence of
+# the gated SHA, checked by scripts/hosted-evidence.sh and kept in OUT/hosted. Neither falls back
+# to the emulated leg, which scripts/limits.sh refuses.
+hosted_or_local() { # gate leg local-command...
+    local gate=$1 leg=$2
+    shift 2
+    if (cd "$CLONE" && scripts/hosted-evidence.sh --native-engine); then
+        run "$gate" "$@"
+    else
+        run "$gate" scripts/hosted-evidence.sh "$SHA" "$leg" "$OUT/hosted"
+    fi
+}
+
+gate_limits-linux() { hosted_or_local limits-linux limits-linux scripts/local-ci.sh --linux --limits; }
 
 gate_toolchain-free() {
     # ADR 0124 rule 31, the build phase for `una check` and `una test`: the release una alone,
@@ -779,8 +794,8 @@ gate_toolchain-free() {
     local version
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     run toolchain-free sh -c '
-        version=$1 unpacked=$2
-        shift 2
+        version=$1 unpacked=$2 sha=$3 hosted=$4
+        shift 4
         built=target/local-release/v$version
         rm -rf "${unpacked:?}"
         mkdir -p "$unpacked" || exit 1
@@ -810,16 +825,31 @@ gate_toolchain-free() {
                 *) echo "no toolchain-free leg for $target" >&2; exit 1 ;;
             esac
             una=$(unpacked_una "$target") || exit 1
+            # The x86-64 Linux leg on a gate machine whose linux/amd64 container is emulated
+            # (#2106): the hosted runner ran scripts/toolchain-free.sh --linux natively on its
+            # archive (the `archive` leg), and this archive must be byte for byte that one.
+            if [ "$leg" = --linux ] && ! scripts/hosted-evidence.sh --native-engine; then
+                # Its whole output, the log of the runner included (#2327).
+                evidence=$(scripts/hosted-evidence.sh "$sha" archive "$hosted") \
+                    || { printf "%s\n" "$evidence"; exit 1; }
+                printf "%s\n" "$evidence"
+                name=una-$version-$target.tar.gz
+                ours=$(shasum -a 256 "$built/$name" | cut -d " " -f 1)
+                printf "%s\n" "$evidence" | grep -qx "hosted: archive $name sha256 $ours" \
+                    || { echo "$name here is $ours, not the archive the hosted runner checked" >&2; exit 1; }
+                echo "== toolchain-free ($target): the hosted runner ran it natively on this archive, sha256 $ours"
+                continue
+            fi
             scripts/toolchain-free.sh "$una" examples/events $leg || exit 1
         done' \
-        sh "$version" "$OUT/toolchain-free" $TARGETS
+        sh "$version" "$OUT/toolchain-free" "$SHA" "$OUT/hosted/toolchain-free" $TARGETS
 }
 
 gate_deps() { run deps scripts/deps-audit.sh; }
 
 gate_mac() { run mac scripts/local-ci.sh; }
 
-gate_linux() { run linux scripts/local-ci.sh --linux; }
+gate_linux() { hosted_or_local linux linux scripts/local-ci.sh --linux; }
 
 gate_linux-arm64() { run linux-arm64 scripts/local-ci.sh --linux-arm64; }
 
@@ -832,7 +862,7 @@ gate_release() {
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     tag=v$version
     run release with_clone_tag "$CLONE" "$OUT" "$tag" "$SHA" \
-        sh -c "git status --porcelain && scripts/local-release.sh '$tag'"
+        sh -c "git status --porcelain && UNA_HOSTED_DIR='$OUT/hosted/release' scripts/local-release.sh '$tag'"
 }
 
 gate_reproducible() {
@@ -858,7 +888,7 @@ gate_reproducible() {
         rm -rf "${first:?}"
         cp -R "$built" "$first" || exit 1
         docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
-        UNA_LOCAL_RELEASE_VOLUME=$again scripts/local-release.sh "$tag"
+        UNA_LOCAL_RELEASE_VOLUME=$again UNA_HOSTED_DIR='"'$OUT/hosted/reproducible'"' scripts/local-release.sh "$tag"
         status=$?
         version=${tag#v}
         [ $# -gt 0 ] || { echo "no shipped target"; status=1; }
@@ -1207,6 +1237,24 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null |
         echo "None: the release gate did not run or did not record the musl inputs."
     else
         printf '%s\n' "$musls"
+    fi
+    echo
+    # The hosted x86-64 evidence (#2106, docs/release-gates.md §2 "The hosted x86-64 evidence"):
+    # for each gate that took it, the run, its runner image and kernel, and the archive's digest,
+    # as scripts/hosted-evidence.sh printed them in the gate's log. Only the record holds them;
+    # the files are in OUT/hosted (linux, limits-linux, and release, reproducible and
+    # toolchain-free each in a directory of its own). The runner's own log is printed with each
+    # line after `| `, so only the checker's lines start with `hosted` (#2329).
+    echo "## Hosted x86-64 evidence"
+    echo
+    hosted=$(for gate in linux limits-linux release reproducible toolchain-free; do
+        LC_ALL=C sed -n -E "s/^(hosted evidence: (PASS|FAIL) .*|hosted: (run|job|archive) .*)\$/- $gate: \1/p" \
+            "$OUT/logs/$gate.log" 2>/dev/null | LC_ALL=C sort -u
+    done)
+    if [ -z "$hosted" ]; then
+        echo "None: no gate of this run took the hosted runner's evidence."
+    else
+        printf '%s\n' "$hosted"
     fi
     echo
     echo "## Dependency audit"
