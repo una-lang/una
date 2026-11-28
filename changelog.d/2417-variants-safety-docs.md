@@ -1,0 +1,1 @@
+- **una-core passes clippy on x86-64** (#2417). The kernels of the x86-64 dense variants (ADR 0120 rule 56) are `#[target_feature]` functions, which clippy treats as unsafe to call; their docs had no `# Safety` section, so `cargo clippy -- -D warnings` failed on x86-64 only. Each now states that the processor must have every feature of its variant.

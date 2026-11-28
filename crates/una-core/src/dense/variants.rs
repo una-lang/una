@@ -80,12 +80,22 @@ macro_rules! variant {
             }
 
             /// [`blocked::sum`] with this variant's features: the lanes of rule 45. O(n).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn sum(items: &[f64]) -> f64 {
                 blocked::sum_lanes(items)
             }
 
             /// [`blocked::dot_from`] with this variant's `fma`: rule 46 from `start`. O(K).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn dot_from(start: f64, x: &[f64], y: &[f64]) -> f64 {
                 blocked::dot_from_with(start, x, y, |a, b, c| fused(a, b, c))
@@ -93,6 +103,11 @@ macro_rules! variant {
 
             /// [`blocked::dot_pairs`] with this variant's `fma`, over the pairs of `pairs`.
             /// O(K).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn dot_pairs(start: f64, pairs: &mut dyn Iterator<Item = (f64, f64)>) -> f64 {
                 blocked::dot_pairs_with(start, pairs, |a, b, c| fused(a, b, c))
@@ -100,6 +115,11 @@ macro_rules! variant {
 
             /// [`blocked::norm2`] with this variant's `fma` (rule 47): `scan` and `items` are
             /// two passes over the same elements. O(n).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn norm2(
                 scan: &mut dyn Iterator<Item = f64>,
@@ -109,30 +129,55 @@ macro_rules! variant {
             }
 
             /// [`blocked::add_product`] with this variant's `fma`: `C += A × B`. O(mkn).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn add_product(c: &mut [f64], a: &[f64], b: &[f64], m: usize, k: usize, n: usize) {
                 blocked::add_product_with(c, a, b, m, k, n, |x, y, z| fused(x, y, z));
             }
 
             /// [`blocked::multiply_array`] with this variant's `fma`. O(mk).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn multiply_array(a: &[f64], m: usize, k: usize, v: &[f64], out: &mut [f64]) {
                 blocked::multiply_array_with(a, m, k, v, out, |x, y, z| fused(x, y, z));
             }
 
             /// [`blocked::lu`] with this variant's `fma` (rule 48). O(n³).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn lu(a: &mut [f64], n: usize, pivots: &mut [usize]) -> bool {
                 blocked::lu_with(a, n, pivots, |x, y, z| fused(x, y, z))
             }
 
             /// [`blocked::cholesky`] with this variant's `fma` (rule 49). O(n³).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn cholesky(a: &mut [f64], n: usize) -> bool {
                 blocked::cholesky_with(a, n, |x, y, z| fused(x, y, z))
             }
 
             /// [`blocked::solve_triangular`] with this variant's `fma` (rule 50). O(n²r).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn solve_triangular(
                 t: &[f64],
@@ -148,6 +193,11 @@ macro_rules! variant {
             }
 
             /// [`blocked::lu_solve`] with this variant's `fma` (rule 48). O(n²r).
+            ///
+            /// # Safety
+            ///
+            /// The processor must have every feature of [`FEATURES`]: call it only where
+            /// [`detected`] is true (ADR 0120 rule 56).
             $(#[target_feature(enable = $feature)])*
             pub fn lu_solve(factors: &[f64], pivots: &[usize], n: usize, b: &mut [f64], r: usize) {
                 blocked::lu_solve_with(factors, pivots, n, b, r, |x, y, z| fused(x, y, z));
