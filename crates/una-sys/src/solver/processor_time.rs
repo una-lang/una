@@ -24,6 +24,27 @@
 //! with status 0, the exit the verifier also reads as `cpu`; if the wait itself fails, it ends
 //! the child with status 4, a child with no answer, which the parent reports as a crash. Neither path can
 //! make a proof.
+//!
+//! Two bounds of this design (review of #2268):
+//!
+//! - The thread must run before the process uses one more second of processor time: the hard
+//!   limit is the soft one plus one second, and past it Linux ends the child by `SIGKILL`
+//!   (macOS sends nothing at the hard limit; a late thread there leaves the child to the
+//!   parent's wall-clock guard, `wallclock`).
+//!   A freshly woken thread runs within milliseconds even under load (children of a query on
+//!   about ten solver threads ended by `SIGXCPU` 200 times in 200 beside 20 busy loops, and 100
+//!   times in 100 with every process on one processor, #2321), but nothing guarantees it. When it is late, the parent reads the `SIGKILL` of a
+//!   child that used at least its soft limit as the kernel's at the hard limit, `cpu`
+//!   (`una_sys::solver::spawn::try_wait_with_usage`, the launcher's `kernel_end`): a late
+//!   thread changes nothing in the outcome, and the limits are unchanged.
+//! - If the signal were already pending when the thread wakes, before the front end has
+//!   installed its handler, the front end could install it between this thread's `sigaction`
+//!   and its `raise`, and the raise would run that handler (#2322). It would run on this
+//!   thread, inside `raise`, which holds no lock of the allocator, so it cannot meet the
+//!   failure of #2268; it writes `timeout` and exits with status 0, which the verifier reads as
+//!   `cpu`. No real limit reaches it: the child's limit is the wall-clock guard plus one second,
+//!   at least one second (Linux reads a zero soft limit as one second), and the front end
+//!   installs its handler within milliseconds of starting, before it reads the query.
 #![allow(unsafe_code)]
 
 use std::io;
@@ -69,7 +90,10 @@ pub fn hold() -> io::Result<()> {
 /// The error of building the signal set or starting the thread; the caller fails closed.
 pub fn watch() -> io::Result<()> {
     let set = processor_time_signal()?;
+    // A small stack: the thread makes a few system calls and nothing else, so it adds little
+    // to the address space the backstop limits (the system's minimum applies if larger).
     std::thread::Builder::new()
+        .stack_size(64 * 1024)
         .spawn(move || end_by_the_signal(set))
         .map(drop)
 }

@@ -11,7 +11,7 @@ use std::ffi::CString;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 
-use una_sys::solver::spawn::{Ended, spawn, try_wait, wait};
+use una_sys::solver::spawn::{Ended, spawn, try_wait, try_wait_with_usage, wait};
 use una_sys::solver::{Limits, confine, confined, limits};
 
 /// The name a child is spawned under: the marker that tells it to read its scenario.
@@ -237,6 +237,69 @@ fn after_confining_sigxcpu_is_blocked_in_the_child_and_in_every_thread_it_starts
         text.contains("before=false after=true started=true"),
         "{text}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_past_its_hard_processor_time_limit_is_killed_with_its_time_used() {
+    // The end of a child whose own end by `SIGXCPU` comes too late (#2321): with the signal
+    // ignored, the kernel lets the soft limit pass and kills the child with `SIGKILL` at the
+    // hard limit, a second later. The parent's wait gives that kill with at least the soft
+    // limit of processor time used, which the launcher reads as `cpu`. Linux only: macOS
+    // sends no `SIGKILL` at the hard limit, so a late end there runs to the wall-clock guard,
+    // `wallclock`.
+    if let Some(scenario) = scenario() {
+        if scenario != "cpu-hard" {
+            return;
+        }
+        // SAFETY: `SIG_IGN` is a valid action for `SIGXCPU`.
+        unsafe { libc::signal(libc::SIGXCPU, libc::SIG_IGN) };
+        limits::apply(&Limits {
+            cpu_seconds: 1,
+            memory_mib: 4096,
+            address_space_backstop: false,
+        })
+        .unwrap();
+        let mut x: u64 = 1;
+        loop {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            if x == 0 {
+                println!("never");
+            }
+        }
+    }
+    let exe = CString::new(std::env::current_exe().unwrap().to_str().unwrap()).unwrap();
+    let test = "a_child_past_its_hard_processor_time_limit_is_killed_with_its_time_used";
+    let args: Vec<CString> = [CHILD, "--exact", test, "--nocapture", "--test-threads", "1"]
+        .iter()
+        .map(|a| CString::new(*a).unwrap())
+        .collect();
+    let args: Vec<&std::ffi::CStr> = args.iter().map(CString::as_c_str).collect();
+    let (stdin_reader, mut stdin_writer) = std::io::pipe().unwrap();
+    let (_stdout_reader, stdout_writer) = std::io::pipe().unwrap();
+    let (_stderr_reader, stderr_writer) = std::io::pipe().unwrap();
+    stdin_writer.write_all(b"cpu-hard").unwrap();
+    drop(stdin_writer);
+    let pid = spawn(
+        &exe,
+        &args,
+        stdin_reader.as_fd(),
+        stdout_writer.as_fd(),
+        stderr_writer.as_fd(),
+    )
+    .unwrap();
+    drop(stdout_writer);
+    drop(stderr_writer);
+    let started = std::time::Instant::now();
+    let (ended, used) = loop {
+        if let Some(done) = try_wait_with_usage(pid).unwrap() {
+            break done;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(ended, Ended::Signaled(libc::SIGKILL), "{used:?}");
+    assert!(used >= std::time::Duration::from_secs(1), "{used:?}");
 }
 
 #[cfg(target_os = "linux")]

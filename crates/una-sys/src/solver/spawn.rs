@@ -12,6 +12,7 @@
 use std::ffi::CStr;
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::time::Duration;
 
 /// How a child ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,6 +178,44 @@ pub fn try_wait(pid: libc::pid_t) -> io::Result<Option<Ended>> {
             Err(error)
         }
     }
+}
+
+/// Whether child `pid` has ended, without waiting, with the processor time it used (user
+/// and system, all its threads) when it has: the parent reads it to tell the kernel's
+/// `SIGKILL` at the hard processor-time limit from any other kill (#2321).
+///
+/// # Errors
+///
+/// The error of `wait4`, or an id that is not one child's.
+pub fn try_wait_with_usage(pid: libc::pid_t) -> io::Result<Option<(Ended, Duration)>> {
+    one_child(pid)?;
+    let mut status: libc::c_int = 0;
+    // SAFETY: an all-zero `rusage` is a valid object for the call to fill.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `status` and `usage` are valid places the call writes; `WNOHANG` returns at once.
+    let waited = unsafe { libc::wait4(pid, &raw mut status, libc::WNOHANG, &raw mut usage) };
+    if waited == pid {
+        Ok(Some((ended(status), processor_time(&usage))))
+    } else if waited == 0 {
+        Ok(None)
+    } else {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EINTR) {
+            Ok(None)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+/// The user and system time of a `rusage`, negative fields read as zero.
+fn processor_time(usage: &libc::rusage) -> Duration {
+    let part = |t: libc::timeval| {
+        let seconds = u64::try_from(t.tv_sec).unwrap_or(0);
+        let micros = u64::try_from(t.tv_usec).unwrap_or(0);
+        Duration::from_secs(seconds).saturating_add(Duration::from_micros(micros))
+    };
+    part(usage.ru_utime).saturating_add(part(usage.ru_stime))
 }
 
 /// Waits for child `pid` to end.

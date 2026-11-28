@@ -33,7 +33,7 @@ fail() {
 LIMITS_CASES=3
 case $(uname -s) in
     Darwin) CONFINEMENT_CASES=14 ;;
-    Linux) CONFINEMENT_CASES=10 ;;
+    Linux) CONFINEMENT_CASES=11 ;;
     *) fail "no count of the confinement cases is known for $(uname -s)" ;;
 esac
 

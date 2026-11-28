@@ -261,6 +261,25 @@ pub fn serve(args: &[String]) -> u8 {
     }
 }
 
+/// How a child the parent did not kill ended, from its wait status and the processor time it
+/// used: a `SIGKILL` the parent did not send, from a child at or past its soft processor-time
+/// limit (`cpu_seconds`), is read as the hard limit's, one second later, which a child gets
+/// when its own end by `SIGXCPU` came too late (#2321), and is [`Ended::ProcessorTime`]; a
+/// coincident outside kill of such a child (OOM, jetsam, `kill -9`) reads the same (#2372).
+/// Any other `SIGKILL` is a crash, as before. Neither is ever an answer.
+fn kernel_end(spawned: Spawned, used: Duration, cpu_seconds: u64) -> Ended {
+    match spawned {
+        Spawned::Exited(status) => Ended::Exited(status),
+        Spawned::Signaled(SIGKILL) if used >= Duration::from_secs(cpu_seconds) => {
+            Ended::ProcessorTime
+        }
+        Spawned::Signaled(signal) => Ended::Signaled(signal),
+    }
+}
+
+/// `SIGKILL`, the same number on Linux and macOS.
+const SIGKILL: i32 = 9;
+
 /// Writes `reason` on stderr and gives the exit status of a child that wrote no handshake.
 fn refuse(reason: &str) -> u8 {
     let _ = writeln!(std::io::stderr(), "{reason}");
@@ -438,7 +457,8 @@ impl Solver for Launcher {
         let exe = self.executable()?;
         let exe_c = CString::new(exe.as_os_str().as_encoded_bytes())
             .map_err(|_| "the path of `una` holds a NUL byte".to_owned())?;
-        let cpu = wallclock.as_secs().saturating_add(1).to_string();
+        let cpu_seconds = wallclock.as_secs().saturating_add(1);
+        let cpu = cpu_seconds.to_string();
         let memory = self.memory_mib.to_string();
         let handshake = expected_handshake();
         let args: Vec<CString> = if self.stand_in().is_some() {
@@ -588,9 +608,8 @@ impl Solver for Launcher {
                 kill_and_wait(pid);
                 break Ended::Wallclock;
             }
-            match spawn::try_wait(pid) {
-                Ok(Some(Spawned::Exited(status))) => break Ended::Exited(status),
-                Ok(Some(Spawned::Signaled(signal))) => break Ended::Signaled(signal),
+            match spawn::try_wait_with_usage(pid) {
+                Ok(Some((spawned, used))) => break kernel_end(spawned, used, cpu_seconds),
                 Ok(None) => {}
                 Err(e) => {
                     // A child this process can no longer wait for (`ECHILD`) is not killed:
@@ -763,6 +782,42 @@ mod tests {
         assert!(line.len() <= HANDSHAKE_BYTES);
         // The digest is of the build record, so it changes with the solver's library.
         assert_eq!(parts.get(4).copied(), Some(build_digest().as_str()));
+    }
+
+    #[test]
+    fn a_kill_past_the_soft_processor_time_limit_is_the_kernels_and_any_other_a_crash() {
+        let second = Duration::from_secs(1);
+        // The hard limit's `SIGKILL`: at or past the soft limit of 61 s (#2321).
+        assert_eq!(
+            kernel_end(Spawned::Signaled(SIGKILL), 62 * second, 61),
+            Ended::ProcessorTime
+        );
+        assert_eq!(
+            kernel_end(Spawned::Signaled(SIGKILL), 61 * second, 61),
+            Ended::ProcessorTime
+        );
+        // Below the soft limit a `SIGKILL` is someone else's: a crash, as before.
+        assert_eq!(
+            kernel_end(
+                Spawned::Signaled(SIGKILL),
+                61 * second - Duration::from_millis(1),
+                61
+            ),
+            Ended::Signaled(SIGKILL)
+        );
+        // Other signals and exits are read as they are, whatever the time used.
+        assert_eq!(
+            kernel_end(Spawned::Signaled(24), 62 * second, 61),
+            Ended::Signaled(24)
+        );
+        assert_eq!(
+            kernel_end(Spawned::Signaled(11), 62 * second, 61),
+            Ended::Signaled(11)
+        );
+        assert_eq!(
+            kernel_end(Spawned::Exited(0), 62 * second, 61),
+            Ended::Exited(0)
+        );
     }
 
     #[test]
