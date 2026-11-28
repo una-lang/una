@@ -80,17 +80,8 @@ pub fn location(url: &str) -> Result<Location, String> {
 pub fn parse<'a>(text: impl Into<ita::Text<'a>>) -> (Mirrors, Vec<ProjectError>) {
     let text = text.into();
     let mut mirrors = Mirrors::default();
-    if text.raw_len() > MAX_BYTES {
-        return (
-            mirrors,
-            vec![refusal(
-                0..0,
-                format!(
-                    "mirrors.una holds {} bytes, more than the {MAX_BYTES} it may hold",
-                    text.raw_len()
-                ),
-            )],
-        );
+    if let Some(message) = ita::past_bound(text, MAX_BYTES, "mirrors.una may hold") {
+        return (mirrors, vec![refusal(0..0, message)]);
     }
     let read = ita::lines(text);
     let mut errors: Vec<ProjectError> = read

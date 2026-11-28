@@ -32,7 +32,7 @@ use una_project::tlog::state::Advisory;
 use una_project::tlog::state::{Signers, parse_advisory};
 use una_project::transport::{Directory, Fallback, Transport};
 use una_project::version::{Line, Version};
-use una_syntax::ita::parse_manifest;
+use una_syntax::ita::{Text, parse_manifest};
 
 const D: &str = "sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b";
 
@@ -256,7 +256,7 @@ fn publishing_refuses_what_rules_26_and_43_name() {
     let publisher = key(50, "acme.publisher");
     let none = BTreeSet::new();
     let refusal = |text: &str, state: &NameState, keys: &[&SigningKey]| {
-        let (manifest, _) = parse_manifest(text);
+        let (manifest, _) = parse_manifest(Text::Written(text));
         submit::release(
             &manifest,
             files(text),

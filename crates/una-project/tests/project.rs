@@ -10,6 +10,7 @@ use una_project::{
     DEFAULT_SOLVER_VERSION, LoadError, Lock, MAX_MEMORY_CAP, Profile, Role, discover, is_grant,
     is_module_path, parse_lock, parse_manifest,
 };
+use una_syntax::Unread;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -251,17 +252,17 @@ fn project_files_are_read_within_their_bounds() {
     let lock = std::fs::File::create(root.join("ita.lock")).unwrap();
     lock.set_len(32 << 20).unwrap();
     let loaded = discover(&root).unwrap();
-    let sizes: Vec<(&str, usize, u64)> = loaded
+    let sizes: Vec<(&str, usize, Option<Unread>)> = loaded
         .files
         .iter()
-        .map(|file| (file.name.as_str(), file.bytes.len(), file.len))
+        .map(|file| (file.name.as_str(), file.bytes.len(), file.unread))
         .collect();
     assert_eq!(
         sizes,
         [
-            ("ita.una", 0, manifest.len() as u64),
-            ("ita.lock", 0, 32 << 20),
-            ("src/a.una", 9, 9),
+            ("ita.una", 0, Some(Unread::Holds(manifest.len()))),
+            ("ita.lock", 0, Some(Unread::Holds(32 << 20))),
+            ("src/a.una", 9, None),
         ]
     );
     let decoded = loaded.files[0].decode();
@@ -276,7 +277,8 @@ fn project_files_are_read_within_their_bounds() {
     );
     let file =
         una_project::read_project_file(&root.join("ita.lock"), "ita.lock", 16 << 20).unwrap();
-    assert_eq!((file.text(), file.raw_len()), ("", 32 << 20));
+    assert_eq!(file.text(), "");
+    assert_eq!(file.unread_len(), Some(Unread::Holds(32 << 20)));
     // Within the bound, the file is read whole and decoded once.
     std::fs::write(
         root.join("ita.una"),
@@ -286,7 +288,76 @@ fn project_files_are_read_within_their_bounds() {
     let file = una_project::read_project_file(&root.join("ita.una"), "ita.una", 1 << 20).unwrap();
     assert_eq!(file.text(), "ita a\n  version 0.1.0\n  edition 0.4\n");
     assert_eq!(file.raw_len(), 39);
+    assert_eq!(file.unread_len(), None);
     assert_eq!(una_project::ita::parse_ita_manifest(&file).1, vec![]);
+}
+
+/// A manifest of exactly its bound on disk, `\r\n` line ends and all, is read whole, by
+/// [`discover`] and by `read_project_file`; one byte more is past it (#2310).
+#[test]
+fn a_project_file_of_exactly_its_bound_on_disk_is_read() {
+    let root = scratch("discover-exact-bound");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    let mut manifest = "ita a\r\n  version 0.1.0\r\n  edition 0.4\r\n".to_owned();
+    while manifest.len() + 6 <= 1 << 20 {
+        manifest.push_str("-- x\r\n");
+    }
+    manifest.push_str(&"-".repeat((1 << 20) - manifest.len()));
+    assert_eq!(manifest.len(), 1 << 20);
+    std::fs::write(root.join("ita.una"), &manifest).unwrap();
+    let loaded = discover(&root).unwrap();
+    assert_eq!(loaded.files[0].unread, None);
+    assert_eq!(loaded.files[0].bytes.len(), 1 << 20);
+    let file = una_project::read_project_file(&root.join("ita.una"), "ita.una", 1 << 20).unwrap();
+    assert_eq!((file.unread_len(), file.raw_len()), (None, 1 << 20));
+    let (_, errors) = una_project::ita::parse_ita_manifest(&file);
+    assert!(
+        errors.iter().all(|error| !error.message.contains("bytes")),
+        "{errors:?}"
+    );
+    manifest.push('-');
+    std::fs::write(root.join("ita.una"), &manifest).unwrap();
+    let file = una_project::read_project_file(&root.join("ita.una"), "ita.una", 1 << 20).unwrap();
+    assert_eq!(file.unread_len(), Some(Unread::Holds((1 << 20) + 1)));
+}
+
+/// A project file that is not a regular file is refused before anything is read, and the open
+/// never blocks: a link to `/dev/zero`, which would never end, a FIFO with no writer, which
+/// would block the open, and a directory (#2310, #2313). A link to a regular file is read.
+#[cfg(unix)]
+#[test]
+fn a_project_file_that_is_not_a_regular_file_is_refused_before_it_is_read() {
+    let root = scratch("project-file-kinds");
+    let refused = |path: &Path| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(una_project::read_project_file(&path, "ita.una", 1 << 20));
+        });
+        let read = wait
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the read blocked");
+        let error = read.expect_err("a file that is not regular was read");
+        assert!(
+            error.to_string().contains("is not a regular file"),
+            "{error}"
+        );
+    };
+    std::os::unix::fs::symlink("/dev/zero", root.join("zero")).unwrap();
+    refused(&root.join("zero"));
+    let fifo = root.join("fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    refused(&fifo);
+    refused(&root);
+    std::fs::write(root.join("real"), "ita a\n").unwrap();
+    std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+    let file = una_project::read_project_file(&root.join("link"), "ita.una", 1 << 20).unwrap();
+    assert_eq!(file.text(), "ita a\n");
 }
 
 #[test]

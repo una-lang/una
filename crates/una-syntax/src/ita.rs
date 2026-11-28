@@ -14,7 +14,7 @@ use std::ops::Range;
 
 use crate::intern::Interner;
 use crate::lexer::lex_project;
-use crate::source::{FileId, SourceFile};
+use crate::source::{FileId, SourceFile, Unread};
 use crate::token::TokenKind;
 
 /// The largest `ita.una` or `itaty.una`, in bytes (ADR 0122 rule 3).
@@ -181,10 +181,61 @@ impl<'a> Text<'a> {
             Text::Decoded(file) => file.raw_len(),
         }
     }
+
+    /// What is known of the length of a decoded file left unread past its bound
+    /// ([`SourceFile::unread`]); `None` for a written text and a file that was read.
+    pub fn unread(self) -> Option<Unread> {
+        match self {
+            Text::Written(_) => None,
+            Text::Decoded(file) => file.unread_len(),
+        }
+    }
 }
 
-impl<'a> From<&'a str> for Text<'a> {
-    fn from(text: &'a str) -> Text<'a> {
+/// The refusal of a project file past its bound of `bound` bytes, if it is past it
+/// (`spec/30 §1` rule 4): one message for every reader and every command, measured on the
+/// bytes as written. `what` ends the message, as "a manifest may hold". An unread file is
+/// always refused; its message states its length when it is known.
+pub fn past_bound(text: Text<'_>, bound: usize, what: &str) -> Option<String> {
+    match text.unread() {
+        Some(Unread::Holds(len)) if len > bound => Some(format!(
+            "the file holds {len} bytes, more than the {bound} {what}"
+        )),
+        Some(_) => Some(format!("the file holds more than the {bound} bytes {what}")),
+        None if text.raw_len() > bound => Some(format!(
+            "the file holds {} bytes, more than the {bound} {what}",
+            text.raw_len()
+        )),
+        None => None,
+    }
+}
+
+/// A literal is a text as written. A borrowed `&str` of any shorter life converts to no
+/// [`Text`], so the decoded text of a file, `SourceFile::text()`, can never be passed to a
+/// reader, which would decode it a second time (#2292): pass the [`SourceFile`] itself, or
+/// write [`Text::Written`] for a text that was never decoded.
+///
+/// ```compile_fail
+/// use una_syntax::SourceFile;
+/// let file = SourceFile::new("ita.lock", b"lock 1\n");
+/// let _ = una_syntax::ita::parse_lock(file.text());
+/// ```
+///
+/// ```compile_fail
+/// use una_syntax::SourceFile;
+/// let file = SourceFile::new("ita.una", b"ita x\n");
+/// let text = file.text();
+/// let _ = una_syntax::ita::parse_manifest(text);
+/// ```
+///
+/// ```
+/// use una_syntax::SourceFile;
+/// let file = SourceFile::new("ita.lock", b"lock 1\n");
+/// let _ = una_syntax::ita::parse_lock(&file);
+/// let _ = una_syntax::ita::parse_lock("lock 1\n");
+/// ```
+impl From<&'static str> for Text<'_> {
+    fn from(text: &'static str) -> Self {
         Text::Written(text)
     }
 }
@@ -1004,17 +1055,8 @@ pub struct Manifest {
 pub fn parse_manifest<'a>(text: impl Into<Text<'a>>) -> (Manifest, Vec<Error>) {
     let text = text.into();
     let mut manifest = Manifest::default();
-    if text.raw_len() > MAX_MANIFEST_BYTES {
-        return (
-            manifest,
-            vec![Error::new(
-                0..0,
-                format!(
-                    "the file holds {} bytes, more than the {MAX_MANIFEST_BYTES} a manifest may hold",
-                    text.raw_len()
-                ),
-            )],
-        );
+    if let Some(message) = past_bound(text, MAX_MANIFEST_BYTES, "a manifest may hold") {
+        return (manifest, vec![Error::new(0..0, message)]);
     }
     let read = lines(text);
     let written = read.text.as_str();
@@ -2230,17 +2272,8 @@ pub const LOCK_FORMAT: u64 = 1;
 pub fn parse_lock<'a>(text: impl Into<Text<'a>>) -> (Lock, Vec<Error>) {
     let text = text.into();
     let mut lock = Lock::default();
-    if text.raw_len() > MAX_LOCK_BYTES {
-        return (
-            lock,
-            vec![Error::new(
-                0..0,
-                format!(
-                    "the file holds {} bytes, more than the {MAX_LOCK_BYTES} a lock may hold",
-                    text.raw_len()
-                ),
-            )],
-        );
+    if let Some(message) = past_bound(text, MAX_LOCK_BYTES, "a lock may hold") {
+        return (lock, vec![Error::new(0..0, message)]);
     }
     let read = lines(text);
     let mut errors = read.errors;
@@ -2769,17 +2802,8 @@ pub struct Workspace {
 pub fn parse_workspace<'a>(text: impl Into<Text<'a>>) -> (Workspace, Vec<Error>) {
     let text = text.into();
     let mut workspace = Workspace::default();
-    if text.raw_len() > MAX_MANIFEST_BYTES {
-        return (
-            workspace,
-            vec![Error::new(
-                0..0,
-                format!(
-                    "the file holds {} bytes, more than the {MAX_MANIFEST_BYTES} it may hold",
-                    text.raw_len()
-                ),
-            )],
-        );
+    if let Some(message) = past_bound(text, MAX_MANIFEST_BYTES, "it may hold") {
+        return (workspace, vec![Error::new(0..0, message)]);
     }
     let read = lines(text);
     let mut errors = read.errors;

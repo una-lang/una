@@ -594,8 +594,9 @@ impl Registry {
         }
         let text = std::str::from_utf8(manifest_bytes)
             .map_err(|_| invalid("the archive's ita.una is not UTF-8"))?;
-        let (manifest, errors) = parse_manifest(text);
-        let (_, checked) = una_project::ita::parse_ita_manifest(text);
+        let (manifest, errors) = parse_manifest(una_syntax::ita::Text::Written(text));
+        let (_, checked) =
+            una_project::ita::parse_ita_manifest(una_syntax::ita::Text::Written(text));
         if let Some(message) = errors
             .first()
             .map(|e| e.message.clone())

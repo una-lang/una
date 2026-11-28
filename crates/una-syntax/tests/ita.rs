@@ -5,10 +5,11 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use pretty_assertions::assert_eq;
-use una_syntax::SourceFile;
 use una_syntax::ita::{
-    self, Item, LockOrigin, Origin, format, lines, parse_lock, parse_manifest, parse_workspace,
+    self, Item, LockOrigin, Origin, Text, format, lines, parse_lock, parse_manifest,
+    parse_workspace,
 };
+use una_syntax::{SourceFile, Unread};
 
 /// The example of ADR 0122, with every section this grammar has.
 const MANIFEST: &str = r#"ita acme/ledger
@@ -520,7 +521,10 @@ fn bounds_are_measured_on_the_bytes_on_both_entries() {
     let lock = past("lock 1\n", ita::MAX_LOCK_BYTES);
     let decoded = SourceFile::new("ita.una", &manifest);
     let written = std::str::from_utf8(&manifest).unwrap();
-    for errors in [parse_manifest(&decoded).1, parse_manifest(written).1] {
+    for errors in [
+        parse_manifest(&decoded).1,
+        parse_manifest(Text::Written(written)).1,
+    ] {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].range, 0..0);
         assert_eq!(
@@ -534,7 +538,10 @@ fn bounds_are_measured_on_the_bytes_on_both_entries() {
     }
     let decoded = SourceFile::new("itaty.una", &workspace);
     let written = std::str::from_utf8(&workspace).unwrap();
-    for errors in [parse_workspace(&decoded).1, parse_workspace(written).1] {
+    for errors in [
+        parse_workspace(&decoded).1,
+        parse_workspace(Text::Written(written)).1,
+    ] {
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,
@@ -543,7 +550,7 @@ fn bounds_are_measured_on_the_bytes_on_both_entries() {
     }
     let decoded = SourceFile::new("ita.lock", &lock);
     let written = std::str::from_utf8(&lock).unwrap();
-    for errors in [parse_lock(&decoded).1, parse_lock(written).1] {
+    for errors in [parse_lock(&decoded).1, parse_lock(Text::Written(written)).1] {
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,
@@ -565,22 +572,48 @@ fn bounds_are_measured_on_the_bytes_on_both_entries() {
     );
 }
 
-/// A file left unread past its bound keeps only its length, which the reader refuses with the
-/// message of the bound (#2282).
+/// A file left unread past its bound keeps only what is known of its length, and every reader
+/// refuses it with the message of the bound: its length when known, else only that it is past
+/// the bound (#2282, #2309). An unread file is refused whatever the length it records.
 #[test]
 fn an_unread_file_is_refused_by_its_length() {
-    let file = SourceFile::unread("ita.una", ita::MAX_MANIFEST_BYTES + 7);
+    let bound = ita::MAX_MANIFEST_BYTES;
+    let file = SourceFile::unread("ita.una", Unread::Holds(bound + 7));
     assert_eq!(file.text(), "");
-    assert_eq!(file.raw_len(), ita::MAX_MANIFEST_BYTES + 7);
+    assert_eq!(file.raw_len(), bound + 7);
     let (_, errors) = parse_manifest(&file);
     assert_eq!(errors.len(), 1);
     assert_eq!(
         errors[0].message,
         format!(
-            "the file holds {} bytes, more than the {} a manifest may hold",
-            ita::MAX_MANIFEST_BYTES + 7,
-            ita::MAX_MANIFEST_BYTES
+            "the file holds {} bytes, more than the {bound} a manifest may hold",
+            bound + 7
         )
+    );
+    let file = SourceFile::unread("ita.una", Unread::MoreThan(bound));
+    assert_eq!(file.raw_len(), bound + 1);
+    let (_, errors) = parse_manifest(&file);
+    assert_eq!(
+        errors[0].message,
+        format!("the file holds more than the {bound} bytes a manifest may hold")
+    );
+    let lock = SourceFile::unread("ita.lock", Unread::MoreThan(ita::MAX_LOCK_BYTES));
+    assert_eq!(
+        parse_lock(&lock).1[0].message,
+        format!(
+            "the file holds more than the {} bytes a lock may hold",
+            ita::MAX_LOCK_BYTES
+        )
+    );
+    // An unread file that records a length within the bound is still refused, never read as
+    // the empty text it holds.
+    let file = SourceFile::unread("itaty.una", Unread::Holds(3));
+    let (_, errors) = parse_workspace(&file);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].range, 0..0);
+    assert!(
+        errors[0].message.starts_with("the file holds more than"),
+        "{errors:?}"
     );
 }
 

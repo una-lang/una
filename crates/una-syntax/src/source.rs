@@ -63,6 +63,18 @@ pub struct SourceFile {
     invalid: Vec<usize>,
     first_crlf: Option<usize>,
     raw_len: usize,
+    unread: Option<Unread>,
+}
+
+/// What is known of a file left unread past its bound (`spec/30 §1` rule 4): the number of
+/// bytes it holds, from its size when it was opened, or only that it holds more than the bound,
+/// when the read stopped there (a file that grew while read).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unread {
+    /// It holds this many bytes, more than its bound.
+    Holds(usize),
+    /// It holds more than this many bytes, its bound; its full length is not known.
+    MoreThan(usize),
 }
 
 impl SourceFile {
@@ -91,13 +103,18 @@ impl SourceFile {
             invalid,
             first_crlf,
             raw_len: bytes.len(),
+            unread: None,
         }
     }
 
-    /// A file left unread because it holds `raw_len` bytes, more than any reader of it takes
-    /// (`spec/30 §1` rule 4): its text is empty, and only its length on disk is kept, so the
-    /// reader refuses it by that length without the file ever being held in memory.
-    pub fn unread(path: impl Into<String>, raw_len: usize) -> SourceFile {
+    /// A file left unread past its bound (`spec/30 §1` rule 4): its text is empty, and only
+    /// what is known of its length is kept. Every reader of a project file refuses an unread
+    /// file, whatever that length, with the message of its bound.
+    pub fn unread(path: impl Into<String>, unread: Unread) -> SourceFile {
+        let raw_len = match unread {
+            Unread::Holds(len) => len,
+            Unread::MoreThan(bound) => bound.saturating_add(1),
+        };
         SourceFile {
             path: path.into(),
             text: String::new(),
@@ -105,7 +122,14 @@ impl SourceFile {
             invalid: Vec::new(),
             first_crlf: None,
             raw_len,
+            unread: Some(unread),
         }
+    }
+
+    /// What is known of the length of a file left unread past its bound, or `None` for a file
+    /// that was read.
+    pub fn unread_len(&self) -> Option<Unread> {
+        self.unread
     }
 
     /// The path of the file, relative to the package root, with `/` as separator.
@@ -120,7 +144,8 @@ impl SourceFile {
 
     /// The number of bytes the file holds as written, before decoding: each `\r\n` counts
     /// two bytes, and an ill-formed sequence counts its own bytes. The size bounds of project
-    /// files are measured on this length (`spec/30 §1` rule 4).
+    /// files are measured on this length (`spec/30 §1` rule 4). For an unread file it is the
+    /// length that put it past its bound, at least one byte past it.
     pub fn raw_len(&self) -> usize {
         self.raw_len
     }
