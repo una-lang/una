@@ -351,45 +351,125 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
 
 /// The edition of the nearest manifest above the file `path`: the first directory among its
 /// ancestors holding `ita.una` (read as such) or else `una.toml`. `None` for a loose file with
-/// no manifest in any ancestor, which keeps the ADR 0021 default, edition 0.1 (#1175). A
-/// manifest that is there, a link that names nothing included, but does not read (not a
-/// regular file, past its bound, unreadable) is an error naming it, never the default edition
-/// (#2402). The manifest is read only for its edition. O(depth of the path).
+/// no manifest in the ancestors searched, which keeps the ADR 0021 default, edition 0.1
+/// (#1175). A manifest that is there, a link that names nothing included, but does not read
+/// (not a regular file, past its bound, unreadable) is an error naming it, never the default
+/// edition (#2402); so is an entry whose presence cannot be told (an error other than "not
+/// found").
+///
+/// The search is the user's own (#2410, #2412): it stops, with no manifest, at the first
+/// ancestor that another user could write into: a directory that is world-writable (such as
+/// `/tmp`, sticky or not) or owned by someone other than this user and the superuser. A
+/// manifest owned by another user, or a link to one, also ends it unread. So no other user can
+/// choose the edition of a loose file or make its check fail. Off Unix, where `una` reads no
+/// owner, every ancestor is searched. The manifest is read only for its edition.
+/// O(depth of the path).
 fn enclosing_edition(path: &Path) -> Result<Option<Edition>, LoadError> {
     let Ok(absolute) = std::fs::canonicalize(path).or_else(|_| std::path::absolute(path)) else {
         return Ok(None);
     };
-    let present = |file: &Path| std::fs::symlink_metadata(file).is_ok();
+    #[cfg(unix)]
+    let me = crate::proof_key::effective_uid();
+    #[cfg(not(unix))]
+    let me = None;
     let refused = |file: &Path, reason: String| LoadError::Unreadable {
         path: file.to_path_buf(),
         reason,
     };
     for dir in absolute.ancestors().skip(1) {
+        let meta = std::fs::symlink_metadata(dir).map_err(|e| refused(dir, e.to_string()))?;
+        if !searched(&meta, me) {
+            return Ok(None);
+        }
         let ita = dir.join("ita.una");
-        if present(&ita) {
-            // Read within its bound (spec/30 §1 rule 4).
-            let file = una_project::read_project_file(&ita, "ita.una", ita::MAX_MANIFEST_BYTES)
-                .map_err(|error| refused(&ita, error.to_string()))?;
-            if file.unread_len().is_some() {
-                return Err(refused(
-                    &ita,
-                    format!(
-                        "it holds more than the {} bytes an `ita.una` may hold",
-                        ita::MAX_MANIFEST_BYTES
-                    ),
-                ));
+        match entry(&ita, me).map_err(|e| refused(&ita, e))? {
+            Entry::Absent => {}
+            Entry::Foreign => return Ok(None),
+            Entry::Present => {
+                // Read within its bound (spec/30 §1 rule 4).
+                let file = una_project::read_project_file(&ita, "ita.una", ita::MAX_MANIFEST_BYTES)
+                    .map_err(|error| refused(&ita, error.to_string()))?;
+                if file.unread_len().is_some() {
+                    return Err(refused(
+                        &ita,
+                        format!(
+                            "it holds more than the {} bytes an `ita.una` may hold",
+                            ita::MAX_MANIFEST_BYTES
+                        ),
+                    ));
+                }
+                return Ok(Some(parse_ita_manifest(&file).0.edition));
             }
-            return Ok(Some(parse_ita_manifest(&file).0.edition));
         }
         let toml = dir.join("una.toml");
-        if present(&toml) {
-            let text = read_toml(&toml).map_err(|reason| refused(&toml, reason))?;
-            return Ok(Some(
-                parse_manifest(&String::from_utf8_lossy(&text)).0.edition,
-            ));
+        match entry(&toml, me).map_err(|e| refused(&toml, e))? {
+            Entry::Absent => {}
+            Entry::Foreign => return Ok(None),
+            Entry::Present => {
+                let text = read_toml(&toml).map_err(|reason| refused(&toml, reason))?;
+                return Ok(Some(
+                    parse_manifest(&String::from_utf8_lossy(&text)).0.edition,
+                ));
+            }
         }
     }
     Ok(None)
+}
+
+/// What the search for an enclosing manifest finds at a manifest's path.
+#[derive(Debug, PartialEq, Eq)]
+enum Entry {
+    /// Nothing: the search goes on.
+    Absent,
+    /// An entry this user may rely on, or one that does not read, which is refused.
+    Present,
+    /// An entry owned by another user, or a link to one: the search ends, unread.
+    Foreign,
+}
+
+/// The entry at `path` for the user `me` (`None` off Unix): only "not found" is absent, and any
+/// other error is returned.
+fn entry(path: &Path, me: Option<u32>) -> Result<Entry, String> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Entry::Absent),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !owned(&meta, me) {
+        return Ok(Entry::Foreign);
+    }
+    if meta.file_type().is_symlink()
+        && let Ok(target) = std::fs::metadata(path)
+        && !owned(&target, me)
+    {
+        return Ok(Entry::Foreign);
+    }
+    Ok(Entry::Present)
+}
+
+/// Whether `meta` belongs to the user `me` or to the superuser; always off Unix.
+#[cfg(unix)]
+fn owned(meta: &std::fs::Metadata, me: Option<u32>) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.uid() == 0 || Some(meta.uid()) == me
+}
+
+#[cfg(not(unix))]
+fn owned(_: &std::fs::Metadata, _: Option<u32>) -> bool {
+    true
+}
+
+/// Whether the search for an enclosing manifest looks into the directory of `meta`: one owned
+/// by `me` or the superuser and not world-writable; always off Unix.
+#[cfg(unix)]
+fn searched(meta: &std::fs::Metadata, me: Option<u32>) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    owned(meta, me) && meta.mode() & 0o002 == 0
+}
+
+#[cfg(not(unix))]
+fn searched(_: &std::fs::Metadata, _: Option<u32>) -> bool {
+    true
 }
 
 /// The bytes of `una.toml` at `path`, read as every file of a package is (spec/30 §1 rule 4):
@@ -1075,6 +1155,46 @@ mod tests {
     #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
     use super::*;
+
+    /// Only "not found" makes a manifest absent: any other error, such as a path below a
+    /// file, is returned, never taken for no manifest (#2410). A file or a directory owned by
+    /// another user, here this user's own seen as someone else's, ends the search unread, and a
+    /// world-writable directory is not searched (#2412).
+    #[cfg(unix)]
+    #[test]
+    fn the_search_for_a_manifest_trusts_only_this_users_entries() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("una-cli-entry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("una.toml");
+        std::fs::write(&file, "[package]\n").unwrap();
+        let mine = std::fs::metadata(&file).unwrap().uid();
+        let other = if mine == 1 { 2 } else { 1 };
+        assert_eq!(entry(&dir.join("ita.una"), Some(mine)), Ok(Entry::Absent));
+        assert_eq!(entry(&file, Some(mine)), Ok(Entry::Present));
+        let error = entry(&file.join("ita.una"), Some(mine));
+        assert!(error.is_err(), "{error:?}");
+        if mine != 0 {
+            assert_eq!(entry(&file, Some(other)), Ok(Entry::Foreign));
+            // A link to a file of this user's own is relied on; to one of another's, foreign.
+            std::os::unix::fs::symlink(&file, dir.join("link")).unwrap();
+            assert_eq!(entry(&dir.join("link"), Some(mine)), Ok(Entry::Present));
+            assert_eq!(entry(&dir.join("link"), Some(other)), Ok(Entry::Foreign));
+            let meta = std::fs::metadata(&dir).unwrap();
+            assert!(searched(&meta, Some(mine)));
+            assert!(!searched(&meta, Some(other)));
+            assert!(!searched(&meta, None));
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let meta = std::fs::metadata(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            !searched(&meta, Some(mine)),
+            "a world-writable directory was searched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `una.toml` is read for an enclosing edition as every file of a package is (#2398): a
     /// regular file within its bound is read, a sparse one past 256 MiB is not read at all, and

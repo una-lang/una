@@ -517,6 +517,48 @@ fn path_dependencies_share_one_bound() {
     }
 }
 
+/// A path dependency refused partway, after some of its modules were read, takes nothing of
+/// the shared bound: the next one, which fits in what is left, loads (#2409).
+#[cfg(unix)]
+#[test]
+fn a_dependency_refused_partway_takes_nothing_of_the_bound() {
+    let root = scratch("dependency-refused-partway");
+    for dep in ["bad", "good"] {
+        let dir = root.join(dep);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("ita.una"),
+            format!("ita {dep}\n  version 0.1.0\n  edition 0.4\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/a.una"), [b'-'; 4096]).unwrap();
+    }
+    // `bad/src/b.una`, read after `a.una`, is a FIFO: refused once `a.una` is read.
+    let made = std::process::Command::new("mkfifo")
+        .arg(root.join("bad/src/b.una"))
+        .status()
+        .unwrap();
+    assert!(made.success());
+    // Room for one dependency, a 39-byte manifest and a 4,096-byte module.
+    let mut left = 4096 + 39;
+    let bad = una_project::discover_dependency_within(&root.join("bad"), "bad", &mut left);
+    match bad {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("is not a regular file"), "{reason}");
+        }
+        Ok(_) => panic!("a FIFO module was read"),
+        Err(other) => panic!("{other}"),
+    }
+    assert_eq!(
+        left,
+        4096 + 39,
+        "a refused dependency took bytes of the bound"
+    );
+    let good = una_project::discover_dependency_within(&root.join("good"), "good", &mut left);
+    assert_eq!(good.map(|loaded| loaded.files.len()).ok(), Some(2));
+    assert_eq!(left, 0);
+}
+
 /// The open flags of `tree` are `O_NONBLOCK | O_NOCTTY` by the platform's own values wherever
 /// they are known, and 0 elsewhere: a mistyped value of any family fails here when the crate is
 /// tested on it (#2396).

@@ -253,7 +253,7 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
 }
 
 /// [`discover_dependency`] within the `left` bytes that the root's package and the path
-/// dependencies loaded before it have not taken, which it takes from `left` (spec/30 §1 rule
+/// dependencies loaded before it have not taken, which it takes from `left` only when it loads, so a refused one takes nothing (spec/30 §1 rule
 /// 4): the root and every path dependency it names share one bound of 256 MiB, so a check
 /// holds at most that much of their files, whatever the number of dependencies. The
 /// dependency that would pass it is refused, its modules never read whole.
@@ -305,14 +305,18 @@ pub fn discover_dependency_within(
         .filter(|file| file.role == Role::Manifest)
         .map(|file| file.bytes.len() as u64)
         .sum::<u64>();
-    if held > *left {
+    // The bytes are taken from a copy of what is left, and the copy kept only when the whole
+    // dependency loads: one refused partway holds nothing, so it takes nothing (#2409).
+    let mut budget = *left;
+    if held > budget {
         return Err(past_total(&dir.join("ita.una")));
     }
-    *left -= held;
+    budget -= held;
     for (name, file) in modules {
-        let bytes = read_counted(&file, left, true)?;
+        let bytes = read_counted(&file, &mut budget, true)?;
         files.push(loaded(name, file, bytes, Role::Module));
     }
+    *left = budget;
     Ok(Loaded {
         single: false,
         format: Format::Ita,
