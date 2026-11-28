@@ -23,6 +23,10 @@ use una_lsp::{
 struct Empty;
 
 impl Workspace for Empty {
+    fn check_stack_bytes(&self) -> usize {
+        2 * 1024 * 1024
+    }
+
     fn root(&self, file: &Path) -> PathBuf {
         file.to_owned()
     }
