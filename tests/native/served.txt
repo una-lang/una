@@ -2,7 +2,9 @@
 # `una build` makes of it, listen and answer until a host stop, so neither runs to completion and
 # the differential test
 # (crates/una-cli/tests/native.rs) compares nothing for it. Each is listed by repository path with
-# a reason after a colon, and the list is exact: every program with a `serve` section is listed,
-# and every listed one has one. `crates/una-cli/tests/serve_live.rs` runs each over loopback in
-# both engines instead.
+# a reason after a colon, and the list is exact: every program that serves, by a `serve` section or
+# in the language form with a `serve:` grant, is listed, and every listed one serves.
+# `crates/una-cli/tests/serve_live.rs` runs each over loopback in both engines instead.
 examples/health: serves `GET /health` until stopped; `serve_live.rs` (`the_health_example_answers_get_over_loopback`) runs it in both engines
+examples/orders: serves its JSON API until stopped; `serve_live.rs` (`the_orders_example_answers_without_its_store_over_loopback`) runs it in both engines
+examples/proxy: a server of the language form, serves until stopped; `serve_live.rs` (`the_proxy_example_refuses_another_method_over_loopback`) runs it in both engines

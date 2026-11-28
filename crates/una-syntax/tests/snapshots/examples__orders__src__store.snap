@@ -1,0 +1,104 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module store)
+(import std.host Header Http Response)
+(kind pub Order
+  (doc "--- An order of the shop.")
+  (record (id {internal Int}) (item {internal Text}) (quantity {internal Int})))
+(kind pub Lookup
+  (doc "--- What a lookup found. A failure of `Http` is `internal`, so the store reports it as a value.")
+  (sum (Found (order {internal Order})) Missing Unavailable))
+(kind pub Saved (doc "--- Whether an order was stored.") (sum Stored Refused))
+(capability pub Orders
+  (doc "--- The orders, wherever they are kept: the server needs only these two operations.")
+  (op find ((id {Int})) {internal Lookup} (accepts internal))
+  (op add ((order {Order})) {internal Saved} (accepts internal)))
+(handler pub document_store
+  (doc "--- The orders in a document database with an HTTP interface at `base`, one document per order.")
+  ((base {Text}))
+  (for Orders)
+  (uses @http {Http[get, put]})
+  (op find
+    (id)
+    (block
+      (let answer
+        (attempt (@http.get (text base "/orders/" id) (headers: (list)) (key_name: None))))
+      (when answer
+        (arm (is Ok response) (call lookup_of id response))
+        (arm (is Err failure) Unavailable))))
+  (op add
+    (order)
+    (block
+      (let answer
+        (attempt
+          (@http.put
+            (text base "/orders/" (. order id))
+            (headers: (list (call json_type)))
+            (body: (call order_json order))
+            (key_name: None))))
+      (when answer
+        (arm (is Ok response) (if (== (. response status) 201) Stored Refused))
+        (arm (is Err failure) Refused)))))
+(fn pub json_type
+  (doc "--- The header of a JSON body.")
+  ()
+  {Header}
+  (call Header (name: "content-type") (value: "application/json")))
+(fn lookup_of
+  (doc "--- What the database's answer to a lookup of `id` says.")
+  ((id {internal Int}) (response {internal Response}))
+  {internal Lookup}
+  (block
+    (if
+      (== (. response status) 404)
+      (block Missing)
+      (block
+        (when
+          (call order_from id (body: (. response body)))
+          (arm (is Some order) (call Found order))
+          (arm (is None) Unavailable))))))
+(fn pub order_from
+  (doc "--- Reads `{\"item\": \"...\", \"quantity\": n}` with a positive `n`.")
+  ((id {internal Int}) (body {internal Text}))
+  {internal Option[Order]}
+  (block
+    (let parsed (attempt (method body parse_json)))
+    (when parsed
+      (arm (is Err failure) None)
+      (arm
+        (is Ok json)
+        (block
+          (when json
+            (arm
+              (is Object fields)
+              (block
+                (let item (handled (method fields get (key: "item")) (if-none-use Null)))
+                (let quantity (handled (method fields get (key: "quantity")) (if-none-use Null)))
+                (when item
+                  (arm
+                    (is Str name)
+                    (block
+                      (when quantity
+                        (arm
+                          (is Number count)
+                          (if
+                            (> count 0)
+                            (call Some (call Order (id: id) (item: name) (quantity: count)))
+                            None))
+                        (arm else None))))
+                  (arm else None))))
+            (arm else None)))))))
+(fn pub order_json
+  (doc "--- Writes an order as JSON by interpolation: the fields of `Json` are `public`, so a `Json`")
+  (doc "--- value cannot hold `internal` data.")
+  ((order {internal Order}))
+  {internal Text}
+  (text "{\"id\": "
+    (. order id)
+    ", \"item\": "
+    (method (. order item) quote_json)
+    ", \"quantity\": "
+    (. order quantity)
+    "}"))
