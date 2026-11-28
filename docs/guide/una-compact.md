@@ -1,14 +1,8 @@
 # Una, compact
 
-Edition `0.2`; `una --version` lists the editions served. Full guide: `una-for-agents.md` (editions table at its top).
+Editions: 0.1, 0.2 stable; 0.3–0.5 preview. This reference teaches 0.2; see una-for-agents.md for the others.
 
-| Edition | Status | Taught in |
-| --- | --- | --- |
-| `0.1`, `0.2` | stable | here, guide §21 |
-| `0.3`, `0.4` | preview | guide §22, `configure/package/edition.md` |
-| `0.5` | preview | not taught: `configure/package/edition.md` |
-
-**Loop.** `una fmt .`, `una fix .` (safe mechanical edits), `una --json check .`; read `code` and `repairs`, `una explain <code>`; then `una --json test .`.
+**Loop.** `una fmt .`, `una fix .`, `una --json check .`; read `code` and `repairs`, `una explain <code>`; then `una --json test .`.
 
 **Package.** `una.toml` (`[package]` `name`, `version`, `edition = "0.2"`; `[run]` `entry`, `grants`; `[trusted] modules`), `verification.lock` (pins Z3), `src/<module>.una`.
 

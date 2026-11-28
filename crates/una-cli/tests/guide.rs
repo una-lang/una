@@ -642,9 +642,8 @@ fn every_block_of_the_getting_started_tutorial_is_checked() {
 /// The most characters `una-compact.md` may hold. The model's tokenizer (Claude Opus 5.5,
 /// measured on 2026-10-08 as the difference in input tokens between two identical sessions,
 /// one of which reads the file) counted 1,940 tokens for its 4,506 characters, 2.32 per token;
-/// 4,550 characters stay under its budget of 2,000 tokens (#430). The editions table at the top
-/// (#2403) adds 280 characters, about 120 tokens, so the limit is 4,830 (Owner to confirm).
-const COMPACT_MAX_CHARS: usize = 4_830;
+/// 4,550 characters stay under its budget of 2,000 tokens (#430).
+const COMPACT_MAX_CHARS: usize = 4_550;
 
 #[test]
 fn the_compact_reference_is_checked_and_within_its_token_budget() {
