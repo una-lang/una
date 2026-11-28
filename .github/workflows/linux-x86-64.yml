@@ -1,0 +1,105 @@
+# The native legs of x86_64-unknown-linux-gnu on a GitHub-hosted x86-64 Linux runner (#2106).
+# This is the one use of GitHub Actions in the project: the Owner's decision of 2026-11-19
+# (#2104) accepts a hosted `ubuntu-24.04` runner, real x86-64 cores and no emulation, as the
+# native machine for the target that the gate machine (an arm64 Mac) can only emulate, under
+# ADR 0124 rule 31 as its amendment of 2026-11-27 reads it. Nothing else is validated here; the
+# merges and the releases rest on the local, recorded gates (docs/release-gates.md).
+#
+# Each job runs one leg of scripts/hosted-x86-64.sh on the exact commit (the pull request's head,
+# never the merge commit) and uploads its log, manifest and digests as an artifact named
+# linux-x86-64-<leg>-<commit>. The release gates read those artifacts for the gated commit
+# through scripts/hosted-evidence.sh, and copy them into the release record. No secret is used;
+# the token is read-only.
+name: Linux x86-64 native evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/linux-x86-64.yml
+      - scripts/hosted-x86-64.sh
+      - scripts/hosted-evidence.sh
+      - scripts/local-ci.sh
+      - scripts/local-ci/**
+      - scripts/limits.sh
+      - scripts/emulation.sh
+      - scripts/build-z3.sh
+      - scripts/z3-library.sh
+      - scripts/release.sh
+      - scripts/check-release.sh
+      - scripts/check-toolchain.sh
+      - scripts/check-fma.sh
+      - scripts/fma-canary.sh
+      - scripts/toolchain-free.sh
+      - scripts/release-targets.txt
+      - supply-chain/z3.lock
+      - supply-chain/z3/**
+      - crates/una-sys/**
+      - crates/una-z3/**
+
+permissions:
+  contents: read
+
+concurrency:
+  # One group per event and commit, so that a pull request's run and a dispatched one never
+  # cancel each other (#2332).
+  group: linux-x86-64-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  leg:
+    name: ${{ matrix.leg }}${{ matrix.copy && format(' ({0})', matrix.copy) || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: z3-library
+            copy: one
+          - leg: z3-library
+            copy: two
+          - leg: linux
+          - leg: limits-linux
+          - leg: archive
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Room for the containers
+        # Docker's data on the runner's second disk, and the preinstalled toolsets that no leg
+        # uses removed, so that the containers' target directories fit.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          # The containers run as uid 1000, as on the gate machine, where Docker Desktop shows
+          # the checkout as that user's. Here the checkout is the runner's: its entries are made
+          # writable for the containers, and its top directory is handed to uid 1000 with mode
+          # 755, since the installer's tests as root (install.rs, #1938) take the test's own user
+          # as root's stand-in for every directory above their work directory. `target`, which
+          # the host's own cargo step writes, is made first; the runner's git reads the checkout.
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          chmod -R a+rwX "$GITHUB_WORKSPACE"
+          sudo chown 1000 "$GITHUB_WORKSPACE"
+          sudo chmod 755 "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          df -h / /mnt
+      - name: Run the leg
+        env:
+          LEG: ${{ matrix.leg }}
+        run: scripts/hosted-x86-64.sh "$LEG" "$RUNNER_TEMP/evidence"
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-x86-64-${{ matrix.leg }}${{ matrix.copy && format('-{0}', matrix.copy) || '' }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 90

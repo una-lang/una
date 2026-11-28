@@ -70,11 +70,12 @@ fn the_installer_pins_follow_the_repository() {
 }
 
 /// The archive's target on this machine, as the installer names it, when it has releases:
-/// macOS on arm64 and Linux on arm64 (#1904); Linux on x86_64 is not shipped in this release.
+/// macOS on arm64, Linux on arm64 (#1904) and Linux on x86_64 (#2106).
 fn target() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
         ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
         _ => None,
     }
 }
@@ -1430,9 +1431,13 @@ fn the_installer_refuses_a_version_before_0_4_0_comparing_numbers_not_text() {
             // refused by the glibc floor of the releases 0.4.0 to 0.5.1 (#2105), as the Linux
             // legs' AlmaLinux 8 image (glibc 2.28) shows; the floor's own test is
             // the_releases_built_on_glibc_2_39_keep_that_floor.
+            // On x86-64 Linux, 0.4.0 is refused for having no x86_64 archive (#2106), after
+            // the version check; a_release_before_x86_64_shipped_again_is_refused_on_x86_64
+            // is that refusal's own test.
             if version == "0.4.0"
                 && output.status.code() == Some(1)
-                && stderr(&output).contains("the una of 0.4.0 needs glibc 2.39 or later")
+                && (stderr(&output).contains("the una of 0.4.0 needs glibc 2.39 or later")
+                    || stderr(&output).contains("0.4.0 has no x86_64 archive"))
             {
                 assert!(
                     !stderr(&output).contains("0.4.0 and later"),
@@ -1459,13 +1464,6 @@ fn the_installer_refuses_a_version_before_0_4_0_comparing_numbers_not_text() {
                 "{}",
                 stderr(&output)
             );
-            if (std::env::consts::OS, std::env::consts::ARCH) == ("linux", "x86_64") {
-                assert!(
-                    stderr(&output).contains("Linux on x86_64 is not shipped in this release"),
-                    "{}",
-                    stderr(&output)
-                );
-            }
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -1551,21 +1549,36 @@ fn install_on_with(
     if host.musl_loader {
         script(&lib.join("ld-musl-aarch64.so.1"), "exit 1");
     }
-    // install.sh with its one `loaders=/lib` line pointing at the fake machine's loaders; every
-    // other line is the repository's.
+    // The x86-64 loader answers as the aarch64 one does (#2106), from its own directory.
+    let lib64 = dir.join("fake-lib64");
+    let _ = std::fs::remove_dir_all(&lib64);
+    std::fs::create_dir_all(&lib64).unwrap();
+    if lib.join("ld-linux-aarch64.so.1").exists() {
+        std::fs::copy(
+            lib.join("ld-linux-aarch64.so.1"),
+            lib64.join("ld-linux-x86-64.so.2"),
+        )
+        .unwrap();
+    }
+    // install.sh with its one `loaders=/lib` and one `loaders64=/lib64` line pointing at the
+    // fake machine's loaders; every other line is the repository's.
     let original = read("install.sh");
-    assert_eq!(
-        original
-            .lines()
-            .filter(|line| *line == "loaders=/lib")
-            .count(),
-        1,
-        "install.sh has no single `loaders=/lib` line"
-    );
-    let mut patched = original.replace(
-        "\nloaders=/lib\n",
-        &format!("\nloaders='{}'\n", lib.display()),
-    );
+    for line in ["loaders=/lib", "loaders64=/lib64"] {
+        assert_eq!(
+            original.lines().filter(|l| *l == line).count(),
+            1,
+            "install.sh has no single `{line}` line"
+        );
+    }
+    let mut patched = original
+        .replace(
+            "\nloaders=/lib\n",
+            &format!("\nloaders='{}'\n", lib.display()),
+        )
+        .replace(
+            "\nloaders64=/lib64\n",
+            &format!("\nloaders64='{}'\n", lib64.display()),
+        );
     // And, when `envs` names `DEFAULT_TMP`, its one `default_tmp=/tmp` line pointing there.
     if let Some((_, tmp)) = envs.iter().find(|(name, _)| *name == "DEFAULT_TMP") {
         assert_eq!(
@@ -1694,6 +1707,7 @@ fn uname_of(target: &str) -> Option<(&'static str, &'static str)> {
     match target {
         "aarch64-apple-darwin" => Some(("Darwin", "arm64")),
         "aarch64-unknown-linux-gnu" => Some(("Linux", "aarch64")),
+        "x86_64-unknown-linux-gnu" => Some(("Linux", "x86_64")),
         _ => None,
     }
 }
@@ -1724,6 +1738,7 @@ fn every_shipped_target_installs_on_its_machine_with_its_notes() {
         })
         .collect();
     machines.push(("aarch64-unknown-linux-gnu".to_owned(), "Linux", "arm64"));
+    machines.push(("x86_64-unknown-linux-gnu".to_owned(), "Linux", "amd64"));
     for (target, os, arch) in &machines {
         release(&dir, target, version, "PASS (every gate)", None);
         let host = Host {
@@ -1949,27 +1964,15 @@ fn the_releases_built_on_glibc_2_39_keep_that_floor() {
 
 #[test]
 fn a_machine_without_a_release_is_refused_before_anything_is_downloaded() {
-    // Linux on x86_64 is not shipped in this release (#1904), and no other system or processor
-    // has a release: refused with the reason, and nothing downloaded, though an archive under
-    // the name of each target is there.
+    // No system or processor but the shipped ones has a release: refused with the reason, and
+    // nothing downloaded, though an archive under the name of each target is there.
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-machines");
     let _ = std::fs::remove_dir_all(&dir);
     let version = "9.9.3";
     let home = dir.join("home/.una");
-    let shipped = "the releases are for macOS on arm64 and Linux on arm64 (aarch64)";
+    let shipped =
+        "the releases are for macOS on arm64, Linux on arm64 (aarch64) and Linux on x86_64";
     for (os, arch, why, target) in [
-        (
-            "Linux",
-            "x86_64",
-            "Linux on x86_64 is not shipped in this release",
-            "x86_64-unknown-linux-gnu",
-        ),
-        (
-            "Linux",
-            "amd64",
-            "Linux on x86_64 is not shipped in this release",
-            "x86_64-unknown-linux-gnu",
-        ),
         (
             "Linux",
             "armv7l",
@@ -3005,5 +3008,49 @@ fn as_root_the_installer_writes_only_where_only_root_can_write() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(!home.exists());
     reset();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_release_before_x86_64_shipped_again_is_refused_on_x86_64() {
+    // The x86_64 Linux archive is shipped again from 0.5.3 on (#2106): on x86-64 Linux an
+    // earlier release, which has no such archive, is refused before anything is downloaded,
+    // though an archive under that name is there; 0.5.3 and later install.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install-x86-64-from");
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home/.una");
+    let target = "x86_64-unknown-linux-gnu";
+    for arch in ["x86_64", "amd64"] {
+        let host = Host {
+            os: "Linux",
+            arch,
+            ..GLIBC_239
+        };
+        for version in ["0.5.2", "0.4.0", "0.5.0"] {
+            release(&dir, target, version, "PASS (every gate)", None);
+            let (output, fetched) = install_on(&dir, version, &host);
+            assert_refused(
+                &format!("{arch} {version}"),
+                &output,
+                &fetched,
+                &format!(
+                    "Linux on x86_64 is shipped from 0.5.3 on, and {version} has no x86_64 archive"
+                ),
+                &home,
+            );
+        }
+        for version in ["0.5.3", "0.10.0"] {
+            release(&dir, target, version, "PASS (every gate)", None);
+            let (output, _) = install_on(&dir, version, &host);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{arch} {version}: {}",
+                stderr(&output)
+            );
+            assert!(home.join("bin/una").exists(), "{arch} {version}");
+            std::fs::remove_dir_all(&home).unwrap();
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

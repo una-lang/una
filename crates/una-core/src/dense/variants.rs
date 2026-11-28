@@ -52,6 +52,11 @@ macro_rules! variant {
 
         $(#[$attribute])*
         #[allow(clippy::redundant_closure)]
+        // Clippy reads a safe `#[target_feature]` function as an unsafe one and asks for a
+        // `# Safety` section, on x86-64 only, where the variants have features (#2106). The
+        // condition of a call, the variant's features detected first, is stated once in this
+        // module's documentation above, and the one call site is `una-rt`'s `ffi.rs` (rule 56).
+        #[allow(clippy::missing_safety_doc)]
         pub mod $name {
             #[allow(unused_imports)]
             use crate::dense::{Triangle, blocked, fma};

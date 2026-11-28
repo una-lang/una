@@ -331,7 +331,9 @@ done
 if [ "$#" -eq 0 ]; then
     echo "note: no fma_allowlist in the report of the packed una; scripts/check-fma.sh uses its own"
 fi
-scripts/check-fma.sh "$@" "$una" "$runtime"
+# The shipped `una` and `libuna_rt.a` also allow the four exact names of the toolchain's `fma`
+# and `fmaf` (ADR 0120's amendment of 2026-11-27, #2106); the programs `una build` writes do not.
+scripts/check-fma.sh "$@" --toolchain-fma "$una" "$runtime"
 limited 300 "$tmp/step" "$una" test examples/events || { cat "$tmp/step" "$tmp/step.err" >&2; exit 1; }
 limited 300 "$tmp/step" "$una" run examples/hello || { cat "$tmp/step.err" >&2; exit 1; }
 greeting=$(cat "$tmp/step")

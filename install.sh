@@ -21,12 +21,13 @@
 #   accepted only as docs/validation/repacked.md pairs it with the summary's digest.
 # Nothing else is downloaded: the Z3 solver is built into `una` (ADR 0124), so no separate Z3
 # is installed and none is looked for on PATH.
-# The platform is checked before anything is downloaded. The releases are for macOS on arm64 and
-# Linux on arm64 (aarch64). The Linux `una` is a dynamic glibc executable that needs glibc 2.28
-# or later (2.39 or later for the releases 0.4.0 to 0.5.1) and a 64-bit userland, so a musl
-# system (Alpine and others), an older glibc, a system whose glibc version cannot be read, a
-# 32-bit userland on a 64-bit kernel and a system whose aarch64 glibc loader does not answer are
-# refused; so are Linux on x86_64, which this release does not ship, and every other system.
+# The platform is checked before anything is downloaded. The releases are for macOS on arm64,
+# Linux on arm64 (aarch64) and Linux on x86_64 (#2106). The Linux `una` is a dynamic glibc
+# executable that needs glibc 2.28 or later (2.39 or later for the releases 0.4.0 to 0.5.1) and a
+# 64-bit userland, so a musl system (Alpine and others), an older glibc, a system whose glibc
+# version cannot be read, a 32-bit userland on a 64-bit kernel and a system whose glibc loader
+# for its processor does not answer are refused; so is every other system. The x86_64 archive
+# is in the releases after 0.5.2, so an earlier UNA_VERSION is refused there.
 #
 # As root, UNA_HOME must be a place that only root can change (#1938): UNA_HOME, the
 # directories the installer writes in and the files there are not symbolic links, and they are
@@ -419,16 +420,26 @@ if [ "$major" -eq 0 ] && [ "$minor" -lt 4 ]; then
 fi
 
 # The platform: the target of the archive, one of scripts/release-targets.txt (a test keeps the
-# two equal). Linux on x86_64 is not shipped: its confinement has no native test run yet.
+# two equal). Linux on x86_64 is shipped again after 0.5.2 (#2106): its confinement runs
+# natively on a hosted x86-64 runner before each release (ADR 0124 rule 31).
 platform="$(uname -s) $(uname -m)"
-shipped="the releases are for macOS on arm64 and Linux on arm64 (aarch64)"
+shipped="the releases are for macOS on arm64, Linux on arm64 (aarch64) and Linux on x86_64"
+# The first release with an x86_64 Linux archive since 0.3.17.
+x86_64_from=0.5.3
 case $platform in
     "Darwin arm64")
         target=aarch64-apple-darwin ;;
     "Linux aarch64" | "Linux arm64")
         target=aarch64-unknown-linux-gnu ;;
     "Linux x86_64" | "Linux amd64")
-        fail "Linux on x86_64 is not shipped in this release; $shipped" ;;
+        if awk -v v="$version" -v first="$x86_64_from" 'BEGIN {
+            split(v, a, "."); split(first, b, ".")
+            for (i = 1; i <= 3; i++) if (a[i] + 0 != b[i] + 0) exit !(a[i] + 0 < b[i] + 0)
+            exit 1
+        }'; then
+            fail "Linux on x86_64 is shipped from $x86_64_from on, and $version has no x86_64 archive; $shipped"
+        fi
+        target=x86_64-unknown-linux-gnu ;;
     *) fail "no Una release for $platform; $shipped" ;;
 esac
 
@@ -443,7 +454,7 @@ esac
 # library is the one the running system reports and loads (#1938), never inferred from a file
 # being there: a glibc system that also has musl's loader installed (Debian's `musl` package) is
 # glibc. A musl system is refused even when getconf's answer looks like glibc's: its
-# `ldd --version` names musl, or the aarch64 loader that `una` needs, /lib/ld-linux-aarch64.so.1,
+# `ldd --version` names musl, or the loader that `una` needs (/lib/ld-linux-aarch64.so.1 on aarch64, /lib64/ld-linux-x86-64.so.2 on x86_64),
 # is missing, is musl's (as with gcompat), or does not say it is glibc's when asked its version.
 # musl's own loader, /lib/ld-musl-*, only names the reason when getconf shows no glibc. The
 # userland must be 64-bit (`getconf LONG_BIT`): a 32-bit Arm userland on a 64-bit kernel reports
@@ -460,9 +471,16 @@ if awk -v v="$version" -v last="$glibc_239_through" 'BEGIN {
 else
     glibc_floor_of_version=$glibc_floor
 fi
-# Where the loaders are; a test points this one line at a fake machine's.
+# Where the loaders are, /lib for aarch64 and /lib64 for x86_64; a test points these two lines
+# at a fake machine's.
 loaders=/lib
+loaders64=/lib64
 if [ "${platform%% *}" = Linux ]; then
+    # The loader that the target's `una` names (its ELF interpreter).
+    case $target in
+        x86_64-unknown-linux-gnu) cpu=x86_64 userland=x86-64 loader=$loaders64/ld-linux-x86-64.so.2 ;;
+        *) cpu=aarch64 userland=Arm loader=$loaders/ld-linux-aarch64.so.1 ;;
+    esac
     needs="the una of $version needs glibc $glibc_floor_of_version or later; Alpine and other musl systems are not supported"
     if ldd --version 2>&1 | grep -qi musl; then
         fail "this system's C library is musl (ldd --version); $needs"
@@ -475,8 +493,8 @@ if [ "${platform%% *}" = Linux ]; then
     esac
     case $glibc in
         "" | *[!0-9.]* | *..* | *.)
-            for loader in "$loaders"/ld-musl-*; do
-                [ -e "$loader" ] && fail "this system's C library is musl: getconf GNU_LIBC_VERSION shows no glibc, and musl's loader is $loader; $needs"
+            for musl in "$loaders"/ld-musl-*; do
+                [ -e "$musl" ] && fail "this system's C library is musl: getconf GNU_LIBC_VERSION shows no glibc, and musl's loader is $musl; $needs"
             done
             fail "cannot read this system's glibc version (getconf GNU_LIBC_VERSION); $needs"
             ;;
@@ -487,15 +505,14 @@ if [ "${platform%% *}" = Linux ]; then
     }' || fail "this system has glibc $glibc; $needs"
     bits=$(getconf LONG_BIT 2> /dev/null) || bits=
     [ "$bits" = 64 ] \
-        || fail "this system's userland is not 64-bit (getconf LONG_BIT: '$bits'): a 32-bit userland on a 64-bit kernel cannot start the aarch64 una; the Linux release needs a 64-bit Arm userland"
-    aarch64_loader=$loaders/ld-linux-aarch64.so.1
-    if answer=$("$aarch64_loader" --version 2>&1); then ran=1; else ran=; fi
+        || fail "this system's userland is not 64-bit (getconf LONG_BIT: '$bits'): a 32-bit userland on a 64-bit kernel cannot start the $cpu una; the Linux release needs a 64-bit $userland userland"
+    if answer=$("$loader" --version 2>&1); then ran=1; else ran=; fi
     case $answer in
-        *musl*) fail "this system's C library is musl: $aarch64_loader is musl's loader; $needs" ;;
+        *musl*) fail "this system's C library is musl: $loader is musl's loader; $needs" ;;
     esac
     case $ran$answer in
         1*GLIBC* | 1*"GNU libc"*) ;;
-        *) fail "glibc's aarch64 loader $aarch64_loader does not answer as glibc's ($aarch64_loader --version); $needs" ;;
+        *) fail "glibc's $cpu loader $loader does not answer as glibc's ($loader --version); $needs" ;;
     esac
 fi
 

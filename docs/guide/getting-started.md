@@ -351,7 +351,8 @@ The pages on edition `0.4` are [Tasks and time](https://github.com/una-lang/una/
 | Linux on arm64 with 0.4.0 to 0.5.1 | Yes, with glibc 2.39 or later (Ubuntu 24.04, for example) | The same |
 | Linux with an older glibc (before 2.28) | No | |
 | Linux with musl, such as Alpine | No | |
-| Linux on x86-64 | No | |
+| Linux on x86-64, glibc 2.28 or later, from 0.5.3 (#2106) | Yes | The same as on arm64 |
+| Linux on x86-64 with 0.4.0 to 0.5.2 | No | |
 | Windows | No | |
 
 `una check`, `una test` and `una run` need no other program. On Linux, `una` is a dynamic executable against the system's glibc, with the C++ runtime of the solver linked into it. The installer refuses an unsupported Linux before any download, a 32-bit userland on a 64-bit kernel included.

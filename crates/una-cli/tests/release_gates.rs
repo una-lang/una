@@ -138,14 +138,14 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     assert!(record.contains(&format!("| clone | PASS | {} | `{}` |", row[3], row[4])));
     assert!(
         record.contains(
-            "- Shipped targets (`scripts/release-targets.txt`): `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`\n"
+            "- Shipped targets (`scripts/release-targets.txt`): `aarch64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`\n"
         ),
         "{record}"
     );
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, deps, mac, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, docs, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, toolchain-free)"
+            "Verdict: INCOMPLETE (not run: build, deps, mac, linux, linux-arm64, release, reproducible, determinism, native, timing-channels, owner-replay, sanitize, docs, formal, hunt, hunt-linux-arm64, solver-identity, limits, limits-linux-arm64, limits-linux, toolchain-free)"
         ),
         "{record}"
     );
@@ -1538,7 +1538,7 @@ fn the_shipped_targets_are_one_list_that_fails_closed() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "aarch64-apple-darwin\naarch64-unknown-linux-gnu\n"
+        "aarch64-apple-darwin\naarch64-unknown-linux-gnu\nx86_64-unknown-linux-gnu\n"
     );
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-targets");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2011,14 +2011,14 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(source.join("scripts")).unwrap();
     let reader = std::fs::read_to_string(root().join("scripts/release-targets.sh")).unwrap()
-        + "release_target_platform() { case $1 in aarch64-apple-darwin) echo macos ;; aarch64-unknown-linux-gnu) echo linux/arm64 ;; x86_64-unknown-linux-gnu) echo plan9 ;; *) return 1 ;; esac; }\n";
+        + "release_target_platform() { case $1 in aarch64-apple-darwin) echo macos ;; aarch64-unknown-linux-gnu) echo linux/arm64 ;; x86_64-unknown-linux-gnu) echo ${STUB_X86_PLATFORM:-plan9} ;; *) return 1 ;; esac; }\n";
     for (path, text) in [
         (".gitignore", "target/\n".to_owned()),
         ("Cargo.toml", "version = \"9.9.9\"\n".to_owned()),
         ("scripts/release-targets.sh", reader),
         (
             "scripts/local-release.sh",
-            "#!/bin/sh\n[ -z \"${STUB_RELEASE_LOG:-}\" ] || cat \"$STUB_RELEASE_LOG\"\nout=target/local-release/$1\nrm -rf \"$out\" && mkdir -p \"$out\" || exit 1\nfor t in ${STUB_SECOND:-}; do echo \"$t\" > \"$out/una-9.9.9-${t%!}.tar.gz\"; done\n".to_owned(),
+            "#!/bin/sh\n[ -z \"${STUB_RELEASE_LOG:-}\" ] || cat \"$STUB_RELEASE_LOG\"\nif [ -n \"${STUB_HOSTED:-}\" ]; then echo \"local-release.sh UNA_HOSTED_DIR=${UNA_HOSTED_DIR:-}\" >> \"$STUB_LOG\"; scripts/hosted-evidence.sh 0 archive \"$UNA_HOSTED_DIR\"; fi\nout=target/local-release/$1\nrm -rf \"$out\" && mkdir -p \"$out\" || exit 1\nfor t in ${STUB_SECOND:-}; do echo \"$t\" > \"$out/una-9.9.9-${t%!}.tar.gz\"; done\n".to_owned(),
         ),
         (
             "scripts/toolchain-free.sh",
@@ -2041,6 +2041,13 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
         (
             "scripts/limits.sh",
             "#!/bin/sh\necho \"limits.sh $*\" >> \"$STUB_LOG\"\n[ -z \"${STUB_LIMITS_FAIL:-}\" ]\n".to_owned(),
+        ),
+        // The hosted x86-64 evidence (#2106): `--native-engine` answers as `STUB_HOSTED` says
+        // (unset: native, the legs run here), and a read of the evidence logs its arguments to
+        // `STUB_LOG` and fails when `STUB_LIMITS_FAIL` is set.
+        (
+            "scripts/hosted-evidence.sh",
+            "#!/bin/sh\nif [ \"$*\" = --native-engine ]; then [ -z \"${STUB_HOSTED:-}\" ]; exit; fi\necho \"hosted-evidence.sh $1 $2\" >> \"$STUB_LOG\"\nmkdir -p \"$3/$2\" && echo \"leg=$2\" > \"$3/$2/$2.manifest\"\necho \"| the runner's log of $2\"\na=target/local-release/v9.9.9/una-9.9.9-x86_64-unknown-linux-gnu.tar.gz\n[ \"$2\" != archive ] || [ ! -f \"$a\" ] || echo \"hosted: archive ${a##*/} sha256 $(shasum -a 256 \"$a\" | cut -d ' ' -f 1)\"\n[ -z \"${STUB_LIMITS_FAIL:-}\" ]\n".to_owned(),
         ),
         (
             "scripts/local-ci.sh",
@@ -2073,6 +2080,7 @@ fn gate_fixture(dir: &Path, list: &str) -> (PathBuf, String, PathBuf) {
             "scripts/limits.sh",
             "scripts/local-ci.sh",
             "scripts/z3-library.sh",
+            "scripts/hosted-evidence.sh",
         ])
         .current_dir(&source)
         .status()
@@ -2421,7 +2429,7 @@ fn the_record_copies_the_strip_toolchain_and_musl_lines_of_the_release_log() {
             "## Linux toolchain\n\n- {linux}: libgcc.a sha256 {digest}\n- {linux}: libstdc++-13-dev 13.3.0-6ubuntu2~24.04\n- Not copied: 1 of the 3 lines of logs/release.log that start with `toolchain: ` are out of shape\n\n"
         ),
         format!(
-            "## musl inputs\n\n- {linux}: libc.a sha256 {digest}\n- {linux}: rcrt1.o sha256 {digest}\n\n## Dependency audit\n"
+            "## musl inputs\n\n- {linux}: libc.a sha256 {digest}\n- {linux}: rcrt1.o sha256 {digest}\n\n## Hosted x86-64 evidence\n\nNone: no gate of this run took the hosted runner's evidence.\n\n## Dependency audit\n"
         ),
     ];
     for section in &expected {
@@ -2534,6 +2542,38 @@ fn the_limits_gates_run_their_legs_and_follow_them() {
         for gate in legs {
             assert_eq!(result_of(&out, gate), result, "{gate} {fail:?}");
         }
+        // Off an x86-64 engine, limits-linux is the hosted runner's evidence of the gated SHA,
+        // and its result is that evidence's (#2106); the other legs still run here.
+        let _ = std::fs::remove_file(&log);
+        gates_of(
+            &script,
+            &sha,
+            &out,
+            &legs,
+            &dir.join("source"),
+            &[
+                ("STUB_LOG", &log_path),
+                ("STUB_LIMITS_FAIL", fail),
+                ("STUB_HOSTED", "1"),
+            ],
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap_or_default(),
+            format!(
+                "limits.sh \nlocal-ci.sh --linux-arm64 --limits\nhosted-evidence.sh {sha} limits-linux\n"
+            ),
+            "{fail:?}"
+        );
+        for gate in legs {
+            assert_eq!(result_of(&out, gate), result, "{gate} {fail:?} hosted");
+        }
+        // The evidence stays in OUT/hosted, and the gate's log holds the runner's log (#2327).
+        assert!(
+            out.join("hosted/limits-linux/limits-linux.manifest")
+                .is_file()
+        );
+        let log = std::fs::read_to_string(out.join("logs/limits-linux.log")).unwrap();
+        assert!(log.contains("| the runner's log of limits-linux"), "{log}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -4077,4 +4117,209 @@ fn the_archive_check_tells_every_serving_example() {
         }
     }
     assert_eq!(serving, ["health", "orders", "proxy"]);
+}
+
+#[test]
+fn the_gates_keep_the_hosted_evidence_of_release_reproducible_and_toolchain_free() {
+    // #2337: off an x86-64 engine, the release and reproducible gates give local-release.sh
+    // OUT/hosted/release and OUT/hosted/reproducible, and the toolchain-free gate takes the
+    // x86-64 leg from the checker into OUT/hosted/toolchain-free, printing the runner's log; the
+    // stand-in checker vouches for the planted x86-64 archive by its digest.
+    if head().is_none() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-hosted-kept");
+    let all = "aarch64-apple-darwin\naarch64-unknown-linux-gnu\nx86_64-unknown-linux-gnu\n";
+    let (script, sha, out) = gate_fixture(&dir, all);
+    let log = dir.join("hosted.log");
+    let log_path = log.display().to_string();
+    let env = [
+        ("STUB_LOG", log_path.as_str()),
+        ("STUB_HOSTED", "1"),
+        ("STUB_X86_PLATFORM", "linux/amd64"),
+    ];
+    // toolchain-free, on the three archives.
+    plant(&out, &all.lines().collect::<Vec<_>>(), true);
+    gates_of(
+        &script,
+        &sha,
+        &out,
+        &["toolchain-free"],
+        &dir.join("source"),
+        &env,
+    );
+    let gate_log = std::fs::read_to_string(out.join("logs/toolchain-free.log")).unwrap();
+    assert_eq!(result_of(&out, "toolchain-free"), "PASS", "{gate_log}");
+    assert!(
+        out.join("hosted/toolchain-free/archive/archive.manifest")
+            .is_file(),
+        "{gate_log}"
+    );
+    assert!(
+        gate_log.contains("| the runner's log of archive"),
+        "{gate_log}"
+    );
+    let ran = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        ran.contains(&format!("hosted-evidence.sh {sha} archive")),
+        "{ran}"
+    );
+    // release and reproducible: the directory each gives local-release.sh, and the runner's log
+    // in each gate's log.
+    let _ = std::fs::remove_file(&log);
+    gates_of(
+        &script,
+        &sha,
+        &out,
+        &["release", "reproducible"],
+        &dir.join("source"),
+        &[
+            ("STUB_LOG", log_path.as_str()),
+            ("STUB_HOSTED", "1"),
+            ("STUB_X86_PLATFORM", "linux/amd64"),
+            (
+                "STUB_SECOND",
+                "aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu",
+            ),
+        ],
+    );
+    let ran = std::fs::read_to_string(&log).unwrap_or_default();
+    let physical = out.canonicalize().unwrap();
+    for gate in ["release", "reproducible"] {
+        assert!(
+            ran.contains(&format!(
+                "local-release.sh UNA_HOSTED_DIR={}/hosted/{gate}\n",
+                physical.display()
+            )),
+            "{gate}: {ran}"
+        );
+        assert!(
+            physical
+                .join(format!("hosted/{gate}/archive/archive.manifest"))
+                .is_file(),
+            "{gate}"
+        );
+        let gate_log = std::fs::read_to_string(out.join(format!("logs/{gate}.log"))).unwrap();
+        assert!(
+            gate_log.contains("| the runner's log of archive"),
+            "{gate}: {gate_log}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_x86_64_linux_release_links_with_gnu_ld_and_the_trace_refuses_lld() {
+    // #2340: rustc links x86_64-unknown-linux-gnu with rust-lld by default, whose
+    // --trace-symbol lines go to stdout in another shape; the release and the no-libm canaries
+    // link that target with GNU ld, and scripts/link-trace.sh refuses a link through lld rather
+    // than read it as a trace with no reference.
+    let release = std::fs::read_to_string(root().join("scripts/release.sh")).unwrap();
+    assert!(
+        release.contains(
+            "x86_64-unknown-linux-gnu) RUSTFLAGS=\"$RUSTFLAGS -C linker-features=-lld\" ;;"
+        )
+    );
+    let canaries = std::fs::read_to_string(root().join("scripts/no-libm-test.sh")).unwrap();
+    assert!(
+        canaries.contains("x86_64-unknown-linux-gnu) linker_flags=\"-C linker-features=-lld\" ;;")
+    );
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("link-trace-lld");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A stand-in `cc`, first on PATH, that succeeds and writes GNU ld's trace line of the start
+    // of every glibc executable when STUB_GNU is set, and nothing otherwise.
+    std::fs::write(
+        dir.join("cc"),
+        "#!/bin/sh\n[ -z \"${STUB_GNU:-}\" ] || echo '/usr/bin/ld: /usr/lib64/Scrt1.o: reference to __libc_start_main' >&2\nexit 0\n",
+    )
+    .unwrap();
+    let status = Command::new("chmod")
+        .arg("755")
+        .arg(dir.join("cc"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(dir.join("args"), "-o\nout\n\"-fuse-ld=lld\"\n").unwrap();
+    #[allow(clippy::disallowed_methods)]
+    let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
+    let trace = |args: &[&str], gnu: bool| {
+        Command::new("sh")
+            .arg(root().join("scripts/link-trace.sh"))
+            .args(args)
+            .env("UNA_LINK_TRACE_DIR", &dir)
+            .env("PATH", &path)
+            .env("STUB_GNU", if gnu { "1" } else { "" })
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    // #2353: any linker but GNU ld's bfd, directly or in a response file, is refused before the
+    // link, and an executable whose trace lacks GNU ld's line for __libc_start_main after it.
+    let at_args = format!("@{}", dir.join("args").display());
+    for (case, args, gnu, says) in [
+        (
+            "lld",
+            &["-fuse-ld=lld", "-o", "out"][..],
+            true,
+            "would use lld",
+        ),
+        (
+            "gold",
+            &["-fuse-ld=gold", "-o", "out"][..],
+            true,
+            "would use gold",
+        ),
+        (
+            "mold",
+            &["-fuse-ld=mold", "-o", "out"][..],
+            true,
+            "would use mold",
+        ),
+        (
+            "rustc's lld wrapper",
+            &[
+                "-B/rust/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld",
+                "-o",
+                "out",
+            ][..],
+            true,
+            "rustc's lld wrapper",
+        ),
+        (
+            "a response file",
+            &[at_args.as_str()][..],
+            true,
+            "would use lld",
+        ),
+        (
+            "no GNU ld trace",
+            &["-o", "out"][..],
+            false,
+            "holds no reference to __libc_start_main",
+        ),
+    ] {
+        let output = trace(args, gnu);
+        assert_eq!(output.status.code(), Some(2), "{case}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(says),
+            "{case}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // GNU ld (bfd), named or by default, links; so does a shared object, which has no start.
+    for (case, args, gnu) in [
+        ("default", &["-o", "out"][..], true),
+        ("bfd", &["-fuse-ld=bfd", "-o", "out"][..], true),
+        ("shared", &["-shared", "-o", "out.so"][..], false),
+    ] {
+        let output = trace(args, gnu);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{case}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
