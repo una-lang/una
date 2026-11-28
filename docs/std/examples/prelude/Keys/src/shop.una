@@ -1,0 +1,18 @@
+module shop
+
+--- A key file that holds no key.
+handler no_keys() for Keys
+  op hmac(key_name, data) = fail UnknownKey
+
+--- Whether a receipt can be signed with the key `receipts`.
+signed(receipt: Text) -> Bool
+  uses @keys: Keys[hmac]
+=
+  let signature = attempt @keys.hmac(key_name: "receipts", data: receipt)
+  signature.is_ok()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let ok = signed("order 17") with @keys = no_keys()
+  @console.print("receipt signed: {ok}")

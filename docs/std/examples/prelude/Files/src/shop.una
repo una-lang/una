@@ -1,0 +1,20 @@
+module shop
+
+--- A directory that holds one file, `stock.txt`; a write succeeds and is forgotten.
+handler shelf() for Files
+  op read(path) = if path == "stock.txt" then "lamp: 3" else fail NotFound
+  op write(path, content) = unit
+
+--- Whether the stock file can be read.
+readable(path: Text) -> Bool
+  uses @files: Files[read]
+=
+  let content = attempt @files.read(path)
+  content.is_ok()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let found = readable("stock.txt") with @files = shelf()
+  let missing = readable("other.txt") with @files = shelf()
+  @console.print("stock.txt readable: {found}, other.txt readable: {missing}")

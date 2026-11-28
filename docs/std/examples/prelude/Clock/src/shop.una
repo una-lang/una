@@ -1,0 +1,17 @@
+module shop
+
+--- A clock fixed at one instant, so that the example prints the same line on every run.
+handler fixed(at: Int) for Clock
+  op now() = at
+
+--- The milliseconds since the Unix epoch, as `Clock` reads them.
+stamp() -> Int
+  uses @clock: Clock[now]
+=
+  @clock.now()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let at = stamp() with @clock = fixed(at: 1700000000000)
+  @console.print("order placed at {at}")
