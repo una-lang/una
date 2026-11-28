@@ -204,6 +204,15 @@ fn a_dependency_of_edition_0_4_gets_the_diagnostics_it_gets_alone() {
                 "U1001 at src/text.una:5:49",
             ],
         ),
+        // #2318: nor the kinds the prelude does not declare `pub`.
+        (
+            "ita_path_dep_0_4_private_prelude_kinds_error",
+            &[
+                "U1001 at src/text.una:3:21",
+                "U1001 at src/text.una:5:23",
+                "U2029 at src/text.una:7:21",
+            ],
+        ),
     ] {
         let under_root = checked(&fresh(name, "check"), "deps/util/");
         let alone_dir = fresh(name, "alone").join("deps/util");
@@ -223,4 +232,21 @@ fn a_dependency_of_edition_0_4_gets_the_diagnostics_it_gets_alone() {
             .collect();
         assert_eq!(codes, expected, "{name}: alone");
     }
+}
+
+#[test]
+fn no_module_names_a_private_kind_of_the_prelude() {
+    // #2318: `Complex_F64` and `Complex_F32`, which the prelude does not declare `pub`, are in
+    // no scope of a module of edition 0.5 either: U1001 with no type of their fields, and an
+    // unknown unit, never "not a unit".
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/types/private_prelude_kinds");
+    assert_eq!(
+        checked(&dir, ""),
+        [
+            "U1001 at src/m.una:8:21: cannot find name `Complex_F64` in this module, its imports or the prelude",
+            "U1001 at src/m.una:10:23: cannot find name `Complex_F32` in this module, its imports or the prelude",
+            "U2029 at src/m.una:12:21: unknown unit `Complex_F64`",
+        ]
+    );
 }

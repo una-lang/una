@@ -1,0 +1,13 @@
+-- test: a dependency of edition 0.4 under a root of edition 0.5 gets the diagnostics it gets alone: the prelude's private kinds `Complex_F64` and `Complex_F32` are U1001 with no U2001, and an unknown unit in a unit position (ADR 0122 rule 49, #2318)
+-- spec: spec/30 §12
+-- expect: error U1001 at deps/util/src/text.una:3:21
+-- expect: error U1001 at deps/util/src/text.una:5:23
+-- expect: error U2029 at deps/util/src/text.una:7:21
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  const line = twice("hello")
+  line

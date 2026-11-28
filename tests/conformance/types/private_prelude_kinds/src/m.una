@@ -1,0 +1,14 @@
+-- test: the kinds the prelude does not declare `pub`, `Complex_F64` and `Complex_F32`, are in no module's scope: U1001 and no U2001 at a use as a constructor, an unknown unit (U2029) in a unit position; `Complex[F64]` and `complex` still name them (#2318)
+-- spec: spec/29 §19
+-- expect: error U1001 at src/m.una:8:21
+-- expect: error U1001 at src/m.una:10:23
+-- expect: error U2029 at src/m.una:12:21
+module m
+
+pub wide() -> Int = Complex_F64(re: 1.0, im: 2.0).re
+
+pub narrow() -> Int = Complex_F32(re: 1.0, im: 2.0).re
+
+pub count(a: Int of Complex_F64) -> Int = 0
+
+pub z() -> Complex[F64] = complex(re: 1.0, im: 2.0)

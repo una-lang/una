@@ -1223,6 +1223,14 @@ impl<'a> Env<'a> {
             .get(self.prelude)
             .and_then(|p| p.upper.get(name))
         {
+            // A kind the prelude does not declare `pub` (`Complex_F64`, `Complex_F32`: the
+            // checker reaches them by `prelude_kind` only) is in no other module's scope, in
+            // any edition, as name resolution has it (#2318).
+            Some(&Entity::Kind(id) | &Entity::Variant(id, _))
+                if self.kinds.get(id).is_some_and(|kind| !kind.ast.public) =>
+            {
+                Vec::new()
+            }
             Some(&entity) => vec![entity],
             None => Vec::new(),
         }
