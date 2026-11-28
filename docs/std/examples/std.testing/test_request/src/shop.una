@@ -1,0 +1,16 @@
+module shop
+
+import std.host (Method, Request)
+import std.testing (test_request)
+
+--- The path segments of a request, decoded.
+segments(r: Request) -> internal List[Text] = r.segments
+
+test "the host splits the path"
+  do segments(test_request(Get, target: "/lamps/desk%20lamp", body: ""))
+  expect result == ["lamps", "desk lamp"]
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("the test of segments runs with `una test`")

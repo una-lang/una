@@ -1,0 +1,20 @@
+module shop
+
+import std.host (ServeError)
+
+--- Why the server stopped answering.
+reason(failure: ServeError) -> Text
+=
+  when failure
+    is Interrupted -> "the host asked the server to stop"
+    is TimedOut -> "no request came before the deadline"
+    is Closed -> "the server was closed"
+    is NotHeld -> "the reply right was not this task's"
+    is BadReply -> "the host refused the reply"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(reason(Closed))
+  @console.print(reason(NotHeld))
+  @console.print(reason(BadReply))

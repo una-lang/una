@@ -17,20 +17,7 @@
   "http",
   "testing"
  ],
- "pending": [
-  "std.host Exchange",
-  "std.host HttpServer",
-  "std.host Method",
-  "std.host Param",
-  "std.host Reply",
-  "std.host Request",
-  "std.host ServeError",
-  "std.host Status",
-  "std.testing TestRequestError",
-  "std.testing elapse",
-  "std.testing test_exchange",
-  "std.testing test_request"
- ],
+ "pending": [],
  "entries": [
   {
    "module": "prelude",
@@ -4764,6 +4751,400 @@
     "prelude tensor"
    ],
    "example": "docs/std/examples/prelude/tensor_filled"
+  },
+  {
+   "module": "std.host",
+   "name": "HttpServer",
+   "area": "http",
+   "operations": [
+    {
+     "name": "next",
+     "params": [],
+     "returns": {
+      "type": "internal Exchange",
+      "meaning": "the next request and the reply right to answer it once, which the calling task now holds"
+     },
+     "fails": [
+      {
+       "variant": "Interrupted",
+       "when": "a stop request of the host came while the operation waited, or before it started"
+      },
+      {
+       "variant": "TimedOut",
+       "when": "a deadline of the program cut the wait of `next`"
+      },
+      {
+       "variant": "Closed",
+       "when": "the server was closed with `close`"
+      },
+      {
+       "variant": "NotHeld",
+       "when": "the reply right is not one the calling task holds, or it was answered already"
+      },
+      {
+       "variant": "BadReply",
+       "when": "the host refuses to send the reply"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "serve:<scheme>://<address>:<port>"
+    },
+    {
+     "name": "reply",
+     "params": [
+      {
+       "name": "to",
+       "meaning": "the reply right of the request to answer"
+      },
+      {
+       "name": "reply",
+       "meaning": "the status, headers and body to send; the host writes the framing headers itself"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; the reply is handed to the host, without waiting"
+     },
+     "fails": [
+      {
+       "variant": "Interrupted",
+       "when": "a stop request of the host came while the operation waited, or before it started"
+      },
+      {
+       "variant": "TimedOut",
+       "when": "a deadline of the program cut the wait of `next`"
+      },
+      {
+       "variant": "Closed",
+       "when": "the server was closed with `close`"
+      },
+      {
+       "variant": "NotHeld",
+       "when": "the reply right is not one the calling task holds, or it was answered already"
+      },
+      {
+       "variant": "BadReply",
+       "when": "the host refuses to send the reply"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "serve:<scheme>://<address>:<port>"
+    },
+    {
+     "name": "close",
+     "params": [],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; the server accepts no more connections"
+     },
+     "accepts": "public",
+     "grant": "serve:<scheme>://<address>:<port>"
+    }
+   ],
+   "see_also": [
+    "std.host Exchange",
+    "std.host Reply",
+    "std.host ServeError"
+   ],
+   "example": "docs/std/examples/std.host/HttpServer"
+  },
+  {
+   "module": "std.host",
+   "name": "Exchange",
+   "area": "http",
+   "fields": [
+    {
+     "name": "request",
+     "meaning": "the request, as the host read it"
+    },
+    {
+     "name": "right",
+     "meaning": "the reply right that answers it once"
+    }
+   ],
+   "see_also": [
+    "std.host HttpServer",
+    "std.host Request"
+   ],
+   "example": "docs/std/examples/std.host/Exchange"
+  },
+  {
+   "module": "std.host",
+   "name": "Request",
+   "area": "http",
+   "fields": [
+    {
+     "name": "method",
+     "meaning": "the request's method"
+    },
+    {
+     "name": "target",
+     "meaning": "its target in origin-form, as received"
+    },
+    {
+     "name": "segments",
+     "meaning": "its path split on `/`, each segment percent-decoded"
+    },
+    {
+     "name": "params",
+     "meaning": "the parameters of its query, decoded, in order"
+    },
+    {
+     "name": "headers",
+     "meaning": "its headers, names in ASCII lower case, in the order received"
+    },
+    {
+     "name": "body",
+     "meaning": "its whole body"
+    },
+    {
+     "name": "peer",
+     "meaning": "the peer's IP address, without its port"
+    },
+    {
+     "name": "listener",
+     "meaning": "the address of the grant it came in on, as the grant writes it"
+    }
+   ],
+   "see_also": [
+    "std.host Exchange",
+    "std.host Param",
+    "std.host Method"
+   ],
+   "example": "docs/std/examples/std.host/Request"
+  },
+  {
+   "module": "std.host",
+   "name": "Param",
+   "area": "http",
+   "fields": [
+    {
+     "name": "name",
+     "meaning": "the parameter's name, decoded"
+    },
+    {
+     "name": "value",
+     "meaning": "its value, decoded"
+    }
+   ],
+   "see_also": [
+    "std.host Request"
+   ],
+   "example": "docs/std/examples/std.host/Param"
+  },
+  {
+   "module": "std.host",
+   "name": "Reply",
+   "area": "http",
+   "fields": [
+    {
+     "name": "status",
+     "meaning": "the reply's status, from 200 to 599"
+    },
+    {
+     "name": "headers",
+     "meaning": "its headers; the host writes the framing headers itself"
+    },
+    {
+     "name": "body",
+     "meaning": "its body"
+    }
+   ],
+   "see_also": [
+    "std.host HttpServer",
+    "std.host Status"
+   ],
+   "example": "docs/std/examples/std.host/Reply"
+  },
+  {
+   "module": "std.host",
+   "name": "Status",
+   "area": "http",
+   "definition": {
+    "type": "Int where 200 <= it and it <= 599",
+    "meaning": "the status of a reply; a `1xx` status is the host's alone"
+   },
+   "see_also": [
+    "std.host Reply"
+   ],
+   "example": "docs/std/examples/std.host/Status"
+  },
+  {
+   "module": "std.host",
+   "name": "Method",
+   "area": "http",
+   "variants": [
+    {
+     "name": "Get",
+     "fields": [],
+     "meaning": "`GET`"
+    },
+    {
+     "name": "Head",
+     "fields": [],
+     "meaning": "`HEAD`"
+    },
+    {
+     "name": "Post",
+     "fields": [],
+     "meaning": "`POST`"
+    },
+    {
+     "name": "Put",
+     "fields": [],
+     "meaning": "`PUT`"
+    },
+    {
+     "name": "Patch",
+     "fields": [],
+     "meaning": "`PATCH`"
+    },
+    {
+     "name": "Delete",
+     "fields": [],
+     "meaning": "`DELETE`"
+    },
+    {
+     "name": "Options",
+     "fields": [],
+     "meaning": "`OPTIONS`"
+    }
+   ],
+   "see_also": [
+    "std.host Request"
+   ],
+   "example": "docs/std/examples/std.host/Method"
+  },
+  {
+   "module": "std.host",
+   "name": "ServeError",
+   "area": "http",
+   "variants": [
+    {
+     "name": "Interrupted",
+     "fields": [],
+     "meaning": "a stop request of the host came while the operation waited, or before it started"
+    },
+    {
+     "name": "TimedOut",
+     "fields": [],
+     "meaning": "a deadline of the program cut the wait of `next`"
+    },
+    {
+     "name": "Closed",
+     "fields": [],
+     "meaning": "the server was closed with `close`"
+    },
+    {
+     "name": "NotHeld",
+     "fields": [],
+     "meaning": "the reply right is not one the calling task holds, or it was answered already"
+    },
+    {
+     "name": "BadReply",
+     "fields": [],
+     "meaning": "the host refuses to send the reply"
+    }
+   ],
+   "see_also": [
+    "std.host HttpServer"
+   ],
+   "example": "docs/std/examples/std.host/ServeError"
+  },
+  {
+   "module": "std.testing",
+   "name": "TestRequestError",
+   "area": "testing",
+   "variants": [
+    {
+     "name": "Refused",
+     "fields": [],
+     "meaning": "the host would answer the request `400`"
+    }
+   ],
+   "see_also": [
+    "std.testing test_request"
+   ],
+   "example": "docs/std/examples/std.testing/TestRequestError"
+  },
+  {
+   "module": "std.testing",
+   "name": "elapse",
+   "area": "testing",
+   "params": [
+    {
+     "name": "d",
+     "meaning": "the time to move the test's virtual clock forward, in milliseconds"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; the clock has moved forward at once, without waiting"
+   },
+   "requires": [
+    {
+     "condition": "d >= 0",
+     "meaning": "the clock never moves backward"
+    }
+   ],
+   "see_also": [
+    "std.time minute"
+   ],
+   "example": "docs/std/examples/std.testing/elapse"
+  },
+  {
+   "module": "std.testing",
+   "name": "test_request",
+   "area": "testing",
+   "params": [
+    {
+     "name": "method",
+     "meaning": "the request's method"
+    },
+    {
+     "name": "target",
+     "meaning": "the request's target, read by the host's own rules"
+    },
+    {
+     "name": "body",
+     "meaning": "the request's body"
+    }
+   ],
+   "returns": {
+    "type": "Request",
+    "meaning": "the request as the host would read it from a peer: the only header `host: test`, the peer `192.0.2.1` and the listener `test`"
+   },
+   "fails": [
+    {
+     "variant": "Refused",
+     "when": "the host would answer the request `400`, as for a target that is not in origin-form"
+    }
+   ],
+   "see_also": [
+    "std.testing test_exchange",
+    "std.testing TestRequestError"
+   ],
+   "example": "docs/std/examples/std.testing/test_request"
+  },
+  {
+   "module": "std.testing",
+   "name": "test_exchange",
+   "area": "testing",
+   "params": [
+    {
+     "name": "request",
+     "meaning": "the request of the exchange"
+    }
+   ],
+   "returns": {
+    "type": "Exchange",
+    "meaning": "an exchange of `request` with a fresh reply right, distinct from every other reply right of the run"
+   },
+   "see_also": [
+    "std.testing test_request",
+    "std.host HttpServer"
+   ],
+   "example": "docs/std/examples/std.testing/test_exchange"
   }
  ]
 }

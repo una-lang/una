@@ -1,0 +1,40 @@
+module shop
+
+import std.host (Exchange, HttpServer, Method, Reply, Request)
+import std.testing (test_exchange)
+
+--- Answers the next request with `200`.
+pub answer_one() -> Unit
+  uses @server: HttpServer[next, reply]
+=
+  let next = attempt @server.next()
+  when next
+    is Ok(exchange) -> answer(exchange)
+    is Err(failure) -> unit
+
+--- Replies `200` to `exchange`; a reply the host refuses is dropped.
+answer(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+=
+  let sent = attempt @server.reply(to: exchange.right,
+    reply: Reply(status: 200, headers: [], body: "ok")
+  )
+  unit
+
+--- A server that receives one exchange and accepts any reply, for examples only.
+handler one_exchange(e: Exchange) for HttpServer
+  op next() = e
+  op reply(to, reply) = unit
+  op close() = unit
+
+test "the next request is answered"
+  given @server = one_exchange(e: test_exchange(Request(method: Get, target: "/", segments: [],
+        params: [], headers: [], body: "", peer: "192.0.2.1", listener: "test"
+      )))
+  do answer_one()
+  expect result == unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("the test of answer_one runs with `una test`")

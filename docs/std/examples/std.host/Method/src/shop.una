@@ -1,0 +1,20 @@
+module shop
+
+import std.host (Method)
+
+--- Whether a request of `method` may change the shop's data.
+changes(method: Method) -> Text
+=
+  when method
+    is Get -> "reads"
+    is Head -> "reads its headers"
+    is Post -> "creates"
+    is Put -> "replaces"
+    is Patch -> "edits"
+    is Delete -> "removes"
+    is Options -> "asks what is allowed"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("GET {changes(Get)}, POST {changes(Post)}, DELETE {changes(Delete)}")

@@ -1,0 +1,13 @@
+module shop
+
+import std.testing (elapse)
+import std.time (minute)
+
+test "the test's clock moves fifteen minutes at once"
+  do elapse(15 * minute)
+  expect result == unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("the test of elapse runs with `una test`")

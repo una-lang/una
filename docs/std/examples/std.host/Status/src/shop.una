@@ -1,0 +1,9 @@
+module shop
+
+import std.host (Status)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let created: Status = 201
+  @console.print("created is {created}")

@@ -1,0 +1,1 @@
+a request holds what the host read, all internal
