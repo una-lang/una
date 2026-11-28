@@ -407,7 +407,9 @@ for example in examples/*/; do
     example=${example%/}
     dir="$tmp/native-$(basename "$example")"
     cp -R "$example" "$dir"
-    if grep -qx serve "$example/ita.una" 2>/dev/null; then
+    # It serves by a `serve` section, or in the language form by a `serve "..."` grant of its
+    # entry (spec/31 §1 rule 6, examples/proxy): the rule of crates/una-cli/tests/examples.rs (#2423).
+    if grep -qx serve "$example/ita.una" 2>/dev/null || grep -q '^    serve "' "$example/ita.una" 2>/dev/null; then
         limited 600 "$tmp/step" "$una" build "$dir" --out "$dir/native-exe" || { cat "$tmp/step.err" >&2; exit 1; }
         continue
     fi
