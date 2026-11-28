@@ -377,8 +377,9 @@ fn no_step_of_the_release_run_builds_the_website() {
     let order = [
         "scripts/doc-links.py --self-test",
         "&& scripts/doc-links.py \\",
-        // The product's `una` (#2254), never target/release/una.
-        "&& with_pattern env UNA_BIN=\"$UNA_PRODUCT\" scripts/site-bundle.sh",
+        // The una of the run's macOS archive, else the product's (#2254, #2256), never
+        // target/release/una.
+        "&& with_pattern env UNA_BIN=\"$bundle_una\" scripts/site-bundle.sh",
     ];
     let mut from = 0;
     for step in order {
@@ -3322,31 +3323,53 @@ fn a_schedule_switch_that_is_neither_0_nor_1_stops_the_run_before_any_gate() {
 /// A scratch repository at `dir/source` for the product (#2254), committed, with stubs that
 /// log to `STUB_LOG` the arguments they were started with: the build gate's checks
 /// (no-libm-build.sh, no-libm.sh, load-commands.sh and their canaries), the docs gate's
-/// doc-links.py and site-bundle.sh (which logs its `UNA_BIN` and runs it), a passing
-/// sanitize.sh, and one package, examples/a. A fake `cargo`, in `dir/bin`, which `product_path`
+/// doc-links.py and site-bundle.sh (which logs its `UNA_BIN` and writes its `--version` into
+/// OUT/site-bundle/una-docs-9.9.9/version.txt), a passing sanitize.sh, the hunt's steps (a
+/// solver check, Lean's environment, a fake `lake` that makes the re-check, and a `hunt` module
+/// that logs its arguments and runs its `--una`), a pinned z3 at `dir/z3` for UNA_GATES_Z3, and
+/// two packages, examples/a and tests/conformance/c. A fake `cargo`, in `dir/bin`, which `product_path`
 /// puts first on PATH: `cargo build` writes target/release/una, a script that logs its
-/// arguments and holds the text of `STUB_UNA_TEXT`, and target/release/libuna_rt.a; `cargo test`
-/// relinks target/release/una with the test hooks' marker when `STUB_RELINK` is set, as
-/// `cargo test --release` does. Then a copy of the gate script and a run of its clone gate into
+/// arguments, prints `{}` after `--json`, and holds the text of `STUB_UNA_TEXT`, and
+/// target/release/libuna_rt.a; `cargo test` relinks target/release/una with the test hooks'
+/// marker when `STUB_RELINK` is set, as `cargo test --release` does, prints a conformance
+/// summary for `--test conformance`, and fails when `STUB_TEST_FAIL` is set. Then a copy of the gate script and a run of its clone gate into
 /// `dir/out`. Gives the script, the commit and `out`.
 fn product_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
     let source = dir.join("source");
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(source.join("scripts")).unwrap();
     std::fs::create_dir_all(source.join("examples/a")).unwrap();
+    std::fs::create_dir_all(source.join("tests/conformance/c")).unwrap();
+    std::fs::create_dir_all(source.join("formal")).unwrap();
+    std::fs::create_dir_all(source.join("scripts/security-hunt/hunt")).unwrap();
     std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::create_dir_all(dir.join("z3/bin")).unwrap();
     let logs = |name: &str| format!("#!/bin/sh\necho \"{name} $*\" >> \"$STUB_LOG\"\n");
     let mut files = vec![
-        (".gitignore", "target/\n".to_owned()),
+        (".gitignore", "target/\nformal/.lake/\n".to_owned()),
         ("Cargo.toml", "version = \"9.9.9\"\n".to_owned()),
         ("examples/a/una.toml", "[package]\n".to_owned()),
+        ("tests/conformance/c/una.toml", "[package]\n".to_owned()),
+        ("formal/lakefile.lean", "-- a stub\n".to_owned()),
+        // The hunt gate's steps (#2256): the solver check and Lean's environment pass, and
+        // the hunt logs its arguments and runs the `una` it is given.
+        ("scripts/check-solver.sh", logs("check-solver.sh")),
+        ("scripts/lean-env.sh", String::new()),
+        ("scripts/security-hunt/hunt/__init__.py", String::new()),
+        (
+            "scripts/security-hunt/hunt/__main__.py",
+            "import os, subprocess, sys\nwith open(os.environ[\"STUB_LOG\"], \"a\") as log:\n    log.write(\"hunt \" + \" \".join(sys.argv[1:]) + \"\\n\")\nuna = sys.argv[sys.argv.index(\"--una\") + 1]\nsubprocess.run([una, \"--version\"], check=True)\n".to_owned(),
+        ),
         (
             "scripts/z3-library.sh",
             "#!/bin/sh\nlib=$(pwd)/target/stub-z3/libz3shell.a\nmkdir -p \"${lib%/*}\" && echo z3 > \"$lib\" && echo \"$lib\"\n".to_owned(),
         ),
         (
             "scripts/site-bundle.sh",
-            format!("{}\"$UNA_BIN\" --version\n", logs("site-bundle.sh UNA_BIN=$UNA_BIN")),
+            format!(
+                "{}mkdir -p \"$1/una-docs-9.9.9\" && \"$UNA_BIN\" --version > \"$1/una-docs-9.9.9/version.txt\"\n",
+                logs("site-bundle.sh UNA_BIN=$UNA_BIN")
+            ),
         ),
     ];
     for name in [
@@ -3373,14 +3396,22 @@ fn product_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
         }
     }
     std::fs::write(
+        dir.join("bin/lake"),
+        "#!/bin/sh\necho \"lake $*\" >> \"$STUB_LOG\"\nmkdir -p .lake/build/bin && printf '#!/bin/sh\\n' > .lake/build/bin/una-core-check && chmod 755 .lake/build/bin/una-core-check\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("z3/bin/z3"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
         dir.join("bin/cargo"),
-        "#!/bin/sh\necho \"cargo $*\" >> \"$STUB_LOG\"\ncase $1 in\n    build)\n        mkdir -p target/release || exit 1\n        printf '#!/bin/sh\\necho \"una $*\" >> \"$STUB_LOG\"\\n# %s\\n' \"${STUB_UNA_TEXT:-shipped}\" > target/release/una\n        chmod 755 target/release/una && echo runtime > target/release/libuna_rt.a ;;\n    test)\n        [ -z \"${STUB_RELINK:-}\" ] || printf '#!/bin/sh\\n# UNA_CLI_TEST_HOOKS_MARKER\\n' > target/release/una ;;\nesac\n",
+        "#!/bin/sh\necho \"cargo $*\" >> \"$STUB_LOG\"\ncase $1 in\n    build)\n        mkdir -p target/release || exit 1\n        printf '#!/bin/sh\\necho \"una $*\" >> \"$STUB_LOG\"\\n[ \"$1\" != --json ] || echo {}\\n# %s\\n' \"${STUB_UNA_TEXT:-shipped}\" > target/release/una\n        chmod 755 target/release/una && echo runtime > target/release/libuna_rt.a ;;\n    test)\n        [ -z \"${STUB_RELINK:-}\" ] || printf '#!/bin/sh\\n# UNA_CLI_TEST_HOOKS_MARKER\\n' > target/release/una\n        case \" $* \" in *\" --test conformance \"*) echo 'conformance: 2 cases'; echo 'test result: ok. 2 passed; 0 failed; finished in 0.1s' ;; esac\n        [ -z \"${STUB_TEST_FAIL:-}\" ] || exit 1 ;;\nesac\n",
     )
     .unwrap();
     let status = Command::new("chmod")
         .arg("755")
         .args(&executables)
         .arg(dir.join("bin/cargo"))
+        .arg(dir.join("bin/lake"))
+        .arg(dir.join("z3/bin/z3"))
         .current_dir(&source)
         .status()
         .unwrap();
@@ -3627,5 +3658,171 @@ fn the_gates_that_run_una_run_the_build_gates_copy_and_refuse_a_test_build() {
             .contains("cargo test"),
         "the build gate went on after refusing its product"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writes into the clone of `out` the macOS archive that a release gate leaves, with its
+/// `.sha256`, whose `una` prints `version` for `--version` and logs `archive una` (#2256).
+fn release_archive(out: &Path, version: &str) {
+    let built = out.join("clone/target/local-release/v9.9.9");
+    let name = "una-9.9.9-aarch64-apple-darwin";
+    let inner = built.join("stage").join(name);
+    let _ = std::fs::remove_dir_all(&built);
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(
+        inner.join("una"),
+        format!(
+            "#!/bin/sh\necho \"archive una $*\" >> \"$STUB_LOG\"\nprintf '%s\\n' '{version}'\n"
+        ),
+    )
+    .unwrap();
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "chmod 755 stage/{name}/una && tar -czf {name}.tar.gz -C stage {name} && shasum -a 256 {name}.tar.gz > {name}.tar.gz.sha256 && rm -rf stage"
+        ))
+        .current_dir(&built)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn the_gates_that_run_the_product_pass_with_it_and_a_failed_build_leaves_none() {
+    if head().is_none() {
+        return;
+    }
+    // #2256 (L5 of the review of #2255): the success paths of hunt and determinism with the
+    // product, beside docs: each runs OUT/product/una, never the clone's test build.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-product-pass");
+    let log = dir.join("stub.log");
+    let log_path = log.display().to_string();
+    let (script, sha, out) = product_fixture(&dir);
+    let path = product_path(&dir, &out);
+    let source = dir.join("source");
+    let z3 = dir.join("z3").display().to_string();
+    let env = [
+        ("PATH", path.as_str()),
+        ("STUB_LOG", log_path.as_str()),
+        ("STUB_RELINK", "1"),
+        ("UNA_GATES_Z3", z3.as_str()),
+    ];
+    let output = gates_of(
+        &script,
+        &sha,
+        &out,
+        &["build", "hunt", "determinism", "docs"],
+        &source,
+        &env,
+    );
+    let context = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let got: Vec<String> = rows(&out)
+        .iter()
+        .map(|row| format!("{} {}", row[0], row[2]))
+        .collect();
+    let mut logs = String::new();
+    for gate in ["build", "hunt", "determinism", "docs"] {
+        logs.push_str(
+            &std::fs::read_to_string(out.join(format!("logs/{gate}.log"))).unwrap_or_default(),
+        );
+    }
+    assert_eq!(
+        got.join(","),
+        "build PASS,hunt PASS,determinism PASS,docs PASS",
+        "{context}{logs}"
+    );
+    let physical = out.canonicalize().unwrap();
+    let una = physical.join("product/una").display().to_string();
+    let ran = std::fs::read_to_string(&log).unwrap();
+    for line in [
+        format!(
+            "hunt gate --una {una} --out {}",
+            physical.join("hunt").display()
+        ),
+        "una --json check examples/a".to_owned(),
+        "una --json check tests/conformance/c".to_owned(),
+        format!("site-bundle.sh UNA_BIN={una} "),
+    ] {
+        assert!(ran.contains(&line), "{line}: {ran}");
+    }
+    // Each `--json check` of determinism ran twice, and the hunt ran the product's `--version`.
+    assert_eq!(
+        ran.matches("una --json check examples/a").count(),
+        2,
+        "{ran}"
+    );
+    let docs = std::fs::read_to_string(out.join("logs/docs.log")).unwrap();
+    assert!(
+        docs.contains("the docs bundle is built with the product"),
+        "{docs}"
+    );
+
+    // With the release gate's macOS archive in the run, the docs bundle is built with that
+    // archive's una, unpacked outside the clone (#2256); one that says "development build", or
+    // an archive that does not match its digest, fails the gate.
+    let bundle_una = physical.join("docs-una/una-9.9.9-aarch64-apple-darwin/una");
+    for (case, version, tamper, expected) in [
+        ("shipped", "una 9.9.9", false, "PASS"),
+        ("development", "development build", false, "FAIL"),
+        ("tampered", "una 9.9.9", true, "FAIL"),
+    ] {
+        release_archive(&out, version);
+        if tamper {
+            let archive = physical
+                .join("clone/target/local-release/v9.9.9/una-9.9.9-aarch64-apple-darwin.tar.gz");
+            let mut bytes = std::fs::read(&archive).unwrap();
+            bytes.push(0);
+            std::fs::write(&archive, bytes).unwrap();
+        }
+        let _ = std::fs::remove_file(&log);
+        // Only the docs gate's row is read: the record's verdict also judges the archives,
+        // which this run holds for one shipped target only.
+        gates_of(&script, &sha, &out, &["docs"], &source, &env);
+        let docs = std::fs::read_to_string(out.join("logs/docs.log")).unwrap();
+        assert_eq!(result_of(&out, "docs"), expected, "{case}: {docs}");
+        let ran = std::fs::read_to_string(&log).unwrap_or_default();
+        if tamper {
+            assert!(!ran.contains("site-bundle.sh"), "{case}: {ran}");
+        } else {
+            assert!(
+                ran.contains(&format!("site-bundle.sh UNA_BIN={} ", bundle_una.display())),
+                "{case}: {ran}"
+            );
+            assert!(!ran.contains(&format!("UNA_BIN={una} ")), "{case}: {ran}");
+        }
+        if case == "development" {
+            assert!(docs.contains("says \"development build\""), "{docs}");
+        }
+    }
+
+    // L1: a build gate that fails after saving the product (here its `cargo test`) leaves no
+    // product, so no later gate of the run takes it as the build gate's copy.
+    let _ = std::fs::remove_dir_all(physical.join("clone/target/local-release"));
+    let env = [
+        ("PATH", path.as_str()),
+        ("STUB_LOG", log_path.as_str()),
+        ("STUB_TEST_FAIL", "1"),
+        ("UNA_GATES_Z3", z3.as_str()),
+    ];
+    let output = gates_of(
+        &script,
+        &sha,
+        &out,
+        &["build", "docs", "hunt"],
+        &source,
+        &env,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(result_of(&out, "build"), "FAIL");
+    assert!(!out.join("product").exists());
+    for gate in ["docs", "hunt"] {
+        assert_eq!(result_of(&out, gate), "FAIL", "{gate}");
+        let text = std::fs::read_to_string(out.join(format!("logs/{gate}.log"))).unwrap();
+        assert!(text.contains("no product at"), "{gate}: {text}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

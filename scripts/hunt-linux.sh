@@ -108,12 +108,16 @@ docker run --rm --platform "linux/$arch" \
         UNA_Z3_LIB=$(scripts/z3-library.sh) || exit 1
         export UNA_Z3_LIB
         cargo build --locked --release -p una-cli -p una-rt
-        # The release build as it ships (#2254): a test build of this volume relinks it with the
-        # test features, and the build above relinks it without them; refuse it otherwise.
-        if LC_ALL=C grep -a -q -E "UNA_(CLI|HASH|HTTP)_TEST_HOOKS_MARKER|UNA_TEST_[A-Z0-9_]+" target/release/una; then
-            echo "target/release/una was built with test features (#2254)" >&2
-            exit 1
-        fi
+        # The release build without test features (#2254): a test build of this volume relinks
+        # it with the test features, and the build above relinks it without them; refuse it
+        # otherwise. A read error of grep (status 2) fails too, never passes as clean (#2256).
+        status=0
+        LC_ALL=C grep -a -q -E "UNA_(CLI|HASH|HTTP)_TEST_HOOKS_MARKER|UNA_TEST_[A-Z0-9_]+" target/release/una || status=$?
+        case $status in
+            1) ;;
+            0) echo "target/release/una was built with test features (#2254)" >&2; exit 1 ;;
+            *) echo "target/release/una could not be read for the test features (grep status $status, #2256)" >&2; exit 1 ;;
+        esac
         root=/work
         . scripts/lean-env.sh
         (cd formal && lake build una-core-check)
