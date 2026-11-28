@@ -1386,6 +1386,63 @@ fn core_keeps_the_symbolic_labels_of_a_generic_body() {
 }
 
 #[test]
+fn core_json_of_a_let_chain_with_an_of_lambda_is_pinned() {
+    // #2358: `una core --json` writes a chain of `let`s in a loop, folding the nodes from the
+    // innermost body out (#2339). The snapshot pins the text it writes, keys in their order, of
+    // a function whose body is a chain of lets, the first binding a lambda given to an `of`
+    // parameter, with its `of_lambda` field (ADR 0062). When the snapshot was taken, the whole
+    // document was byte-identical to the one of the recursive writer of v0.5.2.
+    let root = scratch("core-let-chain");
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"chain\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/chain.una"),
+        "module chain\n\npub capability Log\n  op write(line: Text) -> Unit\n\npub logged(names: List[Text]) -> Int\n  uses @log: Log[write]\n=\n  let done = names.map(each: fn(n) -> @log.write(n))\n  let count = done.len\n  let twice = count + count\n  twice\n",
+    )
+    .unwrap();
+    let output = una(&["--json", "core", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    // The declaration of `logged`, as written: from its opening brace to the matching one.
+    let start = text
+        .find("{\"kind\":\"fun\",\"value\":{\"name\":\"logged\"")
+        .expect("the declaration of `logged`");
+    let (mut depth, mut quoted, mut escaped, mut end) = (0usize, false, false, start);
+    for (at, c) in text[start..].char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '{' if !quoted => depth += 1,
+            '}' if !quoted => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + at + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let decl = &text[start..end];
+    assert!(
+        decl.contains("\"of_lambda\":{\"effects\":true,\"fails\":false}"),
+        "{decl}"
+    );
+    assert!(decl.matches("\"kind\":\"let\"").count() >= 3, "{decl}");
+    insta::assert_snapshot!("core_json_let_chain_of_lambda", decl);
+}
+
+#[test]
 fn core_exports_the_facts_inference_adds() {
     // #443: a function's `of` clauses and result summary (ADR 0062, ADR 0067), and the effects
     // of a lambda given to an `of` parameter, which its function type in Core does not carry.

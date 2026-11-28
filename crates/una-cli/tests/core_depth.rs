@@ -318,3 +318,66 @@ fn a_text_constant_counts_at_every_reference_in_one_line() {
         );
     }
 }
+
+/// The note of a refused large stack (#2357): when the system cannot start a thread of the
+/// stack sized from the depth bound, `una` runs the command on a smaller one, and says so on
+/// stderr, once, for a human; under `--json` stderr stays empty (`spec/13 §5`). The refusal is
+/// the test hook of the toolchain's test builds, as a limit on virtual memory gives it.
+#[test]
+fn a_refused_large_stack_is_one_note_for_a_human_and_none_under_json() {
+    let dir = package("refused", &in_body(10));
+    let refused = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .args(args)
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env("NO_COLOR", "1")
+            .env("UNA_TEST_REFUSE_LARGE_STACKS", "1")
+            .current_dir(&dir)
+            .output()
+            .unwrap()
+    };
+    let human = refused(&["check", "--tier", "0"]);
+    assert_eq!(human.status.code(), Some(0), "{human:?}");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    let mib = una_core::depth::STACK_BYTES >> 20;
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        [format!(
+            "note: the system refused a thread stack of {mib} MiB (refused by the test hook), so `una` runs on a smaller stack, where a program nested near the depth bound of Core IR can overflow it; a limit on virtual memory (`ulimit -v`) or strict overcommit (`vm.overcommit_memory=2`) refuses that reservation"
+        )],
+        "one note, though both the command's thread and the checker's were refused"
+    );
+    let json = refused(&["--json", "check", "--tier", "0"]);
+    assert_eq!(json.status.code(), Some(0), "{json:?}");
+    assert_eq!(String::from_utf8_lossy(&json.stderr), "", "{json:?}");
+    // Without the hook, no note.
+    let normal = una(&dir, &["check", "--tier", "0"]);
+    assert_eq!(String::from_utf8_lossy(&normal.stderr), "", "{normal:?}");
+}
+
+/// The same note under a real limit on virtual memory, on Linux, where `ulimit -v` bounds the
+/// address space (macOS does not enforce it): 2 GiB holds one stack of 1,088 MiB, not the
+/// checker's beside it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_limit_on_virtual_memory_gives_the_note_and_the_command_still_runs() {
+    let dir = package("ulimit", &in_body(10));
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "ulimit -v 2097152 && exec \"{}\" check --tier 0",
+            env!("CARGO_BIN_EXE_una")
+        ))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("NO_COLOR", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("note: the system refused a thread stack of ")
+            && stderr.lines().count() == 1,
+        "{stderr}"
+    );
+}
