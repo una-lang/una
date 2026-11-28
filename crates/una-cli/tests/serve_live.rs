@@ -1210,6 +1210,12 @@ fn the_serve_section_runs_no_more_handle_tasks_than_once() {
 /// `at most 1 at once`, three peers that leave early and then three kept connections: every
 /// `handle` runs, one after another, and each kept connection is answered `200`. A bound that
 /// never gave a place back would answer the kept ones `503` at `answer`.
+///
+/// Each early peer leaves once its own `handle` has begun (#2360). A peer that leaves while its
+/// request still waits for delivery ends its exchange there, and its request never reaches
+/// `handle` (ADR 0123 rule 14): leaving 50 ms after the request, as the peers of
+/// [`served_early`] do, raced the previous `handle` on a loaded machine, which then printed
+/// `handling` five times, not six.
 #[test]
 fn a_driver_task_s_place_is_given_back_when_handle_ends() {
     for engine in ENGINES {
@@ -1218,10 +1224,18 @@ fn a_driver_task_s_place_is_given_back_when_handle_ends() {
             engine,
             1,
             "1000",
-            3,
-            1,
+            0,
+            0,
             &["--stop-grace", "10"],
         );
+        for begun in 1..=3 {
+            let mut stream = connect(port);
+            stream
+                .write_all(b"GET /a HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+            run.expect_times("handling", begun);
+            drop(stream);
+        }
         for _ in 0..3 {
             let mut stream = connect(port);
             stream
