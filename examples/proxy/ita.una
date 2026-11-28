@@ -1,0 +1,11 @@
+ita proxy
+  version 0.1.0
+  edition 0.4
+
+run
+  entry proxy
+  grants
+    serve "http://127.0.0.1:8082"
+      at most 600 per minute
+      at most 256 at once
+    http "https://upstream.example" get

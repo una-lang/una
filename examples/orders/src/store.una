@@ -1,0 +1,78 @@
+module store
+
+import std.host (Header, Http, Response)
+
+--- An order of the shop.
+pub kind Order
+  id: internal Int
+  item: internal Text
+  quantity: internal Int
+
+--- What a lookup found. A failure of `Http` is `internal`, so the store reports it as a value.
+pub kind Lookup = Found(order: internal Order) | Missing | Unavailable
+
+--- Whether an order was stored.
+pub kind Saved = Stored | Refused
+
+--- The orders, wherever they are kept: the server needs only these two operations.
+pub capability Orders
+  op find(id: Int) -> internal Lookup
+    accepts internal
+  op add(order: Order) -> internal Saved
+    accepts internal
+
+--- The orders in a document database with an HTTP interface at `base`, one document per order.
+pub handler document_store(base: Text) for Orders
+  uses @http: Http[get, put]
+  op find(id) =
+    let answer = attempt @http.get("{base}/orders/{id}", headers: [], key_name: None)
+    when answer
+      is Ok(response) -> lookup_of(id, response)
+      is Err(failure) -> Unavailable
+  op add(order) =
+    let answer = attempt @http.put("{base}/orders/{order.id}", headers: [json_type()],
+      body: order_json(order), key_name: None
+    )
+    when answer
+      is Ok(response) -> if response.status == 201 then Stored else Refused
+      is Err(failure) -> Refused
+
+--- The header of a JSON body.
+pub json_type() -> Header = Header(name: "content-type", value: "application/json")
+
+--- What the database's answer to a lookup of `id` says.
+lookup_of(id: internal Int, response: internal Response) -> internal Lookup
+=
+  if response.status == 404
+    Missing
+  else
+    when order_from(id, body: response.body)
+      is Some(order) -> Found(order)
+      is None -> Unavailable
+
+--- Reads `{"item": "...", "quantity": n}` with a positive `n`.
+pub order_from(id: internal Int, body: internal Text) -> internal Option[Order]
+=
+  let parsed = attempt body.parse_json()
+  when parsed
+    is Err(failure) -> None
+    is Ok(json) ->
+      when json
+        is Object(fields) ->
+          let item = fields.get(key: "item")
+            if none use Null
+          let quantity = fields.get(key: "quantity")
+            if none use Null
+          when item
+            is Str(name) ->
+              when quantity
+                is Number(count) -> if count > 0 then Some(Order(id: id, item: name,
+                    quantity: count
+                  )) else None
+                else -> None
+            else -> None
+        else -> None
+
+--- Writes an order as JSON by interpolation: the fields of `Json` are `public`, so a `Json`
+--- value cannot hold `internal` data.
+pub order_json(order: internal Order) -> internal Text = "\{\"id\": {order.id}, \"item\": {order.item.quote_json()}, \"quantity\": {order.quantity}\}"

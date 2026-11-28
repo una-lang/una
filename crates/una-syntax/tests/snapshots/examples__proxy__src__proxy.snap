@@ -1,0 +1,120 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module proxy)
+(import std.host Exchange Header Http HttpServer Method Reply Request Response)
+(fn pub main
+  (doc "--- The language form of `spec/31 §1` rule 6: the program takes each exchange itself, and a")
+  (doc "--- task per request forwards it to the upstream.")
+  ()
+  {Unit}
+  (uses @server {HttpServer[next, reply, close]})
+  (uses @http {Http[get]})
+  diverges
+  (block
+    (tasks
+      (at-most 512)
+      (block
+        (for-ever
+          (block
+            (let next (attempt (@server.next)))
+            (when next
+              (arm (is Ok exchange) (block (start (call forward exchange))))
+              (arm (is Err failure) unit)))
+          (on-stop (block (@server.close))))))))
+(fn forward
+  (doc "--- Answers one exchange with what the upstream answered.")
+  ((exchange {internal Exchange}))
+  {Unit}
+  (uses @server {HttpServer[reply]})
+  (uses @http {Http[get]})
+  (block
+    (let reply (call answer_for (. exchange request)))
+    (handled (@server.reply (to: (. exchange right)) (reply: reply)) (if-error-use unit))))
+(fn answer_for
+  (doc "--- A `GET` goes to the upstream, with an allowlist of its headers; every other method is 405.")
+  ((request {internal Request}))
+  {internal Reply}
+  (uses @http {Http[get]})
+  (block
+    (if
+      (not (paren (is (. request method) Get)))
+      (block
+        (call Reply
+          (status: 405)
+          (headers: (list (call Header (name: "allow") (value: "GET"))))
+          (body: "")))
+      (block
+        (let upstream
+          (attempt
+            (@http.get
+              (text "https://upstream.example" (. request target))
+              (headers: (call outbound (. request headers)))
+              (key_name: None))))
+        (when upstream
+          (arm (is Ok response) (call relay response))
+          (arm (is Err failure) (call Reply (status: 502) (headers: (list)) (body: ""))))))))
+(fn pub outbound
+  (doc "--- Only the headers the upstream needs, by an allowlist: a peer's `forwarded`, its")
+  (doc "--- `x-forwarded-*`, its credentials and its `expect` never reach the upstream.")
+  ((headers {internal List[Header]}))
+  {internal List[Header]}
+  (method headers filter
+    (keep:
+      (fn
+        (h)
+        (method
+          (list "accept" "accept-language" "if-none-match" "if-modified-since" "user-agent")
+          contains
+          (item: (. h name)))))))
+(fn pub relay
+  (doc "--- The upstream's answer as a reply, with an allowlist of its headers; a status the host")
+  (doc "--- would refuse to send is 502.")
+  ((response {internal Response}))
+  {internal Reply}
+  (block
+    (if
+      (and (>= (. response status) 200) (<= (. response status) 599))
+      (block
+        (call Reply
+          (status: (. response status))
+          (headers: (call inbound (. response headers)))
+          (body:
+            (if (or (== (. response status) 204) (== (. response status) 304)) "" (. response body)))))
+      (block (call Reply (status: 502) (headers: (list)) (body: ""))))))
+(fn pub inbound
+  (doc "--- The upstream's headers that describe its body, by an allowlist.")
+  ((headers {internal List[Header]}))
+  {internal List[Header]}
+  (method headers filter
+    (keep:
+      (fn
+        (h)
+        (method
+          (list "content-type" "cache-control" "etag" "last-modified")
+          contains
+          (item: (. h name)))))))
+(example "only allowed headers go upstream"
+  (do
+    (call outbound
+      (list
+        (call Header (name: "accept") (value: "text/html"))
+        (call Header (name: "x-forwarded-for") (value: "10.0.0.1"))
+        (call Header (name: "authorization") (value: "Bearer t")))))
+  (expect (== (. result len) 1)))
+(example "a status the host would not send becomes 502"
+  (do (call relay (call Response (status: 101) (headers: (list)) (body: ""))))
+  (expect (== (. result status) 502)))
+(example "an upstream's 304 is relayed without a body"
+  (do
+    (call relay
+      (call Response
+        (status: 304)
+        (headers:
+          (list
+            (call Header (name: "etag") (value: "\"v1\""))
+            (call Header (name: "set-cookie") (value: "a=b"))))
+        (body: "ignored"))))
+  (expect
+    (and (and (== (. result status) 304) (== (. result body) "")) (== (. (. result headers) len) 1))))

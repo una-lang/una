@@ -1,0 +1,100 @@
+module api
+
+import std.host (Header, Http, Method, Reply, Request, Status)
+import std.testing (test_request)
+import store (Lookup, Order, Orders, Saved, document_store, json_type, order_from, order_json)
+
+--- `GET /orders/<id>` reads an order, and `POST /orders/<id>` stores one.
+pub handle(request: internal Request) -> internal Reply
+  uses @http: Http[get, put]
+=
+  route(request) with @orders = document_store(base: "http://127.0.0.1:5984/shop")
+
+--- Answers a request from the orders, wherever they are kept.
+route(request: internal Request) -> internal Reply
+  uses @orders: Orders[find, add]
+=
+  let path = request.segments
+  let id = path.at(index: 1)
+    if none use ""
+  if path.len != 2 or path.at(index: 0) != Some("orders")
+    text(status: 404, message: "no such resource")
+  else
+    when id.to_int()
+      is None -> text(status: 400, message: "the id is not a number")
+      is Some(number) ->
+        when request.method
+          is Get -> show(number)
+          is Post -> create(number, body: request.body)
+          else -> Reply(status: 405, headers: [Header(name: "allow", value: "GET, POST")], body: "")
+
+--- The order `id`, as JSON.
+show(id: internal Int) -> internal Reply
+  uses @orders: Orders[find]
+=
+  let found = @orders.find(id: id)
+  when found
+    is Found(order) -> Reply(status: 200, headers: [json_type()], body: order_json(order))
+    is Missing -> text(status: 404, message: "no such order")
+    is Unavailable -> text(status: 503, message: "the store is unavailable")
+
+--- Stores the order `id` that `body` describes.
+create(id: internal Int, body: internal Text) -> internal Reply
+  uses @orders: Orders[add]
+=
+  when order_from(id, body: body)
+    is None -> text(status: 422, message: "expected an item and a positive quantity")
+    is Some(order) ->
+      let saved = @orders.add(order: order)
+      when saved
+        is Stored -> Reply(status: 201, headers: [Header(name: "location", value: "/orders/{id}")],
+          body: ""
+        )
+        is Refused -> text(status: 503, message: "the store refused the order")
+
+--- A reply with a plain-text message.
+text(status: Status, message: Text) -> Reply = Reply(status: status, headers: [], body: message)
+
+--- No orders at all, and nothing can be stored.
+handler no_orders() for Orders
+  op find(id) = Missing
+  op add(order) = Refused
+
+--- One order, 7, of 2 apples, and every order can be stored.
+handler one_order() for Orders
+  op find(id) = if id == 7 then Found(order: Order(id: 7, item: "apples", quantity: 2)) else Missing
+  op add(order) = Stored
+
+test "an unknown order is 404"
+  given @orders = no_orders()
+  do route(test_request(method: Get, target: "/orders/8", body: ""))
+  expect result.status == 404
+
+test "a stored order is read back as JSON"
+  given @orders = one_order()
+  do route(test_request(method: Get, target: "/orders/7", body: ""))
+  expect result.status == 200 and result.body == "\{\"id\": 7, \"item\": \"apples\", \"quantity\": 2\}"
+
+test "an order is created from its JSON"
+  given @orders = one_order()
+  do route(test_request(method: Post, target: "/orders/9",
+      body: "\{\"item\": \"pears\", \"quantity\": 3\}"
+    ))
+  expect result.status == 201
+
+test "a quantity that is not positive is 422"
+  given @orders = one_order()
+  do route(test_request(method: Post, target: "/orders/9",
+      body: "\{\"item\": \"pears\", \"quantity\": 0\}"
+    ))
+  expect result.status == 422
+
+test "an id that is not a number is 400"
+  given @orders = one_order()
+  do route(test_request(method: Get, target: "/orders/seven", body: ""))
+  expect result.status == 400
+
+test "another method is 405"
+  given @orders = one_order()
+  do route(test_request(method: Delete, target: "/orders/7", body: ""))
+  expect result.status == 405

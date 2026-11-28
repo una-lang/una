@@ -1,0 +1,139 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module api)
+(import std.host Header Http Method Reply Request Status)
+(import std.testing test_request)
+(import store Lookup Order Orders Saved document_store json_type order_from order_json)
+(fn pub handle
+  (doc "--- `GET /orders/<id>` reads an order, and `POST /orders/<id>` stores one.")
+  ((request {internal Request}))
+  {internal Reply}
+  (uses @http {Http[get, put]})
+  (block
+    (handled
+      (call route request)
+      (with (= @orders (call document_store (base: "http://127.0.0.1:5984/shop")))))))
+(fn route
+  (doc "--- Answers a request from the orders, wherever they are kept.")
+  ((request {internal Request}))
+  {internal Reply}
+  (uses @orders {Orders[find, add]})
+  (block
+    (let path (. request segments))
+    (let id (handled (method path at (index: 1)) (if-none-use "")))
+    (if
+      (or (!= (. path len) 2) (!= (method path at (index: 0)) (call Some "orders")))
+      (block (call text (status: 404) (message: "no such resource")))
+      (block
+        (when
+          (method id to_int)
+          (arm (is None) (call text (status: 400) (message: "the id is not a number")))
+          (arm
+            (is Some number)
+            (block
+              (when
+                (. request method)
+                (arm (is Get) (call show number))
+                (arm (is Post) (call create number (body: (. request body))))
+                (arm else
+                  (call Reply
+                    (status: 405)
+                    (headers: (list (call Header (name: "allow") (value: "GET, POST"))))
+                    (body: "")))))))))))
+(fn show
+  (doc "--- The order `id`, as JSON.")
+  ((id {internal Int}))
+  {internal Reply}
+  (uses @orders {Orders[find]})
+  (block
+    (let found (@orders.find (id: id)))
+    (when found
+      (arm
+        (is Found order)
+        (call Reply
+          (status: 200)
+          (headers: (list (call json_type)))
+          (body: (call order_json order))))
+      (arm (is Missing) (call text (status: 404) (message: "no such order")))
+      (arm (is Unavailable) (call text (status: 503) (message: "the store is unavailable"))))))
+(fn create
+  (doc "--- Stores the order `id` that `body` describes.")
+  ((id {internal Int}) (body {internal Text}))
+  {internal Reply}
+  (uses @orders {Orders[add]})
+  (block
+    (when
+      (call order_from id (body: body))
+      (arm
+        (is None)
+        (call text (status: 422) (message: "expected an item and a positive quantity")))
+      (arm
+        (is Some order)
+        (block
+          (let saved (@orders.add (order: order)))
+          (when saved
+            (arm
+              (is Stored)
+              (call Reply
+                (status: 201)
+                (headers: (list (call Header (name: "location") (value: (text "/orders/" id)))))
+                (body: "")))
+            (arm (is Refused) (call text (status: 503) (message: "the store refused the order")))))))))
+(fn text
+  (doc "--- A reply with a plain-text message.")
+  ((status {Status}) (message {Text}))
+  {Reply}
+  (call Reply (status: status) (headers: (list)) (body: message)))
+(handler no_orders
+  (doc "--- No orders at all, and nothing can be stored.")
+  ()
+  (for Orders)
+  (op find (id) Missing)
+  (op add (order) Refused))
+(handler one_order
+  (doc "--- One order, 7, of 2 apples, and every order can be stored.")
+  ()
+  (for Orders)
+  (op find
+    (id)
+    (if (== id 7) (call Found (order: (call Order (id: 7) (item: "apples") (quantity: 2)))) Missing))
+  (op add (order) Stored))
+(example "an unknown order is 404"
+  (given @orders (call no_orders))
+  (do (call route (call test_request (method: Get) (target: "/orders/8") (body: ""))))
+  (expect (== (. result status) 404)))
+(example "a stored order is read back as JSON"
+  (given @orders (call one_order))
+  (do (call route (call test_request (method: Get) (target: "/orders/7") (body: ""))))
+  (expect
+    (and
+      (== (. result status) 200)
+      (== (. result body) "{\"id\": 7, \"item\": \"apples\", \"quantity\": 2}"))))
+(example "an order is created from its JSON"
+  (given @orders (call one_order))
+  (do
+    (call route
+      (call test_request
+        (method: Post)
+        (target: "/orders/9")
+        (body: "{\"item\": \"pears\", \"quantity\": 3}"))))
+  (expect (== (. result status) 201)))
+(example "a quantity that is not positive is 422"
+  (given @orders (call one_order))
+  (do
+    (call route
+      (call test_request
+        (method: Post)
+        (target: "/orders/9")
+        (body: "{\"item\": \"pears\", \"quantity\": 0}"))))
+  (expect (== (. result status) 422)))
+(example "an id that is not a number is 400"
+  (given @orders (call one_order))
+  (do (call route (call test_request (method: Get) (target: "/orders/seven") (body: ""))))
+  (expect (== (. result status) 400)))
+(example "another method is 405"
+  (given @orders (call one_order))
+  (do (call route (call test_request (method: Delete) (target: "/orders/7") (body: ""))))
+  (expect (== (. result status) 405)))

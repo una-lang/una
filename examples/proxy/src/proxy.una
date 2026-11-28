@@ -1,0 +1,83 @@
+module proxy
+
+import std.host (Exchange, Header, Http, HttpServer, Method, Reply, Request, Response)
+
+--- The language form of `spec/31 §1` rule 6: the program takes each exchange itself, and a
+--- task per request forwards it to the upstream.
+pub main() -> Unit
+  uses @server: HttpServer[next, reply, close]
+  uses @http: Http[get]
+  diverges
+=
+  tasks at most 512 at once
+    for ever
+      let next = attempt @server.next()
+      when next
+        is Ok(exchange) ->
+          start forward(exchange)
+        is Err(failure) -> unit
+    on stop
+      @server.close()
+
+--- Answers one exchange with what the upstream answered.
+forward(exchange: internal Exchange) -> Unit
+  uses @server: HttpServer[reply]
+  uses @http: Http[get]
+=
+  let reply = answer_for(exchange.request)
+  @server.reply(to: exchange.right, reply: reply)
+    if error use unit
+
+--- A `GET` goes to the upstream, with an allowlist of its headers; every other method is 405.
+answer_for(request: internal Request) -> internal Reply
+  uses @http: Http[get]
+=
+  if not (request.method is Get)
+    Reply(status: 405, headers: [Header(name: "allow", value: "GET")], body: "")
+  else
+    let upstream = attempt @http.get("https://upstream.example{request.target}",
+      headers: outbound(request.headers), key_name: None
+    )
+    when upstream
+      is Ok(response) -> relay(response)
+      is Err(failure) -> Reply(status: 502, headers: [], body: "")
+
+--- Only the headers the upstream needs, by an allowlist: a peer's `forwarded`, its
+--- `x-forwarded-*`, its credentials and its `expect` never reach the upstream.
+pub outbound(headers: internal List[Header]) -> internal List[Header] = headers.filter(keep: fn(h) -> ["accept",
+    "accept-language", "if-none-match", "if-modified-since", "user-agent"
+  ].contains(item: h.name))
+
+--- The upstream's answer as a reply, with an allowlist of its headers; a status the host
+--- would refuse to send is 502.
+pub relay(response: internal Response) -> internal Reply
+=
+  if response.status >= 200 and response.status <= 599
+    Reply(status: response.status, headers: inbound(response.headers),
+      body: if response.status == 204 or response.status == 304 then "" else response.body
+    )
+  else
+    Reply(status: 502, headers: [], body: "")
+
+--- The upstream's headers that describe its body, by an allowlist.
+pub inbound(headers: internal List[Header]) -> internal List[Header] = headers.filter(keep: fn(h) -> ["content-type",
+    "cache-control", "etag", "last-modified"
+  ].contains(item: h.name))
+
+test "only allowed headers go upstream"
+  do outbound([Header(name: "accept", value: "text/html"),
+      Header(name: "x-forwarded-for", value: "10.0.0.1"),
+      Header(name: "authorization", value: "Bearer t")
+    ])
+  expect result.len == 1
+
+test "a status the host would not send becomes 502"
+  do relay(Response(status: 101, headers: [], body: ""))
+  expect result.status == 502
+
+test "an upstream's 304 is relayed without a body"
+  do relay(Response(status: 304,
+      headers: [Header(name: "etag", value: "\"v1\""), Header(name: "set-cookie", value: "a=b")],
+      body: "ignored"
+    ))
+  expect result.status == 304 and result.body == "" and result.headers.len == 1

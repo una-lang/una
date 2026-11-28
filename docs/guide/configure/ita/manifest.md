@@ -70,7 +70,7 @@ sources | needs | replace | trust | labels | trusted | escapes | boundaries | co
   - `boundaries`: a module path, then its ceiling as `may` lines;
   - `contracts`: a function's qualified name, then its locked `uses` clauses, one per line;
   - `run`: `entry <module>`, `max_memory <MiB>` (see [`[run] max_memory`](../run/max_memory.md)), and `grants`, one grant per line: `console`, `clock`, `env`, `keys "<file>"`, `files "<path>" read, write`, `http "<origin>" get, post`, and `serve "<scheme>://<address>:<port>"`, with its items one per line below it, such as `at most 64 at once` (see [Serving HTTP](../../serving-http.md)).
-- **The sections of edition `0.4`:** `drive`, with `module <module>`, `ticks <milliseconds>` and an optional `budget <milliseconds>`, for a program the host drives (see [Driven programs](../../driven-programs.md)); `serve`, with `module <module>` and an optional `within <milliseconds>`, for a program that serves HTTP (see [Serving HTTP](../../serving-http.md)). In this preview every `within` of a `serve` section is refused (U4003), since the label of a server's timing is the top label; the grant's `answer` bounds what each peer waits instead.
+- **The sections of edition `0.4`:** `drive`, with `module <module>`, `ticks <milliseconds>` and an optional `budget <milliseconds>`, for a program the host drives (see [Driven programs](../../driven-programs.md)); `serve`, with `module <module>` and an optional `within <milliseconds>`, for a program that serves HTTP (see [`serve`](serve.md) and [Serving HTTP](../../serving-http.md)). In this preview every `within` of a `serve` section is refused (U4003), since the label of a server's timing is the top label; the grant's `answer` bounds what each peer waits instead.
 
 ## Examples
 

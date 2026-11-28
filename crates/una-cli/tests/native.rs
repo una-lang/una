@@ -62,7 +62,8 @@ fn rejected() -> BTreeMap<String, String> {
 /// (`tests/native/served.txt`, `spec/31 §1` rule 10): `una run` of one answers requests until a
 /// host stop and never runs to completion, so neither differential runs it, and
 /// `tests/serve_live.rs` runs it in both engines instead. The list must be exact: every program
-/// with a `serve` section is listed ([`the_native_lists_name_runnable_programs_only`]).
+/// that serves, by a `serve` section or in the language form, is listed
+/// ([`the_native_lists_name_runnable_programs_only`]).
 fn served() -> BTreeMap<String, String> {
     reasons("tests/native/served.txt")
 }
@@ -84,11 +85,12 @@ fn reasons(list: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Whether the program at `name`, relative to the repository root, is a package whose
-/// `ita.una` has a `serve` section (`spec/31 §7`).
+/// Whether the program at `name`, relative to the repository root, is a package that serves: its
+/// `ita.una` has a `serve` section (`spec/31 §7`), or a `serve:` grant for a program of the
+/// language form (`spec/31 §1` rule 6, #1793).
 fn has_serve_section(name: &str) -> bool {
     std::fs::read_to_string(root().join(name).join("ita.una"))
-        .is_ok_and(|manifest| manifest.contains("\nserve\n"))
+        .is_ok_and(|manifest| manifest.contains("\nserve\n") || manifest.contains("\n    serve \""))
 }
 
 /// The arguments each engine runs the program at `name` with: none, or for a driven package
@@ -158,7 +160,7 @@ fn runs_natively_as_in_the_interpreter(test: &str, name: &str, grants: &[&str]) 
     if served().contains_key(name) {
         assert!(
             has_serve_section(name),
-            "{name}: listed in tests/native/served.txt, but it has no `serve` section"
+            "{name}: listed in tests/native/served.txt, but it does not serve"
         );
         return;
     }
@@ -490,8 +492,8 @@ fn the_native_lists_name_runnable_programs_only() {
             ));
         }
     }
-    // The programs that serve are exactly those with a `serve` section: one not listed would
-    // run until the test's own timeout.
+    // The programs that serve, by a `serve` section or in the language form, are exactly those
+    // listed: one not listed would run until the test's own timeout.
     let served = served();
     for name in served.keys() {
         if !names.contains(name) {
@@ -508,7 +510,7 @@ fn the_native_lists_name_runnable_programs_only() {
     for name in names.iter().filter(|name| has_serve_section(name)) {
         if !served.contains_key(name) {
             failures.push(format!(
-                "{name}: it has a `serve` section, so `una run` serves it until stopped, and tests/native/served.txt does not list it"
+                "{name}: it serves, so `una run` serves it until stopped, and tests/native/served.txt does not list it"
             ));
         }
     }
