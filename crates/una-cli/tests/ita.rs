@@ -1012,6 +1012,36 @@ fn links_back_into_src_refuse_check_at_once() {
     assert!(err.contains("already walked"), "{err}");
 }
 
+/// A loose file below a manifest that is there but does not read is refused, naming it, and
+/// never checked under the default edition 0.1 (#2402); with no manifest above it, the default
+/// holds.
+#[cfg(unix)]
+#[test]
+fn a_loose_file_below_a_manifest_that_does_not_read_is_refused() {
+    let dir = std::env::temp_dir().join(format!("una-loose-manifest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("x.una"), MODULE).unwrap();
+    let loose = dir.join("x.una");
+    let loose = loose.to_str().unwrap();
+    let (code, _, err) = una(&["una", "check", loose]);
+    assert_eq!(code, 0, "{err}");
+    std::fs::create_dir(dir.join("una.toml")).unwrap();
+    let (code, _, err) = una(&["una", "check", loose]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("una.toml"), "{err}");
+    assert!(err.contains("is not a regular file"), "{err}");
+    std::fs::remove_dir(dir.join("una.toml")).unwrap();
+    std::fs::write(dir.join("ita.una"), MANIFEST).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.join("ita.una"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, _, err) = una(&["una", "check", loose]);
+    std::fs::set_permissions(dir.join("ita.una"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("ita.una"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A link at `ita.lock` that names nothing is refused as a broken link by `una check` and `una
 /// ita verify`, never reported as a missing lock with the advice to write one (#2395).
 #[cfg(unix)]

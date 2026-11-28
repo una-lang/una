@@ -124,7 +124,27 @@ pub fn load_in(
     overlay: &BTreeMap<PathBuf, String>,
     itaoca: Option<&Itaoca>,
 ) -> Result<Package, LoadError> {
+    load_within(path, overlay, itaoca, una_project::content::MAX_BYTES)
+}
+
+/// [`load_in`], with the root's manifest and modules and its path dependencies sharing the
+/// bound `total` (spec/30 §1 rule 4, 256 MiB): what the root holds is taken first, and the
+/// path dependency whose files would pass what is left is refused at its need.
+fn load_within(
+    path: &Path,
+    overlay: &BTreeMap<PathBuf, String>,
+    itaoca: Option<&Itaoca>,
+    total: u64,
+) -> Result<Package, LoadError> {
     let mut loaded = discover(path)?;
+    let mut left = total.saturating_sub(
+        loaded
+            .files
+            .iter()
+            .filter(|file| file.role != Role::Lock)
+            .map(|file| file.bytes.len() as u64)
+            .sum(),
+    );
     for file in &mut loaded.files {
         if let Some(text) = overlay.get(&file.path) {
             file.bytes = text.as_bytes().to_vec();
@@ -142,7 +162,7 @@ pub fn load_in(
         modules: Vec::new(),
         disk_paths: BTreeMap::new(),
         enclosing_edition: if loaded.single {
-            enclosing_edition(path)
+            enclosing_edition(path)?
         } else {
             None
         },
@@ -168,7 +188,7 @@ pub fn load_in(
     {
         // The files as decoded once, by the source database (#2252).
         let manifest = package.sources.file(id).clone();
-        load_dependencies(path, &manifest, overlay, &mut package);
+        load_dependencies(path, &manifest, overlay, &mut package, &mut left);
         if let Some(lock) = package.lock {
             let lock = package.sources.file(lock).clone();
             load_registry(path, &manifest, &lock, itaoca, &mut package);
@@ -330,50 +350,76 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
 }
 
 /// The edition of the nearest manifest above the file `path`: the first directory among its
-/// ancestors holding `ita.una` (read as such) or else `una.toml`. `None` for a loose file, with
-/// no manifest in any ancestor, which keeps the ADR 0021 default, edition 0.1 (#1175). The
-/// manifest is read only for its edition. O(depth of the path).
-fn enclosing_edition(path: &Path) -> Option<Edition> {
-    let absolute = std::fs::canonicalize(path)
-        .or_else(|_| std::path::absolute(path))
-        .ok()?;
+/// ancestors holding `ita.una` (read as such) or else `una.toml`. `None` for a loose file with
+/// no manifest in any ancestor, which keeps the ADR 0021 default, edition 0.1 (#1175). A
+/// manifest that is there, a link that names nothing included, but does not read (not a
+/// regular file, past its bound, unreadable) is an error naming it, never the default edition
+/// (#2402). The manifest is read only for its edition. O(depth of the path).
+fn enclosing_edition(path: &Path) -> Result<Option<Edition>, LoadError> {
+    let Ok(absolute) = std::fs::canonicalize(path).or_else(|_| std::path::absolute(path)) else {
+        return Ok(None);
+    };
+    let present = |file: &Path| std::fs::symlink_metadata(file).is_ok();
+    let refused = |file: &Path, reason: String| LoadError::Unreadable {
+        path: file.to_path_buf(),
+        reason,
+    };
     for dir in absolute.ancestors().skip(1) {
         let ita = dir.join("ita.una");
-        if ita.is_file() {
+        if present(&ita) {
             // Read within its bound (spec/30 §1 rule 4).
-            let file =
-                una_project::read_project_file(&ita, "ita.una", ita::MAX_MANIFEST_BYTES).ok()?;
-            return Some(parse_ita_manifest(&file).0.edition);
+            let file = una_project::read_project_file(&ita, "ita.una", ita::MAX_MANIFEST_BYTES)
+                .map_err(|error| refused(&ita, error.to_string()))?;
+            if file.unread_len().is_some() {
+                return Err(refused(
+                    &ita,
+                    format!(
+                        "it holds more than the {} bytes an `ita.una` may hold",
+                        ita::MAX_MANIFEST_BYTES
+                    ),
+                ));
+            }
+            return Ok(Some(parse_ita_manifest(&file).0.edition));
         }
         let toml = dir.join("una.toml");
-        if toml.is_file() {
-            let text = read_toml(&toml)?;
-            return Some(parse_manifest(&String::from_utf8_lossy(&text)).0.edition);
+        if present(&toml) {
+            let text = read_toml(&toml).map_err(|reason| refused(&toml, reason))?;
+            return Ok(Some(
+                parse_manifest(&String::from_utf8_lossy(&text)).0.edition,
+            ));
         }
     }
-    None
+    Ok(None)
 }
 
 /// The bytes of `una.toml` at `path`, read as every file of a package is (spec/30 §1 rule 4):
 /// a regular file, checked before and after a non-blocking open, of at most 256 MiB, never held
-/// whole past it; `None` when it does not read. O(min(n, 256 MiB)).
-fn read_toml(path: &Path) -> Option<Vec<u8>> {
-    una_project::tree::read_regular(path, una_project::content::MAX_BYTES).ok()
+/// whole past it. O(min(n, 256 MiB)).
+fn read_toml(path: &Path) -> Result<Vec<u8>, String> {
+    una_project::tree::read_regular(path, una_project::content::MAX_BYTES)
 }
+
+/// The most path dependencies a package names (spec/30 §1 rule 4): a need past them is refused
+/// and its directory not read.
+const MAX_PATH_DEPENDENCIES: usize = 1_000;
 
 /// Loads the path dependencies that the root's `ita.una` names (ADR 0122 rule 7). A directory
 /// that is not relative, that is the root, lies under the root's `src/`, or is named by two
-/// needs is not read; nor is one that does not load. Each keeps the reason, which [`project`]
-/// reports at its need. O(files of the dependencies).
+/// needs is not read; nor is one that does not load, one past the [`MAX_PATH_DEPENDENCIES`]th,
+/// or one whose files would take the root's package and the dependencies before it past the
+/// `left` bytes they share. Each keeps the reason, which [`project`] reports at its need.
+/// O(needs + files of the dependencies).
 fn load_dependencies(
     root: &Path,
     manifest: &SourceFile,
     overlay: &BTreeMap<PathBuf, String>,
     package: &mut Package,
+    left: &mut u64,
 ) {
     let (read, _) = una_syntax::ita::parse_manifest(manifest);
     let canonical_root = std::fs::canonicalize(root).ok();
-    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut paths = 0usize;
     for (index, need) in read.needs.iter().enumerate() {
         let Some(una_syntax::ita::At {
             value: una_syntax::ita::Origin::Path(dir),
@@ -392,7 +438,13 @@ fn load_dependencies(
             files: Vec::new(),
             registry: None,
         };
+        paths += 1;
         let refusal = (|| {
+            if paths > MAX_PATH_DEPENDENCIES {
+                return Some(format!(
+                    "a package names at most {MAX_PATH_DEPENDENCIES} path dependencies"
+                ));
+            }
             if !una_project::ita::is_relative_dir(&written) || written == "." {
                 return Some(
                     "its directory is not a relative path to another directory".to_owned(),
@@ -407,10 +459,9 @@ fn load_dependencies(
                     "its directory is the package itself, or inside its `src/`".to_owned(),
                 );
             }
-            if seen.contains(&canonical) {
+            if !seen.insert(canonical) {
                 return Some("another need names the same directory".to_owned());
             }
-            seen.push(canonical);
             None
         })();
         if let Some(reason) = refusal {
@@ -418,7 +469,7 @@ fn load_dependencies(
             package.dependencies.push(dependency);
             continue;
         }
-        match una_project::discover_dependency(&root.join(&written), &written) {
+        match una_project::discover_dependency_within(&root.join(&written), &written, left) {
             Ok(loaded) => {
                 for mut file in loaded.files {
                     if let Some(text) = overlay.get(&file.path) {
@@ -1036,16 +1087,19 @@ mod tests {
         let toml = dir.join("una.toml");
         std::fs::write(&toml, "[package]\nedition = \"0.3\"\n").unwrap();
         assert_eq!(
-            read_toml(&toml).as_deref(),
+            read_toml(&toml).ok().as_deref(),
             Some(&b"[package]\nedition = \"0.3\"\n"[..])
         );
         let big = std::fs::File::create(&toml).unwrap();
         big.set_len((256 << 20) + 1).unwrap();
         drop(big);
-        assert_eq!(read_toml(&toml), None, "a una.toml past its bound was read");
+        assert!(
+            read_toml(&toml).is_err(),
+            "a una.toml past its bound was read"
+        );
         std::fs::remove_file(&toml).unwrap();
         std::fs::create_dir(&toml).unwrap();
-        assert_eq!(read_toml(&toml), None);
+        assert!(read_toml(&toml).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1073,6 +1127,69 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    /// The root and its path dependencies share one bound (#2401): with room for the root and
+    /// one dependency, the second is refused at its need, its module never read; and a need
+    /// past the 1,000th path dependency is refused without reading its directory.
+    #[test]
+    fn path_dependencies_share_the_bound_and_are_counted() {
+        let dir = with_dependency("shared-bound", "hi");
+        let manifest = std::fs::read_to_string(dir.join("ita.una"))
+            .unwrap()
+            .replace(
+                "    accept name\n",
+                "    accept name\n  tool from path \"deps/tool\"\n    accept name\n",
+            );
+        std::fs::write(dir.join("ita.una"), manifest).unwrap();
+        std::fs::create_dir_all(dir.join("deps/tool/src")).unwrap();
+        std::fs::write(
+            dir.join("deps/tool/ita.una"),
+            "ita tool\n  version 0.1.0\n  edition 0.4\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("deps/tool/src/t.una"), [b'-'; 4096]).unwrap();
+        let whole = load(&dir).unwrap();
+        assert_eq!(whole.dependencies.len(), 2);
+        assert!(whole.dependencies.iter().all(|dep| dep.error.is_none()));
+        // Room for all but the tool's module.
+        let held: u64 = whole
+            .dependencies
+            .iter()
+            .flat_map(|dep| dep.files.iter())
+            .map(|file| file.bytes.len() as u64)
+            .sum::<u64>()
+            + whole
+                .modules
+                .iter()
+                .chain(whole.manifest.iter())
+                .map(|id| whole.sources.file(*id).raw_len() as u64)
+                .sum::<u64>();
+        let package = load_within(&dir, &BTreeMap::new(), None, held - 1).unwrap();
+        let tool = &package.dependencies[1];
+        let error = tool.error.as_deref().unwrap_or_default();
+        assert!(error.contains("may hold together"), "{error}");
+        assert!(package.dependencies[0].error.is_none());
+        let package = load_within(&dir, &BTreeMap::new(), None, held).unwrap();
+        assert!(package.dependencies.iter().all(|dep| dep.error.is_none()));
+        // 1,001 path needs: the last is refused by the count.
+        let mut many = "ita demo\n  version 0.1.0\n  edition 0.4\n\nneeds\n".to_owned();
+        for at in 0..1_001 {
+            many.push_str(&format!(
+                "  d{at} from path \"deps/d{at}\"\n    accept name\n"
+            ));
+        }
+        std::fs::write(dir.join("ita.una"), many).unwrap();
+        let package = load(&dir).unwrap();
+        assert_eq!(package.dependencies.len(), 1_001);
+        let last = package.dependencies[1_000]
+            .error
+            .as_deref()
+            .unwrap_or_default();
+        assert!(last.contains("at most 1000 path dependencies"), "{last}");
+        let first = package.dependencies[0].error.as_deref().unwrap_or_default();
+        assert!(!first.contains("at most 1000"), "{first}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The digest of a path dependency is computed from the bytes loaded, never from its files
