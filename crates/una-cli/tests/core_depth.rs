@@ -19,6 +19,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+#[path = "common/native_build.rs"]
+mod native_build;
+
 /// The workspace root.
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -98,6 +101,9 @@ fn overflowed(output: &Output) -> bool {
 
 #[test]
 fn a_body_just_under_the_bound_passes_every_command() {
+    // `una build` links the runtime library, which `cargo test` builds only when asked (#2339:
+    // the Linux legs run `cargo test --workspace`, where no step built it beside `una`).
+    native_build::runtime();
     // 18,000 items: 126,000 levels, under the bound of 131,072.
     let dir = package("under", &in_body(18_000));
     for args in [
@@ -240,6 +246,8 @@ fn a_body_just_under_the_bound_passes_una_lsp_at_tier_1() {
 
 #[test]
 fn a_body_past_the_bound_is_u0101_in_every_command_never_a_stack_overflow() {
+    // `una build` among the commands: its runtime library, as above.
+    native_build::runtime();
     for (name, program) in [
         // 19,000 items: 133,000 levels, past the bound.
         ("body", in_body(19_000)),
