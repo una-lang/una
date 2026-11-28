@@ -83,7 +83,8 @@ fn refused_write_interest() -> String {
         assert!(Instant::now() < end, "no request was delivered");
         std::thread::sleep(Duration::from_millis(2));
     };
-    server::fail_write_registrations(1);
+    // ENOMEM, 12 on both macOS and Linux, as `epoll_ctl` and `kevent` give it.
+    server::fail_connection_registrations(true, 1, 12);
     let start = Instant::now();
     exchange.reply(&body(32 << 20)).unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(20)))
@@ -171,7 +172,7 @@ fn a_connection_cut_short_is_recorded_with_its_cause() {
     assert_eq!(refused.len(), 1, "{text}");
     assert!(refused[0].0 > 0, "{text}");
     assert_eq!(
-        refused[0].1, "Some(Unregistered(OutOfMemory, None))",
+        refused[0].1, "Some(Unregistered(OutOfMemory, Some(12)))",
         "{text}"
     );
     let _ = std::fs::remove_dir_all(&dir);

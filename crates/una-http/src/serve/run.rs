@@ -79,9 +79,23 @@ pub struct Port {
     ended: AtomicBool,
     /// The inbox of an ended thread. Set before `ended`; locked only after a thread ended.
     orphan: Mutex<Option<Receiver<Msg>>>,
+    /// The thread passed on the turn to accept because its readiness queue kept refusing the
+    /// accept poller (#2343): [`Shared::pass_turn`] skips it while another live thread can
+    /// take the turn (#2352). Cleared when it registers the accept poller again.
+    accept_broken: AtomicBool,
 }
 
 impl Port {
+    /// Marks whether the thread's readiness queue refuses the accept poller (#2352).
+    pub fn set_accept_broken(&self, broken: bool) {
+        self.accept_broken.store(broken, Ordering::SeqCst);
+    }
+
+    /// Whether the thread's readiness queue refused the accept poller for good (#2352).
+    pub fn is_accept_broken(&self) -> bool {
+        self.accept_broken.load(Ordering::SeqCst)
+    }
+
     /// Pushes a message, or gives it back when nothing can receive it.
     fn push(&self, msg: Msg) -> Result<(), Msg> {
         self.tx.send(msg).map_err(|failed| failed.0)
@@ -387,6 +401,7 @@ impl Shared {
                 sleeping: AtomicBool::new(false),
                 waker,
                 ended: AtomicBool::new(false),
+                accept_broken: AtomicBool::new(false),
                 orphan: Mutex::new(None),
             });
             receivers.push(rx);
@@ -634,19 +649,37 @@ impl Shared {
     }
 
     /// Passes the turn to accept from thread `from` to another serve thread that can take it:
-    /// one that sleeps first (it is idle), else any other; a thread that ended is skipped.
+    /// one that sleeps first (it is idle), else any other; a thread that ended is skipped, and
+    /// a thread whose readiness queue refused the accept poller for good is given it only by
+    /// another such thread, when no healthy thread can take it (#2352). O(threads).
     /// The receiver is recorded before the message is sent, so a receiver that takes the turn
     /// and passes it on at once is never overwritten by a late record. `false` when no other
     /// thread took it, and the turn is `from`'s again.
     pub fn pass_turn(&self, from: usize) -> bool {
+        // A healthy thread keeps the turn rather than hand it to a broken one.
+        let from_broken = self.ports.get(from).is_some_and(Port::is_accept_broken);
+        self.pass_turn_to(from, from_broken)
+    }
+
+    /// [`Shared::pass_turn`]; with `any`, a thread whose readiness queue refused the accept
+    /// poller can take the turn when no healthy thread can.
+    fn pass_turn_to(&self, from: usize, any: bool) -> bool {
         let n = self.threads;
-        for sleeping_first in [true, false] {
+        for (healthy_only, sleeping_first) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            if !healthy_only && !any {
+                break;
+            }
             for step in 1..n {
                 let thread = (from + step) % n;
                 let Some(port) = self.ports.get(thread) else {
                     continue;
                 };
-                if port.is_ended() || (sleeping_first && !port.is_sleeping()) {
+                if port.is_ended()
+                    || (sleeping_first && !port.is_sleeping())
+                    || (healthy_only && port.is_accept_broken())
+                {
                     continue;
                 }
                 self.turn.store(thread, Ordering::SeqCst);
@@ -676,7 +709,8 @@ impl Shared {
             .turn
             .compare_exchange(thread, HANDING, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-            && !self.pass_turn(thread)
+            // An ending thread cannot keep the turn: a broken thread takes it if no other can.
+            && !self.pass_turn_to(thread, true)
         {
             // No live thread is left to take it.
             self.turn.store(thread, Ordering::SeqCst);
