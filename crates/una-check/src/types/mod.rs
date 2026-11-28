@@ -960,7 +960,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
             true,
         );
         findings.refused_constants = refused;
-        constants::substitution_budget(&env, &findings.records, &findings.constants, &mut report);
+        // #2316: the declarations the caps reject are left out of elaboration.
+        findings.oversized = constants::substitution_budget(
+            &env,
+            &findings.records,
+            &findings.constants,
+            &mut report,
+        );
     }
     authority::testing_installs(&findings, &mut report, |span| env.edition_at(span));
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
@@ -1311,6 +1317,9 @@ pub(crate) struct Findings {
     pub(crate) standard_constants: constants::Evaluated,
     /// The module constants whose check reported a diagnostic: they are not evaluated.
     pub(crate) refused_constants: std::collections::BTreeSet<usize>,
+    /// The declarations, by span, whose constants pass the caps of the substitution budget
+    /// (U2041, #2316): elaboration leaves them out, so that no Core IR past the caps is built.
+    pub(crate) oversized: std::collections::BTreeSet<Span>,
     /// Pending obligations: kind, primary span and the span of the declared type.
     pub(crate) obligations: Vec<(ObligationKind, Span, Option<Span>)>,
     /// The `Int` literals of a `systems` package outside the tagged range, each an `overflow`

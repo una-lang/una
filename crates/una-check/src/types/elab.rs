@@ -313,7 +313,10 @@ pub(crate) fn rejected(
             continue;
         };
         for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-            if !findings.failed.contains(&decl.span) || matches!(decl.kind, DeclKind::Example(_)) {
+            if !findings.failed.contains(&decl.span)
+                || findings.oversized.contains(&decl.span)
+                || matches!(decl.kind, DeclKind::Example(_))
+            {
                 continue;
             }
             let Some(entity) = entity else {
@@ -571,7 +574,9 @@ fn elaborate_module(
         return out;
     };
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
-        if findings.failed.contains(&decl.span) {
+        // #2316: a declaration whose constants pass the caps of the substitution budget is
+        // U2041 and left out, so that elaboration never builds the Core IR the caps refuse.
+        if findings.failed.contains(&decl.span) || findings.oversized.contains(&decl.span) {
             continue;
         }
         let mut fx = Fx::new(env, findings, dbs, module);
