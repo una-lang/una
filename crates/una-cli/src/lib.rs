@@ -719,20 +719,76 @@ fn partial_of(
 const CHECK_STACK_BYTES: usize = una_core::depth::STACK_BYTES;
 
 /// Runs `work` on a thread with [`CHECK_STACK_BYTES`] of stack, or on the current thread when
-/// the operating system cannot start one.
+/// the operating system cannot start one, with the note of [`large_stack_refused`].
 fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
     std::thread::scope(|scope| {
-        let spawned = std::thread::Builder::new()
-            .name("una-check".to_owned())
-            .stack_size(CHECK_STACK_BYTES)
-            .spawn_scoped(scope, &work);
+        let spawned = large_stack_allowed().and_then(|()| {
+            std::thread::Builder::new()
+                .name("una-check".to_owned())
+                .stack_size(CHECK_STACK_BYTES)
+                .spawn_scoped(scope, &work)
+        });
         match spawned {
             Ok(handle) => handle
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
-            Err(_) => work(),
+            Err(error) => {
+                large_stack_refused(&error, HUMAN_STDERR.with(std::cell::Cell::get));
+                work()
+            }
         }
     })
+}
+
+thread_local! {
+    /// Whether this thread runs a command whose stderr is for a human (#2357). [`run`] sets
+    /// it on the thread that holds the command's stderr, so that the note of
+    /// [`large_stack_refused`] is written there and nowhere else: never under `--json`, whose
+    /// stderr stays empty (`spec/13 §5`), and never from a worker thread, which would wait
+    /// for the lock that thread holds (`compiler/conventions.md §1`).
+    static HUMAN_STDERR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the note of [`large_stack_refused`] was written, so that a process writes it once.
+static STACK_NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The toolchain's test builds: whether every thread of a large stack is refused, as a limit
+/// on virtual memory or strict overcommit refuses it (#2357).
+#[cfg(feature = "test-hooks")]
+static LARGE_STACKS_REFUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The toolchain's test builds: refuses every later thread of a large stack, as the system can
+/// (#2357). The binary calls it when `UNA_TEST_REFUSE_LARGE_STACKS` is set.
+#[cfg(feature = "test-hooks")]
+pub fn refuse_large_stacks() {
+    LARGE_STACKS_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `Ok` unless the toolchain's test hook refuses large stacks; the system's own refusal is the
+/// error of the spawn.
+pub fn large_stack_allowed() -> std::io::Result<()> {
+    #[cfg(feature = "test-hooks")]
+    if LARGE_STACKS_REFUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::other("refused by the test hook"));
+    }
+    Ok(())
+}
+
+/// The note, one line on stderr and once per process, that the system refused a thread of
+/// [`una_core::depth::STACK_BYTES`] of stack (#2357): the command then runs on a smaller
+/// stack, where a program nested near the depth bound of Core IR can overflow. Written only
+/// when `human`, on the thread that holds stderr; a note that cannot be written changes
+/// nothing about the command.
+pub fn large_stack_refused(error: &std::io::Error, human: bool) {
+    if !human || STACK_NOTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "note: the system refused a thread stack of {} MiB ({error}), so `una` runs on a smaller stack, where a program nested near the depth bound of Core IR can overflow it; a limit on virtual memory (`ulimit -v`) or strict overcommit (`vm.overcommit_memory=2`) refuses that reservation",
+        una_core::depth::STACK_BYTES >> 20
+    );
 }
 
 /// The environment variables of the process, by name, which `una run` gives to programs that
@@ -824,6 +880,7 @@ where
     // `--json` is a global flag without a value, so its presence decides the shape of the
     // report even when parsing is what panicked.
     let json = args.iter().skip(1).any(|arg| arg == "--json");
+    HUMAN_STDERR.with(|human| human.set(!json));
     // What a panic report needs from the command line, read before the command runs; parsing
     // is guarded too, and a panic in it leaves both unknown.
     let parsed = std::panic::catch_unwind(|| parse_line(args.clone()).ok())

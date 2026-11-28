@@ -25,6 +25,7 @@ The serve engine of this release has the limits of the [Servers](#servers) secti
 - **Coarser labels of concurrent work.** The labels are less precise than the design intends: `τ_conc` at the limiter's site and for `L_srv`, `L_res` where the reactor removes the residue, and the task-switch rule.
 - **Scheduler measurements not made.** Structural placement on nested constructs is not measured, nor whether a rare 100 ms stall can happen without load.
 - **No formal model of the server or of the collections.**
+- **A deep program needs a large stack reservation.** `una` runs each command, and its checker, on threads of 1,088 MiB of reserved stack each, sized from the depth bound of Core IR, 131,072 levels ([`spec/02 §9`](../spec/02-grammar.md)). The reservation is address space, not memory: a thread commits only the pages it touches. A limit on virtual memory (`ulimit -v`) below about 2.5 GiB, or strict overcommit (`vm.overcommit_memory=2`), can refuse it. `una` then writes one note to stderr, `note: the system refused a thread stack of 1088 MiB ...` (none under `--json`), and runs the command on a smaller stack, where a program nested near the bound can abort with a stack overflow. Programs far below the bound are not affected (#2357).
 
 ## Servers
 

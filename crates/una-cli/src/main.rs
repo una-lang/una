@@ -51,16 +51,30 @@ fn main() -> ExitCode {
             },
         )
     };
+    // The toolchain's test builds: the refusal of a large stack, as a limit on virtual memory
+    // gives it (#2357).
+    #[cfg(feature = "test-hooks")]
+    if environment("UNA_TEST_REFUSE_LARGE_STACKS").is_ok_and(|value| value.is_some()) {
+        una_cli::refuse_large_stacks();
+    }
     let status = std::thread::scope(|scope| {
-        match std::thread::Builder::new()
-            .name("una".to_owned())
-            .stack_size(MAIN_STACK_BYTES)
-            .spawn_scoped(scope, command)
-        {
+        let spawned = una_cli::large_stack_allowed().and_then(|()| {
+            std::thread::Builder::new()
+                .name("una".to_owned())
+                .stack_size(MAIN_STACK_BYTES)
+                .spawn_scoped(scope, command)
+        });
+        match spawned {
             Ok(handle) => handle
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
-            Err(_) => command(),
+            Err(error) => {
+                // On the main thread, before the command takes the lock of stderr: a note for
+                // a human, never under `--json`, whose stderr stays empty (`spec/13 §5`).
+                let json = std::env::args_os().skip(1).any(|arg| arg == "--json");
+                una_cli::large_stack_refused(&error, !json);
+                command()
+            }
         }
     });
     ExitCode::from(status.code())

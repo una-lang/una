@@ -4004,3 +4004,43 @@ fn a_stopped_run_stops_sanitize_and_a_sanitize_without_its_row_is_a_fail() {
     assert!(!out.join("clone-sanitize").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The opt-level 0 leg of `core_depth` (#2358): the release run, which the nightly runs every
+/// night on the head of `main`, builds the tests unoptimized and runs every test of the
+/// workspace in its build gate, `core_depth` among them. An unoptimized build takes about twice
+/// the stack per level of Core IR that the per-PR check's opt-level 1 takes (#2339), so this is
+/// where a pass that grew past `una_core::depth::STACK_PER_LEVEL` shows. This fails if the
+/// script stops exporting opt-level 0, if the build gate stops running the whole workspace's
+/// tests, or if `core_depth` moves out of the workspace's tests.
+#[test]
+fn the_release_run_runs_core_depth_unoptimized() {
+    let text = std::fs::read_to_string(root().join("scripts/release-gates.sh")).unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line == "export CARGO_PROFILE_DEV_OPT_LEVEL=0"),
+        "scripts/release-gates.sh no longer builds its tests at opt-level 0"
+    );
+    let steps: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("build_steps_in_order() {"))
+        .take_while(|line| *line != "}")
+        .collect();
+    assert!(
+        steps.iter().any(|line| line
+            .trim_start()
+            .starts_with("cargo test --workspace --locked")),
+        "the build gate no longer runs `cargo test --workspace`: {steps:#?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .all(|line| !line.contains("--exclude") && !line.contains("--skip")),
+        "the build gate leaves tests out: {steps:#?}"
+    );
+    assert!(root().join("crates/una-cli/tests/core_depth.rs").is_file());
+    assert!(
+        text.lines()
+            .any(|line| line.trim_start().starts_with("run build build_steps")),
+        "the build gate no longer runs its steps"
+    );
+}
