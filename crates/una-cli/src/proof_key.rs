@@ -294,7 +294,7 @@ fn same_file(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
 /// temporary directory on every check; a test keeps that probe and checks that both agree.
 /// `None` when the identity cannot be read, and the key is then not used.
 #[cfg(unix)]
-pub(crate) fn effective_uid() -> Option<u32> {
+fn effective_uid() -> Option<u32> {
     una_sys::server::identity()
         .ok()
         .map(|identity| identity.uid)
@@ -332,7 +332,7 @@ fn effective_uid_by_probe() -> Option<u32> {
 
 /// No user to compare off Unix: only the file's type is checked there.
 #[cfg(not(unix))]
-pub(crate) fn effective_uid() -> Option<u32> {
+fn effective_uid() -> Option<u32> {
     None
 }
 
