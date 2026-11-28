@@ -360,6 +360,345 @@ fn a_project_file_that_is_not_a_regular_file_is_refused_before_it_is_read() {
     assert_eq!(file.text(), "ita a\n");
 }
 
+/// Two links to `.` in `src/` would make a walk that follows links visit 2^32 directories: the
+/// walk reaches each directory once and refuses a link back to one already walked, at once
+/// (#2397). A link to a directory not otherwise reached is followed, and its modules read.
+#[cfg(unix)]
+#[test]
+fn a_link_back_into_src_refuses_the_walk_at_once() {
+    let root = scratch("discover-src-loops");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let discovered = |root: &Path| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(discover(&root));
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the walk of src/ did not end")
+    };
+    std::os::unix::fs::symlink(".", root.join("src/l1")).unwrap();
+    std::os::unix::fs::symlink(".", root.join("src/l2")).unwrap();
+    match discovered(&root) {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("already walked"), "{reason}");
+        }
+        other => panic!("a link back into src/ was not refused: {other:?}"),
+    }
+    std::fs::remove_file(root.join("src/l1")).unwrap();
+    std::fs::remove_file(root.join("src/l2")).unwrap();
+    // A link to an ancestor reaches `src/` again.
+    std::os::unix::fs::symlink("..", root.join("src/up")).unwrap();
+    assert!(discovered(&root).is_err());
+    std::fs::remove_file(root.join("src/up")).unwrap();
+    // A link to a directory outside `src/`, reached only through it, is followed.
+    std::fs::create_dir_all(root.join("shared")).unwrap();
+    std::fs::write(root.join("shared/b.una"), "module b\n").unwrap();
+    std::os::unix::fs::symlink(root.join("shared"), root.join("src/shared")).unwrap();
+    let loaded = discovered(&root).unwrap();
+    let names: Vec<&str> = loaded.files.iter().map(|file| file.name.as_str()).collect();
+    assert_eq!(names, ["ita.una", "src/a.una", "src/shared/b.una"]);
+}
+
+/// The walk of `src/` refuses a module more than 32 segments below the package's directory,
+/// and more than 10,000 modules (#2397); 32 segments, and 10,000 modules, are read.
+#[test]
+fn the_walk_of_src_is_bounded_in_depth_and_modules() {
+    let root = scratch("discover-src-bounds");
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    // `src/d/d/.../a.una`: src, 30 directories and the module make 32 segments.
+    let mut deep = root.join("src");
+    for _ in 0..30 {
+        deep.push("d");
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("a.una"), "module a\n").unwrap();
+    assert_eq!(discover(&root).unwrap().files.len(), 2);
+    std::fs::create_dir_all(deep.join("d")).unwrap();
+    std::fs::write(deep.join("d/b.una"), "module b\n").unwrap();
+    match discover(&root) {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("more than 32 segments"), "{reason}");
+        }
+        other => panic!("a module of 33 segments was not refused: {other:?}"),
+    }
+    std::fs::remove_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src/m")).unwrap();
+    for at in 0..10_000 {
+        std::fs::write(root.join(format!("src/m/m{at}.una")), "").unwrap();
+    }
+    assert_eq!(discover(&root).unwrap().files.len(), 10_001);
+    std::fs::write(root.join("src/m/one-more.una"), "").unwrap();
+    match discover(&root) {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("more than 10000 modules"), "{reason}");
+        }
+        other => panic!("10,001 modules were not refused: {other:?}"),
+    }
+}
+
+/// The manifest and the modules of a package share its bound of 256 MiB (§9 rule 1): two
+/// modules each within it but past it together refuse the package at the second, which is not
+/// read whole (#2399). Modules within it together are read.
+#[test]
+fn the_modules_of_a_package_share_its_bound() {
+    let root = scratch("discover-package-total");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let sparse = |name: &str, len: u64| {
+        let file = std::fs::File::create(root.join("src").join(name)).unwrap();
+        file.set_len(len).unwrap();
+    };
+    sparse("a.una", 1 << 20);
+    sparse("b.una", 1 << 20);
+    assert_eq!(discover(&root).unwrap().files.len(), 3);
+    sparse("a.una", 129 << 20);
+    sparse("b.una", 128 << 20);
+    match discover(&root) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, root.join("src/b.una"));
+            assert!(
+                reason.contains("the package's files hold more than the 268435456 bytes"),
+                "{reason}"
+            );
+        }
+        other => panic!("a package past its bound was read: {other:?}"),
+    }
+}
+
+/// The open flags of `tree` are `O_NONBLOCK | O_NOCTTY` by the platform's own values wherever
+/// they are known, and 0 elsewhere: a mistyped value of any family fails here when the crate is
+/// tested on it (#2396).
+#[cfg(unix)]
+#[test]
+fn the_open_flags_are_the_platforms_nonblock_and_noctty() {
+    let flags = una_project::tree::OPEN_FLAGS;
+    let known = cfg!(any(
+        target_os = "macos",
+        all(
+            any(target_os = "linux", target_os = "android"),
+            any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "arm",
+                target_arch = "aarch64",
+                target_arch = "riscv32",
+                target_arch = "riscv64",
+                target_arch = "powerpc",
+                target_arch = "powerpc64",
+                target_arch = "s390x",
+                target_arch = "loongarch64"
+            )
+        ),
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ));
+    if known {
+        assert_eq!(flags, libc::O_NONBLOCK | libc::O_NOCTTY);
+    } else {
+        assert_eq!(flags, 0);
+    }
+    // On the hosts this is tested on, the flags are known and are the generic Linux or the
+    // Apple values; neither ever holds a bit that would change a file, such as `O_TRUNC`.
+    #[cfg(target_os = "macos")]
+    assert_eq!(flags, 0x4 | 0x2_0000);
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    assert_eq!(flags, 0o4000 | 0o400);
+    for changes in [libc::O_TRUNC, libc::O_APPEND, libc::O_CREAT, libc::O_EXCL] {
+        assert_eq!(flags & changes, 0);
+    }
+}
+
+/// A module under `src/` is read as every project file is (#2392): a FIFO with no writer is
+/// refused at once rather than wait for one, a link to a device is refused before anything is
+/// read, and a regular file past the 256 MiB a package holds is refused by its size, never read.
+/// A link to a regular module is read.
+#[cfg(unix)]
+#[test]
+fn a_module_that_is_not_a_regular_file_or_too_large_is_refused() {
+    let root = scratch("discover-module-kinds");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let module = root.join("src/x.una");
+    let refused = |root: &Path, expected: &str| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let dir = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(discover(&dir));
+        });
+        let result = wait
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("discover blocked");
+        match result {
+            Err(LoadError::Unreadable { path, reason }) => {
+                assert_eq!(path, root.join("src/x.una"));
+                assert!(reason.contains(expected), "{reason}");
+            }
+            other => panic!("the module was not refused: {other:?}"),
+        }
+    };
+    let made = std::process::Command::new("mkfifo")
+        .arg(&module)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    refused(&root, "is not a regular file");
+    std::fs::remove_file(&module).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &module).unwrap();
+    refused(&root, "is not a regular file");
+    std::fs::remove_file(&module).unwrap();
+    // A sparse file one byte past the bound: refused by the size it has when opened.
+    let big = std::fs::File::create(&module).unwrap();
+    big.set_len((256 << 20) + 1).unwrap();
+    drop(big);
+    refused(
+        &root,
+        "with it the package's files hold more than the 268435456 bytes",
+    );
+    std::fs::remove_file(&module).unwrap();
+    std::fs::write(root.join("real.una"), "module x\n").unwrap();
+    std::os::unix::fs::symlink(root.join("real.una"), &module).unwrap();
+    let loaded = discover(&root).unwrap();
+    let read = loaded.files.iter().find(|file| file.name == "src/x.una");
+    assert_eq!(
+        read.map(|file| file.bytes.as_slice()),
+        Some(&b"module x\n"[..])
+    );
+}
+
+/// The open flags of `tree` are known on the platforms this is tested on, and they are the ones
+/// that keep an open from blocking: a FIFO with no writer, which a plain open waits on, opens
+/// at once with them; a project file read there is refused as not a regular file (#2350).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn opening_a_fifo_with_the_open_flags_never_waits() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = una_project::tree::OPEN_FLAGS;
+    assert_ne!(flags, 0);
+    let root = scratch("fifo-open-flags");
+    let fifo = root.join("ita.una");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let opened = |flags: i32| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            let opened = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags)
+                .open(&fifo);
+            let _ = done.send(opened.is_ok());
+        });
+        wait.recv_timeout(std::time::Duration::from_millis(500))
+    };
+    assert_eq!(opened(flags), Ok(true), "the open waited");
+    // Without them the open waits for a writer; one opened here releases it.
+    assert!(opened(0).is_err(), "a plain open of a FIFO did not wait");
+    drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
+    let error = una_project::read_project_file(&fifo, "ita.una", 1 << 20).unwrap_err();
+    assert!(
+        error.to_string().contains("is not a regular file"),
+        "{error}"
+    );
+}
+
+/// An `ita.lock` that is there but is not a regular file, a FIFO with no writer, a link to a
+/// device, or a directory, refuses the package as not a regular file, before anything is read
+/// and without blocking, rather than leave it with no lock (#2348). A missing lock is none; a link
+/// that names nothing is refused as a broken link (#2395); a link to a regular lock is read.
+#[cfg(unix)]
+#[test]
+fn an_ita_lock_that_is_not_a_regular_file_is_refused_not_missing() {
+    let root = scratch("discover-lock-kinds");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let lock = root.join("ita.lock");
+    let discovered = |root: &Path| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(discover(&root));
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("discover blocked")
+    };
+    let has_lock =
+        |loaded: &una_project::Loaded| loaded.files.iter().any(|file| file.role == Role::Lock);
+    // No lock: the package has none.
+    assert!(!has_lock(&discovered(&root).unwrap()));
+    let refused = |root: &Path| match discovered(root) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, root.join("ita.lock"));
+            assert!(reason.contains("is not a regular file"), "{reason}");
+        }
+        other => panic!("a lock that is not a regular file was not refused: {other:?}"),
+    };
+    let made = std::process::Command::new("mkfifo")
+        .arg(&lock)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    refused(&root);
+    std::fs::remove_file(&lock).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &lock).unwrap();
+    refused(&root);
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    refused(&root);
+    std::fs::remove_dir(&lock).unwrap();
+    // A link that names nothing is a broken lock, refused as such, not a missing one (#2395).
+    std::os::unix::fs::symlink(root.join("gone"), &lock).unwrap();
+    match discovered(&root) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, lock);
+            assert!(
+                reason.contains("is a symbolic link that names nothing"),
+                "{reason}"
+            );
+        }
+        other => panic!("a dangling link at ita.lock was not refused: {other:?}"),
+    }
+    std::fs::remove_file(&lock).unwrap();
+    // A link to a regular lock is read.
+    std::fs::write(root.join("real.lock"), "lock\n").unwrap();
+    std::os::unix::fs::symlink(root.join("real.lock"), &lock).unwrap();
+    let loaded = discovered(&root).unwrap();
+    let read = loaded.files.iter().find(|file| file.role == Role::Lock);
+    assert_eq!(read.map(|file| file.bytes.as_slice()), Some(&b"lock\n"[..]));
+}
+
 #[test]
 fn a_package_is_a_directory_with_una_toml_and_src() {
     let root = scratch("discover-package");

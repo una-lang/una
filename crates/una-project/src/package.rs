@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use una_syntax::ita::{MAX_LOCK_BYTES, MAX_MANIFEST_BYTES};
 use una_syntax::{SourceFile, Unread};
 
+use crate::content;
 use crate::manifest::Format;
 
 /// Why a path cannot be loaded; a usage error of the command (`spec/13 §5`, exit code 2).
@@ -189,7 +190,25 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
         role: Role::Manifest,
     }];
     let lock = path.join(lock_name);
-    if lock.is_file() {
+    // An `ita.lock` that is there but is not a regular file, such as a FIFO, a device or a
+    // directory, is refused by its read before anything is read (spec/30 §1 rule 4), never
+    // taken for a missing lock; a link is followed, and one that names nothing is refused.
+    // `verification.lock` keeps its check for a regular file.
+    let has_lock = match format {
+        Format::Ita => match lock.try_exists() {
+            // A link at `ita.lock` that names nothing is a broken lock, not a missing one.
+            Ok(false) if std::fs::symlink_metadata(&lock).is_ok() => {
+                return Err(LoadError::Unreadable {
+                    reason: format!("`{}` is a symbolic link that names nothing", lock.display()),
+                    path: lock,
+                });
+            }
+            Ok(false) => false,
+            _ => true,
+        },
+        Format::Toml => lock.is_file(),
+    };
+    if has_lock {
         let (bytes, unread) = read_project(&lock, lock_name)?;
         files.push(LoadedFile {
             name: lock_name.to_owned(),
@@ -199,11 +218,19 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
             role: Role::Lock,
         });
     }
-    let mut modules = Vec::new();
-    collect(&src, "src", &mut modules)?;
+    let mut walk = Walk::new(&src, true)?;
+    walk.directory(&src, "src", 1)?;
+    let mut modules = walk.files;
     modules.sort();
+    // The manifest and the modules share the package's bound (spec/30 §1 rule 4, §9 rule 1).
+    let held = files
+        .iter()
+        .filter(|file| file.role == Role::Manifest)
+        .map(|file| file.bytes.len() as u64)
+        .sum::<u64>();
+    let mut left = content::MAX_BYTES.saturating_sub(held);
     for (name, file) in modules {
-        let bytes = read(&file)?;
+        let bytes = read_counted(&file, &mut left, false)?;
         files.push(loaded(name, file, bytes, Role::Module));
     }
     Ok(Loaded {
@@ -254,11 +281,18 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
         path: manifest,
         role: Role::Manifest,
     }];
-    let mut modules = Vec::new();
-    collect_no_links(&src, &format!("{written}/src"), &mut modules)?;
+    let mut walk = Walk::new(&src, false)?;
+    walk.directory(&src, &format!("{written}/src"), 1)?;
+    let mut modules = walk.files;
     modules.sort();
+    let held = files
+        .iter()
+        .filter(|file| file.role == Role::Manifest)
+        .map(|file| file.bytes.len() as u64)
+        .sum::<u64>();
+    let mut left = content::MAX_BYTES.saturating_sub(held);
     for (name, file) in modules {
-        let bytes = read_unlinked(&file)?;
+        let bytes = read_counted(&file, &mut left, true)?;
         files.push(loaded(name, file, bytes, Role::Module));
     }
     Ok(Loaded {
@@ -269,57 +303,135 @@ pub fn discover_dependency(dir: &Path, written: &str) -> Result<Loaded, LoadErro
     })
 }
 
-/// [`collect`], refusing every symbolic link instead of following it.
-fn collect_no_links(
-    dir: &Path,
-    prefix: &str,
-    files: &mut Vec<(String, PathBuf)>,
-) -> Result<(), LoadError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| unreadable(dir, &error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| unreadable(dir, &error))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if is_hidden(&name) {
-            continue;
-        }
-        let path = entry.path();
-        let kind = entry
-            .file_type()
-            .map_err(|error| unreadable(&path, &error))?;
-        if kind.is_symlink() {
-            return Err(LoadError::Unreadable {
-                path,
-                reason: "it is a symbolic link, which a dependency may not hold".to_owned(),
-            });
-        }
-        let relative = format!("{prefix}/{name}");
-        if kind.is_dir() {
-            collect_no_links(&path, &relative, files)?;
-        } else if kind.is_file() && name.ends_with(".una") {
-            files.push((relative, path));
-        }
-    }
-    Ok(())
+/// The walk of a package's `src/` (spec/30 §1 rule 4): its `.una` files, named after the
+/// path the package writes, at most [`content::MAX_FILES`] of them among at most
+/// [`tree::MAX_ENTRIES`] entries listed, none deeper than [`content::MAX_SEGMENTS`] segments,
+/// and each directory reached once. For the root's own package (`follow`) a link is followed,
+/// to a file or to a directory, but a directory reached a second time, through a link back to
+/// it or to one above it, refuses the package, so a walk never repeats; for a path dependency
+/// every link refuses it. O(entries listed).
+///
+/// [`tree::MAX_ENTRIES`]: crate::tree::MAX_ENTRIES
+struct Walk {
+    files: Vec<(String, PathBuf)>,
+    follow: bool,
+    entries: usize,
+    seen: std::collections::HashSet<DirKey>,
 }
 
-/// Collects the `.una` files under `dir`, named `prefix/...`.
-fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>) -> Result<(), LoadError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| unreadable(dir, &error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| unreadable(dir, &error))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if is_hidden(&name) {
-            continue;
-        }
-        let path = entry.path();
-        let relative = format!("{prefix}/{name}");
-        if path.is_dir() {
-            collect(&path, &relative, files)?;
-        } else if name.ends_with(".una") {
-            files.push((relative, path));
-        }
+impl Walk {
+    fn new(src: &Path, follow: bool) -> Result<Walk, LoadError> {
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(dir_key(src)?);
+        Ok(Walk {
+            files: Vec::new(),
+            follow,
+            entries: 0,
+            seen,
+        })
     }
-    Ok(())
+
+    /// Walks `dir`, named `prefix`, of `depth` segments below the package's directory.
+    fn directory(&mut self, dir: &Path, prefix: &str, depth: usize) -> Result<(), LoadError> {
+        let entries = std::fs::read_dir(dir).map_err(|error| unreadable(dir, &error))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| unreadable(dir, &error))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if is_hidden(&name) {
+                continue;
+            }
+            let path = entry.path();
+            self.entries += 1;
+            if self.entries > crate::tree::MAX_ENTRIES {
+                return Err(refused(
+                    dir,
+                    format!(
+                        "the package's `src/` holds more than {} entries",
+                        crate::tree::MAX_ENTRIES
+                    ),
+                ));
+            }
+            let kind = entry
+                .file_type()
+                .map_err(|error| unreadable(&path, &error))?;
+            if kind.is_symlink() && !self.follow {
+                return Err(refused(
+                    &path,
+                    "it is a symbolic link, which a dependency may not hold".to_owned(),
+                ));
+            }
+            let (is_dir, is_file) = if kind.is_symlink() {
+                // A link of the root's own package is followed; what it names decides.
+                match std::fs::metadata(&path) {
+                    Ok(meta) => (meta.is_dir(), !meta.is_dir()),
+                    Err(_) => (false, true),
+                }
+            } else {
+                (kind.is_dir(), !kind.is_dir())
+            };
+            let relative = format!("{prefix}/{name}");
+            let walked = is_dir || (is_file && name.ends_with(".una"));
+            if walked && depth + 1 > content::MAX_SEGMENTS {
+                return Err(refused(
+                    &path,
+                    format!(
+                        "it lies more than {} segments below the package's directory",
+                        content::MAX_SEGMENTS
+                    ),
+                ));
+            }
+            if is_dir {
+                if !self.seen.insert(dir_key(&path)?) {
+                    return Err(refused(
+                        &path,
+                        "it leads, through a link, to a directory of `src/` already walked"
+                            .to_owned(),
+                    ));
+                }
+                self.directory(&path, &relative, depth + 1)?;
+            } else if is_file && name.ends_with(".una") {
+                if self.files.len() >= content::MAX_FILES {
+                    return Err(refused(
+                        &path,
+                        format!(
+                            "the package's `src/` holds more than {} modules",
+                            content::MAX_FILES
+                        ),
+                    ));
+                }
+                // A dependency's non-regular entry is refused by its read; so is the root's.
+                self.files.push((relative, path));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A directory's identity: its device and inode on Unix, its canonical path elsewhere.
+#[cfg(unix)]
+type DirKey = (u64, u64);
+#[cfg(not(unix))]
+type DirKey = PathBuf;
+
+/// The identity of the directory `path` names, through a link or not.
+fn dir_key(path: &Path) -> Result<DirKey, LoadError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).map_err(|error| unreadable(path, &error))?;
+        Ok((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::canonicalize(path).map_err(|error| unreadable(path, &error))
+    }
+}
+
+fn refused(path: &Path, reason: String) -> LoadError {
+    LoadError::Unreadable {
+        path: path.to_path_buf(),
+        reason,
+    }
 }
 
 /// Hidden entries under `src/` (names starting with `.`, such as editor lock
@@ -339,17 +451,43 @@ fn loaded(name: String, path: PathBuf, bytes: Vec<u8>, role: Role) -> LoadedFile
     }
 }
 
+/// Reads a file of the user's own package that has no bound of its own, a module under `src/`,
+/// a single-file package, `una.toml` or `verification.lock`: a regular file, checked before
+/// and after it is opened without blocking, of at most the 256 MiB a package holds, read no
+/// further than one byte past it (`spec/30 §1` rule 4, §9 rule 1). O(min(n, 256 MiB)).
 fn read(path: &Path) -> Result<Vec<u8>, LoadError> {
-    std::fs::read(path).map_err(|error| unreadable(path, &error))
+    crate::tree::read_regular(path, crate::content::MAX_BYTES).map_err(|reason| {
+        LoadError::Unreadable {
+            path: path.to_path_buf(),
+            reason,
+        }
+    })
 }
 
-/// Reads a file of a dependency through a descriptor opened with no link followed, checked to
-/// be the regular file its directory lists (ADR 0122 rule 30).
-fn read_unlinked(path: &Path) -> Result<Vec<u8>, LoadError> {
-    crate::tree::read_unlinked(path).map_err(|reason| LoadError::Unreadable {
-        path: path.to_path_buf(),
-        reason,
-    })
+/// Reads the module at `path` within the `left` bytes its package may still hold, and takes
+/// them from `left` (spec/30 §1 rule 4, §9 rule 1): a module that would take the package past
+/// its bound is refused, never read whole. A path dependency's module (`unlinked`) is opened
+/// with no link followed and checked to be the regular file its directory lists (ADR 0122 rule
+/// 30); the root's is read as its other project files are. O(min(n, left)).
+fn read_counted(path: &Path, left: &mut u64, unlinked: bool) -> Result<Vec<u8>, LoadError> {
+    let read = if unlinked {
+        crate::tree::read_unlinked_within(path, *left)
+    } else {
+        crate::tree::read_regular_within(path, *left)
+    };
+    match read.map_err(|reason| refused(path, reason))? {
+        (bytes, None) => {
+            *left = left.saturating_sub(bytes.len() as u64);
+            Ok(bytes)
+        }
+        (_, Some(_)) => Err(refused(
+            path,
+            format!(
+                "with it the package's files hold more than the {} bytes a package may hold",
+                content::MAX_BYTES
+            ),
+        )),
+    }
 }
 
 fn unreadable(path: &Path, error: &std::io::Error) -> LoadError {

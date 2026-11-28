@@ -879,6 +879,12 @@ fn a_manifest_far_past_its_bound_is_refused_by_its_length() {
 /// 20 seconds: the exit code and stderr.
 #[cfg(unix)]
 fn una_ends(dir: &Path, args: &[&str]) -> (u8, String) {
+    una_ends_within(dir, args, 20)
+}
+
+/// [`una_ends`] with a limit of `seconds`.
+#[cfg(unix)]
+fn una_ends_within(dir: &Path, args: &[&str], seconds: u64) -> (u8, String) {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_una"))
         .current_dir(dir)
         .args(args)
@@ -892,7 +898,7 @@ fn una_ends(dir: &Path, args: &[&str]) -> (u8, String) {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        let blocked = start.elapsed() > std::time::Duration::from_secs(20);
+        let blocked = start.elapsed() > std::time::Duration::from_secs(seconds);
         if blocked {
             let _ = child.kill();
         }
@@ -934,6 +940,94 @@ fn a_fifo_at_ita_una_is_refused_and_never_blocks() {
     for args in [&["ita", "yank", "0.1.0"][..], &["fmt", "ita.una"]] {
         let (code, err) = una_ends(&dir, args);
         assert_eq!(code, 2, "`una {}`: {err}", args.join(" "));
+    }
+}
+
+/// A FIFO or a directory at `ita.lock` is not a regular file: `una check` and `una ita verify`
+/// refuse it as such, at once, and never report it as a missing lock (#2348).
+#[cfg(unix)]
+#[test]
+fn an_ita_lock_that_is_not_a_regular_file_is_refused_not_missing() {
+    let dir = package("fifo-lock", MANIFEST);
+    let lock = dir.join("ita.lock");
+    let commands = [&["check", "."][..], &["ita", "verify", "."]];
+    // With no lock at all, `verify` reports the missing lock.
+    let (code, err) = una_ends(&dir, &["ita", "verify", "."]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("has no ita.lock"), "{err}");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&lock)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let refused = |what: &str| {
+        for args in commands {
+            let (code, err) = una_ends(&dir, args);
+            let shown = format!("`una {}` with a {what} at ita.lock: {err}", args.join(" "));
+            assert_ne!(code, 0, "{shown}");
+            assert!(err.contains("is not a regular file"), "{shown}");
+            assert!(!err.contains("has no ita.lock"), "{shown}");
+        }
+    };
+    refused("FIFO");
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    refused("directory");
+}
+
+/// A module under `src/` that is a FIFO, or a link to `/dev/zero`, is refused by `una check` as
+/// not a regular file, at once: it never waits for a writer, and never reads an endless device
+/// into memory (#2392). The limit on `/dev/zero` is short, so a regression is killed before it
+/// holds much.
+#[cfg(unix)]
+#[test]
+fn a_module_that_is_not_a_regular_file_is_refused_by_check() {
+    let dir = package("fifo-module", MANIFEST);
+    let module = dir.join("src/x.una");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&module)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let (code, err) = una_ends(&dir, &["check", "."]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("is not a regular file"), "{err}");
+    std::fs::remove_file(&module).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", &module).unwrap();
+    let (code, err) = una_ends_within(&dir, &["check", "."], 3);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("is not a regular file"), "{err}");
+}
+
+/// Two links to `.` in `src/` refuse `una check` at once, rather than walk the package
+/// exponentially (#2397).
+#[cfg(unix)]
+#[test]
+fn links_back_into_src_refuse_check_at_once() {
+    let dir = package("src-loops", MANIFEST);
+    std::os::unix::fs::symlink(".", dir.join("src/l1")).unwrap();
+    std::os::unix::fs::symlink(".", dir.join("src/l2")).unwrap();
+    let (code, err) = una_ends_within(&dir, &["check", "."], 10);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("already walked"), "{err}");
+}
+
+/// A link at `ita.lock` that names nothing is refused as a broken link by `una check` and `una
+/// ita verify`, never reported as a missing lock with the advice to write one (#2395).
+#[cfg(unix)]
+#[test]
+fn a_dangling_link_at_ita_lock_is_refused_as_broken() {
+    let dir = package("dangling-lock", MANIFEST);
+    std::os::unix::fs::symlink(dir.join("moved/ita.lock"), dir.join("ita.lock")).unwrap();
+    for args in [&["check", "."][..], &["ita", "verify", "."]] {
+        let (code, err) = una_ends(&dir, args);
+        let shown = format!("`una {}`: {err}", args.join(" "));
+        assert_ne!(code, 0, "{shown}");
+        assert!(
+            err.contains("is a symbolic link that names nothing"),
+            "{shown}"
+        );
+        assert!(!err.contains("una ita lock"), "{shown}");
     }
 }
 

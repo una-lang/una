@@ -347,11 +347,18 @@ fn enclosing_edition(path: &Path) -> Option<Edition> {
         }
         let toml = dir.join("una.toml");
         if toml.is_file() {
-            let text = std::fs::read(&toml).ok()?;
+            let text = read_toml(&toml)?;
             return Some(parse_manifest(&String::from_utf8_lossy(&text)).0.edition);
         }
     }
     None
+}
+
+/// The bytes of `una.toml` at `path`, read as every file of a package is (spec/30 §1 rule 4):
+/// a regular file, checked before and after a non-blocking open, of at most 256 MiB, never held
+/// whole past it; `None` when it does not read. O(min(n, 256 MiB)).
+fn read_toml(path: &Path) -> Option<Vec<u8>> {
+    una_project::tree::read_regular(path, una_project::content::MAX_BYTES).ok()
 }
 
 /// Loads the path dependencies that the root's `ita.una` names (ADR 0122 rule 7). A directory
@@ -1017,6 +1024,30 @@ mod tests {
     #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
     use super::*;
+
+    /// `una.toml` is read for an enclosing edition as every file of a package is (#2398): a
+    /// regular file within its bound is read, a sparse one past 256 MiB is not read at all, and
+    /// a directory, which the path check would not catch here, is not read either.
+    #[test]
+    fn una_toml_is_read_within_its_bound_for_the_edition() {
+        let dir = std::env::temp_dir().join(format!("una-cli-toml-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = dir.join("una.toml");
+        std::fs::write(&toml, "[package]\nedition = \"0.3\"\n").unwrap();
+        assert_eq!(
+            read_toml(&toml).as_deref(),
+            Some(&b"[package]\nedition = \"0.3\"\n"[..])
+        );
+        let big = std::fs::File::create(&toml).unwrap();
+        big.set_len((256 << 20) + 1).unwrap();
+        drop(big);
+        assert_eq!(read_toml(&toml), None, "a una.toml past its bound was read");
+        std::fs::remove_file(&toml).unwrap();
+        std::fs::create_dir(&toml).unwrap();
+        assert_eq!(read_toml(&toml), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A fresh package directory with the path dependency `deps/util`, whose module says `say`.
     fn with_dependency(name: &str, say: &str) -> PathBuf {
