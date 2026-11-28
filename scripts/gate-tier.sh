@@ -6,9 +6,10 @@
 # Output, one item per line:
 #   line 1        `full` or `fast`
 #   `reason: ...` why, one line per path that decides (or a summary for fast)
-#   `extra: ...`  (fast only) a nextest filterset of tests the change needs beyond the fixed subset:
-#                 the test binaries it edits, the native differential of the programs it edits, the
-#                 suites that read the files it edits
+#   `extra: ...`  a nextest filterset of tests the change needs beyond the fixed subset: the test
+#                 binaries it edits, the native differential of the programs it edits, the suites that
+#                 read the files it edits, and the fast binaries of a skipped suite in a package it
+#                 changes (`fast_of_long`; in the full tier, only these)
 #   `skipped: ...` (fast only) the nextest filterset of the suites the fast tier leaves out
 #
 # The tier is `full` when UNA_GATE_TIER=full, when the run of the engineering harness that holds the
@@ -49,6 +50,7 @@ cd "$root" || exit 2
 tier=fast
 reasons=""
 extras=""
+long_extras=""
 add_reason() { reasons="${reasons}reason: $1
 "; }
 add_extra() {
@@ -170,6 +172,40 @@ SKIPPED_SUITES="una-cli::native una-cli::release_gates una-cli::runtime una-cli:
 una-cli::serve_live una-cli::http una-cli::http_limits una-cli::outcome_redaction una-cli::guide una-cli::site_website
 una-cli::profiles una-cli::recovery una-cli::refined_elements una-interp::confine una-http::* una-sys::*"
 
+# The binaries of the skipped suites that are fast and deterministic: static checks of the package's
+# own source (size caps) and engine tests over scripted connections, a clock the test drives or bytes
+# in memory, with no wall-clock bound, no live socket and no child process (#2361). A change of the
+# package runs them in either tier (an `extra:` line), so a check cannot miss an invariant of the
+# package it changes (#2359: `una-sys::solver_size` broke unseen); the slow or timing-dependent
+# binaries of those suites stay for the nightly. Test time on the gate machine under load
+# (2026-11-27): una-sys 0.5 s, una-http 18 s (provider_parts 12 s of it). `una-interp::confine`
+# (90 s) and the una-cli suites (9 s and up, each) have none; a builder names the una-cli ones with
+# `ops/pr-check.sh --suites`.
+fast_of_long() {
+    case "$1" in
+    una-sys) echo "una-sys::base_size una-sys::solver_size" ;;
+    una-http) echo "una-http::serve_engine una-http::serve_faults una-http::serve_scripts una-http::serve_quiet una-http::provider_parts" ;;
+    esac
+}
+
+# A changed path in a crate with fast binaries in a skipped suite adds them.
+fast_long_of() {
+    local crate b
+    case "$1" in crates/*/*) ;; *) return 0 ;; esac
+    crate=${1#crates/}; crate=${crate%%/*}
+    for b in $(fast_of_long "$crate"); do
+        add_extra "binary_id($b)"
+        case "
+$long_extras" in
+        *"
+binary_id($b)
+"*) ;;
+        *) long_extras="${long_extras}binary_id($b)
+" ;;
+        esac
+    done
+}
+
 # The test files of a skipped suite (`crate::name`, `name` may be `*`).
 suite_files() {
     local crate=${1%%::*} name=${1#*::}
@@ -275,6 +311,7 @@ test_binary_of() {
 fast_count=0
 classify() {
     local p=$1
+    fast_long_of "$p"
     case "$p" in
     # Runtime code: the abstract machine, code generation, native runtime, linking, HTTP, system calls, solver binding, registry service.
     crates/una-rt/* | crates/una-interp/* | crates/una-codegen/* | crates/una-http/* | crates/una-sys/* | crates/una-link/* | crates/una-z3/* | crates/una-itaty/*)
@@ -395,6 +432,10 @@ fi
 echo "$tier"
 if [ "$tier" = full ]; then
     printf '%s' "$reasons"
+    # The full tier runs every test; its `extra:` lines name only the fast binaries of the skipped
+    # suites that a changed package holds (`fast_of_long`), for a check that runs less than every
+    # test (ops/pr-check.sh's lane C adds them to the changed packages' tests).
+    printf '%s' "$long_extras" | sed '/^$/d; s/^/extra: /'
 else
     echo "reason: $total changed path(s) (against $base), each one named fast by a rule"
     printf '%s' "$reasons"

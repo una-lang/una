@@ -276,6 +276,15 @@ raw:fast|100644 100644 docs/a.md|
 raw:fast|000000 100644 docs/new.md|
 raw:fast|100644 000000 docs/old.md|
 raw:full|100644 100644 crates/una-rt/src/lib.rs|
+# The fast binaries of a skipped suite run whenever their package changes, in either tier (#2361)
+full|crates/una-sys/src/solver/sandbox.rs|binary_id(una-sys::solver_size)
+full|crates/una-sys/src/lib.rs|binary_id(una-sys::base_size)
+full|crates/una-sys/tests/poll.rs|binary_id(una-sys::solver_size)
+full|crates/una-http/src/serve/thread.rs|binary_id(una-http::serve_engine)
+full|crates/una-http/src/serve/thread.rs|binary_id(una-http::serve_faults)
+full|crates/una-http/src/serve/thread.rs|binary_id(una-http::serve_scripts)
+full|crates/una-http/src/serve/thread.rs|binary_id(una-http::serve_quiet)
+full|crates/una-http/src/tls/provider.rs|binary_id(una-http::provider_parts)
 # Mixed changes: one full path makes the change full
 full|docs/spec/07-information-flow.md crates/una-check/src/lib.rs|
 full|docs/adr/0138-x.md crates/una-rt/src/lib.rs|
@@ -298,6 +307,22 @@ fi
 n=$((n + 1))
 if env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD "$tier_script" --paths "$tmp/no-such-file" >/dev/null 2>&1; then
     echo "FAIL a missing --paths file must be an error"; fails=$((fails + 1))
+fi
+
+# Every fast binary of a skipped suite exists, and none names the slow or timing-dependent ones
+# that the nightly keeps; a package without any adds no such line.
+for b in $(sed -n '/^fast_of_long() {/,/^}/p' "$tier_script" | grep -oE '[a-z-]+::[a-z_]+'); do
+    n=$((n + 1))
+    crate=${b%%::*} name=${b#*::}
+    if [ ! -f "crates/$crate/tests/$name.rs" ] && [ ! -f "crates/$crate/tests/$name/main.rs" ]; then
+        echo "FAIL fast_of_long names $b, which has no test file"; fails=$((fails + 1))
+    fi
+done
+printf '%s
+' crates/una-interp/src/lib.rs > "$tmp/interp"
+n=$((n + 1))
+if env -u UNA_GATE_TIER -u UNA_HARNESS_GATE_HELD "$tier_script" --paths "$tmp/interp" | grep -q '^extra: binary_id(una-interp::confine)'; then
+    echo "FAIL una-interp::confine (90 s) must stay for the nightly"; fails=$((fails + 1))
 fi
 
 if [ "$fails" -ne 0 ]; then
