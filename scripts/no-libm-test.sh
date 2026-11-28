@@ -138,6 +138,37 @@ z3lib() {
     ranlib "$work/$out.a" 2> /dev/null || true
 }
 
+# members NAME MEMBER:IMPORT:EXPORT...: a static archive at $work/NAME.a, one member per
+# argument, named MEMBER, importing IMPORT (none when empty) and exporting the C symbol EXPORT
+# (its exact name, mangled or not), for the runtime's entries of scripts/no-libm-una.txt (#2354).
+members() {
+    out=$1
+    shift
+    rm -rf "${work:?}/members-$out" "$work/$out.a"
+    mkdir "$work/members-$out"
+    index=0
+    for triple in "$@"; do
+        index=$((index + 1))
+        member=${triple%%:*} rest=${triple#*:}
+        import=${rest%%:*} export_name=${rest#*:}
+        {
+            echo '#![allow(unused)]'
+            echo '#![no_builtins]'
+            if [ -n "$import" ]; then printf 'extern "C" {\n    fn %s(x: f64) -> f64;\n}\n' "$import"; fi
+            printf '#[export_name = "%s"]\npub extern "C" fn exported(x: f64) -> f64 {\n' "$export_name"
+            if [ -n "$import" ]; then printf '    unsafe { %s(x) }\n' "$import"; else echo '    x'; fi
+            echo '}'
+        } > "$work/members-$out/$index.rs"
+        compile --crate-type lib --emit obj -o "$work/members-$out/$member" "$work/members-$out/$index.rs"
+        (cd "$work/members-$out" && ar rc "$work/$out.a" "$member") > "$work/ar.log" 2>&1 || {
+            cat "$work/ar.log" >&2
+            echo "error: ar failed" >&2
+            exit 1
+        }
+    done
+    ranlib "$work/$out.a" 2> /dev/null || true
+}
+
 # A directory holding the executable $1 alone.
 dir_of() {
     rm -rf "${work:?}/exes-$1"
@@ -292,7 +323,7 @@ if [ "$os" = linux ]; then
         {
             echo '#![allow(unused)]'
             echo '#![no_builtins]'
-            printf '#[cfg_attr(target_os = "linux", link(name = "m"))]\nextern "C" {\n'
+            if [ -n "${NOLM:-}" ]; then printf 'extern "C" {\n'; else printf '#[cfg_attr(target_os = "linux", link(name = "m"))]\nextern "C" {\n'; fi
             for call in $calls; do printf '    fn %s(x: f64) -> f64;\n' "$call"; done
             [ -z "$direct" ] || printf '    fn %s(x: f64) -> f64;\n' "$direct"
             printf '}\nfn main() {\n    let mut y = std::hint::black_box(2.0f64);\n'
@@ -407,6 +438,73 @@ if [ "$os" = linux ]; then
     { sed -n 1p "$work/t_una.trace" | sed 's/^output: /output- /'; sed -n '2,$p' "$work/t_una.trace"; } > "$work/t_nooutput.trace"
     treject trace-no-output "its first line names no linked file" \
         "$work/libz3t.a" "$work/t_nooutput.trace" "$work/t_una"
+
+    # The runtime's entries of the Owner's decisions of 2026-11-27 (#2354): a Rust object's
+    # reference that resolves to compiler_builtins (`linux-rust-builtins`, by the exact member)
+    # and a compiler_builtins member's own (`linux-rt-builtins`, by the function it defines).
+    rname=$(sed 's/#.*//' "$list" | awk '$1 == "linux-rust-builtins" { print $2; exit }')
+    robject=$(sed 's/#.*//' "$list" | awk -v n="$rname" '$1 == "linux-rust-builtins" && $2 == n { print $3; exit }')
+    rtname=$(sed 's/#.*//' "$list" | awk '$1 == "linux-rt-builtins" { print $2; exit }')
+    rtrole=$(sed 's/#.*//' "$list" | awk '$1 == "linux-rt-builtins" { print $3; exit }')
+    [ -n "$rname" ] && [ -n "$robject" ] && [ -n "$rtname" ] && [ -n "$rtrole" ] \
+        || { echo "error: scripts/no-libm-una.txt has no linux-rust-builtins or linux-rt-builtins entry" >&2; exit 1; }
+    # The legacy mangling of the role's path, which nm -C writes back as that path.
+    mangled=_ZN$(printf '%s' "$rtrole" | awk -F'::' '{ for (i = 1; i <= NF; i++) printf "%d%s", length($i), $i }')17h0123456789abcdefE
+    rtcase() { traced=$((traced + 1)); "$@"; }
+    clean_dir=$(dir_of clean_exe)
+    # The Rust object's reference, in the runtime: with compiler_builtins' definition beside it,
+    # it passes; without that definition, from another member, it fails.
+    members rt_rust_ok "$robject:$rname:una_rt_rust_1" "compiler_builtins-0.rcgu.o::$rname"
+    members rt_rust_nodef "$robject:$rname:una_rt_rust_1"
+    members rt_rust_other "other.rcgu.o:$rname:una_rt_rust_1" "compiler_builtins-0.rcgu.o::$rname"
+    rtcase pass rt-rust-builtins "" "$work/clean_una" "$work/rt_rust_ok.a" "$clean_dir"
+    rtcase reject rt-rust-builtins-no-definition "rt_rust_nodef.a($robject): $rname" \
+        "" "$work/clean_una" "$work/rt_rust_nodef.a" "$clean_dir"
+    rtcase reject rt-rust-builtins-other-member "rt_rust_other.a(other.rcgu.o): $rname" \
+        "" "$work/clean_una" "$work/rt_rust_other.a" "$clean_dir"
+    # compiler_builtins' own reference, by the member that defines the role: it passes beside
+    # compiler_builtins' definition; from a member of another role, from a member that is not
+    # compiler_builtins', or with no definition, it fails.
+    members rt_cb_ok "compiler_builtins-1.rcgu.o:$rtname:$mangled" "compiler_builtins-2.rcgu.o::$rtname"
+    members rt_cb_role "compiler_builtins-1.rcgu.o:$rtname:una_other_role" "compiler_builtins-2.rcgu.o::$rtname"
+    members rt_cb_crate "other-1.rcgu.o:$rtname:$mangled" "compiler_builtins-2.rcgu.o::$rtname"
+    members rt_cb_nodef "compiler_builtins-1.rcgu.o:$rtname:$mangled"
+    rtcase pass rt-cb-builtins "" "$work/clean_una" "$work/rt_cb_ok.a" "$clean_dir"
+    rtcase reject rt-cb-builtins-other-role "rt_cb_role.a(compiler_builtins-1.rcgu.o): $rtname" \
+        "" "$work/clean_una" "$work/rt_cb_role.a" "$clean_dir"
+    rtcase reject rt-cb-builtins-not-compiler-builtins "rt_cb_crate.a(other-1.rcgu.o): $rtname" \
+        "" "$work/clean_una" "$work/rt_cb_crate.a" "$clean_dir"
+    rtcase reject rt-cb-builtins-no-definition "rt_cb_nodef.a(compiler_builtins-1.rcgu.o): $rtname" \
+        "" "$work/clean_una" "$work/rt_cb_nodef.a" "$clean_dir"
+    # An executable that `una build` links stays strict: one that refers to either name fails.
+    exe exe_rt_name "$rtname"
+    exe exe_rust_name "$rname"
+    rtcase reject rt-exe-strict "$rtname" "" "$work/clean_una" "$work/clean_rt.a" "$(dir_of exe_rt_name)"
+    rtcase reject rt-exe-strict-rust "$rname" "" "$work/clean_una" "$work/clean_rt.a" "$(dir_of exe_rust_name)"
+    # In the trace of `una`: the listed member's reference, bound to compiler_builtins, passes;
+    # another member's fails; bound to the platform's libm, it fails, by `una`'s import of it.
+    # (A Rust link binds the reference to compiler_builtins even with -lm, which it places
+    # after compiler_builtins; the binding to libm is made here by a driver that names libm
+    # first, whose shared definition then satisfies the reference.)
+    members libtomls "$robject:$rname:una_libtomls_1"
+    members libtomlo "other.rcgu.o:$rname:una_libtomlo_1"
+    NOLM=1
+    traced_exe t_rust libtomls ""
+    traced_exe t_rust_other libtomlo ""
+    unset NOLM
+    printf '#!/bin/sh\nexec cc -Wl,--no-as-needed -lm "$@"\n' > "$work/cc-libm-first"
+    chmod +x "$work/cc-libm-first"
+    UNA_LINK_TRACE_CC=$work/cc-libm-first
+    export UNA_LINK_TRACE_CC
+    traced_exe t_rust_libm libtomls ""
+    unset UNA_LINK_TRACE_CC
+    echo "== the trace of t_rust and t_rust_libm (#2354)"
+    grep -E " $rname " "$work/t_rust.trace" "$work/t_rust_libm.trace" || true
+    tpass trace-rust-builtins "$work/libz3t.a" "$work/t_rust.trace" "$work/t_rust"
+    treject trace-rust-builtins-other-member "(other.rcgu.o) references $rname" \
+        "$work/libz3t.a" "$work/t_rust_other.trace" "$work/t_rust_other"
+    treject trace-rust-builtins-libm "$work/t_rust_libm: $rname" \
+        "$work/libz3t.a" "$work/t_rust_libm.trace" "$work/t_rust_libm"
 else
     traced=1
     reject trace-not-linux "a link trace is GNU ld's, read on Linux only" \
