@@ -1,0 +1,9 @@
+module text
+
+pub wide() -> Int = Complex_F64(re: 1.0, im: 2.0).re
+
+pub narrow() -> Int = Complex_F32(re: 1.0, im: 2.0).re
+
+pub count(a: Int of Complex_F64) -> Int = 0
+
+pub twice(word: Text) -> Text = "{word}{word}"
