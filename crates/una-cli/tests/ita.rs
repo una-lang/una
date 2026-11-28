@@ -999,6 +999,19 @@ fn a_module_that_is_not_a_regular_file_is_refused_by_check() {
     assert!(err.contains("is not a regular file"), "{err}");
 }
 
+/// Two links to `.` in `src/` refuse `una check` at once, rather than walk the package
+/// exponentially (#2397).
+#[cfg(unix)]
+#[test]
+fn links_back_into_src_refuse_check_at_once() {
+    let dir = package("src-loops", MANIFEST);
+    std::os::unix::fs::symlink(".", dir.join("src/l1")).unwrap();
+    std::os::unix::fs::symlink(".", dir.join("src/l2")).unwrap();
+    let (code, err) = una_ends_within(&dir, &["check", "."], 10);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("already walked"), "{err}");
+}
+
 /// A link at `ita.lock` that names nothing is refused as a broken link by `una check` and `una
 /// ita verify`, never reported as a missing lock with the advice to write one (#2395).
 #[cfg(unix)]

@@ -360,6 +360,126 @@ fn a_project_file_that_is_not_a_regular_file_is_refused_before_it_is_read() {
     assert_eq!(file.text(), "ita a\n");
 }
 
+/// Two links to `.` in `src/` would make a walk that follows links visit 2^32 directories: the
+/// walk reaches each directory once and refuses a link back to one already walked, at once
+/// (#2397). A link to a directory not otherwise reached is followed, and its modules read.
+#[cfg(unix)]
+#[test]
+fn a_link_back_into_src_refuses_the_walk_at_once() {
+    let root = scratch("discover-src-loops");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let discovered = |root: &Path| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(discover(&root));
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the walk of src/ did not end")
+    };
+    std::os::unix::fs::symlink(".", root.join("src/l1")).unwrap();
+    std::os::unix::fs::symlink(".", root.join("src/l2")).unwrap();
+    match discovered(&root) {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("already walked"), "{reason}");
+        }
+        other => panic!("a link back into src/ was not refused: {other:?}"),
+    }
+    std::fs::remove_file(root.join("src/l1")).unwrap();
+    std::fs::remove_file(root.join("src/l2")).unwrap();
+    // A link to an ancestor reaches `src/` again.
+    std::os::unix::fs::symlink("..", root.join("src/up")).unwrap();
+    assert!(discovered(&root).is_err());
+    std::fs::remove_file(root.join("src/up")).unwrap();
+    // A link to a directory outside `src/`, reached only through it, is followed.
+    std::fs::create_dir_all(root.join("shared")).unwrap();
+    std::fs::write(root.join("shared/b.una"), "module b\n").unwrap();
+    std::os::unix::fs::symlink(root.join("shared"), root.join("src/shared")).unwrap();
+    let loaded = discovered(&root).unwrap();
+    let names: Vec<&str> = loaded.files.iter().map(|file| file.name.as_str()).collect();
+    assert_eq!(names, ["ita.una", "src/a.una", "src/shared/b.una"]);
+}
+
+/// The walk of `src/` refuses a module more than 32 segments below the package's directory,
+/// and more than 10,000 modules (#2397); 32 segments, and 10,000 modules, are read.
+#[test]
+fn the_walk_of_src_is_bounded_in_depth_and_modules() {
+    let root = scratch("discover-src-bounds");
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    // `src/d/d/.../a.una`: src, 30 directories and the module make 32 segments.
+    let mut deep = root.join("src");
+    for _ in 0..30 {
+        deep.push("d");
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("a.una"), "module a\n").unwrap();
+    assert_eq!(discover(&root).unwrap().files.len(), 2);
+    std::fs::create_dir_all(deep.join("d")).unwrap();
+    std::fs::write(deep.join("d/b.una"), "module b\n").unwrap();
+    match discover(&root) {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("more than 32 segments"), "{reason}");
+        }
+        other => panic!("a module of 33 segments was not refused: {other:?}"),
+    }
+    std::fs::remove_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src/m")).unwrap();
+    for at in 0..10_000 {
+        std::fs::write(root.join(format!("src/m/m{at}.una")), "").unwrap();
+    }
+    assert_eq!(discover(&root).unwrap().files.len(), 10_001);
+    std::fs::write(root.join("src/m/one-more.una"), "").unwrap();
+    match discover(&root) {
+        Err(LoadError::Unreadable { reason, .. }) => {
+            assert!(reason.contains("more than 10000 modules"), "{reason}");
+        }
+        other => panic!("10,001 modules were not refused: {other:?}"),
+    }
+}
+
+/// The manifest and the modules of a package share its bound of 256 MiB (§9 rule 1): two
+/// modules each within it but past it together refuse the package at the second, which is not
+/// read whole (#2399). Modules within it together are read.
+#[test]
+fn the_modules_of_a_package_share_its_bound() {
+    let root = scratch("discover-package-total");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let sparse = |name: &str, len: u64| {
+        let file = std::fs::File::create(root.join("src").join(name)).unwrap();
+        file.set_len(len).unwrap();
+    };
+    sparse("a.una", 1 << 20);
+    sparse("b.una", 1 << 20);
+    assert_eq!(discover(&root).unwrap().files.len(), 3);
+    sparse("a.una", 129 << 20);
+    sparse("b.una", 128 << 20);
+    match discover(&root) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, root.join("src/b.una"));
+            assert!(
+                reason.contains("the package's files hold more than the 268435456 bytes"),
+                "{reason}"
+            );
+        }
+        other => panic!("a package past its bound was read: {other:?}"),
+    }
+}
+
 /// The open flags of `tree` are `O_NONBLOCK | O_NOCTTY` by the platform's own values wherever
 /// they are known, and 0 elsewhere: a mistyped value of any family fails here when the crate is
 /// tested on it (#2396).
@@ -455,7 +575,10 @@ fn a_module_that_is_not_a_regular_file_or_too_large_is_refused() {
     let big = std::fs::File::create(&module).unwrap();
     big.set_len((256 << 20) + 1).unwrap();
     drop(big);
-    refused(&root, "holds 268435457 bytes, more than the 268435456");
+    refused(
+        &root,
+        "with it the package's files hold more than the 268435456 bytes",
+    );
     std::fs::remove_file(&module).unwrap();
     std::fs::write(root.join("real.una"), "module x\n").unwrap();
     std::os::unix::fs::symlink(root.join("real.una"), &module).unwrap();
