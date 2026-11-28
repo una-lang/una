@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const grid = matrix(rows: 2, columns: 3, elements: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+  @console.print("{grid.rows} by {grid.columns}")

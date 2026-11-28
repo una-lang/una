@@ -1,0 +1,14 @@
+module shop
+
+--- The price that a JSON value gives, at two decimal places.
+price(j: Json) -> Text
+=
+  when as_decimal(j, scale: 2)
+    is Some(value) -> "{value}"
+    is None -> "no price"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(price(Number(value: 5)))
+  @console.print(price(Str(value: "five")))

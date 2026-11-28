@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const shelf = array_filled(length: 4, value: 0.0)
+  @console.print("{shelf.len} empty slots")

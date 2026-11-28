@@ -1,0 +1,9 @@
+module shop
+
+--- The mean of two finite measurements.
+mean(a: Finite64, b: Finite64) -> F64 = (a + b) / 2.0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{mean(1.5, b: 2.5)}")

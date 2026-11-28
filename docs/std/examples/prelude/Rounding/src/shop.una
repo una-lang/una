@@ -1,0 +1,22 @@
+module shop
+
+--- What a rounding mode does to a price of half a cent.
+mode(r: Rounding) -> Text
+=
+  when r
+    is HalfEven -> "to the even cent"
+    is HalfAwayFromZero -> "half up, away from zero"
+    is HalfTowardZero -> "half down, toward zero"
+    is TowardZero -> "cut off"
+    is AwayFromZero -> "always up in magnitude"
+    is TowardPositive -> "up"
+    is TowardNegative -> "down"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const price: Decimal[3] = 2.345
+  const even = price.rescale(scale: 2, rounding: HalfEven)
+  const away = price.rescale(scale: 2, rounding: HalfAwayFromZero)
+  @console.print("{even} {mode(HalfEven)}, {away} {mode(HalfAwayFromZero)}")
+  @console.print("{mode(HalfTowardZero)}, {mode(TowardZero)}, {mode(AwayFromZero)}, {mode(TowardPositive)}, {mode(TowardNegative)}")

@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const grid = matrix_filled(rows: 3, columns: 3, value: 0.0)
+  @console.print("{grid.rows} by {grid.columns}, all zero")

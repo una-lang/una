@@ -1,0 +1,15 @@
+module shop
+
+--- The price that a text writes, in cents.
+price(t: Text) -> Text
+=
+  const outcome = attempt parse_decimal(t, scale: 2)
+  when outcome
+    is Ok(value) -> "{value}"
+    is Err(failure) -> "not a price"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(price("19.99"))
+  @console.print(price("19.999"))

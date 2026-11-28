@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const price: Decimal[2] = 19.99
+  @console.print(to_json(json_decimal(price)))

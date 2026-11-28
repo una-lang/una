@@ -1,0 +1,2 @@
+2.34 to the even cent, 2.35 half up, away from zero
+half down, toward zero, cut off, always up in magnitude, up, down
