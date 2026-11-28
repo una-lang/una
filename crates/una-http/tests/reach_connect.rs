@@ -92,7 +92,8 @@ fn an_abandon_during_a_hung_connect_returns_at_once_and_deadlines_still_hold() {
         "{took:?}, the control {late:?} late"
     );
     // Twice as many hung attempts as the pool has: each request fails with `TimedOut` at its
-    // own deadline, the later ones queued behind the hung ones, and the pool never grows.
+    // own deadline, waiting in its zone's line behind the hung attempt that holds the zone's
+    // share of the pool, 1 of 2 (#1265, #1717), and the pool never grows.
     let deadline = Duration::from_millis(300);
     let (taken, late) = measured(deadline, 4, || {
         let requests: Vec<_> = (0..4)
