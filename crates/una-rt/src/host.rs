@@ -1952,4 +1952,99 @@ mod tests {
             assert_eq!(declared[index], name, "{name} is at {index}");
         }
     }
+
+    /// The shortest of `rounds` batches of `run` on a value of one limb and on one of about a
+    /// thousand limbs, the two alternating, in seconds: a loaded host only lengthens a batch, and
+    /// a slower core for a while slows both alike (the measure of #2345).
+    fn shortest_pair(rounds: usize, mut run: impl FnMut(i64) -> f64) -> (f64, f64) {
+        use una_core::bigint::BigInt;
+        let small = crate::values::int_word(&BigInt::from(7));
+        // 3^40000: 63,398 bits, 991 limbs, 19,085 digits.
+        let large = crate::values::int_word(&BigInt::from(3).pow(40_000));
+        let (mut a, mut b) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..rounds {
+            a = a.min(run(small));
+            b = b.min(run(large));
+        }
+        (a, b)
+    }
+
+    /// Whether the batches on the large value take more than four times those on the small one,
+    /// with 20 microseconds for the clock's granularity, as `grows` of `una_http::limit` judges.
+    fn depends_on_size(small: f64, large: f64) -> bool {
+        large > small * 4.0 + 20e-6
+    }
+
+    /// Runs `batch` operations on `value` at an operation site whose argument and result are an
+    /// `Int`, from the start of each event to its end, and returns their time in seconds. A
+    /// trace the run records is emptied first, out of the time, so that it does not grow.
+    fn timed_operations(batch: usize, instance: i64, value: i64) -> f64 {
+        use crate::runtime::with_state;
+        with_state(|state| {
+            if let Some(trace) = state.trace.as_mut() {
+                trace.clear();
+            }
+        });
+        let started = std::time::Instant::now();
+        for _ in 0..batch {
+            let slot = super::event(0, instance);
+            super::event_arg(0, slot, 0, value);
+            super::event_end(0, slot, value, 0);
+        }
+        started.elapsed().as_secs_f64()
+    }
+
+    /// Installs, on this thread, a run that records a trace when `tracing`, with one operation
+    /// site, `Store.put(n: Int) -> Int`, and returns an instance of `Store`.
+    fn one_int_site(tracing: bool) -> i64 {
+        use crate::runtime::with_state;
+        crate::runtime::install_test_state_as("0".to_owned(), tracing, String::new());
+        let types = crate::render::Types::parse(&serde_json::json!([{ "shape": "int" }]))
+            .expect("the types");
+        let site = super::OpSite::parse(&serde_json::json!({
+            "capability": "Store",
+            "op": "put",
+            "params": ["n"],
+            "args": [{ "type": 0 }],
+            "result": { "type": 0 },
+            "outcome": null,
+        }))
+        .expect("the site");
+        with_state(|state| {
+            state.types = std::sync::Arc::new(types);
+            state.ops = std::sync::Arc::new(vec![site]);
+        });
+        crate::values::instance("host:Store".to_owned())
+    }
+
+    #[test]
+    fn an_untraced_operation_costs_the_same_whatever_the_size_of_its_int() {
+        // #2382, guard of #2238: without a trace, an operation's event is not rendered and
+        // reserves nothing (`spec/11 §7`), so an operation on an `Int` of a thousand limbs
+        // costs what one on a small `Int` does: O(1) in the value's size.
+        std::thread::spawn(|| {
+            let instance = one_int_site(false);
+            let (small, large) = shortest_pair(50, |value| timed_operations(100, instance, value));
+            assert!(!depends_on_size(small, large), "{small} then {large}");
+            assert_eq!(
+                crate::runtime::with_state(|state| state.trace.is_none()),
+                Some(true)
+            );
+        })
+        .join()
+        .unwrap_or_else(|_| panic!("the test thread panicked"));
+    }
+
+    #[test]
+    fn the_measure_of_untraced_operations_finds_a_cost_in_the_size() {
+        // The same measure on the same operations with a trace, which writes the `Int` of each
+        // event, its argument and its outcome, in time that grows with its size: it says so.
+        std::thread::spawn(|| {
+            let instance = one_int_site(true);
+            let (small, large) = shortest_pair(10, |value| timed_operations(5, instance, value));
+            assert!(depends_on_size(small, large), "{small} then {large}");
+        })
+        .join()
+        .unwrap_or_else(|_| panic!("the test thread panicked"));
+    }
 }
