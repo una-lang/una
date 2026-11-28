@@ -38,7 +38,7 @@ use std::net::TcpListener;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -63,6 +63,9 @@ const ACCEPT: u64 = u64::MAX - 1;
 const BURST: usize = 16;
 /// Events handled at one pass of a serve thread's loop.
 const EVENTS: usize = 256;
+/// The longest a serve thread sleeps while its wake pair or the accept poller is not
+/// registered (#2301): it registers them again at its next pass.
+const REARM_RETRY: Duration = Duration::from_millis(10);
 /// How long accepting stops on a listener after an error that is not the peer's.
 const BACKOFF: Duration = Duration::from_millis(100);
 
@@ -310,29 +313,85 @@ fn registration_fault() -> bool {
     }
 }
 
-/// Write registrations of a connection that fail, for a test of #2279: a process-wide count,
-/// so its test runs alone in its binary.
-#[cfg(feature = "test-hooks")]
-static WRITE_REGISTRATION_FAULTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+/// Re-registrations of a serve thread's wake pair after the start that fail, for a test of
+/// #2301: a process-wide count, so its test runs alone in its binary.
+static WAKE_REARM_FAULTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Makes the next `n` registrations of a connection's write interest fail, as a refused
-/// `kevent` or `epoll_ctl` would, for a test.
+/// Re-registrations of the accept poller after the start that fail, for a test of #2301.
+static ACCEPT_REARM_FAULTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Makes the next `wake` re-registrations of a serve thread's wake pair, and the next
+/// `accept` re-registrations of the accept poller, after the start, fail, for a test.
 #[cfg(feature = "test-hooks")]
-pub fn fail_write_registrations(n: usize) {
-    WRITE_REGISTRATION_FAULTS.store(n, Ordering::SeqCst);
+pub fn fail_rearms(wake: usize, accept: usize) {
+    WAKE_REARM_FAULTS.store(wake, Ordering::SeqCst);
+    ACCEPT_REARM_FAULTS.store(accept, Ordering::SeqCst);
+}
+
+/// The re-registration faults still to happen, of the wake pair and of the accept poller;
+/// for a test.
+#[cfg(feature = "test-hooks")]
+pub fn rearm_faults_left() -> (usize, usize) {
+    (
+        WAKE_REARM_FAULTS.load(Ordering::SeqCst),
+        ACCEPT_REARM_FAULTS.load(Ordering::SeqCst),
+    )
+}
+
+/// Whether a re-registration fails by a test's fault.
+fn rearm_fault(faults: &AtomicUsize) -> bool {
+    #[cfg(feature = "test-hooks")]
+    {
+        faults
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+    #[cfg(not(feature = "test-hooks"))]
+    {
+        let _ = faults;
+        false
+    }
+}
+
+/// Registrations of a connection's read and write interests that fail, and the error number
+/// they fail with, for a test of #2279 and #2302: process-wide, so its test runs alone in its
+/// binary.
+#[cfg(feature = "test-hooks")]
+static READ_REGISTRATION_FAULTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "test-hooks")]
+static WRITE_REGISTRATION_FAULTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "test-hooks")]
+static CONNECTION_REGISTRATION_ERRNO: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
+
+/// Makes the next `n` registrations of a connection's write interest (or, with `write`
+/// false, its read interest) fail with the operating system's error number `errno`, as a
+/// refused `kevent` or `epoll_ctl` would, for a test.
+#[cfg(feature = "test-hooks")]
+pub fn fail_connection_registrations(write: bool, n: usize, errno: i32) {
+    CONNECTION_REGISTRATION_ERRNO.store(errno, Ordering::SeqCst);
+    let faults = if write {
+        &WRITE_REGISTRATION_FAULTS
+    } else {
+        &READ_REGISTRATION_FAULTS
+    };
+    faults.store(n, Ordering::SeqCst);
 }
 
 /// The error a test's fault gives a connection's registration of `interest`, if any.
 fn connection_registration_fault(interest: Interest) -> Option<io::Error> {
     #[cfg(feature = "test-hooks")]
     {
-        if interest == Interest::Write
-            && WRITE_REGISTRATION_FAULTS
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
+        let faults = match interest {
+            Interest::Write => &WRITE_REGISTRATION_FAULTS,
+            Interest::Read => &READ_REGISTRATION_FAULTS,
+        };
+        if faults
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
         {
-            return Some(io::Error::from(io::ErrorKind::OutOfMemory));
+            let errno = CONNECTION_REGISTRATION_ERRNO.load(Ordering::SeqCst);
+            return Some(io::Error::from_raw_os_error(errno));
         }
         None
     }
@@ -422,6 +481,8 @@ impl Server {
                 poller: Arc::clone(&poller),
                 armed: armed.clone(),
                 backoff: Vec::new(),
+                wake_lost: false,
+                accept_lost: false,
                 report: Report {
                     started: Arc::clone(&started),
                     done: false,
@@ -574,6 +635,12 @@ struct Context {
     armed: Armed,
     /// Listeners to register again, and when, after an error of `accept`.
     backoff: Vec<(u64, usize)>,
+    /// The wake pair's registration failed after the start: until it is registered again,
+    /// nothing reports a message in the inbox (#2301).
+    wake_lost: bool,
+    /// The accept poller's registration failed while this thread holds the turn: until it is
+    /// registered again, nothing reports a listener's connections (#2301).
+    accept_lost: bool,
     /// Tells [`Server::start`] that this thread is in place.
     report: Report,
 }
@@ -645,7 +712,7 @@ impl Context {
             let mut busy = false;
             while let Ok(msg) = self.inbox.try_recv() {
                 if matches!(msg, Msg::Accept) {
-                    self.arm_accept();
+                    self.take_turn();
                 } else {
                     thread.handle(msg, self.clock.now());
                 }
@@ -655,6 +722,7 @@ impl Context {
                 busy = true;
             }
             self.retry_listeners(now);
+            self.retry_rearms();
             if self.shared.is_stopping()
                 && self.acceptor.closed.load(Ordering::SeqCst)
                 && thread.open() == 0
@@ -681,7 +749,7 @@ impl Context {
                     if let Ok(msg) = self.inbox.try_recv() {
                         port.announce_awake();
                         if matches!(msg, Msg::Accept) {
-                            self.arm_accept();
+                            self.take_turn();
                         } else {
                             thread.handle(msg, self.clock.now());
                         }
@@ -701,7 +769,7 @@ impl Context {
                     WAKE => {
                         let mut drain = [0u8; 64];
                         while matches!((&self.wake_rx).read(&mut drain), Ok(n) if n > 0) {}
-                        self.arm_wake();
+                        self.wake_lost = !self.rearm_wake();
                     }
                     ACCEPT => self.accept_ready(),
                     _ => {
@@ -715,7 +783,8 @@ impl Context {
         }
     }
 
-    /// The longest this thread may sleep: until its earliest timer or backed-off listener.
+    /// The longest this thread may sleep: until its earliest timer or backed-off listener, and
+    /// at most [`REARM_RETRY`] while a registration of its own is to be made again.
     fn sleep_timeout(&self, thread: &Thread) -> Option<Duration> {
         let now = self.clock.now();
         let timer = thread.next_wake();
@@ -723,8 +792,43 @@ impl Context {
         let at = match (timer, retry) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
-        }?;
-        Some(Duration::from_nanos(at.saturating_sub(now)))
+        };
+        let until = at.map(|at| Duration::from_nanos(at.saturating_sub(now)));
+        if self.wake_lost || self.accept_lost {
+            return Some(until.map_or(REARM_RETRY, |until| until.min(REARM_RETRY)));
+        }
+        until
+    }
+
+    /// Registers again, at each pass, the wake pair or the accept poller whose registration
+    /// failed (#2301), so that a failure costs at most [`REARM_RETRY`] of latency and never
+    /// leaves the thread deaf to its inbox or the listeners.
+    fn retry_rearms(&mut self) {
+        if self.wake_lost {
+            self.wake_lost = !self.rearm_wake();
+        }
+        if self.accept_lost {
+            self.accept_lost = !self.rearm_accept();
+        }
+    }
+
+    /// Takes the turn to accept; a failed registration is made again at the next pass.
+    fn take_turn(&mut self) {
+        self.accept_lost = !self.rearm_accept();
+    }
+
+    /// Registers the wake pair again after the start; whether that held.
+    fn rearm_wake(&self) -> bool {
+        !rearm_fault(&WAKE_REARM_FAULTS) && self.arm_wake()
+    }
+
+    /// Takes the turn and registers the accept poller again after the start; whether that held.
+    fn rearm_accept(&self) -> bool {
+        if rearm_fault(&ACCEPT_REARM_FAULTS) {
+            self.shared.set_turn(self.index);
+            return false;
+        }
+        self.arm_accept()
     }
 
     /// Registers the wake pair again; whether that held.
@@ -793,7 +897,7 @@ impl Context {
         {
             return;
         }
-        self.arm_accept();
+        self.take_turn();
     }
 
     /// Accepts at most [`BURST`] connections from listener `grant`, then registers it again

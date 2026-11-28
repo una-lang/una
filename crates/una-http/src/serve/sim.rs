@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
@@ -145,25 +145,38 @@ impl Drop for SimSocket {
     }
 }
 
-/// The simulator's readiness: every interest holds, except the write registrations that
-/// [`Sim::fail_write_registrations`] makes fail.
-struct SimReadiness(Arc<AtomicUsize>);
+/// Registrations to fail, of read interests and of write interests, and the error number
+/// they fail with ([`Sim::fail_registrations`]).
+#[derive(Default)]
+struct Faults {
+    left: [AtomicUsize; 2],
+    errno: AtomicI32,
+}
+
+/// The simulator's readiness: every interest holds, except the registrations that
+/// [`Sim::fail_registrations`] makes fail.
+struct SimReadiness(Arc<Faults>);
 
 impl Readiness for SimReadiness {
     fn set(
         &mut self,
         _token: u64,
         _socket: &dyn Socket,
-        _read: bool,
+        read: bool,
         write: bool,
     ) -> io::Result<()> {
-        if write
-            && self
-                .0
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        // The registration the real readiness makes: write when both are wanted.
+        if !(read || write) {
+            return Ok(());
+        }
+        let left = self.0.left.get(usize::from(write));
+        if left.is_some_and(|left| {
+            left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
-        {
-            return Err(io::ErrorKind::OutOfMemory.into());
+        }) {
+            return Err(io::Error::from_raw_os_error(
+                self.0.errno.load(Ordering::SeqCst),
+            ));
         }
         Ok(())
     }
@@ -201,8 +214,8 @@ pub struct Sim {
     pub refused: Vec<(u64, AcceptRefusal, u64)>,
     /// Wakes sent to the serve threads, over all of them.
     pub wakes: Arc<AtomicU64>,
-    /// Write registrations still to fail, over all the threads.
-    write_faults: Arc<AtomicUsize>,
+    /// Registrations still to fail, over all the threads.
+    faults: Arc<Faults>,
 }
 
 impl Sim {
@@ -225,10 +238,10 @@ impl Sim {
             .collect();
         let key = SipKey::from_bytes([0x42; 16]);
         let (shared, inboxes) = Shared::new(grants, threads, key, clock.clone(), wakers);
-        let write_faults = Arc::new(AtomicUsize::new(0));
+        let faults = Arc::new(Faults::default());
         let threads = (0..shared.threads)
             .map(|index| {
-                let readiness = SimReadiness(Arc::clone(&write_faults));
+                let readiness = SimReadiness(Arc::clone(&faults));
                 Thread::new(index, shared.clone(), Box::new(readiness), 0)
             })
             .collect();
@@ -241,7 +254,7 @@ impl Sim {
             by_address: BTreeMap::new(),
             refused: Vec::new(),
             wakes,
-            write_faults,
+            faults,
         }
     }
 
@@ -550,10 +563,14 @@ impl Sim {
         }
     }
 
-    /// The next `n` registrations of a connection's write interest fail, on any thread, as a
-    /// refused `kevent` or `epoll_ctl` would (#2279).
-    pub fn fail_write_registrations(&mut self, n: usize) {
-        self.write_faults.store(n, Ordering::SeqCst);
+    /// The next `n` registrations of a connection's write interest (or, with `write` false,
+    /// its read interest) fail, on any thread, with the operating system's error number
+    /// `errno`, as a refused `kevent` or `epoll_ctl` would (#2279, #2302).
+    pub fn fail_registrations(&mut self, write: bool, n: usize, errno: i32) {
+        self.faults.errno.store(errno, Ordering::SeqCst);
+        if let Some(left) = self.faults.left.get(usize::from(write)) {
+            left.store(n, Ordering::SeqCst);
+        }
     }
 
     /// The next timer a connection of serve thread `thread` arms fails, as with a full wheel.

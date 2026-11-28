@@ -499,7 +499,7 @@ fn a_connection_whose_write_interest_cannot_be_registered_closes_at_once() {
     assert!(sim.connect(1, 0, &addr(1), Reads::Paced));
     sim.send(1, &get("/a"));
     let mut exchange = sim.deliver().unwrap();
-    sim.fail_write_registrations(1);
+    sim.fail_registrations(true, 1, 12);
     exchange.reply(&ok("pending")).unwrap();
     sim.flush();
     assert!(
@@ -522,6 +522,45 @@ fn a_connection_whose_write_interest_cannot_be_registered_closes_at_once() {
     sim.allow(2, u64::MAX);
     sim.flush();
     assert!(String::from_utf8_lossy(&sim.received(2)).ends_with("served"));
+}
+
+#[test]
+fn a_connection_whose_read_interest_cannot_be_registered_closes_at_once() {
+    // #2302: the same for the read interest, of a fresh connection and of a kept-alive one
+    // that waits for its next request.
+    let mut sim = Sim::new(&[GRANT], 1);
+    sim.fail_registrations(false, 1, 12);
+    assert!(sim.connect(1, 0, &addr(1), Reads::Eager));
+    sim.flush();
+    assert!(
+        sim.closed(1),
+        "a fresh connection waits for a readiness that never comes"
+    );
+    assert_eq!(sim.wire(1).unwrap().closed_at, Some(0));
+    assert!(sim.received(1).is_empty());
+    assert_eq!(sim.open(), 0);
+    assert!(
+        sim.shared.is_quiet(),
+        "{:?}",
+        sim.shared.grants[0].counters()
+    );
+    assert!(sim.connect(2, 0, &addr(2), Reads::Eager));
+    sim.send(2, &get("/a"));
+    sim.fail_registrations(false, 1, 12);
+    sim.deliver().unwrap().reply(&ok("first")).unwrap();
+    sim.flush();
+    assert!(String::from_utf8_lossy(&sim.received(2)).ends_with("first"));
+    assert!(
+        sim.closed(2),
+        "a kept-alive connection waits for a readiness that never comes"
+    );
+    assert_eq!(sim.open(), 0);
+    assert_eq!(sim.timers(), 0);
+    assert!(
+        sim.shared.is_quiet(),
+        "{:?}",
+        sim.shared.grants[0].counters()
+    );
 }
 
 #[test]
