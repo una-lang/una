@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (HashSet, to_hash_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const a: HashSet[Text] = to_hash_set(["lamp", "desk"])
+  const b: HashSet[Text] = to_hash_set(["desk", "lamp"])
+  @console.print("same items: {a.same_items(as: b)}")

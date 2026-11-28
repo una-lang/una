@@ -1,0 +1,9 @@
+module shop
+
+import std.collections (Set, to_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const prices: Set[Int] = to_set([1999, 499, 2499])
+  @console.print("the highest price is {prices.last()}")

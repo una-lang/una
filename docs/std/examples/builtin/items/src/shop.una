@@ -1,0 +1,9 @@
+module shop
+
+import std.collections (Set, to_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const sizes: Set[Int] = to_set([42, 38, 40, 38])
+  @console.print("{sizes.items()}")

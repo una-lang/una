@@ -1,0 +1,12 @@
+module shop
+
+import std.collections (Set, empty_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var tags: Set[Text] = empty_set()
+  edit tags.add(item: "lamp")
+  edit tags.add(item: "desk")
+  edit tags.add(item: "lamp")
+  @console.print("{tags.len} tags: {tags.items()}")

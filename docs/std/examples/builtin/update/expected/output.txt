@@ -1,0 +1,1 @@
+lamps Some(4), desks Some(2)

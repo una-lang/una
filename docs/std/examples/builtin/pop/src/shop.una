@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (Stack, to_stack)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var trail: Stack[Text] = to_stack(["home", "lamps"])
+  const back = edit trail.pop()
+  @console.print("back from {back}, {trail.len} page left")

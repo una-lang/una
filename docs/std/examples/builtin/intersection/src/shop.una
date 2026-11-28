@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (Set, to_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const monday: Set[Text] = to_set(["lamp", "desk"])
+  const tuesday: Set[Text] = to_set(["desk", "chair"])
+  @console.print("sold both days: {monday.intersection(other: tuesday).items()}")

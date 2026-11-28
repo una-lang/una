@@ -1,0 +1,11 @@
+module shop
+
+import std.collections (Stack, empty_stack)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var trail: Stack[Text] = empty_stack()
+  edit trail.push(item: "home")
+  edit trail.push(item: "lamps")
+  @console.print("{trail.len} pages, the top is {trail.peek()}")

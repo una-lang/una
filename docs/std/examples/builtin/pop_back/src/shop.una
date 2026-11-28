@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (Queue, to_queue)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var line: Queue[Text] = to_queue(["Ana", "Bo", "Cy"])
+  const left = edit line.pop_back()
+  @console.print("{left} left the line; {line.items()} wait")

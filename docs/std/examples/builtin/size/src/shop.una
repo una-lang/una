@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (BitSet, empty_bit_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var hall: BitSet = empty_bit_set(size: 100)
+  edit hall.add(item: 12)
+  @console.print("{hall.len} of {hall.size} seats taken")

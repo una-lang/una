@@ -18,27 +18,6 @@
   "testing"
  ],
  "pending": [
-  "builtin add",
-  "builtin between",
-  "builtin difference",
-  "builtin first",
-  "builtin intersection",
-  "builtin is_subset",
-  "builtin items",
-  "builtin last",
-  "builtin peek",
-  "builtin peek_back",
-  "builtin peek_priority",
-  "builtin pop",
-  "builtin pop_back",
-  "builtin pop_ranked",
-  "builtin push",
-  "builtin push_front",
-  "builtin same_entries",
-  "builtin same_items",
-  "builtin size",
-  "builtin union",
-  "builtin update",
   "prelude Finite32",
   "prelude Finite64",
   "prelude Rounding",
@@ -3712,6 +3691,700 @@
     "std.time second"
    ],
    "example": "docs/std/examples/std.time/minute"
+  },
+  {
+   "module": "builtin",
+   "name": "push",
+   "area": "lists",
+   "by_receiver": {
+    "Stack[T]": {
+     "meaning": "the stack `s`, changed in place: `item` goes on top",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to add"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; `s.peek()` is now `Some(item)`"
+     }
+    },
+    "Queue[T]": {
+     "meaning": "the queue `q`, changed in place: `item` goes to the back",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to add"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; `q.peek_back()` is now `Some(item)`"
+     }
+    },
+    "PriorityQueue[T, P]": {
+     "meaning": "the priority queue `q`, changed in place",
+     "params": [
+      {
+       "name": "item",
+       "meaning": "the item to add"
+      },
+      {
+       "name": "priority",
+       "meaning": "its priority, by which `pop` orders it"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; `item` waits at `priority`, after the items pushed before it at an equal priority"
+     }
+    }
+   },
+   "see_also": [
+    "builtin pop",
+    "builtin peek"
+   ],
+   "example": "docs/std/examples/builtin/push"
+  },
+  {
+   "module": "builtin",
+   "name": "pop",
+   "area": "lists",
+   "receivers": [
+    {
+     "type": "Stack[T]",
+     "meaning": "the stack `s`, changed in place: its top is removed"
+    },
+    {
+     "type": "Queue[T]",
+     "meaning": "the queue `q`, changed in place: its front is removed"
+    },
+    {
+     "type": "PriorityQueue[T, P]",
+     "meaning": "the priority queue `q`, changed in place: its item of the first priority, the one pushed first among equal priorities, is removed"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "the removed item as `Some`, or `None` when the receiver is empty, which it stays"
+   },
+   "see_also": [
+    "builtin push",
+    "builtin peek"
+   ],
+   "example": "docs/std/examples/builtin/pop"
+  },
+  {
+   "module": "builtin",
+   "name": "peek",
+   "area": "lists",
+   "receivers": [
+    {
+     "type": "Stack[T]",
+     "meaning": "the stack `s`: its top"
+    },
+    {
+     "type": "Queue[T]",
+     "meaning": "the queue `q`: its front"
+    },
+    {
+     "type": "PriorityQueue[T, P]",
+     "meaning": "the priority queue `q`: its item of the first priority"
+    }
+   ],
+   "params": [],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "the item that `pop` would remove, as `Some`, and `None` exactly when the receiver is empty"
+   },
+   "see_also": [
+    "builtin pop"
+   ],
+   "example": "docs/std/examples/builtin/peek"
+  },
+  {
+   "module": "builtin",
+   "name": "push_front",
+   "area": "lists",
+   "receiver": {
+    "type": "Queue[T]",
+    "meaning": "the queue `q`, changed in place: `item` goes to the front"
+   },
+   "params": [
+    {
+     "name": "item",
+     "meaning": "the item to add"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; `q.peek()` is now `Some(item)`"
+   },
+   "see_also": [
+    "builtin pop_back"
+   ],
+   "example": "docs/std/examples/builtin/push_front"
+  },
+  {
+   "module": "builtin",
+   "name": "pop_back",
+   "area": "lists",
+   "receiver": {
+    "type": "Queue[T]",
+    "meaning": "the queue `q`, changed in place: its back is removed"
+   },
+   "params": [],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "the removed item as `Some`, or `None` when `q` is empty, which it stays"
+   },
+   "see_also": [
+    "builtin push_front",
+    "builtin peek_back"
+   ],
+   "example": "docs/std/examples/builtin/pop_back"
+  },
+  {
+   "module": "builtin",
+   "name": "peek_back",
+   "area": "lists",
+   "receiver": {
+    "type": "Queue[T]",
+    "meaning": "the queue `q`: its back"
+   },
+   "params": [],
+   "returns": {
+    "type": "Option[T]",
+    "meaning": "the item that `pop_back` would remove, as `Some`, and `None` exactly when `q` is empty"
+   },
+   "see_also": [
+    "builtin pop_back"
+   ],
+   "example": "docs/std/examples/builtin/peek_back"
+  },
+  {
+   "module": "builtin",
+   "name": "items",
+   "area": "lists",
+   "by_receiver": {
+    "Stack[T]": {
+     "meaning": "the stack `s`",
+     "params": [],
+     "returns": {
+      "type": "List[T]",
+      "meaning": "its items, the top first"
+     }
+    },
+    "Queue[T]": {
+     "meaning": "the queue `q`",
+     "params": [],
+     "returns": {
+      "type": "List[T]",
+      "meaning": "its items, the front first"
+     }
+    },
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [],
+     "returns": {
+      "type": "List[T]",
+      "meaning": "its items in ascending order"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [],
+     "returns": {
+      "type": "List[T]",
+      "meaning": "its items in the order they were first added"
+     }
+    },
+    "PriorityQueue[T, P]": {
+     "meaning": "the priority queue `q`",
+     "params": [],
+     "returns": {
+      "type": "List[T]",
+      "meaning": "its items in the order the pops would give them"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [],
+     "returns": {
+      "type": "List[Int]",
+      "meaning": "its members in ascending order"
+     }
+    }
+   },
+   "example": "docs/std/examples/builtin/items"
+  },
+  {
+   "module": "builtin",
+   "name": "add",
+   "area": "lists",
+   "receivers": [
+    {
+     "type": "Set[T]",
+     "meaning": "the set `s`, changed in place"
+    },
+    {
+     "type": "HashSet[T]",
+     "meaning": "the hash set `s`, changed in place"
+    },
+    {
+     "type": "BitSet",
+     "meaning": "the bit set `b`, changed in place"
+    }
+   ],
+   "params": [
+    {
+     "name": "item",
+     "meaning": "the item to add; on a `BitSet`, a member from 0 to `b.size - 1`"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; afterwards the receiver holds `item`, and its length grows by one when `item` was not there; a new item of a `HashSet` comes last in the order of `items()`"
+   },
+   "requires": [
+    {
+     "condition": "0 <= item and item < b.size",
+     "meaning": "on a `BitSet` only: the item is one of its bits"
+    }
+   ],
+   "see_also": [
+    "builtin has",
+    "builtin items"
+   ],
+   "example": "docs/std/examples/builtin/add"
+  },
+  {
+   "module": "builtin",
+   "name": "first",
+   "area": "lists",
+   "by_receiver": {
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [],
+     "returns": {
+      "type": "Option[T]",
+      "meaning": "its least item as `Some`, or `None` when it is empty"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [],
+     "returns": {
+      "type": "Option[Int]",
+      "meaning": "its least member as `Some`, or `None` when it has none"
+     }
+    }
+   },
+   "see_also": [
+    "builtin last"
+   ],
+   "example": "docs/std/examples/builtin/first"
+  },
+  {
+   "module": "builtin",
+   "name": "last",
+   "area": "lists",
+   "by_receiver": {
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [],
+     "returns": {
+      "type": "Option[T]",
+      "meaning": "its greatest item as `Some`, or `None` when it is empty"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [],
+     "returns": {
+      "type": "Option[Int]",
+      "meaning": "its greatest member as `Some`, or `None` when it has none"
+     }
+    }
+   },
+   "see_also": [
+    "builtin first"
+   ],
+   "example": "docs/std/examples/builtin/last"
+  },
+  {
+   "module": "builtin",
+   "name": "between",
+   "area": "lists",
+   "receiver": {
+    "type": "Set[T]",
+    "meaning": "the set `s`"
+   },
+   "params": [
+    {
+     "name": "low",
+     "meaning": "the least item to list"
+    },
+    {
+     "name": "high",
+     "meaning": "the greatest item to list"
+    }
+   ],
+   "returns": {
+    "type": "List[T]",
+    "meaning": "the items of `s` from `low` to `high`, both included, in ascending order; none when `low` is above `high`"
+   },
+   "see_also": [
+    "builtin first",
+    "builtin last"
+   ],
+   "example": "docs/std/examples/builtin/between"
+  },
+  {
+   "module": "builtin",
+   "name": "union",
+   "area": "lists",
+   "by_receiver": {
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other set"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "the items of `s` and those of `other`"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other hash set"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "the items of `s`, then those of `other` that `s` lacks, in the order of `other`"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other bit set, of the same size"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "the members of `b` and those of `other`"
+     },
+     "requires": [
+      {
+       "condition": "other.size == b.size",
+       "meaning": "the two bit sets have the same size"
+      }
+     ]
+    }
+   },
+   "see_also": [
+    "builtin intersection",
+    "builtin difference"
+   ],
+   "example": "docs/std/examples/builtin/union"
+  },
+  {
+   "module": "builtin",
+   "name": "intersection",
+   "area": "lists",
+   "by_receiver": {
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other set"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "the items of `s` that `other` holds"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other hash set"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "the items of `s` that `other` holds, in the order of `s`"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other bit set, of the same size"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "the members of `b` that `other` holds"
+     },
+     "requires": [
+      {
+       "condition": "other.size == b.size",
+       "meaning": "the two bit sets have the same size"
+      }
+     ]
+    }
+   },
+   "see_also": [
+    "builtin union",
+    "builtin difference"
+   ],
+   "example": "docs/std/examples/builtin/intersection"
+  },
+  {
+   "module": "builtin",
+   "name": "difference",
+   "area": "lists",
+   "by_receiver": {
+    "Set[T]": {
+     "meaning": "the set `s`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other set"
+      }
+     ],
+     "returns": {
+      "type": "Set[T]",
+      "meaning": "the items of `s` that `other` does not hold"
+     }
+    },
+    "HashSet[T]": {
+     "meaning": "the hash set `s`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other hash set"
+      }
+     ],
+     "returns": {
+      "type": "HashSet[T]",
+      "meaning": "the items of `s` that `other` does not hold, in the order of `s`"
+     }
+    },
+    "BitSet": {
+     "meaning": "the bit set `b`",
+     "params": [
+      {
+       "name": "other",
+       "meaning": "the other bit set, of the same size"
+      }
+     ],
+     "returns": {
+      "type": "BitSet",
+      "meaning": "the members of `b` that `other` does not hold"
+     },
+     "requires": [
+      {
+       "condition": "other.size == b.size",
+       "meaning": "the two bit sets have the same size"
+      }
+     ]
+    }
+   },
+   "see_also": [
+    "builtin union",
+    "builtin intersection"
+   ],
+   "example": "docs/std/examples/builtin/difference"
+  },
+  {
+   "module": "builtin",
+   "name": "is_subset",
+   "area": "lists",
+   "receivers": [
+    {
+     "type": "Set[T]",
+     "meaning": "the set `s`"
+    },
+    {
+     "type": "HashSet[T]",
+     "meaning": "the hash set `s`"
+    },
+    {
+     "type": "BitSet",
+     "meaning": "the bit set `b`"
+    }
+   ],
+   "params": [
+    {
+     "name": "of",
+     "meaning": "the other set, hash set or bit set, which may hold every item of the receiver; for a `BitSet`, of the same size"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "whether `of` holds every item of the receiver"
+   },
+   "requires": [
+    {
+     "condition": "of.size == b.size",
+     "meaning": "on a `BitSet` only: the two bit sets have the same size"
+    }
+   ],
+   "see_also": [
+    "builtin intersection"
+   ],
+   "example": "docs/std/examples/builtin/is_subset"
+  },
+  {
+   "module": "builtin",
+   "name": "same_items",
+   "area": "lists",
+   "receiver": {
+    "type": "HashSet[T]",
+    "meaning": "the hash set `s`"
+   },
+   "params": [
+    {
+     "name": "as",
+     "meaning": "the other hash set"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "whether `s` and `as` hold the same items, whatever the order they were added in; a hash set has no `==`"
+   },
+   "example": "docs/std/examples/builtin/same_items"
+  },
+  {
+   "module": "builtin",
+   "name": "same_entries",
+   "area": "maps",
+   "receiver": {
+    "type": "HashMap[K, V]",
+    "meaning": "the hash map `m`"
+   },
+   "params": [
+    {
+     "name": "as",
+     "meaning": "the other hash map"
+    }
+   ],
+   "returns": {
+    "type": "Bool",
+    "meaning": "whether `m` and `as` have the same keys, each with an equal value, whatever the order they were added in; a hash map has no `==`"
+   },
+   "example": "docs/std/examples/builtin/same_entries"
+  },
+  {
+   "module": "builtin",
+   "name": "update",
+   "area": "maps",
+   "receivers": [
+    {
+     "type": "Map[K, V]",
+     "meaning": "the map `m`, changed in place"
+    },
+    {
+     "type": "HashMap[K, V]",
+     "meaning": "the hash map `m`, changed in place"
+    }
+   ],
+   "params": [
+    {
+     "name": "key",
+     "meaning": "the key whose value changes"
+    },
+    {
+     "name": "initial",
+     "meaning": "the value that `change` receives when `m` has no `key`"
+    },
+    {
+     "name": "change",
+     "meaning": "the function that gives the new value from the old one, called exactly once"
+    }
+   ],
+   "returns": {
+    "type": "Unit",
+    "meaning": "nothing; `key` is set to `change` of its value, or of `initial`; when `change` fails, `m` keeps its value from before the call"
+   },
+   "see_also": [
+    "builtin get",
+    "builtin set"
+   ],
+   "example": "docs/std/examples/builtin/update"
+  },
+  {
+   "module": "builtin",
+   "name": "pop_ranked",
+   "area": "lists",
+   "receiver": {
+    "type": "PriorityQueue[T, P]",
+    "meaning": "the priority queue `q`, changed in place: its item of the first priority is removed"
+   },
+   "params": [],
+   "returns": {
+    "type": "Option[Ranked[T, P]]",
+    "meaning": "the removed item with its priority, as `Some` of a `Ranked`, or `None` when `q` is empty"
+   },
+   "see_also": [
+    "builtin pop",
+    "builtin peek_priority"
+   ],
+   "example": "docs/std/examples/builtin/pop_ranked"
+  },
+  {
+   "module": "builtin",
+   "name": "peek_priority",
+   "area": "lists",
+   "receiver": {
+    "type": "PriorityQueue[T, P]",
+    "meaning": "the priority queue `q`"
+   },
+   "params": [],
+   "returns": {
+    "type": "Option[P]",
+    "meaning": "the priority of the item that `pop` would give, as `Some`, and `None` exactly when `q` is empty"
+   },
+   "see_also": [
+    "builtin pop_ranked",
+    "builtin peek"
+   ],
+   "example": "docs/std/examples/builtin/peek_priority"
+  },
+  {
+   "module": "builtin",
+   "name": "size",
+   "area": "lists",
+   "receiver": {
+    "type": "BitSet",
+    "meaning": "the bit set `b`"
+   },
+   "params": [],
+   "returns": {
+    "type": "Int",
+    "meaning": "the number of bits of `b`, fixed when `empty_bit_set` makes it: its members are integers from 0 to `size - 1`"
+   },
+   "see_also": [
+    "builtin len"
+   ],
+   "example": "docs/std/examples/builtin/size"
   }
  ]
 }

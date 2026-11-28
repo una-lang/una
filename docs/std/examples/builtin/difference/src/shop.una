@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (Set, to_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const stocked: Set[Text] = to_set(["lamp", "desk", "chair"])
+  const sold: Set[Text] = to_set(["desk"])
+  @console.print("not sold: {stocked.difference(other: sold).items()}")
