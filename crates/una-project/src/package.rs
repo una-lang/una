@@ -191,10 +191,20 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     let lock = path.join(lock_name);
     // An `ita.lock` that is there but is not a regular file, such as a FIFO, a device or a
     // directory, is refused by its read before anything is read (spec/30 §1 rule 4), never
-    // taken for a missing lock; a link is followed, and one that names nothing is no lock.
+    // taken for a missing lock; a link is followed, and one that names nothing is refused.
     // `verification.lock` keeps its check for a regular file.
     let has_lock = match format {
-        Format::Ita => !matches!(lock.try_exists(), Ok(false)),
+        Format::Ita => match lock.try_exists() {
+            // A link at `ita.lock` that names nothing is a broken lock, not a missing one.
+            Ok(false) if std::fs::symlink_metadata(&lock).is_ok() => {
+                return Err(LoadError::Unreadable {
+                    reason: format!("`{}` is a symbolic link that names nothing", lock.display()),
+                    path: lock,
+                });
+            }
+            Ok(false) => false,
+            _ => true,
+        },
         Format::Toml => lock.is_file(),
     };
     if has_lock {
@@ -347,8 +357,17 @@ fn loaded(name: String, path: PathBuf, bytes: Vec<u8>, role: Role) -> LoadedFile
     }
 }
 
+/// Reads a file of the user's own package that has no bound of its own, a module under `src/`,
+/// a single-file package, `una.toml` or `verification.lock`: a regular file, checked before
+/// and after it is opened without blocking, of at most the 256 MiB a package holds, read no
+/// further than one byte past it (`spec/30 §1` rule 4, §9 rule 1). O(min(n, 256 MiB)).
 fn read(path: &Path) -> Result<Vec<u8>, LoadError> {
-    std::fs::read(path).map_err(|error| unreadable(path, &error))
+    crate::tree::read_regular(path, crate::content::MAX_BYTES).map_err(|reason| {
+        LoadError::Unreadable {
+            path: path.to_path_buf(),
+            reason,
+        }
+    })
 }
 
 /// Reads a file of a dependency through a descriptor opened with no link followed, checked to

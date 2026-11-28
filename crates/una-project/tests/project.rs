@@ -360,6 +360,113 @@ fn a_project_file_that_is_not_a_regular_file_is_refused_before_it_is_read() {
     assert_eq!(file.text(), "ita a\n");
 }
 
+/// The open flags of `tree` are `O_NONBLOCK | O_NOCTTY` by the platform's own values wherever
+/// they are known, and 0 elsewhere: a mistyped value of any family fails here when the crate is
+/// tested on it (#2396).
+#[cfg(unix)]
+#[test]
+fn the_open_flags_are_the_platforms_nonblock_and_noctty() {
+    let flags = una_project::tree::OPEN_FLAGS;
+    let known = cfg!(any(
+        target_os = "macos",
+        all(
+            any(target_os = "linux", target_os = "android"),
+            any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "arm",
+                target_arch = "aarch64",
+                target_arch = "riscv32",
+                target_arch = "riscv64",
+                target_arch = "powerpc",
+                target_arch = "powerpc64",
+                target_arch = "s390x",
+                target_arch = "loongarch64"
+            )
+        ),
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ));
+    if known {
+        assert_eq!(flags, libc::O_NONBLOCK | libc::O_NOCTTY);
+    } else {
+        assert_eq!(flags, 0);
+    }
+    // On the hosts this is tested on, the flags are known and are the generic Linux or the
+    // Apple values; neither ever holds a bit that would change a file, such as `O_TRUNC`.
+    #[cfg(target_os = "macos")]
+    assert_eq!(flags, 0x4 | 0x2_0000);
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    assert_eq!(flags, 0o4000 | 0o400);
+    for changes in [libc::O_TRUNC, libc::O_APPEND, libc::O_CREAT, libc::O_EXCL] {
+        assert_eq!(flags & changes, 0);
+    }
+}
+
+/// A module under `src/` is read as every project file is (#2392): a FIFO with no writer is
+/// refused at once rather than wait for one, a link to a device is refused before anything is
+/// read, and a regular file past the 256 MiB a package holds is refused by its size, never read.
+/// A link to a regular module is read.
+#[cfg(unix)]
+#[test]
+fn a_module_that_is_not_a_regular_file_or_too_large_is_refused() {
+    let root = scratch("discover-module-kinds");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.una"), "module a\n").unwrap();
+    std::fs::write(
+        root.join("ita.una"),
+        "ita a\n  version 0.1.0\n  edition 0.4\n",
+    )
+    .unwrap();
+    let module = root.join("src/x.una");
+    let refused = |root: &Path, expected: &str| {
+        let (done, wait) = std::sync::mpsc::channel();
+        let dir = root.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = done.send(discover(&dir));
+        });
+        let result = wait
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("discover blocked");
+        match result {
+            Err(LoadError::Unreadable { path, reason }) => {
+                assert_eq!(path, root.join("src/x.una"));
+                assert!(reason.contains(expected), "{reason}");
+            }
+            other => panic!("the module was not refused: {other:?}"),
+        }
+    };
+    let made = std::process::Command::new("mkfifo")
+        .arg(&module)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    refused(&root, "is not a regular file");
+    std::fs::remove_file(&module).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &module).unwrap();
+    refused(&root, "is not a regular file");
+    std::fs::remove_file(&module).unwrap();
+    // A sparse file one byte past the bound: refused by the size it has when opened.
+    let big = std::fs::File::create(&module).unwrap();
+    big.set_len((256 << 20) + 1).unwrap();
+    drop(big);
+    refused(&root, "holds 268435457 bytes, more than the 268435456");
+    std::fs::remove_file(&module).unwrap();
+    std::fs::write(root.join("real.una"), "module x\n").unwrap();
+    std::os::unix::fs::symlink(root.join("real.una"), &module).unwrap();
+    let loaded = discover(&root).unwrap();
+    let read = loaded.files.iter().find(|file| file.name == "src/x.una");
+    assert_eq!(
+        read.map(|file| file.bytes.as_slice()),
+        Some(&b"module x\n"[..])
+    );
+}
+
 /// The open flags of `tree` are known on the platforms this is tested on, and they are the ones
 /// that keep an open from blocking: a FIFO with no writer, which a plain open waits on, opens
 /// at once with them; a project file read there is refused as not a regular file (#2350).
@@ -401,8 +508,8 @@ fn opening_a_fifo_with_the_open_flags_never_waits() {
 
 /// An `ita.lock` that is there but is not a regular file, a FIFO with no writer, a link to a
 /// device, or a directory, refuses the package as not a regular file, before anything is read
-/// and without blocking, rather than leave it with no lock (#2348). A missing lock, and a link
-/// that names nothing, are no lock; a link to a regular lock is read.
+/// and without blocking, rather than leave it with no lock (#2348). A missing lock is none; a link
+/// that names nothing is refused as a broken link (#2395); a link to a regular lock is read.
 #[cfg(unix)]
 #[test]
 fn an_ita_lock_that_is_not_a_regular_file_is_refused_not_missing() {
@@ -448,9 +555,18 @@ fn an_ita_lock_that_is_not_a_regular_file_is_refused_not_missing() {
     std::fs::create_dir(&lock).unwrap();
     refused(&root);
     std::fs::remove_dir(&lock).unwrap();
-    // A link that names nothing is no lock.
+    // A link that names nothing is a broken lock, refused as such, not a missing one (#2395).
     std::os::unix::fs::symlink(root.join("gone"), &lock).unwrap();
-    assert!(!has_lock(&discovered(&root).unwrap()));
+    match discovered(&root) {
+        Err(LoadError::Unreadable { path, reason }) => {
+            assert_eq!(path, lock);
+            assert!(
+                reason.contains("is a symbolic link that names nothing"),
+                "{reason}"
+            );
+        }
+        other => panic!("a dangling link at ita.lock was not refused: {other:?}"),
+    }
     std::fs::remove_file(&lock).unwrap();
     // A link to a regular lock is read.
     std::fs::write(root.join("real.lock"), "lock\n").unwrap();

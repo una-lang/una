@@ -129,12 +129,12 @@ const FLAGS: Option<Flags> = None;
 ///
 /// They are known on macOS (`O_NONBLOCK` 0x4, `O_NOCTTY` 0x20000), on Linux and Android on the
 /// architectures with the generic values (`O_NONBLOCK` 0o4000, `O_NOCTTY` 0o400: x86, x86-64,
-/// Arm, AArch64, RISC-V, PowerPC, s390x and LoongArch), and on FreeBSD, DragonFly, NetBSD and
-/// OpenBSD (`O_NONBLOCK` 0x4, `O_NOCTTY` 0x8000). Elsewhere, Windows and every other target,
-/// they are 0: a file that is not regular when it is checked
-/// is still refused before it is opened, but one swapped in between that check and the open may
-/// block the open (a FIFO) or be opened (a terminal) before the check on the descriptor refuses
-/// it.
+/// Arm, AArch64, RISC-V 32 and 64, PowerPC 32 and 64, s390x and LoongArch 64), and on FreeBSD,
+/// DragonFly, NetBSD and OpenBSD (`O_NONBLOCK` 0x4, `O_NOCTTY` 0x8000), each checked against the
+/// `libc` crate's values by a test. Elsewhere, Windows and every other target, they are 0: a
+/// file that is not regular when it is checked is still refused before it is opened, but one
+/// swapped in between that check and the open may block the open (a FIFO) or be opened (a
+/// terminal) before the check on the descriptor refuses it.
 #[cfg(target_os = "macos")]
 pub const OPEN_FLAGS: i32 = 0x0004 | 0x0002_0000;
 
@@ -145,6 +145,7 @@ pub const OPEN_FLAGS: i32 = 0x0004 | 0x0002_0000;
         target_arch = "x86_64",
         target_arch = "arm",
         target_arch = "aarch64",
+        target_arch = "riscv32",
         target_arch = "riscv64",
         target_arch = "powerpc",
         target_arch = "powerpc64",
@@ -171,6 +172,7 @@ pub const OPEN_FLAGS: i32 = 0x0004 | 0x8000;
             target_arch = "x86_64",
             target_arch = "arm",
             target_arch = "aarch64",
+            target_arch = "riscv32",
             target_arch = "riscv64",
             target_arch = "powerpc",
             target_arch = "powerpc64",
@@ -553,7 +555,7 @@ pub fn read_unlinked(path: &Path) -> Result<Vec<u8>, Refusal> {
 pub fn read_unlinked_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<Unread>), Refusal> {
     let flags = flags()?;
     let (handle, size) = open_stable(path, flags.no_follow, false)?;
-    read_capped(&handle, size, limit).map_err(|e| cannot("read", path, &e))
+    read_capped(&handle, size, limit).map_err(|e| capped_refusal(path, &e))
 }
 
 /// Reads the regular file at `path`, which the user's own package holds, within `limit` bytes
@@ -574,12 +576,41 @@ pub fn read_regular_within(path: &Path, limit: u64) -> Result<(Vec<u8>, Option<U
     if !opened.is_file() {
         return Err(not_regular());
     }
-    read_capped(&handle, opened.len(), limit).map_err(|e| cannot("read", path, &e))
+    read_capped(&handle, opened.len(), limit).map_err(|e| capped_refusal(path, &e))
+}
+
+/// Reads the regular file at `path` of the user's own package that has no bound of its own,
+/// such as a module under `src/`, as [`read_regular_within`] does, within `limit` bytes: a file
+/// past it is refused, never held whole (`spec/30 §1` rule 4). O(min(n, limit)).
+pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, Refusal> {
+    match read_regular_within(path, limit)? {
+        (bytes, None) => Ok(bytes),
+        (_, Some(Unread::Holds(size))) => Err(format!(
+            "`{}` holds {size} bytes, more than the {limit} a file of a package may hold",
+            path.display()
+        )),
+        (_, Some(Unread::MoreThan(_))) => Err(format!(
+            "`{}` holds more than the {limit} bytes a file of a package may hold",
+            path.display()
+        )),
+    }
+}
+
+/// The refusal of a [`read_capped`] of `path` that failed: a file that shrank while it was read,
+/// or the error of the read.
+fn capped_refusal(path: &Path, error: &std::io::Error) -> Refusal {
+    if error.kind() == ErrorKind::UnexpectedEof {
+        format!("`{}` changed while it was read", path.display())
+    } else {
+        cannot("read", path, error)
+    }
 }
 
 /// Reads at most `limit + 1` bytes from `source`, a file of `size` bytes when it was opened:
 /// the bytes, or no bytes and [`Unread::Holds`] its size when `size` is past `limit`, or no
 /// bytes and [`Unread::MoreThan`] `limit` when the read passes it (the file grew while read).
+/// A source that ends before `size` bytes (the file shrank while read) is an error of kind
+/// [`ErrorKind::UnexpectedEof`], so a truncated file is never taken for the whole one.
 /// Never more than `limit + 1` bytes are read or held. O(min(n, limit)).
 pub fn read_capped(
     source: impl Read,
@@ -593,8 +624,15 @@ pub fn read_capped(
     source
         .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+    let read = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if read > limit {
         return Ok((Vec::new(), Some(Unread::MoreThan(to_usize(limit)))));
+    }
+    if read < size {
+        return Err(std::io::Error::new(
+            ErrorKind::UnexpectedEof,
+            "the file shrank while it was read",
+        ));
     }
     Ok((bytes, None))
 }
@@ -1353,6 +1391,36 @@ mod tests {
             64 << 20,
             "a size past the bound reads nothing"
         );
+    }
+
+    /// A file that shrinks while it is read, a source that ends before the size it had when
+    /// opened, is refused as changed, never read as its prefix (#2393); one that ends at its
+    /// size is read whole.
+    #[test]
+    fn a_capped_read_of_a_file_that_shrank_is_refused() {
+        let error = read_capped(&b"ita a\n"[..], 40, 1 << 20).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        assert_eq!(
+            capped_refusal(Path::new("ita.una"), &error),
+            "`ita.una` changed while it was read"
+        );
+        let (bytes, unread) = read_capped(&b"ita a\n"[..], 6, 1 << 20).unwrap();
+        assert_eq!((bytes.as_slice(), unread), (&b"ita a\n"[..], None));
+        // Through a descriptor: the file is cut after its size was taken.
+        let dir = scratch("shrank");
+        let path = dir.join("ita.una");
+        fs::write(&path, [b'-'; 4096]).unwrap();
+        let handle = fs::File::open(&path).unwrap();
+        let size = handle.metadata().unwrap().len();
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(10)
+            .unwrap();
+        let error = read_capped(&handle, size, 1 << 20).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The flag values are this module's own constants: opening a link with them must fail, and
