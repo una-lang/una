@@ -111,6 +111,17 @@ pub mod probe {
             let _ = writeln!(file, "cut {peer} {left} {cause}");
         }
     }
+
+    /// Writes `rearm <kind> <thread> <failures>` to the probe's log: serve thread `thread`
+    /// passes on the turn to accept after `failures` failed re-registrations in a row (#2343).
+    pub(crate) fn rearm(kind: &str, thread: usize, failures: u32) {
+        if let Some(log) = PROBE.get().and_then(|probe| probe.log.as_ref()) {
+            let mut file = log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = writeln!(file, "rearm {kind} {thread} {failures}");
+        }
+    }
 }
 
 #[cfg(test)]
