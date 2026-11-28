@@ -24,10 +24,16 @@ fn store(name: &str) -> Itaoca {
 fn make_writable(dir: &std::path::Path) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.is_dir() {
+        // The entry itself, never what a link names: a link whose target is gone has no
+        // metadata to follow, and a link to a directory is not walked (#2369).
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
             make_writable(&path);
         } else {
-            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            let mut permissions = metadata.permissions();
             #[allow(clippy::permissions_set_readonly_false)]
             permissions.set_readonly(false);
             std::fs::set_permissions(&path, permissions).unwrap();

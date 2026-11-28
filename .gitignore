@@ -1,4 +1,7 @@
 /target/
+# A cargo target directory under another name, as a builder's CARGO_TARGET_DIR may be (#2369):
+# untracked, it would make scripts/gate-tier.sh walk every file of the build.
+/target-*/
 .una/
 .DS_Store
 

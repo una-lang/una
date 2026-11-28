@@ -20,26 +20,48 @@ fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every `.una` file of the repository outside `target/` and hidden directories, sorted.
-fn una_files() -> Vec<PathBuf> {
+/// Whether `path` is a regular file, not followed if it is a link: a FIFO, a socket or a device
+/// named like a source would block or never end a read (#2369), so only regular files are read.
+fn regular(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+/// Whether `dir` is a cargo target directory, whatever its name (`CARGO_TARGET_DIR` may name
+/// `target-1234/`): cargo writes `CACHEDIR.TAG` and `.rustc_info.json` at its root (#2369).
+fn cargo_target(dir: &Path) -> bool {
+    regular(&dir.join("CACHEDIR.TAG")) || regular(&dir.join(".rustc_info.json"))
+}
+
+/// Every regular `.una` file under `root` outside hidden directories and cargo target
+/// directories, sorted. Links are not followed.
+fn una_files_under(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+            let entry = entry.unwrap();
+            let path = entry.path();
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             if name.starts_with('.') || name == "target" {
                 continue;
             }
-            if path.is_dir() {
-                walk(&path, files);
-            } else if name.ends_with(".una") {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                if !cargo_target(&path) {
+                    walk(&path, files);
+                }
+            } else if kind.is_file() && name.ends_with(".una") {
                 files.push(path);
             }
         }
     }
     let mut files = Vec::new();
-    walk(&repository(), &mut files);
+    walk(root, &mut files);
     files.sort();
     files
+}
+
+/// Every `.una` file of the repository, as [`una_files_under`] finds them.
+fn una_files() -> Vec<PathBuf> {
+    una_files_under(&repository())
 }
 
 /// A parsed text: its tree dump after `normalize`, its comments, and its canonical form; `None`
@@ -55,16 +77,25 @@ struct Parsed {
 fn keywords_for(path: &Path) -> KeywordSet {
     // The search stops at the repository root: no manifest above the checkout gives an edition
     // to the repository's files (#1560).
-    let repository = repository();
+    keywords_within(path, &repository())
+}
+
+/// [`keywords_for`] with the search stopping at `root`. A manifest is read only when it is a
+/// regular file (#2369).
+fn keywords_within(path: &Path, root: &Path) -> KeywordSet {
     for dir in path
         .ancestors()
         .skip(1)
-        .take_while(|dir| dir.starts_with(&repository))
+        .take_while(|dir| dir.starts_with(root))
     {
         // `ita.una` exists from edition 0.4 only (ADR 0122), so it names that edition or a later
         // one for the wrapping formatter (#1175); it comes first, as the package reads its
         // manifests.
-        if let Ok(text) = std::fs::read_to_string(dir.join("ita.una")) {
+        let ita = dir.join("ita.una");
+        if let Some(text) = regular(&ita)
+            .then(|| std::fs::read_to_string(&ita).ok())
+            .flatten()
+        {
             return if text.lines().any(|line| line.trim() == "edition 0.5") {
                 KeywordSet::V0_5
             } else {
@@ -72,7 +103,7 @@ fn keywords_for(path: &Path) -> KeywordSet {
             };
         }
         let manifest = dir.join("una.toml");
-        if manifest.is_file() {
+        if regular(&manifest) {
             let text = std::fs::read_to_string(manifest).unwrap_or_default();
             return if text.contains("edition = \"0.3\"") {
                 KeywordSet::V0_3
@@ -502,4 +533,54 @@ impl Normalizer<'_> {
             | ExprKind::Literal(_) => {}
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_walk_reads_regular_files_only_and_skips_any_cargo_target_directory() {
+    // #2369: a FIFO `ita.una` that another test left in a cargo target directory named
+    // `target-2282/` blocked this suite in `open()` for 52 minutes. The walk skips every cargo
+    // target directory, whatever its name, and lists only regular files; the manifest search
+    // reads only a regular `ita.una` or `una.toml`. The checks run on a thread with a deadline,
+    // so a read that blocks fails the test instead of hanging it.
+    let root =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("fmt-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let fifo = |path: &Path| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(made.success(), "mkfifo {}", path.display());
+    };
+    let source = root.join("pkg/src/m.una");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "module m\n").unwrap();
+    fifo(&root.join("pkg/ita.una"));
+    fifo(&root.join("pkg/src/fifo.una"));
+    let target = root.join("target-2282");
+    std::fs::create_dir_all(target.join("tmp")).unwrap();
+    std::fs::write(
+        target.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    std::fs::write(target.join("tmp/left.una"), "module left\n").unwrap();
+    fifo(&target.join("tmp/ita.una"));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let walked = root.clone();
+    let probe = source.clone();
+    std::thread::spawn(move || {
+        let files = una_files_under(&walked);
+        let keywords = keywords_within(&probe, &walked);
+        let _ = sender.send((files, keywords));
+    });
+    let (files, keywords) = receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the walk or the manifest search blocked on a FIFO");
+    assert_eq!(files, [source]);
+    // The FIFO `ita.una` is no manifest: the file keeps edition 0.1, as with no manifest.
+    assert_eq!(keywords, KeywordSet::V0_1);
+    let _ = std::fs::remove_dir_all(&root);
 }
