@@ -1088,6 +1088,12 @@ mod tests {
     /// ones. For a cost that grows linearly with the calls before it, late is about 19 times
     /// early at 25,000 calls, and more at 100,000; for a constant cost it stays near
     /// one. The 20 microseconds absorb the clock's granularity on a batch.
+    ///
+    /// What it pins is no polynomial growth with history, not a strictly constant cost (#2377):
+    /// at 100,000 calls the late batches run about 95 times as far into the state's life as
+    /// the early ones, so a cost per call of order history^0.31 or more exceeds four times
+    /// (95^0.31 is about 4.1) and is flagged, while a logarithmic one, such as an insert into a
+    /// `BTreeMap` that keeps every call, gives about 1.4 and is not.
     fn grows(early: f64, late: f64) -> bool {
         late > early * 4.0 + 20e-6
     }
