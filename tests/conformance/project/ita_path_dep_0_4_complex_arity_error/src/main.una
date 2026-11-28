@@ -1,0 +1,11 @@
+-- test: a dependency of edition 0.4 under a root of edition 0.5 gets the diagnostics it gets alone: `Complex` is U1001, never the built-in type that takes a type argument (ADR 0122 rule 49, ADR 0139 rule 6, #2295)
+-- spec: spec/30 §12
+-- expect: error U1001 at deps/util/src/text.una:3:13
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  const line = twice("hello")
+  line

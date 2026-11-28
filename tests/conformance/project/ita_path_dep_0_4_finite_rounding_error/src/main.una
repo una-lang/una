@@ -1,0 +1,14 @@
+-- test: a dependency of edition 0.4 under a root of edition 0.5 gets the diagnostics it gets alone: `Finite64`, `Finite32` and `Rounding` are U1001, never the built-in types (ADR 0122 rule 49, ADR 0139 rule 6, #2295)
+-- spec: spec/30 §12
+-- expect: error U1001 at deps/util/src/text.una:3:15
+-- expect: error U1001 at deps/util/src/text.una:3:28
+-- expect: error U1001 at deps/util/src/text.una:5:23
+-- expect: error U1001 at deps/util/src/text.una:5:49
+module main
+
+import strings.text (twice)
+
+pub greet() -> Text
+=
+  const line = twice("hello")
+  line

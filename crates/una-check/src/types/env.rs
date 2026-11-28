@@ -1208,6 +1208,16 @@ impl<'a> Env<'a> {
         if module < self.prelude && prelude::SERVER_NAMES.contains(&name) {
             return Vec::new();
         }
+        // ADR 0122 rule 49: the environment loads the root's prelude, so a module of an
+        // earlier edition (a dependency of edition 0.4 under a root of 0.5) finds only its own
+        // edition's upper-case names, as in name resolution: `F32`, the finite kinds,
+        // `Complex`, `Rounding` and its variants are unknown there, as alone (#2295). `Array`
+        // and `Decimal` stay: in edition 0.4 they are variants of `Json`.
+        if self.edition_of(module) < Edition::V0_5
+            && (prelude::UPPER_0_5.contains(&name) || prelude::ROUNDING_0_5.contains(&name))
+        {
+            return Vec::new();
+        }
         match self
             .modules
             .get(self.prelude)
