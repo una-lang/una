@@ -732,13 +732,13 @@ Rule 1's "What is linked" and the amendment of 2026-11-13 name glibc's own libra
 - **What does not change.** No library outside glibc and `libgcc_s.so.1` is loaded; `libstdc++` and `libgcc` stay linked statically; no foreign code enters a Una program.
 - **Cost.** None: no algorithm, build step or run-time work changes.
 
-## Amendment (2026-11-28, Proposed): the solver files' size after the end by `SIGXCPU` (rule 35, #2359)
+## Amendment (2026-11-28): the solver files' size after the end by `SIGXCPU` (rule 35, #2359)
 
-- Status: Proposed (2026-11-28), for the Owner. The accepted text of this record above this amendment is unchanged; once accepted, where the two differ, this amendment governs.
+- Status: Accepted (2026-11-28), by the Owner's decision of 2026-11-28 on issue #2359, for v0.5.3: the cap of 2,003 lines. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs.
 
 The amendment of 2026-11-01 caps the files behind the feature `solver` (`crates/una-sys/src/solver/`) at their measured physical count plus 5%, 1,768 lines, enforced by `crates/una-sys/tests/solver_size.rs`, and says that a change that needs more raises the cap with a dated amendment stating the new count. Two changes of the trusted code need more:
 
 - **#2268 (PR #2297, merged).** Z3 5.1.0's front end handles `SIGXCPU` with a handler that is not async-signal-safe. It aborted inside `malloc` once in 69 runs of the `limits` gate on glibc 2.28, and under load it deadlocked in about one run in a hundred of an allocation-heavy query (4 in 300 on glibc 2.28, 1 in 300 on glibc 2.39). The solver child now blocks the signal before its limits exist and takes it on a thread of its own, which ends the child by `SIGXCPU` (`processor_time.rs`, 135 lines, of which 65 are comments that state the reasons and the fallbacks and 7 are blank; the wiring in `mod.rs`, 14 lines; `rt_sigtimedwait` in the filter, 2 lines). It had a lane S review and a second review (`ops/coordination/reviews/pr2297-review-1.md` and `pr2297-review-2.md`). The files count 1,845 lines on origin/main after it (1,694 before it).
 - **#2321 and #2322 (PR #2326, open).** The parent reads the kernel's `SIGKILL` at the hard processor-time limit as `cpu` from the child's processor time (`spawn.rs`, `try_wait_with_usage`, 39 lines), and `processor_time.rs` states the two bounds of its design (24 lines, comments). With it, the files count 1,908 lines, measured on that PR's head 6a629540f (its later documentation of #2372 adds no line under `solver/`).
 
-No limit, filter rule or confinement step is removed by either change. The cap becomes the count with both changes plus 5%, 2,003 lines, so that #2326 needs no amendment of its own. `crates/una-sys/tests/solver_size.rs` enforces it. A later change that needs more raises the cap with a dated amendment stating the new count, as before. If the Owner accepts only the count of #2297, the cap is 1,937 (1,845 plus 5%), and #2326 brings its own amendment.
+No limit, filter rule or confinement step is removed by either change. The cap becomes the count with both changes plus 5%, 2,003 lines, so that #2326 needs no amendment of its own. `crates/una-sys/tests/solver_size.rs` enforces it. A later change that needs more raises the cap with a dated amendment stating the new count, as before.
