@@ -11,7 +11,9 @@ use std::ffi::CString;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 
-use una_sys::solver::spawn::{Ended, spawn, try_wait, try_wait_with_usage, wait};
+#[cfg(target_os = "linux")]
+use una_sys::solver::spawn::try_wait_with_usage;
+use una_sys::solver::spawn::{Ended, spawn, try_wait, wait};
 use una_sys::solver::{Limits, confine, confined, limits};
 
 /// The name a child is spawned under: the marker that tells it to read its scenario.
