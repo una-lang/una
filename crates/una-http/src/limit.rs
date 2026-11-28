@@ -1040,28 +1040,92 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
+    /// The calls of a batch of [`history_growth`].
+    const BATCH: usize = 100;
+
+    /// The timed batches of each state in [`history_growth`].
+    const WINDOW: usize = 50;
+
+    /// How `op` costs late in the life of a state, against early: one state made by `make`
+    /// takes `calls` calls of `op`, the last [`WINDOW`] batches of [`BATCH`] timed; a second,
+    /// fresh, takes ten batches of warm-up and then [`WINDOW`] timed batches, the batches of the
+    /// two states alternating. Returns the shortest early and the shortest late batch, in
+    /// seconds. An `op` whose cost grows with the calls before it, so that `n` calls cost more
+    /// than linear, takes longer late than early; one of constant cost does not.
+    ///
+    /// The measure does not depend on the host's load (#2345): a loaded host only lengthens a
+    /// batch, and the shortest of each set is one that ran without interruption; since the two
+    /// sets alternate, a slower core or clock speed for a while slows both alike. The measure
+    /// it replaces, the ratio of two whole runs, failed under a load of about 200, when the
+    /// longer run spent most of its time descheduled.
+    fn history_growth<S>(calls: usize, make: impl Fn() -> S, op: impl Fn(&mut S)) -> (f64, f64) {
+        // The old state is timed at least four times as far into its life as the fresh one.
+        assert!(calls >= 4 * (10 + WINDOW) * BATCH, "{calls}");
+        let batch = |state: &mut S| {
+            let started = Instant::now();
+            for _ in 0..BATCH {
+                op(state);
+            }
+            started.elapsed().as_secs_f64()
+        };
+        let mut old = make();
+        for _ in 0..calls - WINDOW * BATCH {
+            op(&mut old);
+        }
+        let mut fresh = make();
+        for _ in 0..10 {
+            batch(&mut fresh);
+        }
+        let (mut early, mut late) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..WINDOW {
+            early = early.min(batch(&mut fresh));
+            late = late.min(batch(&mut old));
+        }
+        (early, late)
+    }
+
+    /// Whether the late batches of [`history_growth`] take more than four times the early
+    /// ones. For a cost that grows linearly with the calls before it, late is about 19 times
+    /// early at 25,000 calls, and more at 100,000; for a constant cost it stays near
+    /// one. The 20 microseconds absorb the clock's granularity on a batch.
+    fn grows(early: f64, late: f64) -> bool {
+        late > early * 4.0 + 20e-6
+    }
+
     #[test]
     fn charging_scales_linearly() {
-        // Each charge is O(1) per grant: ten times the hops take about ten times the time,
-        // never a hundred.
-        let mut times = Vec::new();
-        for hops in [10_000usize, 100_000] {
-            let g = governor(&[
-                "http:http://h;2147483647/second;2147483647/once",
-                "http:http://h:get,post;2147483647/minute",
-            ]);
-            let target = url("http://h/");
-            let started = Instant::now();
-            for _ in 0..hops {
+        // Each charge is O(1) per grant: a hop late in a governor's life costs what an early
+        // one does, so `n` hops cost O(n).
+        let target = url("http://h/");
+        let (early, late) = history_growth(
+            100_000,
+            || {
+                governor(&[
+                    "http:http://h;2147483647/second;2147483647/once",
+                    "http:http://h:get,post;2147483647/minute",
+                ])
+            },
+            |g| {
                 drop(
                     g.acquire(&target, Method::Get, soon(10_000), &Never, &Abandon::new())
                         .unwrap(),
                 );
+            },
+        );
+        assert!(!grows(early, late), "{early} then {late}");
+    }
+
+    #[test]
+    fn the_measure_of_charging_finds_a_quadratic_cost() {
+        // The same measure on an operation that reads everything done before it, as a charge
+        // that scanned its history would: `n` of them cost O(n²), and it says so.
+        let (early, late) = history_growth(25_000, Vec::new, |history: &mut Vec<u64>| {
+            for entry in history.iter() {
+                std::hint::black_box(entry);
             }
-            times.push(started.elapsed().as_secs_f64());
-        }
-        let (small, large) = (times[0], times[1]);
-        assert!(large < small * 40.0 + 0.05, "{small} then {large}");
+            history.push(std::hint::black_box(1));
+        });
+        assert!(grows(early, late), "{early} then {late}");
     }
 
     #[test]
