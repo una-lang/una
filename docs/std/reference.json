@@ -3212,11 +3212,11 @@
       },
       {
        "variant": "Interrupted",
-       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+       "when": "a stop request of the host came while the request waited, or before it started, in the body of a `for ever`; a variant from edition `0.4` on"
       },
       {
        "variant": "RateLimited",
-       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+       "when": "the request had to wait at a limit of a grant whose queue was full, so it was not sent; a variant from edition `0.4` on"
       }
      ],
      "accepts": "internal",
@@ -3281,11 +3281,11 @@
       },
       {
        "variant": "Interrupted",
-       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+       "when": "a stop request of the host came while the request waited, or before it started, in the body of a `for ever`; a variant from edition `0.4` on"
       },
       {
        "variant": "RateLimited",
-       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+       "when": "the request had to wait at a limit of a grant whose queue was full, so it was not sent; a variant from edition `0.4` on"
       }
      ],
      "accepts": "internal",
@@ -3350,11 +3350,11 @@
       },
       {
        "variant": "Interrupted",
-       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+       "when": "a stop request of the host came while the request waited, or before it started, in the body of a `for ever`; a variant from edition `0.4` on"
       },
       {
        "variant": "RateLimited",
-       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+       "when": "the request had to wait at a limit of a grant whose queue was full, so it was not sent; a variant from edition `0.4` on"
       }
      ],
      "accepts": "internal",
@@ -3415,11 +3415,11 @@
       },
       {
        "variant": "Interrupted",
-       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+       "when": "a stop request of the host came while the request waited, or before it started, in the body of a `for ever`; a variant from edition `0.4` on"
       },
       {
        "variant": "RateLimited",
-       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+       "when": "the request had to wait at a limit of a grant whose queue was full, so it was not sent; a variant from edition `0.4` on"
       }
      ],
      "accepts": "internal",

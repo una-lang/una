@@ -1,0 +1,1 @@
+- **Failure texts of the standard library reference read as conditions** (#2386). The `when` of `Http`'s `Interrupted` and `RateLimited` no longer opens with "in edition `0.4` and later", which the site shows after "fails with <variant> when"; the edition note ends the text, and the test of the reference refuses a `when` that opens with an edition note.

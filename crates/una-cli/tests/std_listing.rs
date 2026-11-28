@@ -1745,6 +1745,37 @@ fn a_shadowed_example_must_fail_at_a_call_of_the_item() {
     ));
 }
 
+/// A failure's `when` is read after "fails with <variant> when" (#2386), so it is a condition
+/// and does not open with an edition note, which goes at its end.
+fn when_reads_as_a_condition(when: &str, at: &str, problems: &mut Vec<String>) {
+    let start = when.trim_start().to_lowercase();
+    if start.starts_with("in edition")
+        || start.starts_with("from edition")
+        || start.starts_with("edition")
+    {
+        problems.push(format!(
+            "{at}: `when` opens with an edition note; write the condition first, the edition at its end"
+        ));
+    }
+}
+
+#[test]
+fn a_failure_text_that_opens_with_an_edition_note_is_refused() {
+    let mut problems = Vec::new();
+    when_reads_as_a_condition(
+        "in edition `0.4` and later, a stop request came",
+        "x",
+        &mut problems,
+    );
+    when_reads_as_a_condition("From edition 0.4, the queue was full", "y", &mut problems);
+    when_reads_as_a_condition(
+        "the queue was full; a variant from edition `0.4` on",
+        "z",
+        &mut problems,
+    );
+    assert_eq!(problems.len(), 2, "{problems:?}");
+}
+
 /// An operation of a capability's declaration: `op name(params) -> result`, with its `fails`
 /// and `accepts` lines.
 #[derive(Debug, PartialEq)]
@@ -1968,10 +1999,9 @@ fn check_operations<'i>(
         for (i, failure) in list(op, "fails", &at, problems).iter().enumerate() {
             let at = format!("{at} fails {i}");
             shape(failure, &at, &["variant", "when"], &[], problems);
-            fails.push((
-                filled(failure, "variant", &at, problems).to_owned(),
-                filled(failure, "when", &at, problems).to_owned(),
-            ));
+            let when = filled(failure, "when", &at, problems).to_owned();
+            when_reads_as_a_condition(&when, &at, problems);
+            fails.push((filled(failure, "variant", &at, problems).to_owned(), when));
         }
         match theirs.fails.as_deref() {
             None if op.get("fails").is_some() => {
@@ -2500,7 +2530,8 @@ fn the_reference_agrees_with_the_listing() {
                 let at = format!("{at} fails {i}");
                 shape(failure, &at, &["variant", "when"], &[], &mut problems);
                 fails.push(filled(failure, "variant", &at, &mut problems).to_owned());
-                filled(failure, "when", &at, &mut problems);
+                let when = filled(failure, "when", &at, &mut problems);
+                when_reads_as_a_condition(when, &at, &mut problems);
             }
             // The failure kind as it is declared in the editions the entry describes.
             let declared: Vec<String> = match sig.fails.as_deref() {
