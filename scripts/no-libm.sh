@@ -217,7 +217,7 @@ findings=0
 # and on Linux $tmp/builtins `name object` for each object of the `linux-builtins` entries: the
 # references of Z3 objects that the link resolves to the pinned toolchain's compiler_builtins,
 # which only the trace mode reads; `una` may not import those names.
-awk -v os="$os" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allowed" -v names="$tmp/names" \
+awk -v os="$os" -v arch="$(uname -m)" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allowed" -v names="$tmp/names" \
     -v builtins="$tmp/builtins" -v rustbuiltins="$tmp/rustbuiltins" -v rtbuiltins="$tmp/rtbuiltins" '
     function trim(s) { sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
     BEGIN {
@@ -236,14 +236,20 @@ awk -v os="$os" -v denyfile="$deny" -v listfile="$solver" -v allowed="$tmp/allow
         line = trim($0)
         if (line == "") next
         n = split(line, w, /[ \t]+/)
-        if (n < 3 || (w[1] != "macos" && w[1] != "linux" && w[1] != "linux-builtins" && w[1] != "linux-rust-builtins" && w[1] != "linux-rt-builtins")) {
+        # A platform may be scoped to one processor, `PLATFORM@MACHINE` (`uname -m`), #2365.
+        entry = w[1]
+        machine = ""
+        if (index(w[1], "@") > 0) { machine = substr(w[1], index(w[1], "@") + 1); w[1] = substr(w[1], 1, index(w[1], "@") - 1) }
+        if (n < 3 || (w[1] != "macos" && w[1] != "linux" && w[1] != "linux-builtins" && w[1] != "linux-rust-builtins" && w[1] != "linux-rt-builtins") \
+            || (index(entry, "@") > 0 && machine !~ /^(x86_64|aarch64|arm64)$/)) {
             print "no-libm: " listfile ": an entry that is not a platform, a name and its objects: " $0
             bad = 1
             next
         }
         if (!(w[2] in denied)) { print "no-libm: " listfile ": " w[2] " is not a name of " denyfile; bad = 1; next }
-        if ((w[1] " " w[2]) in seen) { print "no-libm: " listfile ": " w[2] " is listed twice for " w[1]; bad = 1; next }
-        seen[w[1] " " w[2]] = 1
+        if ((entry " " w[2]) in seen) { print "no-libm: " listfile ": " w[2] " is listed twice for " entry; bad = 1; next }
+        seen[entry " " w[2]] = 1
+        if (machine != "" && machine != arch) next
         if (w[1] == "linux-builtins") {
             if (os == "linux") for (i = 3; i <= n; i++) print w[2] " " w[i] > builtins
             next
@@ -431,8 +437,14 @@ if [ -n "$trace" ]; then
                 ok = ((sym " " member) in allowed) || ((sym " " member) in builtin)
             }
             if (!ok && match(file, /\([^()]*\)$/)) {
+                # A `linux-rust-builtins` member, inside the rlib of its own crate (#2364): the
+                # member `<crate>-<hash>.<...>.rcgu.o` of `.../lib<crate>-<hash>.rlib`.
                 member = substr(file, RSTART + 1, RLENGTH - 2)
-                ok = ((sym " " member) in rust)
+                library = substr(file, 1, RSTART - 1)
+                sub(/.*\//, "", library)
+                crate = member
+                sub(/\..*/, "", crate)
+                ok = ((sym " " member) in rust) && library == ("lib" crate ".rlib")
             }
             if (ok) { print sym > referenced; next }
             print "no-libm: " trace ": " file " references " sym ", and is not, byte for byte, an object of the Z3 library that scripts/no-libm-una.txt names for it"

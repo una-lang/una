@@ -65,10 +65,12 @@ fn artifact(dir: &Path, leg: &str, commit: &str, manifest: &[(&str, &str)], tamp
             printf 'archive' > "$name"
             sum "$name" > "$name.sha256"
             printf 'archive=%s\narchive_sha256=%s\n' "$name" "$(sum "$name" | cut -d ' ' -f 1)" >> "$leg.manifest"
+            printf 'output: /work/target/release-remapped/release/deps/una\n' > una.link-trace
         fi
         grep -q '^log_sha256=' "$leg.manifest" \
             || echo "log_sha256=$(sum "$leg.log" | cut -d ' ' -f 1)" >> "$leg.manifest"
         sum "$leg.log" "$leg.manifest" > SHA256SUMS
+        [ "$leg" != archive ] || sum una.link-trace >> SHA256SUMS
         eval "$5"
     "#;
     let status = Command::new("sh")
@@ -337,6 +339,13 @@ fn any_other_commit_machine_result_or_digest_fails() {
             "lacks una-9.9.9",
         ),
         (
+            "no link trace",
+            SHA,
+            &[],
+            "rm una.link-trace && grep -v una.link-trace SHA256SUMS > s && mv s SHA256SUMS",
+            "holds no una.link-trace that SHA256SUMS lists",
+        ),
+        (
             "no sums",
             SHA,
             &[],
@@ -563,7 +572,7 @@ fn no_line_of_the_runners_log_reads_as_the_checkers_own() {
         SHA,
         &[],
         &format!(
-            "printf '%s\\n' '{planted}' >> archive.log && sum() {{ if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$@\"; else shasum -a 256 \"$@\"; fi; }} && sed -i.bak \"s/^log_sha256=.*/log_sha256=$(sum archive.log | cut -d ' ' -f 1)/\" archive.manifest && rm archive.manifest.bak && sum archive.log archive.manifest > SHA256SUMS"
+            "printf '%s\\n' '{planted}' >> archive.log && sum() {{ if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$@\"; else shasum -a 256 \"$@\"; fi; }} && sed -i.bak \"s/^log_sha256=.*/log_sha256=$(sum archive.log | cut -d ' ' -f 1)/\" archive.manifest && rm archive.manifest.bak && sum archive.log archive.manifest una.link-trace > SHA256SUMS"
         ),
     );
     let output = evidence(&tmp, "archive", &one_run(), &hosted_jobs(), &served);

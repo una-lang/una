@@ -580,11 +580,16 @@ fn the_release_check_gives_the_toolchain_names_to_una_and_the_runtime_alone() {
     let release = std::fs::read_to_string(root().join("scripts/check-release.sh")).unwrap();
     let scans: Vec<&str> = release
         .lines()
-        .filter(|line| line.trim_start().starts_with("scripts/check-fma.sh"))
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("scripts/check-fma.sh"))
         .collect();
+    // and its scan of the programs that the packed `una` built keeps the allowlist alone (#2366).
     assert_eq!(
         scans,
-        ["scripts/check-fma.sh \"$@\" --toolchain-fma \"$una\" \"$runtime\""]
+        [
+            "scripts/check-fma.sh \"$@\" --toolchain-fma \"$una\" \"$runtime\"",
+            "scripts/check-fma.sh \"$@\" \"$tmp/no-libm-executables\"/*",
+        ]
     );
     let canary = std::fs::read_to_string(root().join("scripts/fma-canary.sh")).unwrap();
     assert!(!canary.contains("--toolchain-fma"));

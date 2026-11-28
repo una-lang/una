@@ -39,8 +39,10 @@ esac
 list=$root/scripts/no-libm-una.txt
 # The names the solver's list holds for this platform, in its order, and the first object it
 # names for a name.
-names=$(sed 's/#.*//' "$list" | awk -v os="$os" '$1 == os { print $2 }')
-object_of() { sed 's/#.*//' "$list" | awk -v os="$os" -v n="$1" '$1 == os && $2 == n { print $3; exit }'; }
+# An entry `PLATFORM@MACHINE` holds on that processor only (`uname -m`, #2365).
+machine=$(uname -m)
+names=$(sed 's/#.*//' "$list" | awk -v os="$os" -v m="$machine" '$1 == os || $1 == os "@" m { print $2 }')
+object_of() { sed 's/#.*//' "$list" | awk -v os="$os" -v m="$machine" -v n="$1" '($1 == os || $1 == os "@" m) && $2 == n { print $3; exit }'; }
 # The first allowed name of the solver's list, and a denied name that it does not hold.
 allowed=$(printf '%s\n' "$names" | sed -n 1p)
 [ -n "$allowed" ] || { echo "error: scripts/no-libm-una.txt lists no name for $os" >&2; exit 1; }
@@ -333,7 +335,12 @@ if [ "$os" = linux ]; then
             echo '}'
         } > "$work/$tout.rs"
         set --
-        for lib in $libs; do set -- "$@" -l "static=${lib#lib}"; done
+        for lib in $libs; do
+            case $lib in
+            *.rlib) set -- "$@" -l "static:+verbatim=$lib" ;;  # a Rust library, by its file name
+            *) set -- "$@" -l "static=${lib#lib}" ;;
+            esac
+        done
         rm -rf "${work:?}/traces-$tout"
         mkdir "$work/traces-$tout"
         UNA_LINK_TRACE_DIR=$work/traces-$tout
@@ -442,10 +449,21 @@ if [ "$os" = linux ]; then
     # The runtime's entries of the Owner's decisions of 2026-11-27 (#2354): a Rust object's
     # reference that resolves to compiler_builtins (`linux-rust-builtins`, by the exact member)
     # and a compiler_builtins member's own (`linux-rt-builtins`, by the function it defines).
-    rname=$(sed 's/#.*//' "$list" | awk '$1 == "linux-rust-builtins" { print $2; exit }')
-    robject=$(sed 's/#.*//' "$list" | awk -v n="$rname" '$1 == "linux-rust-builtins" && $2 == n { print $3; exit }')
-    rtname=$(sed 's/#.*//' "$list" | awk '$1 == "linux-rt-builtins" { print $2; exit }')
-    rtrole=$(sed 's/#.*//' "$list" | awk '$1 == "linux-rt-builtins" { print $3; exit }')
+    rentry=$(sed 's/#.*//' "$list" | awk '$1 ~ /^linux-rust-builtins(@|$)/ { print $1; exit }')
+    rname=$(sed 's/#.*//' "$list" | awk '$1 ~ /^linux-rust-builtins(@|$)/ { print $2; exit }')
+    robject=$(sed 's/#.*//' "$list" | awk -v n="$rname" '$1 ~ /^linux-rust-builtins(@|$)/ && $2 == n { print $3; exit }')
+    rtentry=$(sed 's/#.*//' "$list" | awk '$1 ~ /^linux-rt-builtins(@|$)/ { print $1; exit }')
+    rtname=$(sed 's/#.*//' "$list" | awk '$1 ~ /^linux-rt-builtins(@|$)/ { print $2; exit }')
+    rtrole=$(sed 's/#.*//' "$list" | awk '$1 ~ /^linux-rt-builtins(@|$)/ { print $3; exit }')
+    # Whether each entry holds here: on another processor than its `@MACHINE`, the cases that
+    # it would allow must fail instead (#2365).
+    holds() { case $1 in *@*) [ "${1#*@}" = "$machine" ] ;; *) true ;; esac; }
+    # allowed CASE MESSAGE ENTRY ARGS...: passes where ENTRY holds, else fails with MESSAGE.
+    allowed() {
+        acase=$1 amessage=$2 aentry=$3
+        shift 3
+        if holds "$aentry"; then pass "$acase" "$@"; else reject "$acase-not-on-$machine" "$amessage" "$@"; fi
+    }
     [ -n "$rname" ] && [ -n "$robject" ] && [ -n "$rtname" ] && [ -n "$rtrole" ] \
         || { echo "error: scripts/no-libm-una.txt has no linux-rust-builtins or linux-rt-builtins entry" >&2; exit 1; }
     # The legacy mangling of the role's path, which nm -C writes back as that path.
@@ -457,7 +475,7 @@ if [ "$os" = linux ]; then
     members rt_rust_ok "$robject:$rname:una_rt_rust_1" "compiler_builtins-0.rcgu.o::$rname"
     members rt_rust_nodef "$robject:$rname:una_rt_rust_1"
     members rt_rust_other "other.rcgu.o:$rname:una_rt_rust_1" "compiler_builtins-0.rcgu.o::$rname"
-    rtcase pass rt-rust-builtins "" "$work/clean_una" "$work/rt_rust_ok.a" "$clean_dir"
+    rtcase allowed rt-rust-builtins "rt_rust_ok.a($robject): $rname" "$rentry" "" "$work/clean_una" "$work/rt_rust_ok.a" "$clean_dir"
     rtcase reject rt-rust-builtins-no-definition "rt_rust_nodef.a($robject): $rname" \
         "" "$work/clean_una" "$work/rt_rust_nodef.a" "$clean_dir"
     rtcase reject rt-rust-builtins-other-member "rt_rust_other.a(other.rcgu.o): $rname" \
@@ -469,7 +487,7 @@ if [ "$os" = linux ]; then
     members rt_cb_role "compiler_builtins-1.rcgu.o:$rtname:una_other_role" "compiler_builtins-2.rcgu.o::$rtname"
     members rt_cb_crate "other-1.rcgu.o:$rtname:$mangled" "compiler_builtins-2.rcgu.o::$rtname"
     members rt_cb_nodef "compiler_builtins-1.rcgu.o:$rtname:$mangled"
-    rtcase pass rt-cb-builtins "" "$work/clean_una" "$work/rt_cb_ok.a" "$clean_dir"
+    rtcase allowed rt-cb-builtins "rt_cb_ok.a(compiler_builtins-1.rcgu.o): $rtname" "$rtentry" "" "$work/clean_una" "$work/rt_cb_ok.a" "$clean_dir"
     rtcase reject rt-cb-builtins-other-role "rt_cb_role.a(compiler_builtins-1.rcgu.o): $rtname" \
         "" "$work/clean_una" "$work/rt_cb_role.a" "$clean_dir"
     rtcase reject rt-cb-builtins-not-compiler-builtins "rt_cb_crate.a(other-1.rcgu.o): $rtname" \
@@ -486,23 +504,33 @@ if [ "$os" = linux ]; then
     # (A Rust link binds the reference to compiler_builtins even with -lm, which it places
     # after compiler_builtins; the binding to libm is made here by a driver that names libm
     # first, whose shared definition then satisfies the reference.)
+    # The stand-in of the crate's rlib, by the file name its member names (#2364): the member
+    # `<crate>-<hash>.<...>.rcgu.o` inside `lib<crate>-<hash>.rlib`; the same member in an
+    # archive of another name fails.
+    rlib=lib${robject%%.*}.rlib
     members libtomls "$robject:$rname:una_libtomls_1"
+    cp "$work/libtomls.a" "$work/$rlib"
     members libtomlo "other.rcgu.o:$rname:una_libtomlo_1"
     NOLM=1
-    traced_exe t_rust libtomls ""
+    traced_exe t_rust "$rlib" "" una_libtomls_1
     traced_exe t_rust_other libtomlo ""
+    traced_exe t_rust_elsewhere libtomls ""
     unset NOLM
     printf '#!/bin/sh\nexec cc -Wl,--no-as-needed -lm "$@"\n' > "$work/cc-libm-first"
     chmod +x "$work/cc-libm-first"
     UNA_LINK_TRACE_CC=$work/cc-libm-first
     export UNA_LINK_TRACE_CC
-    traced_exe t_rust_libm libtomls ""
+    traced_exe t_rust_libm "$rlib" "" una_libtomls_1
     unset UNA_LINK_TRACE_CC
     echo "== the trace of t_rust and t_rust_libm (#2354)"
     grep -E " $rname " "$work/t_rust.trace" "$work/t_rust_libm.trace" || true
-    tpass trace-rust-builtins "$work/libz3t.a" "$work/t_rust.trace" "$work/t_rust"
+    traced=$((traced + 1))
+    allowed trace-rust-builtins "($robject) references $rname" "$rentry" \
+        "$work/libz3t.a" --link-trace "$work/t_rust.trace" "$work/t_rust" "$work/clean_rt.a" "$(dir_of clean_exe)"
     treject trace-rust-builtins-other-member "(other.rcgu.o) references $rname" \
         "$work/libz3t.a" "$work/t_rust_other.trace" "$work/t_rust_other"
+    treject trace-rust-builtins-other-archive "libtomls.a($robject) references $rname" \
+        "$work/libz3t.a" "$work/t_rust_elsewhere.trace" "$work/t_rust_elsewhere"
     treject trace-rust-builtins-libm "$work/t_rust_libm: $rname" \
         "$work/libz3t.a" "$work/t_rust_libm.trace" "$work/t_rust_libm"
 else

@@ -193,7 +193,8 @@ else
     if [ "$result" = PASS ] && [ "$leg" = archive ]; then
         version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)"$/\1/p' Cargo.toml)
         name=una-$version-x86_64-unknown-linux-gnu.tar.gz
-        if [ -f "$out/$name" ]; then
+        # The archive, and the trace of the link of its `una`, both readable by the runner (#2363).
+        if [ -f "$out/$name" ] && [ -r "$out/$name" ] && [ -r "$out/una.link-trace" ]; then
             extra="archive=$name
 archive_sha256=$(digest "$out/$name")"
         else
@@ -218,7 +219,16 @@ fi
     echo "log_sha256=$(digest "$log")"
     [ -n "$extra" ] && printf '%s\n' "$extra"
 } > "$manifest"
-(cd "$out" && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '*.tar.gz' ! -name '*.tar.gz.sha256' \
-    | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
+# Every file's digest, or the leg fails (#2363): a file that sha256sum cannot read would be left
+# out of SHA256SUMS, and its status is checked, not the pipeline's last command's.
+rm -f "$out/sums.status"
+(cd "$out" && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name sums.status ! -name '*.tar.gz' ! -name '*.tar.gz.sha256' \
+    | sed 's|^\./||' | LC_ALL=C sort | { xargs sha256sum > SHA256SUMS; echo "$?" > sums.status; })
+sums=$(cat "$out/sums.status" 2>/dev/null)
+rm -f "$out/sums.status"
 cat "$manifest"
+if [ "$sums" != 0 ]; then
+    echo "hosted x86-64: FAIL (the digests of $out: sha256sum exited ${sums:-without a status})"
+    exit 1
+fi
 [ "$result" = PASS ]

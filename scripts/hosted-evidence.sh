@@ -163,6 +163,9 @@ printf '%s' "$(value image)" | grep -Eqx 'ubuntu24 [0-9]{8}(\.[0-9]+)+' \
 grep -qx "hosted x86-64: PASS ($leg on $sha)" "$target/$leg.log" || fail "the log does not end the leg with PASS"
 
 if [ "$leg" = archive ]; then
+    # The trace of the link of the archive's `una`, as SHA256SUMS lists it (#2363).
+    awk '$2 == "una.link-trace" { found = 1 } END { exit !found }' "$target/SHA256SUMS" \
+        || fail "the artifact holds no una.link-trace that SHA256SUMS lists"
     name=$(value archive)
     case $name in
         una-*-x86_64-unknown-linux-gnu.tar.gz) ;;
