@@ -187,6 +187,19 @@ const METHOD_NOT_FOUND: i64 = -32601;
 /// The stack is reserved, not committed.
 const CHECK_STACK_BYTES: usize = 256 * 1024 * 1024;
 
+/// The files of a package besides its modules whose change can change its check: the
+/// manifests and locks (ADR 0122 rule 2), and the workspace file (#2307).
+const PACKAGE_FILES: [&str; 5] = [
+    "ita.una",
+    "ita.lock",
+    "itaty.una",
+    "una.toml",
+    "verification.lock",
+];
+
+/// The id of the server's one request, `client/registerCapability` for [`PACKAGE_FILES`].
+const WATCH_REGISTRATION: &str = "una/watch-package-files";
+
 /// The server's state.
 pub struct Server<W: Workspace> {
     workspace: Arc<W>,
@@ -211,6 +224,9 @@ pub struct Server<W: Workspace> {
     files: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     /// What the last check found, by absolute file.
     found: BTreeMap<PathBuf, Found>,
+    /// Whether the client registers file watchers only on request (dynamic registration of
+    /// `workspace/didChangeWatchedFiles`), so the server asks it for [`PACKAGE_FILES`].
+    register_watchers: bool,
     exited: bool,
 }
 
@@ -231,6 +247,7 @@ impl<W: Workspace> Server<W> {
             texts: BTreeMap::new(),
             files: BTreeMap::new(),
             found: BTreeMap::new(),
+            register_watchers: false,
             exited: false,
         }
     }
@@ -258,8 +275,17 @@ impl<W: Workspace> Server<W> {
         let method = field(message, &["method"]).as_str().unwrap_or("");
         let params = field(message, &["params"]);
         let id = message.get("id").cloned();
+        if message.get("method").is_none() {
+            // A response of the client, to the registration of `initialized`: nothing to do.
+            return Vec::new();
+        }
         let result = match method {
             "initialize" => Some(self.initialize(params)),
+            "initialized" => return self.register_watchers(),
+            "workspace/didChangeWatchedFiles" => {
+                self.package_files_changed(params);
+                None
+            }
             "shutdown" => Some(Value::Null),
             "exit" => {
                 self.exited = true;
@@ -440,7 +466,78 @@ impl<W: Workspace> Server<W> {
         *entry |= solve;
     }
 
+    /// The request that asks the client to watch [`PACKAGE_FILES`], when it registers
+    /// watchers only on request; nothing otherwise (a client that watches on its own, such as
+    /// the VS Code extension's `fileEvents`, sends the changes unasked).
+    fn register_watchers(&mut self) -> Vec<Value> {
+        if !std::mem::take(&mut self.register_watchers) {
+            return Vec::new();
+        }
+        vec![json!({
+            "jsonrpc": "2.0",
+            "id": WATCH_REGISTRATION,
+            "method": "client/registerCapability",
+            "params": { "registrations": [{
+                "id": WATCH_REGISTRATION,
+                "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": { "watchers": [
+                    { "globPattern": format!("**/{{{}}}", PACKAGE_FILES.join(",")) }
+                ] },
+            }] },
+        })]
+    }
+
+    /// Schedules a check, at tier 1 as on a save, of each package that a changed manifest,
+    /// lock or workspace file may change (#2307): the package of each open document in or
+    /// below the file's directory, found anew since a manifest may have come or gone, and the
+    /// directory itself when diagnostics are published for it as a package, so that a removed
+    /// manifest clears them. A change of any other file is ignored: a module's own changes
+    /// come through its document. O(changes × open documents).
+    fn package_files_changed(&mut self, params: &Value) {
+        let Some(changes) = field(params, &["changes"]).as_array() else {
+            return;
+        };
+        for change in changes {
+            let Some(path) = field(change, &["uri"]).as_str().and_then(path_of) else {
+                continue;
+            };
+            let named = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| PACKAGE_FILES.contains(&name));
+            let Some(dir) = path.parent().filter(|_| named) else {
+                continue;
+            };
+            let open: Vec<PathBuf> = self
+                .documents
+                .keys()
+                .filter(|document| document.starts_with(dir))
+                .cloned()
+                .collect();
+            for document in open {
+                self.schedule(&document, true);
+            }
+            if self.files.contains_key(dir) {
+                if let Some(running) = self.running.remove(dir) {
+                    running.cancel.store(true, Ordering::Relaxed);
+                }
+                self.pending.insert(dir.to_path_buf(), true);
+            }
+        }
+    }
+
     fn initialize(&mut self, params: &Value) -> Value {
+        self.register_watchers = field(
+            params,
+            &[
+                "capabilities",
+                "workspace",
+                "didChangeWatchedFiles",
+                "dynamicRegistration",
+            ],
+        )
+        .as_bool()
+        .unwrap_or(false);
         let offered = field(params, &["capabilities", "general", "positionEncodings"])
             .as_array()
             .is_some_and(|list| list.iter().any(|e| e.as_str() == Some("utf-32")));

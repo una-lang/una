@@ -200,6 +200,14 @@ impl Session {
     /// Starts `una lsp`, with the program `z3` under `path` as the stand-in of its solver
     /// child when given (ADR 0124; the test hooks), and initializes it with UTF-32 positions.
     fn start(path: Option<&Path>) -> Session {
+        Session::start_with(
+            path,
+            json!({ "general": { "positionEncodings": ["utf-32", "utf-16"] } }),
+        )
+    }
+
+    /// [`Session::start`], with the client's `capabilities`, which offer UTF-32 positions.
+    fn start_with(path: Option<&Path>, capabilities: Value) -> Session {
         let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
         command.env("HOME", env!("CARGO_TARGET_TMPDIR"));
         command.env_remove("UNA_PROOF_KEY");
@@ -232,10 +240,7 @@ impl Session {
             held: RefCell::new(VecDeque::new()),
             next_id: 0,
         };
-        let initialized = session.request(
-            "initialize",
-            json!({ "capabilities": { "general": { "positionEncodings": ["utf-32", "utf-16"] } } }),
-        );
+        let initialized = session.request("initialize", json!({ "capabilities": capabilities }));
         assert_eq!(initialized["capabilities"]["positionEncoding"], "utf-32");
         session.notify("initialized", json!({}));
         session
@@ -757,6 +762,94 @@ fn a_package_of_edition_0_4_or_0_5_is_found_through_ita_una_at_tier_1() {
         );
         session.finish();
     }
+}
+
+/// The notification of a client whose watcher saw `file` change.
+fn watched_change(session: &mut Session, file: &Path) {
+    session.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": uri(file), "type": 2 }] }),
+    );
+}
+
+#[test]
+fn a_saved_manifest_rechecks_the_package_of_its_open_modules() {
+    // #2307: a change of `ita.una` that no module's buffer shows reached the editor only at
+    // the next save of a module.
+    let dir = ita_package(
+        "watched",
+        "0.5",
+        &[("app.una", CLEAN_APP), ("util.una", CLEAN_UTIL)],
+    );
+    let file = dir.join("src/app.una");
+    let manifest = dir.join("ita.una");
+    let clean = std::fs::read_to_string(&manifest).unwrap();
+    let mut session = Session::start(None);
+    session.open(&file, CLEAN_APP);
+    assert_eq!(session.published(&file), json!([]));
+
+    // A line `ita.una` has no form for: the diagnostics of `una check`, at the manifest.
+    std::fs::write(&manifest, format!("{clean}  colour blue\n")).unwrap();
+    watched_change(&mut session, &manifest);
+    let published = session.published(&manifest);
+    let cli = cli_check(&dir);
+    let at_manifest: Vec<Value> = cli["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["primary"]["file"] == "ita.una")
+        .cloned()
+        .collect();
+    assert_eq!(at_manifest[0]["code"], "U7008", "{cli}");
+    assert_eq!(published, converted(&dir, &Value::Array(at_manifest)));
+
+    // The manifest made valid again clears them.
+    std::fs::write(&manifest, &clean).unwrap();
+    watched_change(&mut session, &manifest);
+    assert_eq!(session.published(&manifest), json!([]));
+
+    session.finish();
+}
+
+#[test]
+fn a_client_that_registers_watchers_on_request_is_asked_for_the_package_files() {
+    let mut session = Session::start_with(
+        None,
+        json!({
+            "general": { "positionEncodings": ["utf-32", "utf-16"] },
+            "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } },
+        }),
+    );
+    let request = session.receive().expect("no registration");
+    assert_eq!(request["method"], "client/registerCapability", "{request}");
+    let registration = &request["params"]["registrations"][0];
+    assert_eq!(registration["method"], "workspace/didChangeWatchedFiles");
+    let pattern = registration["registerOptions"]["watchers"][0]["globPattern"]
+        .as_str()
+        .unwrap();
+    for name in ["ita.una", "ita.lock", "una.toml", "verification.lock"] {
+        assert!(pattern.contains(name), "{pattern}");
+    }
+    // The client's answer is a response, which the server does not answer: the next message
+    // is the response to `shutdown`.
+    session.send(&json!({ "jsonrpc": "2.0", "id": request["id"], "result": null }));
+    session.send(&json!({ "jsonrpc": "2.0", "id": 99, "method": "shutdown" }));
+    let reply = session.receive().expect("no response");
+    assert_eq!(reply, json!({ "jsonrpc": "2.0", "id": 99, "result": null }));
+    session.notify("exit", Value::Null);
+    let status = session.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+}
+
+#[test]
+fn a_client_that_watches_on_its_own_is_not_asked_to_register() {
+    let mut session = Session::start(None);
+    session.send(&json!({ "jsonrpc": "2.0", "id": 99, "method": "shutdown" }));
+    let reply = session.receive().expect("no response");
+    assert_eq!(reply, json!({ "jsonrpc": "2.0", "id": 99, "result": null }));
+    session.notify("exit", Value::Null);
+    let status = session.child.wait().unwrap();
+    assert!(status.success(), "{status}");
 }
 
 /// A newer change cancels a running tier 1 check and kills its solver (ADR 0063 rule 4): a
