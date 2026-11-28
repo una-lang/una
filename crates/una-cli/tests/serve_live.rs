@@ -1316,21 +1316,36 @@ fn a_task_holding_a_secret_that_decides_no_call_answers_by_its_request_alone() {
 /// `examples/health` (ADR 0123, "A health endpoint") in a fresh temporary directory, its grant
 /// moved to `port`; built natively for `engine`.
 fn health_example(port: u16, engine: Engine) -> PathBuf {
+    example_copy(
+        "health",
+        &["src/health.una"],
+        "127.0.0.1:8080",
+        port,
+        engine,
+    )
+}
+
+/// The example `name` in a fresh temporary directory, its `ita.lock` and `sources` copied, its
+/// serve grant on `address` moved to `port`; built natively for `engine`.
+fn example_copy(name: &str, sources: &[&str], address: &str, port: u16, engine: Engine) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "una-serve-live-health-{engine:?}-{}",
+        "una-serve-live-{name}-{engine:?}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    let example = root().join("examples/health");
-    for file in ["ita.lock", "src/health.una"] {
+    let example = root().join("examples").join(name);
+    for file in std::iter::once(&"ita.lock").chain(sources) {
         std::fs::copy(example.join(file), dir.join(file)).unwrap();
     }
     let manifest = std::fs::read_to_string(example.join("ita.una")).unwrap();
-    assert!(manifest.contains("\"http://127.0.0.1:8080\""), "{manifest}");
+    assert!(
+        manifest.contains(&format!("\"http://{address}\"")),
+        "{manifest}"
+    );
     std::fs::write(
         dir.join("ita.una"),
-        manifest.replace("127.0.0.1:8080", &format!("127.0.0.1:{port}")),
+        manifest.replace(address, &format!("127.0.0.1:{port}")),
     )
     .unwrap();
     if engine == Engine::Native {
@@ -1342,9 +1357,108 @@ fn health_example(port: u16, engine: Engine) -> PathBuf {
             .current_dir(&dir)
             .output()
             .unwrap();
-        assert_eq!(built.status.code(), Some(0), "health: {built:?}");
+        assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
     }
     dir
+}
+
+/// Sends each `(method, target, status, ends)` to the server on `port`, one connection each, and
+/// checks that the reply starts with `status` and ends with `ends`.
+fn answers(port: u16, what: &str, engine: Engine, cases: &[(&str, &str, &str, &str)]) {
+    for (method, target, status, ends) in cases {
+        let mut stream = connect(port);
+        stream
+            .write_all(
+                format!(
+                    "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let answer = read_reply(&mut stream);
+        assert!(
+            answer.starts_with(status) && answer.ends_with(ends),
+            "{what} {engine:?} {method} {target}: {answer:?}"
+        );
+    }
+}
+
+#[test]
+fn the_orders_example_answers_without_its_store_over_loopback() {
+    // `examples/orders` (ADR 0123, "A JSON API over a database-like capability", #1793) through
+    // the driver of `spec/31 §7` rule 4, on requests that never reach its store, so no network
+    // is used: a path that is not `/orders/<id>` is 404, an id that is not a number 400, another
+    // method 405 with `allow`; the host stop ends the run with exit code 0.
+    for engine in ENGINES {
+        let port = free_port();
+        let dir = example_copy(
+            "orders",
+            &["src/api.una", "src/store.una"],
+            "127.0.0.1:8081",
+            port,
+            engine,
+        );
+        let run = start(&dir, "orders", engine, &[]);
+        answers(
+            port,
+            "orders",
+            engine,
+            &[
+                (
+                    "GET",
+                    "/nothing",
+                    "HTTP/1.1 404 Not Found\r\n",
+                    "\r\n\r\nno such resource",
+                ),
+                (
+                    "GET",
+                    "/orders/seven",
+                    "HTTP/1.1 400 Bad Request\r\n",
+                    "\r\n\r\nthe id is not a number",
+                ),
+                (
+                    "DELETE",
+                    "/orders/7",
+                    "HTTP/1.1 405 Method Not Allowed\r\n",
+                    "\r\n\r\n",
+                ),
+            ],
+        );
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert!(lines.is_empty(), "{engine:?}: {lines:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn the_proxy_example_refuses_another_method_over_loopback() {
+    // `examples/proxy` (ADR 0123, "A rate-limited proxy", the language form, #1793): a `POST` is
+    // 405 with `allow: GET`, answered by the program without a request upstream, so no network
+    // is used; the host stop ends `main`'s `for ever`, its `on stop` closes the server, and the
+    // run ends with exit code 0.
+    for engine in ENGINES {
+        let port = free_port();
+        let dir = example_copy("proxy", &["src/proxy.una"], "127.0.0.1:8082", port, engine);
+        let run = start(&dir, "proxy", engine, &[]);
+        answers(
+            port,
+            "proxy",
+            engine,
+            &[(
+                "POST",
+                "/a",
+                "HTTP/1.1 405 Method Not Allowed\r\n",
+                "\r\n\r\n",
+            )],
+        );
+        run.terminate();
+        let (code, lines, stderr) = run.end();
+        assert_eq!(code, Some(0), "{engine:?}: {stderr}");
+        assert!(lines.is_empty(), "{engine:?}: {lines:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

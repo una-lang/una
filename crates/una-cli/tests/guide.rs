@@ -1544,10 +1544,12 @@ fn every_example_has_a_readme_whose_commands_run() {
                         .unwrap_or_else(|| panic!("{relative}: its ita.una has no `edition`"))
                         .trim()
                         .to_owned();
+                    // A program of the language form with a `serve:` grant serves as a
+                    // `serve` section does (`spec/31 §1` rule 6, #1793).
                     (
                         name,
                         edition,
-                        manifest.contains("\nserve\n"),
+                        manifest.contains("\nserve\n") || manifest.contains("\n    serve \""),
                         manifest.contains("\ndrive\n"),
                     )
                 }
@@ -1565,9 +1567,9 @@ fn every_example_has_a_readme_whose_commands_run() {
             .filter(|(_, attributes)| value(attributes, "una") == Some(run_shown.clone()))
             .map(|(block, _)| *block)
             .collect();
-        // A package with a `serve` section serves under `una run` until it is stopped
-        // (`spec/31 §1` rule 10), so its README shows no output of `una run`, and
-        // `serve_live.rs` runs it in both engines.
+        // A package that serves, by a `serve` section or in the language form, serves under
+        // `una run` until it is stopped (`spec/31 §1` rule 10), so its README shows no output
+        // of `una run`, and `serve_live.rs` runs it in both engines.
         assert_eq!(
             runs.len(),
             usize::from(!serves),

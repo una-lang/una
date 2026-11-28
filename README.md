@@ -250,6 +250,8 @@ Every package under [`examples/`](examples) checks with every obligation proven 
 | [`greenhouse`](examples/greenhouse) | Operation contracts, and handlers verified against them |
 | [`shortlinks`](examples/shortlinks) | An escape hatch within its budget, and a generated requirement awaiting review |
 | [`health`](examples/health) | Edition 0.4 preview: a health endpoint, the `serve` section of `ita.una`, tests that call `handle` with `test_request` |
+| [`orders`](examples/orders) | Edition 0.4 preview: a JSON API, a `serve` section whose `handle` reaches its store through a capability, a handler over `Http` and in-memory handlers for the tests |
+| [`proxy`](examples/proxy) | Edition 0.4 preview: a rate-limited proxy in the language form, `next` and `reply` of `HttpServer`, a task per request, headers forwarded by allowlists |
 | [`metronome`](examples/metronome) | Edition 0.4 preview: a driven program, the `drive` section of `ita.una`, a state that `step` edits on each tick |
 
 ## Build from source

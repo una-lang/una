@@ -435,9 +435,13 @@ fn every_example_package_is_canonical_verified_and_tested() {
                 Err(_) => {
                     let manifest =
                         std::fs::read_to_string(repository().join(&path).join("ita.una")).unwrap();
+                    // A program of the language form that serves (an entry and a `serve:`
+                    // grant, `spec/31 §1` rule 6) serves until it is stopped, as a `serve`
+                    // section does: it is tested in `serve_live.rs`, not run here (#1793).
+                    let grants_serve = manifest.contains("\n    serve \"");
                     (
-                        manifest.contains("\nrun\n  entry "),
-                        manifest.contains("\nserve\n"),
+                        manifest.contains("\nrun\n  entry ") && !grants_serve,
+                        manifest.contains("\nserve\n") || grants_serve,
                         manifest.contains("\ndrive\n"),
                     )
                 }
@@ -478,8 +482,9 @@ fn every_example_package_is_canonical_verified_and_tested() {
             assert_eq!(text(&run.stdout), *output, "{name}");
         }
     }
-    // `examples/health` serves (ADR 0123, "A health endpoint").
-    assert_eq!(serving, ["health"]);
+    // `examples/health`, `orders` and `proxy` serve (ADR 0123, "Examples"): the first two by
+    // a `serve` section, the proxy in the language form (#1793).
+    assert_eq!(serving, ["health", "orders", "proxy"]);
     // `examples/metronome` is driven by the host (`spec/26 §2`).
     assert_eq!(driven, ["metronome"]);
 }
