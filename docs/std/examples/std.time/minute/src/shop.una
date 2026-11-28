@@ -1,0 +1,9 @@
+module shop
+
+import std.time (minute)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let hold = 15 * minute
+  @console.print("a cart is held for {hold} ms")

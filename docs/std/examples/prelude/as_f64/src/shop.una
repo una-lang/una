@@ -1,0 +1,14 @@
+module shop
+
+--- The weight a JSON value gives, in kilograms.
+weight(j: Json) -> Text
+=
+  when as_f64(j)
+    is Some(kilograms) -> "{kilograms} kg"
+    is None -> "no weight"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(weight(Number(value: 3)))
+  @console.print(weight(Str(value: "heavy")))

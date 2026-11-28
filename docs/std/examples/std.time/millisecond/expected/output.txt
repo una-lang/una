@@ -1,0 +1,1 @@
+a tick lasts 250 ms

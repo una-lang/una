@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let unknown = nan()
+  @console.print("{unknown} is NaN: {unknown.is_nan()}")

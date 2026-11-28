@@ -1,0 +1,15 @@
+module shop
+
+--- The price that a text writes, or why it writes none.
+price(t: Text) -> Text
+=
+  let outcome = attempt parse_f64(t)
+  when outcome
+    is Ok(value) -> "{value}"
+    is Err(failure) -> "not a number"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(price("19.5"))
+  @console.print(price("19,5"))

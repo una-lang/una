@@ -1,0 +1,6 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{f64_from_bits(4609434218613702656)}")

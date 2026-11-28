@@ -1,0 +1,9 @@
+module shop
+
+import std.time (millisecond)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let tick = 250 * millisecond
+  @console.print("a tick lasts {tick} ms")

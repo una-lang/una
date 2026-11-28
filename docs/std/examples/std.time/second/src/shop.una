@@ -1,0 +1,9 @@
+module shop
+
+import std.time (second)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let timeout = 30 * second
+  @console.print("the request times out after {timeout} ms")
