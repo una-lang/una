@@ -4044,3 +4044,37 @@ fn the_release_run_runs_core_depth_unoptimized() {
         "the build gate no longer runs its steps"
     );
 }
+
+/// The archive check tells a serving example the way `examples.rs` does (#2423): a `serve`
+/// section, or a `serve "..."` grant of the entry (the language form, `examples/proxy`). Run on a
+/// server with `una run .`, it would serve until its time limit. This runs the script's own two
+/// `grep` tests on every example and fails if they miss a server or take a program for one.
+#[test]
+fn the_archive_check_tells_every_serving_example() {
+    let script = std::fs::read_to_string(root().join("scripts/check-release.sh")).unwrap();
+    let rule = "grep -qx serve \"$example/ita.una\" 2>/dev/null || grep -q '^    serve \"' \"$example/ita.una\" 2>/dev/null";
+    assert!(
+        script.contains(rule),
+        "scripts/check-release.sh no longer tells a server by its section or its grant"
+    );
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(root().join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    entries.sort();
+    let mut serving = Vec::new();
+    for dir in entries {
+        if !dir.join("ita.una").is_file() {
+            continue;
+        }
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(format!("example='{}'; {rule}", dir.display()))
+            .status()
+            .unwrap();
+        if status.success() {
+            serving.push(dir.file_name().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    assert_eq!(serving, ["health", "orders", "proxy"]);
+}

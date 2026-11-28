@@ -165,7 +165,9 @@ if [ "${1:-}" = --inside ]; then
         fi
     }
     kind() {
-        if grep -qx serve "$1/ita.una" 2> /dev/null; then
+        # A `serve` section, or a `serve "..."` grant of the entry (the language form, examples/proxy;
+        # the rule of crates/una-cli/tests/examples.rs, #2423).
+        if grep -qx serve "$1/ita.una" 2> /dev/null || grep -q '^    serve "' "$1/ita.una" 2> /dev/null; then
             echo serve
         elif grep -qx drive "$1/ita.una" 2> /dev/null; then
             echo drive
@@ -198,7 +200,15 @@ if [ "${1:-}" = --inside ]; then
                 res FAIL "una test $p (exit $code): $(first "$out/test-$p.out") $(first "$out/test-$p.err")"
             fi
             case $(kind "$d") in
-            serve) serve_health "una run $p" "$d" "$una" run . ;;
+            serve)
+                # serve_health knows examples/health (127.0.0.1:8080); the other servers are
+                # served by crates/una-cli/tests/serve_live.rs (#2423).
+                if [ "$p" = health ]; then
+                    serve_health "una run $p" "$d" "$una" run .
+                else
+                    res NOTE "$p serves until it is stopped; serve_live.rs serves it"
+                fi
+                ;;
             drive)
                 if step_in "$d" "run-$p" 300 "$una" run . --stop-after-iterations 5; then
                     res PASS "una run $p --stop-after-iterations 5"
