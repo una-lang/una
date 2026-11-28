@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const cube = tensor_filled(shape: [2, 3, 4], value: 0.0)
+  @console.print("rank {cube.rank}, {cube.dim(axis: 0)} along the first axis")

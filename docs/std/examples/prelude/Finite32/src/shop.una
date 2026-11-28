@@ -1,0 +1,10 @@
+module shop
+
+--- Twice a finite measurement.
+twice(x: Finite32) -> F32 = x * 2.0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const reading: F32 = 1.25
+  @console.print("{twice(1.25)} from {reading}")

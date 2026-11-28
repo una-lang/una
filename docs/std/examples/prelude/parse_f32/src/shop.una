@@ -1,0 +1,15 @@
+module shop
+
+--- The weight that a text writes, in single precision.
+weight(t: Text) -> Text
+=
+  const outcome = attempt parse_f32(t)
+  when outcome
+    is Ok(value) -> "{value}"
+    is Err(failure) -> "not a number"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(weight("2.5"))
+  @console.print(weight("heavy"))

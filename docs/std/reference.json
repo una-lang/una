@@ -18,21 +18,6 @@
   "testing"
  ],
  "pending": [
-  "prelude Finite32",
-  "prelude Finite64",
-  "prelude Rounding",
-  "prelude array",
-  "prelude array_filled",
-  "prelude as_decimal",
-  "prelude f32_from_bits",
-  "prelude json_decimal",
-  "prelude matrix",
-  "prelude matrix_diagonal",
-  "prelude matrix_filled",
-  "prelude parse_decimal",
-  "prelude parse_f32",
-  "prelude tensor",
-  "prelude tensor_filled",
   "std.host Exchange",
   "std.host HttpServer",
   "std.host Method",
@@ -4385,6 +4370,400 @@
     "builtin len"
    ],
    "example": "docs/std/examples/builtin/size"
+  },
+  {
+   "module": "prelude",
+   "name": "Rounding",
+   "area": "numbers",
+   "variants": [
+    {
+     "name": "HalfEven",
+     "fields": [],
+     "meaning": "to the nearer unit, and from halfway to the even one"
+    },
+    {
+     "name": "HalfAwayFromZero",
+     "fields": [],
+     "meaning": "to the nearer unit, and from halfway away from zero"
+    },
+    {
+     "name": "HalfTowardZero",
+     "fields": [],
+     "meaning": "to the nearer unit, and from halfway toward zero"
+    },
+    {
+     "name": "TowardZero",
+     "fields": [],
+     "meaning": "to the unit nearer zero, cutting the rest off"
+    },
+    {
+     "name": "AwayFromZero",
+     "fields": [],
+     "meaning": "to the unit farther from zero whenever anything is cut"
+    },
+    {
+     "name": "TowardPositive",
+     "fields": [],
+     "meaning": "to the unit above"
+    },
+    {
+     "name": "TowardNegative",
+     "fields": [],
+     "meaning": "to the unit below"
+    }
+   ],
+   "example": "docs/std/examples/prelude/Rounding"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_decimal",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text, digits with an optional `-` and point"
+    },
+    {
+     "name": "scale",
+     "meaning": "an integer literal from 0 to 38, the scale of the result"
+    }
+   ],
+   "returns": {
+    "type": "Decimal[0]",
+    "meaning": "the exact value that `t` writes, at the scale that `scale` gives, as a `Decimal` of that scale"
+   },
+   "fails": [
+    {
+     "variant": "Empty",
+     "when": "`t` is empty"
+    },
+    {
+     "variant": "NotADigit",
+     "when": "at the first nonzero fraction digit beyond the scale, or else at the first position, in scalar values, at which no accepted text can continue; there is no exponent and no space"
+    },
+    {
+     "variant": "NoDigits",
+     "when": "`t` is `-` alone"
+    },
+    {
+     "variant": "TooLong",
+     "when": "the coefficient at the scale would have more than 4300 digits, leading zeros not counted"
+    }
+   ],
+   "see_also": [
+    "prelude ParseError",
+    "prelude as_decimal"
+   ],
+   "example": "docs/std/examples/prelude/parse_decimal"
+  },
+  {
+   "module": "prelude",
+   "name": "as_decimal",
+   "area": "json",
+   "params": [
+    {
+     "name": "j",
+     "meaning": "the JSON value"
+    },
+    {
+     "name": "scale",
+     "meaning": "an integer literal from 0 to 38, the scale of the result"
+    }
+   ],
+   "returns": {
+    "type": "Option[Decimal[0]]",
+    "meaning": "the exact value of a JSON number at the scale that `scale` gives, as `Some`, and `None` when it has no exact value there, and for any other `Json`"
+   },
+   "see_also": [
+    "prelude json_decimal",
+    "prelude as_f64"
+   ],
+   "example": "docs/std/examples/prelude/as_decimal"
+  },
+  {
+   "module": "prelude",
+   "name": "json_decimal",
+   "area": "json",
+   "params": [
+    {
+     "name": "x",
+     "meaning": "the decimal"
+    }
+   ],
+   "returns": {
+    "type": "Json",
+    "meaning": "`x` as a JSON number: `Number` at scale 0, `Decimal` written with all its digits at any other scale"
+   },
+   "see_also": [
+    "prelude as_decimal",
+    "prelude to_json"
+   ],
+   "example": "docs/std/examples/prelude/json_decimal"
+  },
+  {
+   "module": "prelude",
+   "name": "f32_from_bits",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "bits",
+     "meaning": "the 32 bits of an IEEE 754 binary32 value"
+    }
+   ],
+   "returns": {
+    "type": "F32",
+    "meaning": "the `F32` with those bits; any NaN gives the canonical NaN of `F32`"
+   },
+   "see_also": [
+    "prelude f64_from_bits"
+   ],
+   "example": "docs/std/examples/prelude/f32_from_bits"
+  },
+  {
+   "module": "prelude",
+   "name": "parse_f32",
+   "area": "numbers",
+   "params": [
+    {
+     "name": "t",
+     "meaning": "the text: a JSON number, `nan`, `inf` or `-inf`, with no space around it"
+    }
+   ],
+   "returns": {
+    "type": "F32",
+    "meaning": "the `F32` nearest the number `t` writes, ties to even, with the sign of the text"
+   },
+   "fails": [
+    {
+     "variant": "Empty",
+     "when": "`t` is empty"
+    },
+    {
+     "variant": "NotADigit",
+     "when": "at the first position, in scalar values, at which no accepted text can continue, or at the length of a text that ends where one could still continue"
+    },
+    {
+     "variant": "NoDigits",
+     "when": "`t` is `-` alone"
+    },
+    {
+     "variant": "TooLong",
+     "when": "never: `parse_f32` reads any number of digits and any exponent"
+    }
+   ],
+   "see_also": [
+    "prelude parse_f64",
+    "prelude ParseError"
+   ],
+   "example": "docs/std/examples/prelude/parse_f32"
+  },
+  {
+   "module": "prelude",
+   "name": "Finite64",
+   "area": "numbers",
+   "definition": {
+    "type": "F64 where it.is_finite()",
+    "meaning": "an `F64` that is neither NaN nor an infinity, so arithmetic on it is closed only as far as its results are checked"
+   },
+   "see_also": [
+    "prelude nan",
+    "prelude infinity"
+   ],
+   "example": "docs/std/examples/prelude/Finite64"
+  },
+  {
+   "module": "prelude",
+   "name": "Finite32",
+   "area": "numbers",
+   "definition": {
+    "type": "F32 where it.is_finite()",
+    "meaning": "an `F32` that is neither NaN nor an infinity"
+   },
+   "see_also": [
+    "prelude Finite64"
+   ],
+   "example": "docs/std/examples/prelude/Finite32"
+  },
+  {
+   "module": "prelude",
+   "name": "array",
+   "area": "lists",
+   "params": [
+    {
+     "name": "xs",
+     "meaning": "the elements, in order"
+    }
+   ],
+   "returns": {
+    "type": "Array[T]",
+    "meaning": "an array of the elements of `xs`, in order, of the same length"
+   },
+   "see_also": [
+    "prelude array_filled"
+   ],
+   "example": "docs/std/examples/prelude/array"
+  },
+  {
+   "module": "prelude",
+   "name": "array_filled",
+   "area": "lists",
+   "params": [
+    {
+     "name": "length",
+     "meaning": "the number of elements"
+    },
+    {
+     "name": "value",
+     "meaning": "the value of each element"
+    }
+   ],
+   "returns": {
+    "type": "Array[T]",
+    "meaning": "an array of `length` elements, each `value`"
+   },
+   "requires": [
+    {
+     "condition": "length >= 0",
+     "meaning": "the length is not negative"
+    }
+   ],
+   "see_also": [
+    "prelude array"
+   ],
+   "example": "docs/std/examples/prelude/array_filled"
+  },
+  {
+   "module": "prelude",
+   "name": "matrix",
+   "area": "lists",
+   "params": [
+    {
+     "name": "rows",
+     "meaning": "the number of rows"
+    },
+    {
+     "name": "columns",
+     "meaning": "the number of columns"
+    },
+    {
+     "name": "elements",
+     "meaning": "the elements in row-major order"
+    }
+   ],
+   "returns": {
+    "type": "Matrix[T]",
+    "meaning": "a matrix of `rows` rows and `columns` columns, filled row by row from `elements`"
+   },
+   "requires": [
+    {
+     "condition": "rows >= 0 and columns >= 0 and elements.len == rows * columns",
+     "meaning": "the shape is not negative and `elements` has exactly one element per position"
+    }
+   ],
+   "see_also": [
+    "prelude matrix_filled",
+    "prelude matrix_diagonal"
+   ],
+   "example": "docs/std/examples/prelude/matrix"
+  },
+  {
+   "module": "prelude",
+   "name": "matrix_filled",
+   "area": "lists",
+   "params": [
+    {
+     "name": "rows",
+     "meaning": "the number of rows"
+    },
+    {
+     "name": "columns",
+     "meaning": "the number of columns"
+    },
+    {
+     "name": "value",
+     "meaning": "the value of each element"
+    }
+   ],
+   "returns": {
+    "type": "Matrix[T]",
+    "meaning": "a matrix of `rows` rows and `columns` columns, each element `value`"
+   },
+   "requires": [
+    {
+     "condition": "rows >= 0 and columns >= 0",
+     "meaning": "the shape is not negative"
+    }
+   ],
+   "see_also": [
+    "prelude matrix"
+   ],
+   "example": "docs/std/examples/prelude/matrix_filled"
+  },
+  {
+   "module": "prelude",
+   "name": "matrix_diagonal",
+   "area": "lists",
+   "params": [
+    {
+     "name": "values",
+     "meaning": "the diagonal, from the top left"
+    }
+   ],
+   "returns": {
+    "type": "Matrix[T]",
+    "meaning": "the square matrix with `values` on its diagonal and `+0` of the element type elsewhere"
+   },
+   "see_also": [
+    "prelude matrix"
+   ],
+   "example": "docs/std/examples/prelude/matrix_diagonal"
+  },
+  {
+   "module": "prelude",
+   "name": "tensor",
+   "area": "lists",
+   "params": [
+    {
+     "name": "shape",
+     "meaning": "the length along each axis, a list literal of 1 to 8 of them"
+    },
+    {
+     "name": "elements",
+     "meaning": "the elements in row-major order"
+    }
+   ],
+   "returns": {
+    "type": "Tensor[T]",
+    "meaning": "a tensor of that shape, filled in row-major order; each call takes the contract of its rank, that every length is not negative and `elements` has one element per position, and its result has the rank and the lengths of the literal"
+   },
+   "see_also": [
+    "prelude tensor_filled",
+    "prelude matrix"
+   ],
+   "example": "docs/std/examples/prelude/tensor"
+  },
+  {
+   "module": "prelude",
+   "name": "tensor_filled",
+   "area": "lists",
+   "params": [
+    {
+     "name": "shape",
+     "meaning": "the length along each axis, a list literal of 1 to 8 of them"
+    },
+    {
+     "name": "value",
+     "meaning": "the value of each element"
+    }
+   ],
+   "returns": {
+    "type": "Tensor[T]",
+    "meaning": "a tensor of that shape, each element `value`; each call requires that every length is not negative, and its result has the rank and the lengths of the literal"
+   },
+   "see_also": [
+    "prelude tensor"
+   ],
+   "example": "docs/std/examples/prelude/tensor_filled"
   }
  ]
 }

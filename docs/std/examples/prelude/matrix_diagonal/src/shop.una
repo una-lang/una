@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const scale = matrix_diagonal(array([2.0, 3.0]))
+  @console.print("{scale.rows} by {scale.columns}")

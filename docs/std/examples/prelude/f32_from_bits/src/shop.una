@@ -1,0 +1,6 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{f32_from_bits(1069547520)}")

@@ -1,0 +1,7 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const weights = array([1.5, 2.0, 0.5])
+  @console.print("{weights.len} weights")
