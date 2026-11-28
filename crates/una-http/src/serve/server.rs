@@ -860,6 +860,9 @@ impl Context {
                 #[cfg(feature = "test-hooks")]
                 super::place::probe::rearm("accept", self.index, self.accept_failures);
                 self.accept_failures = 0;
+                if let Some(port) = self.shared.port(self.index) {
+                    port.set_accept_broken(true);
+                }
                 if self.shared.pass_turn(self.index) {
                     self.accept_lost = false;
                 }
@@ -874,6 +877,9 @@ impl Context {
             self.accept_failures = self.accept_failures.saturating_add(1);
         } else {
             self.accept_failures = 0;
+            if let Some(port) = self.shared.port(self.index) {
+                port.set_accept_broken(false);
+            }
         }
     }
 

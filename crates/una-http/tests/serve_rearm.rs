@@ -3,7 +3,8 @@
 //! reply handed to it is still written at once instead of waiting for a timer, and the next
 //! connection is still accepted, also when the registration fails 20 times in a row (#2342).
 //! A thread whose accept poller keeps failing passes the turn to accept to another thread
-//! after 100 failures, which the run counts and the probe records (#2343). Its own test
+//! after 100 failures, which the run counts and the probe records (#2343), and is not given
+//! the turn again while another thread can take it (#2352). Its own test
 //! binary, since the fault hooks and the probe are process-wide.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -125,6 +126,12 @@ fn a_failed_re_registration_of_the_wake_pair_or_the_accept_poller_is_made_again(
         "the reply waited {:?}",
         start.elapsed()
     );
+    // The reply came by the 10 ms poll of the inbox; the 20 faults are passed one per pass,
+    // so wait for them (#2351).
+    let end = Instant::now() + Duration::from_secs(5);
+    while server::rearm_faults_left() != (0, 0) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(server::rearm_faults_left(), (0, 0));
     assert!(server.rearm_failures() >= 20, "{}", server.rearm_failures());
     drop(peer);
@@ -159,6 +166,22 @@ fn a_failed_re_registration_of_the_wake_pair_or_the_accept_poller_is_made_again(
         server.rearm_failures() >= 100,
         "{}",
         server.rearm_failures()
+    );
+    // The broken thread is not given the turn again while thread 0 can take it (#2352): more
+    // connections are accepted, and no re-registration fails any more.
+    let failures = server.rearm_failures();
+    for k in 0..5 {
+        assert!(served(
+            &server,
+            port,
+            &format!("c{k}"),
+            Duration::from_secs(10)
+        ));
+    }
+    assert_eq!(
+        server.rearm_failures(),
+        failures,
+        "the turn went back to the thread that cannot take it"
     );
     server::fail_rearms(None, 0, 0);
     server.stop();
