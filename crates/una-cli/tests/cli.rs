@@ -138,7 +138,14 @@ fn check_json_is_byte_identical_across_runs(target: &str) {
         .current_dir(repository)
         .output()
         .unwrap();
-    assert!(matches!(first.status.code(), Some(0 | 1)), "{target}");
+    for run in [&first, &second, &single] {
+        assert!(
+            matches!(run.status.code(), Some(0 | 1)),
+            "{target}: {:?}, stderr: {}",
+            run.status,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
     assert_eq!(first.stdout, second.stdout, "{target}");
     assert_eq!(first.stdout, single.stdout, "{target}");
 }
