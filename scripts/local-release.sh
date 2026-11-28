@@ -4,7 +4,8 @@
 # target that scripts/release-targets.txt lists and of no other (#1903), in its order: the
 # aarch64-apple-darwin archive natively, a Linux one in the container of scripts/local-ci/Dockerfile.release
 # of its architecture (linux/arm64, native here, #241; linux/amd64, emulated), each with
-# scripts/release.sh and checked with scripts/check-release.sh. It writes the archives, their .sha256 files and the release
+# scripts/release.sh and checked with scripts/check-release.sh, but for the emulated linux/amd64
+# one, which must equal the archive the hosted x86-64 runner checked natively (#2106). It writes the archives, their .sha256 files and the release
 # notes to target/local-release/TAG/, and prints the `gh release create` command that publishes
 # them. It publishes nothing.
 #
@@ -155,6 +156,18 @@ linux_archive() {
     "$root/scripts/container-volumes.sh" "linux/$arch" "$image" "$volume:/work/target" \
         una-local-ci-registry:/opt/cargo/registry "una-local-ci-z3-cache$suffix:/opt/z3-cache" \
         || fail "handing the container's volumes to its user for linux/$arch"
+    # The x86-64 archive on a machine whose linux/amd64 container is emulated (#2106, ADR 0124
+    # rule 31 as its amendment of 2026-11-27 reads it): scripts/check-release.sh starts solver
+    # children, whose seccomp filter does not install under emulation (#1442), so it cannot run
+    # here. The archive is built here all the same, and must be byte for byte the one that the
+    # hosted x86-64 runner packed and checked natively on this commit (scripts/hosted-evidence.sh);
+    # no other archive, and no unchecked one, is kept.
+    check="scripts/check-release.sh $target"
+    hosted=""
+    if [ "$arch" = amd64 ] && ! "$root/scripts/hosted-evidence.sh" --native-engine; then
+        check="echo the check: the archive the hosted runner checked natively, below"
+        hosted=1
+    fi
     docker run --rm --platform "linux/$arch" \
         --volume "$checkout:/work" \
         --volume "$volume:/work/target" \
@@ -165,9 +178,28 @@ linux_archive() {
         --volume "$out:/out" \
         "$image" sh -c "set -e
             scripts/release.sh $target
-            scripts/check-release.sh $target
+            $check
             cp target/release-archives/$name target/release-archives/$name.sha256 /out/" \
         || fail "the Linux archive of $target"
+    if [ -n "$hosted" ]; then
+        # The evidence stays where the caller keeps it (UNA_HOSTED_DIR: the release gates give
+        # OUT/hosted/release and OUT/hosted/reproducible), and its whole output, the runner's
+        # log included, goes into this output (ADR 0124's amendment of 2026-11-27, item 4; #2327).
+        hosted_dir=${UNA_HOSTED_DIR:-$root/target/local-release/$tag.hosted}
+        evidence=$("$root/scripts/hosted-evidence.sh" "$commit" archive "$hosted_dir")
+        evidence_status=$?
+        printf '%s\n' "$evidence"
+        if [ "$evidence_status" != 0 ]; then
+            rm -f "$out/$name" "$out/$name.sha256"
+            fail "the hosted x86-64 evidence of $commit"
+        fi
+        ours=$(shasum -a 256 "$out/$name" | cut -d ' ' -f 1)
+        if ! printf '%s\n' "$evidence" | grep -qx "hosted: archive $name sha256 $ours"; then
+            rm -f "$out/$name" "$out/$name.sha256"
+            fail "$name built here is $ours, not the archive the hosted runner checked natively"
+        fi
+        echo "== $name: sha256 $ours, the archive the hosted runner checked natively"
+    fi
     # Only the volume of the current image is kept: once its build passed, the run removes the
     # architecture's other kept volumes, those of earlier images (#2272).
     if [ -z "$volume_override" ]; then

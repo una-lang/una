@@ -469,3 +469,127 @@ fn an_arm64_macho_artifact_is_not_applicable_and_a_universal_one_fails() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("universal"), "{stderr}");
 }
+
+/// The four exact names of ADR 0120's amendment of 2026-11-27 (#2106): the hardware paths of
+/// the pinned toolchain's IEEE `fma` and `fmaf` in `compiler_builtins`.
+const TOOLCHAIN_FMA: [&str; 4] = [
+    "compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma",
+    "compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma4",
+    "compiler_builtins::math::libm_math::arch::x86::fma::fmaf_with_fma",
+    "compiler_builtins::math::libm_math::arch::x86::fma::fmaf_with_fma4",
+];
+
+/// `fma_with_fma` as rustc mangles it (v0), with the crate disambiguator that the demangler
+/// prints in brackets and the gate drops, as in the x86-64 `una` of 0.5.2's tree (#2106).
+const TOOLCHAIN_FMA_V0: &str =
+    "_RNvNtNtNtNtNtCseo7sFwwH0bC_17compiler_builtins4math9libm_math4arch3x863fma12fma_with_fma";
+
+/// Writes `bytes` as `name` in a directory of its own, `case`, so that files named `una` or
+/// `libuna_rt.a` of different tests never meet.
+fn write_as(case: &str, name: &str, bytes: &[u8]) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("fma-gate-toolchain")
+        .join(case);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn the_toolchain_fma_is_allowed_by_its_four_exact_names_in_una_and_the_runtime_only() {
+    // ADR 0120's amendment of 2026-11-27 (#2106): with --toolchain-fma, an FMA instruction in
+    // each of the four exact names passes, in a file named `una` or `libuna_rt.a`.
+    let mut functions: Vec<(&str, &[u8])> = TOOLCHAIN_FMA.iter().map(|name| (*name, FMA)).collect();
+    functions.push((TOOLCHAIN_FMA_V0, FMA));
+    functions.push(("clean", ADD));
+    let bytes = object(&functions);
+    let una = write_as("allowed", "una", &bytes);
+    if !disassembles(&una) {
+        return;
+    }
+    let runtime = write_as("allowed", "libuna_rt.a", &bytes);
+    let output = gate(&["--toolchain-fma"], &[&una, &runtime]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Without the option, the same file fails on each of them: the default allowlist is
+    // unchanged.
+    let output = gate(&[], &[&una]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    for name in TOOLCHAIN_FMA {
+        assert!(stderr.contains(&format!("{name}\t")), "{name}: {stderr}");
+    }
+    // A fifth name of the same module, a name inside an allowed one (no prefix match), a near
+    // name and a name of another crate still fail with the option.
+    for (case, name) in [
+        (
+            "fifth",
+            "compiler_builtins::math::libm_math::arch::x86::fma::fma_fallback",
+        ),
+        (
+            "inside",
+            "compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma::inner",
+        ),
+        (
+            "near",
+            "compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma5",
+        ),
+        (
+            "module",
+            "compiler_builtins::math::libm_math::arch::x86::fma",
+        ),
+        (
+            "other",
+            "my_crate::math::libm_math::arch::x86::fma::fma_with_fma",
+        ),
+    ] {
+        let una = write_as(case, "una", &object(&[(name, FMA)]));
+        let output = gate(&["--toolchain-fma"], &[&una]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{case}: {stderr}");
+        assert!(stderr.contains(&format!("{name}\t")), "{case}: {stderr}");
+    }
+    // A program that `una build` writes keeps the allowlist alone: the option is refused for any
+    // file but `una` and `libuna_rt.a`, and without it the names fail there.
+    let program = write_as("program", "hello", &bytes);
+    let output = gate(&["--toolchain-fma"], &[&una, &program]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("--toolchain-fma is for una and libuna_rt.a only"),
+        "{stderr}"
+    );
+    let output = gate(&[], &[&program]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn the_release_check_gives_the_toolchain_names_to_una_and_the_runtime_alone() {
+    // scripts/check-release.sh passes --toolchain-fma on its one scan of the shipped `una` and
+    // `libuna_rt.a`; scripts/fma-canary.sh, which scans the programs it builds, does not.
+    let release = std::fs::read_to_string(root().join("scripts/check-release.sh")).unwrap();
+    let scans: Vec<&str> = release
+        .lines()
+        .filter(|line| line.trim_start().starts_with("scripts/check-fma.sh"))
+        .collect();
+    assert_eq!(
+        scans,
+        ["scripts/check-fma.sh \"$@\" --toolchain-fma \"$una\" \"$runtime\""]
+    );
+    let canary = std::fs::read_to_string(root().join("scripts/fma-canary.sh")).unwrap();
+    assert!(!canary.contains("--toolchain-fma"));
+    let script = std::fs::read_to_string(root().join("scripts/check-fma.sh")).unwrap();
+    for name in TOOLCHAIN_FMA {
+        assert!(script.contains(&format!("{name}\n")), "{name}");
+    }
+}

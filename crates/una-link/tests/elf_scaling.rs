@@ -13,7 +13,9 @@
 //! counted with their overlaps, is bounded by 4 times the input (U8001 past it), so an input
 //! whose names overlap N x S bytes is refused, in linear time. The same holds for symbols in a
 //! section the executable drops, whose problem is formatted only when a relocation reaches one
-//! (before, each held a copy of its name: memory N x S).
+//! (before, each held a copy of its name: memory N x S). The names' cases are judged at most 3
+//! times per doubling and at most 1.5 times linear over their whole range (#2325): their sizes
+//! are sub-millisecond, and one doubling can cross a cache size of the processor.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -332,6 +334,31 @@ fn shared_names(symbols: usize, name: usize, dropped: bool) -> Vec<u8> {
     out
 }
 
+/// The most one doubling of a names case may cost (#2325): above 2.3, so that one step across a
+/// cache size of the processor (a sub-millisecond size whose working set leaves a cache; 2.4x to
+/// 2.5x on an x86-64 Xeon 6975P-C) passes, and below the 4 of a cost quadratic in N.
+const NAMES_STEP: f64 = 3.0;
+
+/// The most the whole range of a names case may cost, as a multiple of its growth in size
+/// (#2325): 1.5 times linear, under the 12.2x that three doublings at 2.3 allowed before, so a
+/// cost that grows faster than linear over the range still fails, whichever step it hides in.
+const NAMES_RANGE: f64 = 1.5;
+
+/// Asserts that `measure` grows linearly over `sizes` (#2325): each doubling within
+/// [`NAMES_STEP`], and the last size within [`NAMES_RANGE`] times linear of the first, past
+/// `fixed`, both judged by [`timing::assert_growth`] with its retries.
+fn assert_names_linear(
+    what: &str,
+    sizes: &[usize],
+    fixed: f64,
+    mut measure: impl FnMut(usize) -> f64,
+) {
+    timing::assert_growth(what, sizes, fixed, 1e-4, NAMES_STEP, &mut measure);
+    let ends = [sizes[0], sizes[sizes.len() - 1]];
+    let range = ends[1] as f64 / ends[0] as f64;
+    timing::assert_growth(what, &ends, fixed, 1e-4, range * NAMES_RANGE, &mut measure);
+}
+
 /// The median of 9 runs of `run`, in seconds.
 fn median_of_nine_of(run: impl Fn()) -> f64 {
     let mut times: Vec<f64> = (0..9).map(|_| timing::timed(&run).1).collect();
@@ -376,7 +403,7 @@ fn names_that_share_one_long_string_cost_linear_time_and_memory() {
         } else {
             "symbols sharing a long name"
         };
-        timing::assert_growth(what, &sizes, fixed, 1e-4, 2.3, |n| {
+        assert_names_linear(what, &sizes, fixed, |n| {
             median_of_nine_of(|| {
                 let _ = una_link::check_elf("shared.o", &inputs[&n]);
                 let _ = una_link::scan_elf("shared.o", &inputs[&n]);
@@ -388,7 +415,7 @@ fn names_that_share_one_long_string_cost_linear_time_and_memory() {
         .iter()
         .map(|&n| (n, shared_names(n * 4, 16, true)))
         .collect();
-    timing::assert_growth("dropped symbols", &sizes, 0.0, 1e-4, 2.3, |n| {
+    assert_names_linear("dropped symbols", &sizes, 0.0, |n| {
         median_of_nine_of(|| {
             una_link::check_elf("dropped.o", &inputs[&n]).unwrap();
         })
@@ -430,4 +457,30 @@ fn the_engine_grows_linearly_with_functions_relocations_and_sections() {
         2.3,
         |k| median_of_nine(&loads[&k]),
     );
+}
+
+#[test]
+fn the_names_bound_passes_one_cache_step_and_fails_a_quadratic() {
+    // #2325: the measures of the x86-64 runner pass (one doubling at 2.47x), a cost quadratic
+    // in N fails at every doubling, and a cost linear but for one 3.5x step, or one that
+    // grows 2.29x at each doubling (12x over the range, past 1.5 times linear), fails too.
+    let sizes = [2_500, 5_000, 10_000, 20_000];
+    let at = |times: [f64; 4]| move |n: usize| times[sizes.iter().position(|&s| s == n).unwrap()];
+    assert_names_linear(
+        "runner",
+        &sizes,
+        0.0,
+        at([8.5248e-5, 0.000171343, 0.000423039, 0.000893494]),
+    );
+    for (case, times) in [
+        ("quadratic", [1e-3, 4e-3, 16e-3, 64e-3]),
+        ("one 3.5x step", [1e-3, 2e-3, 7e-3, 14e-3]),
+        (
+            "2.29x at each doubling",
+            [1e-3, 2.29e-3, 5.2441e-3, 12.009e-3],
+        ),
+    ] {
+        let failed = std::panic::catch_unwind(|| assert_names_linear(case, &sizes, 0.0, at(times)));
+        assert!(failed.is_err(), "{case} passed");
+    }
 }

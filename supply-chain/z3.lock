@@ -68,6 +68,16 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 # library of 0.4.0 to 0.5.1, built in the Ubuntu 24.04 image (GCC 13.3.0, glibc 2.39), was
 # 0ddec1a9cf5f01e23c96c4c98ad8b6dc7a787f0ecc4ecb975cfb2bf7200e11f7.
 "aarch64-unknown-linux-gnu" = "08fdb9fdbec4d6cb83faa6e881403695555fae2a23973f45a23a6154dc004b02"
+# x86_64-unknown-linux-gnu: c++ (GCC) 13.3.1 20240611 (Red Hat 13.3.1-2) of gcc-toolset-13,
+# cmake version 3.26.5, GNU ar version 2.40-21.el8, glibc 2.28, in the linux/amd64 image of
+# scripts/local-ci/Dockerfile.release (almalinux:8@sha256:768bedc3..., the same packages and
+# versions as the aarch64 table) as uid 1000, built 2026-11-27 (#2106) from the source tarball of the
+# mirror, checked by its digest; shown reproducible by five cold builds with equal digests: two
+# (scripts/build-z3.sh --reproducible) on each of two GitHub-hosted ubuntu-24.04 x86-64 runners
+# (image 20261122.23.1, kernel 7.0.0-1018-aws, run 46058548133 of
+# .github/workflows/linux-x86-64.yml, jobs z3-library one and two), and one in that image on the
+# arm64 gate machine under emulation, where building needs no seccomp filter.
+"x86_64-unknown-linux-gnu" = "66554c48c29d8a3bde0301aa62aeede3b18a66c4851cac61e449b2289a9a2388"
 
 # The packages of the Linux image that built the library above and that links the release `una`
 # (#1926), as `"package" = "VERSION-RELEASE"` from `rpm -q` in the AlmaLinux 8 image of
@@ -123,3 +133,35 @@ mirror = "https://github.com/una-lang/una/releases/download/mirror/z3-5.1.0/z3-5
 "crti.o" = "004ad70051266e5cc3b05f3ecd8a9f388ce7da43da93bf5a42d8615257c91a3b"
 "crtn.o" = "3ab3d63108b001267444acfec36b1eef6de25413c2e5a2cbdce74087f2b947de"
 "libc_nonshared.a" = "593f08119e728225e83a0aa7d96bf1ba3906bbb80d023bc13ad132ca8d71a9ce"
+
+# The same tables for x86_64-unknown-linux-gnu (#2106): the packages of the linux/amd64 image of
+# scripts/local-ci/Dockerfile.release, which installs the same versions on both architectures,
+# as `rpm -q` printed them on the hosted x86-64 runners and on the gate machine, recorded
+# 2026-11-27; and the files its linker puts into `una`, with their SHA-256 on x86-64, found by
+# `cc -print-file-name=<file>` there.
+[toolchain.x86_64-unknown-linux-gnu]
+"gcc-toolset-13-binutils" = "2.40-21.el8"
+"cmake" = "3.26.5-2.el8"
+"make" = "4.2.1-11.el8"
+"gcc-toolset-13-gcc" = "13.3.1-2.2.el8_10"
+"gcc-toolset-13-gcc-c++" = "13.3.1-2.2.el8_10"
+"gcc-toolset-13-libstdc++-devel" = "13.3.1-2.2.el8_10"
+"libgcc" = "8.5.0-31.el8_10.alma.1"
+"glibc" = "2.28-251.el8_10.53"
+"glibc-devel" = "2.28-251.el8_10.53"
+"glibc-headers" = "2.28-251.el8_10.53"
+"kernel-headers" = "4.18.0-553.189.1.el8_10"
+"gcc-toolset-13-runtime" = "13.0-2.el8"
+"binutils" = "2.30-128.el8_10"
+"libstdc++" = "8.5.0-31.el8_10.alma.1"
+
+[toolchain-files.x86_64-unknown-linux-gnu]
+"libstdc++.a" = "26727c40a5700fe422821f8a9f65b30c843692f41fe373be2f800fa30ee6792b"
+"libgcc.a" = "9abd83535ca40972a0ec098c25bee8ece28456033ff1118eb5e5fa80766b302b"
+"libgcc_eh.a" = "5e77e57ae9943eadb940971667f329f97ce4f7ae034f1600146bb22dfe36f8ff"
+"crtbeginS.o" = "61bb620efd92978a7111e621613cee2971c4bb47f0a78ee177d2d6ad7fcb8fd4"
+"crtendS.o" = "ccce40e486c5d77bd409801af57b92cfdc335788dffa519961377a7e8d17a715"
+"Scrt1.o" = "a08a12ed19507c4addb0bbda0d6d0a99681b22148582daa11fb28a78acc7aa39"
+"crti.o" = "d0f6f64378800c817f9ba3a5a6f47e4c9ebef89dcdbc77394e661ca8030c9be8"
+"crtn.o" = "d468c4d1438bb6c14ff3087a0ec364d4ca0b7cdfe71ab493d04c56bbb3c07a5e"
+"libc_nonshared.a" = "eddeaf4e61b6b30d5b4a6451b73cfc0f9a90ea777f680c69aabc5a1cf8ca6eaa"

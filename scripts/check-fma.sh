@@ -9,9 +9,17 @@
 # An artifact for another architecture is reported as not applicable: on AArch64 the FMA
 # instruction, `fmadd`, is part of the baseline and allowed everywhere (ADR 0114).
 #
-# Usage: scripts/check-fma.sh [--allow PREFIX]... ARTIFACT...
-#   --allow PREFIX  a prefix of the allowlist; without any, the two prefixes of
-#                   una_core::dense::variants::ALLOWLIST below.
+# With --toolchain-fma (ADR 0120's amendment of 2026-11-27, accepted by the Owner; #2106), four
+# symbols of the pinned toolchain's `compiler_builtins` are allowed too, by their exact
+# demangled names and never as a prefix: the hardware paths of the IEEE `fma` and `fmaf`
+# (TOOLCHAIN_FMA below), which Z3's `hwf.cpp` reaches in `una` and which `libuna_rt.a` carries
+# with the whole of `compiler_builtins`. It is refused for any artifact but a file named `una`
+# or `libuna_rt.a`, so an executable that `una build` writes keeps the allowlist alone.
+#
+# Usage: scripts/check-fma.sh [--allow PREFIX]... [--toolchain-fma] ARTIFACT...
+#   --allow PREFIX   a prefix of the allowlist; without any, the two prefixes of
+#                    una_core::dense::variants::ALLOWLIST below.
+#   --toolchain-fma  also the four exact names of TOOLCHAIN_FMA, for `una` and `libuna_rt.a`.
 # It disassembles with `objdump -d -C`, or `llvm-objdump -d -C` when there is no `objdump`, or
 # the `objdump` of the Xcode toolchain (`xcrun --find objdump`); a disassembler that fails, or
 # reads no instruction, fails the gate. The architecture comes from `objdump -f`; for a Mach-O
@@ -26,8 +34,10 @@ usage() {
 }
 
 allowlist=""
+toolchain_fma=0
 while [ "$#" -gt 0 ]; do
     case $1 in
+        --toolchain-fma) toolchain_fma=1; shift ;;
         --allow)
             [ "$#" -ge 2 ] || usage
             allowlist="$allowlist$2
@@ -45,6 +55,25 @@ if [ -z "$allowlist" ]; then
     allowlist="una_core::dense::variants::x86_64_v3
 una_core::dense::variants::x86_64_v4
 "
+fi
+# The exact names of ADR 0120's amendment of 2026-11-27: nothing else, no prefix.
+TOOLCHAIN_FMA="compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma
+compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma4
+compiler_builtins::math::libm_math::arch::x86::fma::fmaf_with_fma
+compiler_builtins::math::libm_math::arch::x86::fma::fmaf_with_fma4
+"
+exact=""
+if [ "$toolchain_fma" = 1 ]; then
+    for artifact in "$@"; do
+        case ${artifact##*/} in
+            una | libuna_rt.a) ;;
+            *)
+                echo "error: --toolchain-fma is for una and libuna_rt.a only, not $artifact (ADR 0120, amendment of 2026-11-27)" >&2
+                exit 2
+                ;;
+        esac
+    done
+    exact=$TOOLCHAIN_FMA
 fi
 
 if command -v objdump >/dev/null 2>&1; then
@@ -68,6 +97,7 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 printf '%s' "$allowlist" > "$tmp/allowlist"
+printf '%s' "$exact" > "$tmp/exact"
 
 status=0
 for artifact in "$@"; do
@@ -117,10 +147,13 @@ for artifact in "$@"; do
     # Each symbol's header is `<address> <demangled name>:`; its instructions follow. A v0
     # demangled name may carry crate disambiguators, `una_core[1a2b]::`, which are dropped.
     # Every FMA instruction outside an allowlisted symbol is printed as `symbol<TAB>instruction`.
-    if ! awk -v allowfile="$tmp/allowlist" '
+    if ! awk -v allowfile="$tmp/allowlist" -v exactfile="$tmp/exact" '
         BEGIN {
             while ((getline line < allowfile) > 0) {
                 if (line != "") { allow[++count] = line }
+            }
+            while ((getline line < exactfile) > 0) {
+                if (line != "") { exact[line] = 1 }
             }
             symbol = ""
             instructions = 0
@@ -136,6 +169,7 @@ for artifact in "$@"; do
                 prefix = allow[i]
                 if (name == prefix || index(name, prefix "::") == 1) { allowed = 1 }
             }
+            if (name in exact) { allowed = 1 }
             next
         }
         /^[[:space:]]*[0-9a-fA-F]+:[[:space:]]/ {
@@ -158,6 +192,7 @@ for artifact in "$@"; do
         head -20 "$tmp/found" >&2
         echo "the allowlist:" >&2
         sed 's/^/  /' "$tmp/allowlist" >&2
+        [ -s "$tmp/exact" ] && sed 's/^/  (exact) /' "$tmp/exact" >&2
         status=1
     else
         echo "ok: $artifact has no FMA instruction outside the allowlist"

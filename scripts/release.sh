@@ -113,6 +113,13 @@ built="$root/target/release-remapped"
 case $target in
     *-linux-*)
         RUSTFLAGS="$RUSTFLAGS -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc -C linker=$root/scripts/link-trace.sh"
+        # Since Rust 1.90, rustc links x86_64-unknown-linux-gnu with its own rust-lld by default,
+        # whose --trace-symbol lines go to stdout in another shape. The release links with the
+        # image's GNU ld instead (gcc-toolset-13-binutils, whose version supply-chain/z3.lock
+        # records), as on aarch64, so that the trace is GNU ld's (#2340).
+        case $target in
+            x86_64-unknown-linux-gnu) RUSTFLAGS="$RUSTFLAGS -C linker-features=-lld" ;;
+        esac
         UNA_LINK_TRACE_DIR="$built/link-traces"
         rm -rf "${UNA_LINK_TRACE_DIR:?}" "${built:?}/una.link-trace"
         mkdir -p "$UNA_LINK_TRACE_DIR"

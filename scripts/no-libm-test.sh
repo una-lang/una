@@ -52,8 +52,16 @@ if sed 's/#.*//' "$list" | awk '{ print $2 }' | grep -qxF "$denied"; then
 fi
 
 # rustc of the pinned toolchain, run from the repository so that rust-toolchain.toml applies.
+# On x86_64-unknown-linux-gnu it links with GNU ld, as scripts/release.sh links `una`, not with
+# rustc's default rust-lld, so that the canaries' links and traces are made as the shipped one's
+# (#2340).
+linker_flags=""
+case $(cd "$root" && rustc -vV | sed -n 's/^host: //p') in
+    x86_64-unknown-linux-gnu) linker_flags="-C linker-features=-lld" ;;
+esac
 compile() {
-    (cd "$root" && rustc --edition 2021 -O "$@") > "$work/rustc.log" 2>&1 || {
+    # shellcheck disable=SC2086 # linker_flags is empty or two words
+    (cd "$root" && rustc --edition 2021 -O $linker_flags "$@") > "$work/rustc.log" 2>&1 || {
         cat "$work/rustc.log" >&2
         echo "error: rustc $* failed" >&2
         exit 1
@@ -323,6 +331,36 @@ if [ "$os" = linux ]; then
     traced_exe t_own libz3t "$tname"
     traced_exe t_cxx "libz3t libcxxt" ""
     traced_exe t_else libz3e ""
+    # A link through scripts/link-trace.sh with gold is refused, on every Linux target (#2353).
+    traced=$((traced + 1))
+    cp "$work/t_una.rs" "$work/t_gold.rs"
+    mkdir -p "$work/traces-gold"
+    # shellcheck disable=SC2086 # linker_flags is empty or two words
+    if (cd "$root" && UNA_LINK_TRACE_DIR=$work/traces-gold rustc --edition 2021 -O $linker_flags -o "$work/t_gold" "$work/t_gold.rs" \
+        -L "$work" -l static=z3t -C link-arg=-fuse-ld=gold -C "linker=$root/scripts/link-trace.sh") > "$work/t_gold.log" 2>&1; then
+        echo "error: canary trace-gold: a link with gold through scripts/link-trace.sh passes" >&2
+        status=1
+    elif ! grep -qF "link-trace: the link would use gold" "$work/t_gold.log"; then
+        echo "error: canary trace-gold fails for another reason than the refusal of gold:" >&2
+        cat "$work/t_gold.log" >&2
+        status=1
+    fi
+    # On x86_64-unknown-linux-gnu, a link through scripts/link-trace.sh with rustc's default
+    # rust-lld is refused, never read as a trace with no reference (#2340).
+    if [ -n "$linker_flags" ]; then
+        traced=$((traced + 1))
+        cp "$work/t_una.rs" "$work/t_lld.rs"
+        mkdir -p "$work/traces-lld"
+        if (cd "$root" && UNA_LINK_TRACE_DIR=$work/traces-lld rustc --edition 2021 -O -o "$work/t_lld" "$work/t_lld.rs" \
+            -L "$work" -l static=z3t -C "linker=$root/scripts/link-trace.sh") > "$work/t_lld.log" 2>&1; then
+            echo "error: canary trace-lld: a link with rust-lld through scripts/link-trace.sh passes" >&2
+            status=1
+        elif ! grep -qE "link-trace: the link would use (lld|rustc's lld wrapper)" "$work/t_lld.log"; then
+            echo "error: canary trace-lld fails for another reason than the refusal of lld:" >&2
+            cat "$work/t_lld.log" >&2
+            status=1
+        fi
+    fi
     # tpass NAME UNA_Z3_LIB TRACE UNA, treject NAME MESSAGE UNA_Z3_LIB TRACE UNA: the check in
     # its trace mode.
     tpass() { traced=$((traced + 1)); pass "$1" "$2" --link-trace "$3" "$4" "$work/clean_rt.a" "$(dir_of clean_exe)"; }

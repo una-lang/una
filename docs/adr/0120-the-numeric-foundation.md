@@ -931,3 +931,18 @@ ADR 0106's amendment of 2026-10-31 withdraws the C-emitting backend; the release
 ## Amendment (2026-11-06): the target is edition `0.5` (ADR 0139)
 
 The Target line reads: edition `0.5`. Editions `0.1` to `0.4` do not change, except for the U7007 of ADR 0139 rule 7 in edition `0.4`. Every "edition `0.4`" of this record that names the edition its constructs exist in, including rule 1 and the section "Edition `0.4`", reads "edition `0.5`", and each comparison with edition `0.3` is made with edition `0.4`. `F64` and the rules of ADR 0114 stay in edition `0.3`. No other rule changes.
+
+## Amendment (2026-11-27, Accepted): the toolchain's `fma` and `fmaf` in the FMA gate's allowlist (ADR 0106's amendment, item 3; #2106)
+
+- Status: Accepted by the Owner on 2026-11-27. The accepted text of this record above this amendment is unchanged; where the two differ, this amendment governs once it is accepted. Until then the gate is unchanged, and `x86_64-unknown-linux-gnu` cannot pass it (below).
+- Issue: #2106.
+
+**Why.** The first native x86-64 build of the release archive since 0.3.17 (the `archive` leg of `.github/workflows/linux-x86-64.yml`, #2106) fails `scripts/check-fma.sh`, the disassembly gate of item 3 of ADR 0106's amendment above, on four symbols that the pinned Rust toolchain (1.98.1) brings in its `compiler_builtins`: `compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma` and `fma_with_fma4`, and `fmaf_with_fma` and `fmaf_with_fma4`. They are the hardware paths of the toolchain's own `fma` and `fmaf`, the C functions of IEEE 754's fused multiply-add, which pick at run time between the processor's `vfmadd` (or AMD's FMA4 `vfmadd…`) and a software path. In `una` they are reached from the solver: Z3's `hwf.cpp` calls `fma`, and the static link binds that call to the toolchain's definition (`ld --trace` of the release link). `libuna_rt.a` holds them because a static library carries the whole of `compiler_builtins`. The allowlist names only `una-core`'s dispatched kernels, so the gate fails, as it must under the accepted text.
+
+**What they compute.** `fma(a, b, c)` is defined as `a * b + c` rounded once, correctly rounded in roundTiesToEven. Both paths of each function give that one result for every input, so the bits do not depend on the processor: these are written fused multiply-adds, not a contraction of a multiply and an add that the source wrote as two operations, which is what item 4 and ADR 0114 Appendix C forbid. ADR 0114 rule 6.5's concern (bits that depend on the build or the run machine) does not arise.
+
+**The change.** In item 3, "the dispatched kernel variants of `una-core` … and the `simd required` variants the release backend emits" reads "…, and, on x86-64, exactly the four symbols `compiler_builtins::math::libm_math::arch::x86::fma::fma_with_fma`, `fma_with_fma4`, `fmaf_with_fma` and `fmaf_with_fma4` of the pinned toolchain's `compiler_builtins`, the IEEE `fma` and `fmaf` of rule 6.5's environment". They are allowed by their exact names, never as a prefix, and only in `una` and `libuna_rt.a`; an executable that `una build` writes keeps the allowlist above, so a program's own code still cannot hold an FMA outside the variants. A new toolchain that renames or adds such a symbol fails the gate until a later amendment names it.
+
+**What does not change.** The canary, the planted-instruction test and rule 8 stand. No CPU feature is enabled at build time. `una-core`'s variants keep their prefixes.
+
+**Cost.** None at run time. The gate reads one more list of exact names.
