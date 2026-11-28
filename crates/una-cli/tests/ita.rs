@@ -1035,11 +1035,58 @@ fn a_loose_file_below_a_manifest_that_does_not_read_is_refused() {
     std::fs::write(dir.join("ita.una"), MANIFEST).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(dir.join("ita.una"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    // A superuser reads a file of mode 000 anyway, so the case holds only where it is denied
+    // (#2411).
+    let denied = std::fs::File::open(dir.join("ita.una")).is_err();
     let (code, _, err) = una(&["una", "check", loose]);
     std::fs::set_permissions(dir.join("ita.una"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    if denied {
+        assert_ne!(code, 0, "{err}");
+        assert!(err.contains("ita.una"), "{err}");
+    }
+    // A FIFO at `ita.una` is refused whoever runs the check.
+    std::fs::remove_file(dir.join("ita.una")).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(dir.join("ita.una"))
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let (code, _, err) = una(&["una", "check", loose]);
     assert_ne!(code, 0, "{err}");
-    assert!(err.contains("ita.una"), "{err}");
+    assert!(err.contains("is not a regular file"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The search for the manifest above a loose file stops at a directory any user can write
+/// into, such as `/tmp` (#2410, #2412): a directory manifest there, which another user could
+/// leave to fail every check below it, is never looked at, and the file has the default
+/// edition. A manifest of the user's own, below that directory, is still found.
+#[cfg(unix)]
+#[test]
+fn the_search_for_a_manifest_stops_at_a_world_writable_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let shared = std::env::temp_dir().join(format!("una-shared-ancestor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&shared);
+    std::fs::create_dir_all(shared.join("mine")).unwrap();
+    std::fs::create_dir(shared.join("una.toml")).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    std::fs::write(shared.join("mine/x.una"), MODULE).unwrap();
+    let loose = shared.join("mine/x.una");
+    let (code, _, err) = una(&["una", "check", loose.to_str().unwrap()]);
+    assert_eq!(code, 0, "a manifest in a shared directory was read: {err}");
+    // The same directory, writable by its owner only, is searched: the manifest is refused.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (code, _, err) = una(&["una", "check", loose.to_str().unwrap()]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("una.toml"), "{err}");
+    // A manifest of the user's own in `mine/` is found below the shared directory.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    std::fs::create_dir(shared.join("mine/ita.una")).unwrap();
+    let (code, _, err) = una(&["una", "check", loose.to_str().unwrap()]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("mine/ita.una"), "{err}");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&shared);
 }
 
 /// A link at `ita.lock` that names nothing is refused as a broken link by `una check` and `una
