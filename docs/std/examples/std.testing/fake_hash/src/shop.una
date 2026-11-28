@@ -1,0 +1,25 @@
+module shop
+
+import std.testing (fake_hash)
+
+--- Signs a receipt with the key `receipts` of the grant's key file.
+pub sign(receipt: Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "receipts", data: receipt)
+    if error pass
+
+--- A key file whose every key signs every receipt to one fixed value, for examples only.
+handler fixed_keys() for Keys
+  op hmac(key_name, data) = fake_hash(seed: 7)
+
+example "a receipt is signed with the fixed key"
+  given @keys = fixed_keys()
+  do sign("order 17")
+  expect result == fake_hash(seed: 7)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("the example of sign runs with `una test`")

@@ -1,0 +1,18 @@
+module shop
+
+--- An environment with one variable, `SHOP_LANG`, set.
+handler english() for Env
+  op get(name) = if name == "SHOP_LANG" then Some("en") else None
+
+--- Whether the shop's language is set.
+language_set() -> Bool
+  uses @env: Env[get]
+=
+  let language = @env.get("SHOP_LANG")
+  language.is_some()
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let set = language_set() with @env = english()
+  @console.print(if set then "language set" else "language unset")

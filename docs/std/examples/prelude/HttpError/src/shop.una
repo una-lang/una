@@ -1,0 +1,21 @@
+module shop
+
+--- Why a request to the stock service got no response.
+reason(failure: HttpError) -> Text
+=
+  when failure
+    is Denied -> "no grant allows that origin with that method"
+    is BadUrl -> "not an absolute http or https URL"
+    is BadRequest -> "a header the client sets itself"
+    is Unreachable -> "no connection"
+    is TimedOut -> "past the deadline"
+    is TooLarge -> "the response is too large"
+    is Tls -> "the certificate failed"
+    is Protocol -> "not HTTP/1.1"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(reason(BadUrl))
+  @console.print(reason(TimedOut))
+  @console.print(reason(Protocol))

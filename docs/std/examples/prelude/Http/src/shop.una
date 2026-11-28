@@ -1,0 +1,21 @@
+module shop
+
+--- A server that answers every request with `200` and an empty body.
+handler always_ok() for Http
+  op get(url, headers, key_name) = Response(status: 200, headers: [], body: "")
+  op post(url, headers, body, key_name) = Response(status: 200, headers: [], body: "")
+  op put(url, headers, body, key_name) = Response(status: 200, headers: [], body: "")
+  op delete(url, headers, key_name) = Response(status: 200, headers: [], body: "")
+
+--- Asks the stock service for `item`; the response is `internal`, so this example prints none of it.
+ask(item: Text) -> Unit
+  uses @http: Http[get]
+=
+  let response = attempt @http.get(url: "https://stock.example/items/{item}", headers: [], key_name: None)
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  ask("lamp") with @http = always_ok()
+  @console.print("asked the stock service for lamp")

@@ -1,7 +1,7 @@
 {
  "schema": "una.std-reference/1",
  "note": "Unstable, not part of the specification: see docs/std/README.md. Hand-written; crates/una-cli/tests/std_listing.rs checks it against the listing.",
- "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 §3`): it reports U5001 when the condition is refuted and U5002 when it is unknown (`spec/12 §6`), and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved (`spec/22 §2`).",
+ "requires_note": "Each condition under `requires` is an obligation at every call, which `una check` proves (`spec/12 \u00a73`): it reports U5001 when the condition is refuted and U5002 when it is unknown (`spec/12 \u00a76`), and `una run`, `una test` and `una build` refuse a package with an obligation that is not proved (`spec/22 \u00a72`).",
  "areas": [
   "text",
   "numbers",
@@ -39,18 +39,8 @@
   "builtin size",
   "builtin union",
   "builtin update",
-  "prelude Clock",
-  "prelude Console",
-  "prelude Env",
-  "prelude FileError",
-  "prelude Files",
   "prelude Finite32",
   "prelude Finite64",
-  "prelude Header",
-  "prelude Http",
-  "prelude HttpError",
-  "prelude Keys",
-  "prelude Response",
   "prelude Rounding",
   "prelude array",
   "prelude array_filled",
@@ -80,7 +70,6 @@
   "std.host Status",
   "std.testing TestRequestError",
   "std.testing elapse",
-  "std.testing fake_hash",
   "std.testing test_exchange",
   "std.testing test_request",
   "std.time millisecond",
@@ -395,7 +384,7 @@
      },
      {
       "symbol": "index",
-      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 \u00a76)"
      }
     ]
    },
@@ -495,7 +484,7 @@
      },
      {
       "symbol": "index",
-      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 §6)"
+      "meaning": "on a text that is not all ASCII, the byte offset of every 64th scalar value, its checkpoints: built in O(b) by the first call that needs a position and kept with the value, so at most once per value; an ASCII text needs none (spec/22 \u00a76)"
      }
     ]
    },
@@ -1552,7 +1541,7 @@
    "example": "docs/std/examples/builtin/has",
    "cost": {
     "time": "O(log n) per lookup",
-    "source": "spec/21 §5",
+    "source": "spec/21 \u00a75",
     "terms": [
      {
       "symbol": "n",
@@ -1605,7 +1594,7 @@
    "example": "docs/std/examples/builtin/get",
    "cost": {
     "time": "O(log n) per lookup",
-    "source": "spec/21 §5",
+    "source": "spec/21 \u00a75",
     "terms": [
      {
       "symbol": "n",
@@ -1668,7 +1657,7 @@
    "example": "docs/std/examples/builtin/set",
    "cost": {
     "time": "O(log n) per lookup, insertion and removal",
-    "source": "spec/21 §5",
+    "source": "spec/21 \u00a75",
     "terms": [
      {
       "symbol": "n",
@@ -1774,7 +1763,7 @@
    "example": "docs/std/examples/builtin/remove",
    "cost": {
     "time": "O(log n) per lookup, insertion and removal",
-    "source": "spec/21 §5",
+    "source": "spec/21 \u00a75",
     "terms": [
      {
       "symbol": "n",
@@ -1883,7 +1872,7 @@
    "example": "docs/std/examples/builtin/with",
    "cost": {
     "time": "O(log n) per lookup, insertion and removal",
-    "source": "spec/21 §5",
+    "source": "spec/21 \u00a75",
     "terms": [
      {
       "symbol": "n",
@@ -1984,7 +1973,7 @@
    "example": "docs/std/examples/builtin/without",
    "cost": {
     "time": "O(log n) per lookup, insertion and removal",
-    "source": "spec/21 §5",
+    "source": "spec/21 \u00a75",
     "terms": [
      {
       "symbol": "n",
@@ -2737,7 +2726,7 @@
        "meaning": "the string, unescaped"
       }
      ],
-     "meaning": "a JSON string; the positions of `Json` are unlabeled, so a labeled text given to `Str`, or a labeled value to any variant, is U4001, and a labeled text reaches JSON through a policy, `quote_json` or interpolation (`spec/23 §5`)"
+     "meaning": "a JSON string; the positions of `Json` are unlabeled, so a labeled text given to `Str`, or a labeled value to any variant, is U4001, and a labeled text reaches JSON through a policy, `quote_json` or interpolation (`spec/23 \u00a75`)"
     },
     {
      "name": "Array",
@@ -2793,7 +2782,7 @@
    ],
    "returns": {
     "type": "Bool",
-    "meaning": "`true` exactly when `t` is one JSON number of RFC 8259 §6 with a fraction or an exponent; opaque: both engines evaluate it, and the verifier knows nothing more of it, so in code it is called only as the predicate of `checked`, and elsewhere in code is U2016; a kind's `where` clause, as in `JsonNumber`, the `requires` and `ensures` of a capability operation, and the body of another opaque predicate may name it (`spec/03 §4`, ADR 0042); `checked` counts against `[escape_budget] checked_per_module`, which is 0 unless `una.toml` raises it"
+    "meaning": "`true` exactly when `t` is one JSON number of RFC 8259 \u00a76 with a fraction or an exponent; opaque: both engines evaluate it, and the verifier knows nothing more of it, so in code it is called only as the predicate of `checked`, and elsewhere in code is U2016; a kind's `where` clause, as in `JsonNumber`, the `requires` and `ensures` of a capability operation, and the body of another opaque predicate may name it (`spec/03 \u00a74`, ADR 0042); `checked` counts against `[escape_budget] checked_per_module`, which is 0 unless `una.toml` raises it"
    },
    "see_also": [
     "prelude JsonNumber"
@@ -2812,7 +2801,7 @@
    ],
    "returns": {
     "type": "Json",
-    "meaning": "the one JSON value that `t` writes, with optional white space (U+0020, U+0009, U+000A and U+000D) before and after it and nothing else; there is no limit on its size beyond the memory budget, and a run over it ends with U6003 at the call; when `t` is not one value, the failure is the first error in reading order; the result and the failure carry the labels of `t` (`spec/23 §5`), so with a labeled `t`, `if error pass` and `if error fail` are U4002, and `attempt` or `if error use` handles the failure"
+    "meaning": "the one JSON value that `t` writes, with optional white space (U+0020, U+0009, U+000A and U+000D) before and after it and nothing else; there is no limit on its size beyond the memory budget, and a run over it ends with U6003 at the call; when `t` is not one value, the failure is the first error in reading order; the result and the failure carry the labels of `t` (`spec/23 \u00a75`), so with a labeled `t`, `if error pass` and `if error fail` are U4002, and `attempt` or `if error use` handles the failure"
    },
    "fails": [
     {
@@ -2838,8 +2827,8 @@
     "prelude Json"
    ],
    "cost": {
-    "time": "O(n + Σ k log k)",
-    "source": "spec/23 §6",
+    "time": "O(n + \u03a3 k log k)",
+    "source": "spec/23 \u00a76",
     "terms": [
      {
       "symbol": "n",
@@ -2847,7 +2836,7 @@
      },
      {
       "symbol": "k",
-      "meaning": "the number of keys of one object; `Σ` sums `k log k` over the objects of `t`"
+      "meaning": "the number of keys of one object; `\u03a3` sums `k log k` over the objects of `t`"
      }
     ]
    },
@@ -2916,7 +2905,7 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "the canonical JSON text of `j`, with no white space: `Null` as `null`, a `Boolean` as `true` or `false`, a `Number` in decimal, a `Decimal` as its text, a `Str` as `quote_json` writes it, and an object's entries in key order; parsing it gives `j` back when its arrays and objects nest at most 512 deep and each `Number` has at most 4300 digits, since `parse_json` refuses a deeper value with `TooDeep` and a longer integer with `NumberTooLong`; the result carries the labels of `j` (`spec/23 §5`)"
+    "meaning": "the canonical JSON text of `j`, with no white space: `Null` as `null`, a `Boolean` as `true` or `false`, a `Number` in decimal, a `Decimal` as its text, a `Str` as `quote_json` writes it, and an object's entries in key order; parsing it gives `j` back when its arrays and objects nest at most 512 deep and each `Number` has at most 4300 digits, since `parse_json` refuses a deeper value with `TooDeep` and a longer integer with `NumberTooLong`; the result carries the labels of `j` (`spec/23 \u00a75`)"
    },
    "see_also": [
     "prelude parse_json",
@@ -2924,7 +2913,7 @@
    ],
    "cost": {
     "time": "O(n) time for an output of n scalar values, except that writing a Number of d digits takes O(M(d) log d)",
-    "source": "spec/23 §6",
+    "source": "spec/23 \u00a76",
     "terms": [
      {
       "symbol": "n",
@@ -2954,7 +2943,7 @@
    ],
    "returns": {
     "type": "Text",
-    "meaning": "`t` as a JSON string literal, between double quotes: the double quote and the backslash are escaped with a backslash; U+0008, U+000C, U+000A, U+000D and U+0009 are written as their short escapes; every other scalar value below U+0020, and U+007F, U+2028, U+2029, U+202A to U+202E and U+2066 to U+2069, as a `u` escape with four lowercase hex digits; and every other scalar value as itself; the result carries the labels of `t` (`spec/23 §5`); it escapes for a JSON string only, not for HTML, so `<`, `>`, `&` and `/` are written as themselves"
+    "meaning": "`t` as a JSON string literal, between double quotes: the double quote and the backslash are escaped with a backslash; U+0008, U+000C, U+000A, U+000D and U+0009 are written as their short escapes; every other scalar value below U+0020, and U+007F, U+2028, U+2029, U+202A to U+202E and U+2066 to U+2069, as a `u` escape with four lowercase hex digits; and every other scalar value as itself; the result carries the labels of `t` (`spec/23 \u00a75`); it escapes for a JSON string only, not for HTML, so `<`, `>`, `&` and `/` are written as themselves"
    },
    "see_also": [
     "prelude to_json"
@@ -2973,6 +2962,610 @@
     }
    ],
    "example": "docs/std/examples/prelude/KeyError"
+  },
+  {
+   "module": "prelude",
+   "name": "Console",
+   "area": "console",
+   "operations": [
+    {
+     "name": "print",
+     "params": [
+      {
+       "name": "line",
+       "meaning": "the text to write"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; the line and a newline are written to standard output"
+     },
+     "accepts": "public",
+     "grant": "console"
+    }
+   ],
+   "example": "docs/std/examples/prelude/Console"
+  },
+  {
+   "module": "prelude",
+   "name": "Clock",
+   "area": "clock",
+   "operations": [
+    {
+     "name": "now",
+     "params": [],
+     "returns": {
+      "type": "Int",
+      "meaning": "the milliseconds since the Unix epoch"
+     },
+     "accepts": "public",
+     "grant": "clock"
+    }
+   ],
+   "example": "docs/std/examples/prelude/Clock"
+  },
+  {
+   "module": "prelude",
+   "name": "Env",
+   "area": "env",
+   "operations": [
+    {
+     "name": "get",
+     "params": [
+      {
+       "name": "name",
+       "meaning": "the name of the process environment variable"
+      }
+     ],
+     "returns": {
+      "type": "Option[internal Text]",
+      "meaning": "the variable's value, `internal`, or `None` when it is not set"
+     },
+     "accepts": "public",
+     "grant": "env"
+    }
+   ],
+   "example": "docs/std/examples/prelude/Env"
+  },
+  {
+   "module": "prelude",
+   "name": "Files",
+   "area": "files",
+   "operations": [
+    {
+     "name": "read",
+     "params": [
+      {
+       "name": "path",
+       "meaning": "the file, relative to the directory the grant fixes"
+      }
+     ],
+     "returns": {
+      "type": "internal Text",
+      "meaning": "the file's content, `internal`"
+     },
+     "fails": [
+      {
+       "variant": "NotFound",
+       "when": "the file, or a directory on the way to it, the granted directory included, does not exist"
+      },
+      {
+       "variant": "Denied",
+       "when": "the path is absolute, a `..` segment leaves the granted directory, a directory on the way resolves outside it, or the file itself is a symbolic link"
+      },
+      {
+       "variant": "Io",
+       "when": "a directory on the way is not a directory, or the file system fails, as on a full disk"
+      }
+     ],
+     "accepts": "public",
+     "grant": "files:<path>:read"
+    },
+    {
+     "name": "write",
+     "params": [
+      {
+       "name": "path",
+       "meaning": "the file, relative to the directory the grant fixes"
+      },
+      {
+       "name": "content",
+       "meaning": "the text that replaces the file's content"
+      }
+     ],
+     "returns": {
+      "type": "Unit",
+      "meaning": "nothing; the file holds `content`"
+     },
+     "fails": [
+      {
+       "variant": "NotFound",
+       "when": "the file, or a directory on the way to it, the granted directory included, does not exist"
+      },
+      {
+       "variant": "Denied",
+       "when": "the path is absolute, a `..` segment leaves the granted directory, a directory on the way resolves outside it, or the file itself is a symbolic link"
+      },
+      {
+       "variant": "Io",
+       "when": "a directory on the way is not a directory, or the file system fails, as on a full disk"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "files:<path>:write"
+    }
+   ],
+   "see_also": [
+    "prelude FileError"
+   ],
+   "example": "docs/std/examples/prelude/Files"
+  },
+  {
+   "module": "prelude",
+   "name": "FileError",
+   "area": "files",
+   "variants": [
+    {
+     "name": "NotFound",
+     "fields": [],
+     "meaning": "the file, or a directory on the way to it, the granted directory included, does not exist"
+    },
+    {
+     "name": "Denied",
+     "fields": [],
+     "meaning": "the path leaves the granted directory, or the file is a symbolic link"
+    },
+    {
+     "name": "Io",
+     "fields": [],
+     "meaning": "a directory on the way is not a directory, or the file system fails"
+    }
+   ],
+   "see_also": [
+    "prelude Files"
+   ],
+   "example": "docs/std/examples/prelude/FileError"
+  },
+  {
+   "module": "prelude",
+   "name": "Keys",
+   "area": "keys",
+   "operations": [
+    {
+     "name": "hmac",
+     "params": [
+      {
+       "name": "key_name",
+       "meaning": "the name of a key in the grant's key file; it accepts only `public` data"
+      },
+      {
+       "name": "data",
+       "meaning": "the data to sign, of any label"
+      }
+     ],
+     "returns": {
+      "type": "internal Hashed",
+      "meaning": "the HMAC-SHA-256 of `data` with that key, labeled `internal` joined with every label of `data`"
+     },
+     "fails": [
+      {
+       "variant": "UnknownKey",
+       "when": "the key file of the grant holds no key of that name"
+      }
+     ],
+     "grant": "keys:<keyfile>"
+    }
+   ],
+   "see_also": [
+    "prelude KeyError"
+   ],
+   "example": "docs/std/examples/prelude/Keys"
+  },
+  {
+   "module": "prelude",
+   "name": "Http",
+   "area": "http",
+   "operations": [
+    {
+     "name": "get",
+     "params": [
+      {
+       "name": "url",
+       "meaning": "the absolute `http` or `https` URL to request"
+      },
+      {
+       "name": "headers",
+       "meaning": "the request's headers; the client sets `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` itself"
+      },
+      {
+       "name": "key_name",
+       "meaning": "the name of a key of the `keys:` grants to send as a bearer token, which the program never sees, or `None`"
+      }
+     ],
+     "returns": {
+      "type": "internal Response",
+      "meaning": "the response to the `GET` request, whatever its status"
+     },
+     "fails": [
+      {
+       "variant": "Denied",
+       "when": "no grant allows the URL's origin with the method, or `key_name` names no key of the grants"
+      },
+      {
+       "variant": "BadUrl",
+       "when": "the URL is not an absolute `http` or `https` URL, or it has user info"
+      },
+      {
+       "variant": "BadRequest",
+       "when": "a header's name is not a token or names a header the client sets itself, or the request names a key and also has an `Authorization` header"
+      },
+      {
+       "variant": "Unreachable",
+       "when": "name resolution or the connection failed"
+      },
+      {
+       "variant": "TimedOut",
+       "when": "the request passed its deadline"
+      },
+      {
+       "variant": "TooLarge",
+       "when": "the response passed a size limit"
+      },
+      {
+       "variant": "Tls",
+       "when": "the TLS handshake or the certificate failed"
+      },
+      {
+       "variant": "Protocol",
+       "when": "the response is not valid HTTP/1.1, or its body is not UTF-8"
+      },
+      {
+       "variant": "Interrupted",
+       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+      },
+      {
+       "variant": "RateLimited",
+       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "http:<origin>:get"
+    },
+    {
+     "name": "post",
+     "params": [
+      {
+       "name": "url",
+       "meaning": "the absolute `http` or `https` URL to request"
+      },
+      {
+       "name": "headers",
+       "meaning": "the request's headers; the client sets `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` itself"
+      },
+      {
+       "name": "body",
+       "meaning": "the request's body"
+      },
+      {
+       "name": "key_name",
+       "meaning": "the name of a key of the `keys:` grants to send as a bearer token, which the program never sees, or `None`"
+      }
+     ],
+     "returns": {
+      "type": "internal Response",
+      "meaning": "the response to the `POST` request, whatever its status"
+     },
+     "fails": [
+      {
+       "variant": "Denied",
+       "when": "no grant allows the URL's origin with the method, or `key_name` names no key of the grants"
+      },
+      {
+       "variant": "BadUrl",
+       "when": "the URL is not an absolute `http` or `https` URL, or it has user info"
+      },
+      {
+       "variant": "BadRequest",
+       "when": "a header's name is not a token or names a header the client sets itself, or the request names a key and also has an `Authorization` header"
+      },
+      {
+       "variant": "Unreachable",
+       "when": "name resolution or the connection failed"
+      },
+      {
+       "variant": "TimedOut",
+       "when": "the request passed its deadline"
+      },
+      {
+       "variant": "TooLarge",
+       "when": "the response passed a size limit"
+      },
+      {
+       "variant": "Tls",
+       "when": "the TLS handshake or the certificate failed"
+      },
+      {
+       "variant": "Protocol",
+       "when": "the response is not valid HTTP/1.1, or its body is not UTF-8"
+      },
+      {
+       "variant": "Interrupted",
+       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+      },
+      {
+       "variant": "RateLimited",
+       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "http:<origin>:post"
+    },
+    {
+     "name": "put",
+     "params": [
+      {
+       "name": "url",
+       "meaning": "the absolute `http` or `https` URL to request"
+      },
+      {
+       "name": "headers",
+       "meaning": "the request's headers; the client sets `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` itself"
+      },
+      {
+       "name": "body",
+       "meaning": "the request's body"
+      },
+      {
+       "name": "key_name",
+       "meaning": "the name of a key of the `keys:` grants to send as a bearer token, which the program never sees, or `None`"
+      }
+     ],
+     "returns": {
+      "type": "internal Response",
+      "meaning": "the response to the `PUT` request, whatever its status"
+     },
+     "fails": [
+      {
+       "variant": "Denied",
+       "when": "no grant allows the URL's origin with the method, or `key_name` names no key of the grants"
+      },
+      {
+       "variant": "BadUrl",
+       "when": "the URL is not an absolute `http` or `https` URL, or it has user info"
+      },
+      {
+       "variant": "BadRequest",
+       "when": "a header's name is not a token or names a header the client sets itself, or the request names a key and also has an `Authorization` header"
+      },
+      {
+       "variant": "Unreachable",
+       "when": "name resolution or the connection failed"
+      },
+      {
+       "variant": "TimedOut",
+       "when": "the request passed its deadline"
+      },
+      {
+       "variant": "TooLarge",
+       "when": "the response passed a size limit"
+      },
+      {
+       "variant": "Tls",
+       "when": "the TLS handshake or the certificate failed"
+      },
+      {
+       "variant": "Protocol",
+       "when": "the response is not valid HTTP/1.1, or its body is not UTF-8"
+      },
+      {
+       "variant": "Interrupted",
+       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+      },
+      {
+       "variant": "RateLimited",
+       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "http:<origin>:put"
+    },
+    {
+     "name": "delete",
+     "params": [
+      {
+       "name": "url",
+       "meaning": "the absolute `http` or `https` URL to request"
+      },
+      {
+       "name": "headers",
+       "meaning": "the request's headers; the client sets `Host`, `Content-Length`, `Transfer-Encoding` and `Connection` itself"
+      },
+      {
+       "name": "key_name",
+       "meaning": "the name of a key of the `keys:` grants to send as a bearer token, which the program never sees, or `None`"
+      }
+     ],
+     "returns": {
+      "type": "internal Response",
+      "meaning": "the response to the `DELETE` request, whatever its status"
+     },
+     "fails": [
+      {
+       "variant": "Denied",
+       "when": "no grant allows the URL's origin with the method, or `key_name` names no key of the grants"
+      },
+      {
+       "variant": "BadUrl",
+       "when": "the URL is not an absolute `http` or `https` URL, or it has user info"
+      },
+      {
+       "variant": "BadRequest",
+       "when": "a header's name is not a token or names a header the client sets itself, or the request names a key and also has an `Authorization` header"
+      },
+      {
+       "variant": "Unreachable",
+       "when": "name resolution or the connection failed"
+      },
+      {
+       "variant": "TimedOut",
+       "when": "the request passed its deadline"
+      },
+      {
+       "variant": "TooLarge",
+       "when": "the response passed a size limit"
+      },
+      {
+       "variant": "Tls",
+       "when": "the TLS handshake or the certificate failed"
+      },
+      {
+       "variant": "Protocol",
+       "when": "the response is not valid HTTP/1.1, or its body is not UTF-8"
+      },
+      {
+       "variant": "Interrupted",
+       "when": "in edition `0.4` and later, a stop request of the host came while the request waited, in the body of a `for ever`"
+      },
+      {
+       "variant": "RateLimited",
+       "when": "in edition `0.4` and later, the request had to wait at a limit of a grant whose queue was full; it was not sent"
+      }
+     ],
+     "accepts": "internal",
+     "grant": "http:<origin>:delete"
+    }
+   ],
+   "see_also": [
+    "prelude Response",
+    "prelude HttpError",
+    "prelude Header"
+   ],
+   "example": "docs/std/examples/prelude/Http"
+  },
+  {
+   "module": "prelude",
+   "name": "HttpError",
+   "area": "http",
+   "describes": [
+    "0.2",
+    "0.3"
+   ],
+   "earlier": [
+    {
+     "editions": [
+      "0.4",
+      "0.5"
+     ],
+     "differs": "editions `0.4` and later add `Interrupted` and `RateLimited`: `kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol | Interrupted | RateLimited`"
+    }
+   ],
+   "variants": [
+    {
+     "name": "Denied",
+     "fields": [],
+     "meaning": "no grant allows the URL's origin with the method, or `key_name` names no key of the grants"
+    },
+    {
+     "name": "BadUrl",
+     "fields": [],
+     "meaning": "the URL is not an absolute `http` or `https` URL, or it has user info"
+    },
+    {
+     "name": "BadRequest",
+     "fields": [],
+     "meaning": "a header's name is not a token or names a header the client sets itself, or the request names a key and also has an `Authorization` header"
+    },
+    {
+     "name": "Unreachable",
+     "fields": [],
+     "meaning": "name resolution or the connection failed"
+    },
+    {
+     "name": "TimedOut",
+     "fields": [],
+     "meaning": "the request passed its deadline"
+    },
+    {
+     "name": "TooLarge",
+     "fields": [],
+     "meaning": "the response passed a size limit"
+    },
+    {
+     "name": "Tls",
+     "fields": [],
+     "meaning": "the TLS handshake or the certificate failed"
+    },
+    {
+     "name": "Protocol",
+     "fields": [],
+     "meaning": "the response is not valid HTTP/1.1, or its body is not UTF-8"
+    }
+   ],
+   "see_also": [
+    "prelude Http"
+   ],
+   "example": "docs/std/examples/prelude/HttpError"
+  },
+  {
+   "module": "prelude",
+   "name": "Header",
+   "area": "http",
+   "fields": [
+    {
+     "name": "name",
+     "meaning": "the header's name"
+    },
+    {
+     "name": "value",
+     "meaning": "the header's value, `internal`; a `secret` value needs a policy first"
+    }
+   ],
+   "see_also": [
+    "prelude Http"
+   ],
+   "example": "docs/std/examples/prelude/Header"
+  },
+  {
+   "module": "prelude",
+   "name": "Response",
+   "area": "http",
+   "fields": [
+    {
+     "name": "status",
+     "meaning": "the HTTP status, such as `200` or `404`"
+    },
+    {
+     "name": "headers",
+     "meaning": "the response's headers"
+    },
+    {
+     "name": "body",
+     "meaning": "the response's body"
+    }
+   ],
+   "see_also": [
+    "prelude Http"
+   ],
+   "example": "docs/std/examples/prelude/Response"
+  },
+  {
+   "module": "std.testing",
+   "name": "fake_hash",
+   "area": "testing",
+   "params": [
+    {
+     "name": "seed",
+     "meaning": "any integer; equal seeds give equal values"
+    }
+   ],
+   "returns": {
+    "type": "internal Hashed",
+    "meaning": "a deterministic `Hashed` value, `internal` as a real HMAC is, for a fake `Keys` in an example"
+   },
+   "see_also": [
+    "prelude Keys"
+   ],
+   "example": "docs/std/examples/std.testing/fake_hash"
   }
  ]
 }

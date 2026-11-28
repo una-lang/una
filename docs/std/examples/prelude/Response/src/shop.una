@@ -1,0 +1,11 @@
+module shop
+
+--- Whether a response is a success, by its status.
+succeeded(response: Response) -> Bool = response.status >= 200 and response.status < 300
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let found = Response(status: 200, headers: [], body: "lamp: 3")
+  let missing = Response(status: 404, headers: [], body: "")
+  @console.print("200 succeeded: {succeeded(found)}, 404 succeeded: {succeeded(missing)}")

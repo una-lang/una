@@ -12,6 +12,9 @@
 //!   names, costs that are the cells of an accepted ADR's or a spec section's table with every
 //!   term defined, and an example whose code that `main` reaches uses the item, which checks,
 //!   prints its expected output and stops checking once the item is renamed.
+//! - a capability's operations (#903) are those of its declaration, with their failures, the
+//!   label they accept and a grant spec of `spec/13 §5`, which the checker confirms is needed,
+//!   gives the operation, and is the narrowest grant spec that does.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -1685,7 +1688,8 @@ fn sources(dir: &Path) -> Vec<(PathBuf, String)> {
 fn naming(item: &Item) -> (bool, bool, bool) {
     let declaration = &item.variants.last().unwrap().declaration;
     match item.kind {
-        "kind" => (false, true, false),
+        // A kind or a capability is named as a type, never called.
+        "kind" | "capability" => (false, true, false),
         "method" => (
             declaration.contains(&format!(".{}(", item.name)),
             false,
@@ -1739,6 +1743,418 @@ fn a_shadowed_example_must_fail_at_a_call_of_the_item() {
         &serde_json::json!({ "diagnostics": [], "fixable": 0 }),
         &calls
     ));
+}
+
+/// An operation of a capability's declaration: `op name(params) -> result`, with its `fails`
+/// and `accepts` lines.
+#[derive(Debug, PartialEq)]
+struct Operation {
+    name: String,
+    params: Vec<String>,
+    result: String,
+    fails: Option<String>,
+    accepts: Option<String>,
+}
+
+/// The operations of a capability's declaration, in order (`spec/05 §1`).
+fn operations(declaration: &str) -> Vec<Operation> {
+    let mut out: Vec<Operation> = Vec::new();
+    for line in declaration.lines().skip(1) {
+        let line = line.trim();
+        if let Some(op) = line.strip_prefix("op ") {
+            let (name, rest) = op.split_once('(').unwrap_or((op, ""));
+            let (params, result) = rest.rsplit_once(") -> ").unwrap_or((rest, ""));
+            out.push(Operation {
+                name: name.trim().to_owned(),
+                params: split_top(params, ',')
+                    .into_iter()
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| p.split(':').next().unwrap_or("").trim().to_owned())
+                    .collect(),
+                result: result.trim().to_owned(),
+                fails: None,
+                accepts: None,
+            });
+        } else if let Some(last) = out.last_mut() {
+            if let Some(kind) = line.strip_prefix("fails ") {
+                last.fails = Some(kind.trim().to_owned());
+            } else if let Some(label) = line.strip_prefix("accepts ") {
+                last.accepts = Some(label.trim().to_owned());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn the_operations_of_a_capability_are_read_with_their_clauses() {
+    let declared = "pub capability Files\n  op read(path: Text) -> internal Text\n    fails FileError\n    accepts public\n  op write(path: Text, content: Text) -> Unit\n    fails FileError\n    accepts internal\n";
+    let ops = operations(declared);
+    assert_eq!(ops.len(), 2);
+    assert_eq!(ops[0].name, "read");
+    assert_eq!(ops[0].params, ["path"]);
+    assert_eq!(ops[0].result, "internal Text");
+    assert_eq!(ops[0].fails.as_deref(), Some("FileError"));
+    assert_eq!(ops[0].accepts.as_deref(), Some("public"));
+    assert_eq!(ops[1].params, ["path", "content"]);
+    assert_eq!(ops[1].accepts.as_deref(), Some("internal"));
+    let none = operations("pub capability Clock\n  op now() -> Int\n");
+    assert_eq!(none[0].params, Vec::<String>::new());
+    assert_eq!(none[0].fails, None);
+    assert_eq!(none[0].accepts, None);
+    let generic = operations(
+        "pub capability Http\n  op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response\n",
+    );
+    assert_eq!(generic[0].params, ["url", "headers", "key_name"]);
+}
+
+/// The grant specs of `spec/13 §5`, as it writes them, `files:<path>:read` with its
+/// placeholders, and the HTTP methods that `<methods>` lists (`spec/24 §2` rule 1). Read failing
+/// closed: a spec whose sentences these patterns no longer find gives no form, and every grant
+/// of the reference is then refused.
+fn grant_forms() -> (Vec<String>, Vec<String>) {
+    let spec13 = fs::read_to_string(root().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    let forms: Vec<String> = spec13
+        .lines()
+        .find(|line| line.starts_with("Grant specs: "))
+        .map(|line| {
+            spans(line)
+                .filter(|span| {
+                    matches!(*span, "console" | "clock" | "env")
+                        || (span.contains(":<")
+                            && span.split(':').next().is_some_and(|scheme| {
+                                scheme.chars().all(|c| c.is_ascii_lowercase())
+                            }))
+                })
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let spec24 = fs::read_to_string(root().join("docs/spec/24-http.md")).unwrap();
+    let methods: Vec<String> = spec24
+        .lines()
+        .find_map(|line| line.split_once("`<methods>` is a comma-separated list of "))
+        .map(|(_, rest)| {
+            spans(rest.split(", by default").next().unwrap_or(""))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    (forms, methods)
+}
+
+/// Whether `grant` is a grant spec of `forms`, where `<methods>` is a list of `methods`.
+fn is_grant(grant: &str, (forms, methods): &(Vec<String>, Vec<String>)) -> bool {
+    forms.iter().any(|form| {
+        form == grant
+            || form.strip_suffix("<methods>").is_some_and(|prefix| {
+                grant.strip_prefix(prefix).is_some_and(|list| {
+                    !list.is_empty() && list.split(',').all(|m| methods.iter().any(|x| x == m))
+                })
+            })
+    })
+}
+
+#[test]
+fn the_grant_forms_are_read_from_the_spec_and_refuse_others() {
+    let read = grant_forms();
+    let (forms, methods) = &read;
+    for form in [
+        "console",
+        "clock",
+        "env",
+        "keys:<keyfile>",
+        "files:<path>:read",
+        "files:<path>:write",
+        "files:<path>:read,write",
+        "http:<origin>",
+        "http:<origin>:<methods>",
+    ] {
+        assert!(forms.iter().any(|f| f == form), "{form}: {forms:?}");
+    }
+    assert_eq!(methods, &["get", "post", "put", "delete"]);
+    for grant in [
+        "console",
+        "files:<path>:read",
+        "http:<origin>:get",
+        "http:<origin>:get,post",
+    ] {
+        assert!(is_grant(grant, &read), "{grant}");
+    }
+    for grant in [
+        "files:/etc:read",
+        "keys:./keys.toml",
+        "http:<origin>:patch",
+        "http:<origin>:",
+        "network",
+        "files:<path>:execute",
+    ] {
+        assert!(!is_grant(grant, &read), "{grant}");
+    }
+}
+
+/// The `operations` of a capability's entry: one per operation of its declaration, in order,
+/// with its parameters, its result, the variants of its failure kind in every edition the entry
+/// describes (a variant that some of them lack names, in its `when`, the edition it comes in),
+/// the label of its `accepts` line, and its grant, a grant spec of `spec/13 §5`. That the grant
+/// gives the operation, and is the narrowest that does, is the checker's to say:
+/// `each_operation_is_given_by_its_grant_and_by_no_narrower_one`.
+fn check_operations<'i>(
+    entry: &serde_json::Value,
+    declaration: &str,
+    described: &[&str],
+    listed: &dyn Fn(&str, &str) -> Option<&'i Item>,
+    grants: &(Vec<String>, Vec<String>),
+    at: &str,
+    problems: &mut Vec<String>,
+) {
+    let declared = operations(declaration);
+    let given = list(entry, "operations", at, problems);
+    if given.is_empty() {
+        problems.push(format!("{at}: a capability needs `operations`"));
+    }
+    let names: Vec<&str> = given
+        .iter()
+        .map(|op| op["name"].as_str().unwrap_or(""))
+        .collect();
+    let declared_names: Vec<&str> = declared.iter().map(|op| op.name.as_str()).collect();
+    if names != declared_names {
+        problems.push(format!(
+            "{at}: operations {names:?}, the declaration's are {declared_names:?}"
+        ));
+    }
+    for (op, theirs) in given.iter().zip(&declared) {
+        let at = format!("{at} operation {}", theirs.name);
+        shape(
+            op,
+            &at,
+            &["name", "params", "returns", "grant"],
+            &["fails", "accepts"],
+            problems,
+        );
+        let mut params = Vec::new();
+        for (i, param) in list(op, "params", &at, problems).iter().enumerate() {
+            let at = format!("{at} parameter {i}");
+            shape(param, &at, &["name", "meaning"], &[], problems);
+            params.push(filled(param, "name", &at, problems).to_owned());
+            filled(param, "meaning", &at, problems);
+        }
+        if op.get("params").is_none() {
+            problems.push(format!("{at}: needs `params`, `[]` when it has none"));
+        }
+        if params != theirs.params {
+            problems.push(format!(
+                "{at}: parameters {params:?}, the declaration's are {:?}",
+                theirs.params
+            ));
+        }
+        let returns = &op["returns"];
+        shape(
+            returns,
+            &format!("{at} returns"),
+            &["type", "meaning"],
+            &[],
+            problems,
+        );
+        filled(returns, "meaning", &at, problems);
+        if returns["type"].as_str() != Some(theirs.result.as_str()) {
+            problems.push(format!(
+                "{at}: returns {}, the declaration's result is {}",
+                returns["type"], theirs.result
+            ));
+        }
+        // Its failures: the variants of the failure kind in each edition the entry describes.
+        let mut fails = Vec::new();
+        for (i, failure) in list(op, "fails", &at, problems).iter().enumerate() {
+            let at = format!("{at} fails {i}");
+            shape(failure, &at, &["variant", "when"], &[], problems);
+            fails.push((
+                filled(failure, "variant", &at, problems).to_owned(),
+                filled(failure, "when", &at, problems).to_owned(),
+            ));
+        }
+        match theirs.fails.as_deref() {
+            None if op.get("fails").is_some() => {
+                problems.push(format!(
+                    "{at}: has `fails`, and its declaration fails with no kind"
+                ));
+            }
+            None => {}
+            Some(kind) => {
+                let by_edition: Vec<(&str, Vec<String>)> = described
+                    .iter()
+                    .map(|edition| {
+                        (
+                            *edition,
+                            listed("prelude", kind)
+                                .and_then(|k| failure_variants(k, &[edition]))
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                let latest = by_edition
+                    .last()
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                let named: Vec<&str> = fails.iter().map(|(v, _)| v.as_str()).collect();
+                if latest.is_empty() || named != latest {
+                    problems.push(format!(
+                        "{at}: fails with {named:?}, its failure kind `{kind}` has {latest:?} in edition {:?}",
+                        described.last()
+                    ));
+                }
+                for (variant, when) in &fails {
+                    if let Some((first, _)) = by_edition
+                        .iter()
+                        .find(|(_, variants)| variants.contains(variant))
+                        && *first != described[0]
+                        && !when.contains(&format!("edition `{first}`"))
+                    {
+                        problems.push(format!(
+                            "{at}: `{variant}` is a variant from edition {first} on, and its `when` does not say so"
+                        ));
+                    }
+                }
+            }
+        }
+        match (
+            op.get("accepts").and_then(|a| a.as_str()),
+            theirs.accepts.as_deref(),
+        ) {
+            (None, None) => {}
+            (Some(given), Some(label)) if given == label => {}
+            (given, label) => problems.push(format!(
+                "{at}: accepts {given:?}, the declaration's `accepts` line is {label:?}"
+            )),
+        }
+        let grant = filled(op, "grant", &at, problems);
+        if !is_grant(grant, grants) {
+            problems.push(format!(
+                "{at}: grant `{grant}` is not a grant spec of spec/13 §5"
+            ));
+        }
+    }
+}
+
+/// The placeholders of a grant spec filled, so that `una check` reads it: a directory, a key
+/// file and an origin, none of which needs to exist for a check.
+fn grant_instance(form: &str) -> String {
+    form.replace("<path>", "data")
+        .replace("<keyfile>", "keys.toml")
+        .replace("<origin>", "https://stock.example")
+}
+
+/// Whether `una check` of `main` with `uses @c: capability[op]` and `[run] grants` reports
+/// U3012, in a package of edition 0.2 at `dir`.
+fn needs_grant(dir: &Path, grants: &[String], capability: &str, op: &str) -> bool {
+    let _ = fs::remove_dir_all(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    let listed: Vec<String> = grants.iter().map(|g| format!("\"{g}\"")).collect();
+    fs::write(
+        dir.join("una.toml"),
+        format!(
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"probe\"\ngrants = [{}]\n",
+            listed.join(", ")
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/probe.una"),
+        format!("module probe\n\npub main() -> Unit\n  uses @c: {capability}[{op}]\n=\n  unit\n"),
+    )
+    .unwrap();
+    fs::copy(
+        root().join("verification.lock"),
+        dir.join("verification.lock"),
+    )
+    .unwrap();
+    let output = una(dir, &["--json", "check", "--tier", "0", "."]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let codes: Vec<&str> = report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["code"].as_str())
+        .collect();
+    assert!(
+        codes.iter().all(|code| *code == "U3012"),
+        "{capability}[{op}] with {grants:?}: {codes:?}"
+    );
+    !codes.is_empty()
+}
+
+#[test]
+fn each_operation_is_given_by_its_grant_and_by_no_narrower_one() {
+    // #903: the grant of each operation of a capability's entry is the checker's, both ways.
+    // Without a grant, `uses` of the operation in `main` is U3012; with its grant alone, it is
+    // not; and no other grant spec of spec/13 §5 that gives it gives a strict subset of what
+    // its grant gives. Each spec is probed against every operation the reference describes,
+    // with the placeholders filled and `<methods>` as each single method, one `una check` at
+    // tier 0 per pair.
+    let text = fs::read_to_string(root().join("docs/std/reference.json")).unwrap();
+    let reference: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let (forms, methods) = grant_forms();
+    let mut specs: Vec<String> = Vec::new();
+    for form in &forms {
+        match form.strip_suffix("<methods>") {
+            Some(prefix) => specs.extend(methods.iter().map(|m| format!("{prefix}{m}"))),
+            // `serve:` grants a capability of its own, of edition 0.4 only (`spec/31 §2`).
+            None if form.starts_with("serve:") => {}
+            None => specs.push(form.clone()),
+        }
+    }
+    let mut ops: Vec<(String, String, String)> = Vec::new();
+    for entry in reference["entries"].as_array().unwrap() {
+        for op in entry["operations"].as_array().into_iter().flatten() {
+            ops.push((
+                entry["name"].as_str().unwrap().to_owned(),
+                op["name"].as_str().unwrap().to_owned(),
+                op["grant"].as_str().unwrap().to_owned(),
+            ));
+        }
+    }
+    assert!(!ops.is_empty() && !specs.is_empty(), "{ops:?} {specs:?}");
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("std-grants");
+    // What each spec gives: the operations it lets `main` use.
+    let mut gives: Vec<(String, std::collections::BTreeSet<String>)> = Vec::new();
+    for spec in &specs {
+        let given = ops
+            .iter()
+            .filter(|(cap, op, _)| !needs_grant(&dir, &[grant_instance(spec)], cap, op))
+            .map(|(cap, op, _)| format!("{cap}.{op}"))
+            .collect();
+        gives.push((spec.clone(), given));
+    }
+    let mut problems = Vec::new();
+    for (cap, op, grant) in &ops {
+        let name = format!("{cap}.{op}");
+        if !needs_grant(&dir, &[], cap, op) {
+            problems.push(format!("{name}: `main` uses it with no grant and no U3012"));
+        }
+        let Some((_, by_grant)) = gives.iter().find(|(spec, _)| {
+            spec == grant
+                || (spec.starts_with("http:") && grant_instance(spec) == grant_instance(grant))
+        }) else {
+            problems.push(format!(
+                "{name}: its grant `{grant}` is not one of {specs:?}"
+            ));
+            continue;
+        };
+        if !by_grant.contains(&name) {
+            problems.push(format!(
+                "{name}: its grant `{grant}` does not give it, for the checker"
+            ));
+        }
+        for (spec, given) in &gives {
+            if given.contains(&name) && given.is_subset(by_grant) && given != by_grant {
+                problems.push(format!(
+                    "{name}: `{spec}` gives it and less than `{grant}` gives ({given:?} against {by_grant:?})"
+                ));
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 /// The editions in which `item` exists.
@@ -1858,6 +2274,7 @@ fn the_reference_agrees_with_the_listing() {
                 "use_instead",
                 "see_also",
                 "cost",
+                "operations",
             ],
             &mut problems,
         );
@@ -1993,6 +2410,7 @@ fn the_reference_agrees_with_the_listing() {
                 "receiver",
                 "receivers",
                 "by_receiver",
+                "operations",
             ] {
                 if !keys.contains(&key) && entry.get(key).is_some() {
                     problems.push(format!("{at}: a {} has no `{key}`", item.kind));
@@ -2315,6 +2733,17 @@ fn the_reference_agrees_with_the_listing() {
                     }
                 }
             }
+        } else if item.kind == "capability" {
+            only(&["operations"], &mut problems);
+            check_operations(
+                entry,
+                declaration,
+                &described_editions,
+                &listed,
+                &grant_forms(),
+                &at,
+                &mut problems,
+            );
         } else {
             only(&[], &mut problems);
         }
@@ -2541,7 +2970,15 @@ fn the_reference_agrees_with_the_listing() {
                 } else {
                     (false, true, false)
                 };
-                reached_from_main(src, &code).iter().any(|range| {
+                // `std.testing` is called only by examples and by the handlers that only they
+                // install (`spec/14 §4`), never from `main`: its example uses it anywhere in its
+                // code, and `each_example_of_the_reference_...` requires that `una test` passes.
+                let ranges = if module == "std.testing" {
+                    std::iter::once(0..src.len()).collect()
+                } else {
+                    reached_from_main(src, &code)
+                };
+                ranges.iter().any(|range| {
                     !occurrences(
                         &src[range.clone()],
                         &code[range.clone()],
@@ -2555,7 +2992,7 @@ fn the_reference_agrees_with_the_listing() {
             });
             if !used {
                 problems.push(format!(
-                    "{at}: no code that `main` reaches in {example} uses `{wanted}`"
+                    "{at}: no code that `main` reaches (for `std.testing`, no code) in {example} uses `{wanted}`"
                 ));
             }
         }
@@ -2615,7 +3052,7 @@ fn renamed(src: &str, item: &Item) -> (String, usize) {
     for at in &places {
         out.push_str(&src[last..*at]);
         out.push_str(name);
-        out.push_str(if item.kind == "kind" {
+        out.push_str(if matches!(item.kind, "kind" | "capability") {
             "Absent"
         } else {
             "_absent"
@@ -2688,6 +3125,19 @@ fn each_example_of_the_reference_checks_prints_its_output_and_needs_its_item() {
                     String::from_utf8_lossy(&checked.stderr)
                 ));
                 continue;
+            }
+            // An example of `std.testing` uses it in an example of its own, which passes.
+            if module == "std.testing" {
+                let tested = una(&copy, &["--color", "never", "test", "."]);
+                let out = String::from_utf8_lossy(&tested.stdout);
+                if !tested.status.success()
+                    || !out.contains(" passed, 0 failed")
+                    || out.contains(" 0 passed")
+                {
+                    problems.push(format!(
+                        "{example}: `una test .` does not pass an example:\n{out}"
+                    ));
+                }
             }
             let ran = una(&copy, &["run", "."]);
             let printed = String::from_utf8_lossy(&ran.stdout);

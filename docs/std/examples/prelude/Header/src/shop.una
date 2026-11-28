@@ -1,0 +1,10 @@
+module shop
+
+--- The name of a header, which is `public`; its value is `internal`.
+header_name(header: Header) -> Text = header.name
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let accept = Header(name: "accept", value: "text/plain")
+  @console.print(header_name(accept))

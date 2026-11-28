@@ -1,0 +1,16 @@
+module shop
+
+--- Why reading the stock file failed.
+reason(failure: FileError) -> Text
+=
+  when failure
+    is NotFound -> "no such file under the granted directory"
+    is Denied -> "the path leaves the granted directory"
+    is Io -> "the file system failed"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(reason(NotFound))
+  @console.print(reason(Denied))
+  @console.print(reason(Io))
