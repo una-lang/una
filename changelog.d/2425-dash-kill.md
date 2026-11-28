@@ -1,0 +1,1 @@
+- **The release gates test of a stopped sanitize passes on Linux** (#2425). Its stub killed its process group with `kill -9 -- -PGID`, which dash, the `/bin/sh` of Linux, refuses; it now uses `kill -9 -PGID`, which dash and bash both accept.
