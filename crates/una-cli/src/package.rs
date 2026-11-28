@@ -357,34 +357,28 @@ pub fn load_files(files: &[(String, String)]) -> Result<Package, LoadError> {
 /// edition (#2402); so is an entry whose presence cannot be told (an error other than "not
 /// found").
 ///
-/// The search is the user's own (#2410, #2412): it stops, with no manifest, at the first
-/// ancestor that another user could write into: a directory that is world-writable (such as
-/// `/tmp`, sticky or not) or owned by someone other than this user and the superuser. A
-/// manifest owned by another user, or a link to one, also ends it unread. So no other user can
-/// choose the edition of a loose file or make its check fail. Off Unix, where `una` reads no
-/// owner, every ancestor is searched. The manifest is read only for its edition.
-/// O(depth of the path).
+/// The search stops, with no manifest, at the first ancestor that is world-writable, such as
+/// `/tmp`, sticky or not (#2410), so a manifest that any user could leave there neither
+/// chooses the edition of a loose file below it nor makes its check fail. No owner is read: a
+/// manifest in a directory owned by another user, such as a checkout mounted in a container
+/// under another uid, gives its edition (#2427). Off Unix, where `una` reads no mode, every
+/// ancestor is searched. The manifest is read only for its edition. O(depth of the path).
 fn enclosing_edition(path: &Path) -> Result<Option<Edition>, LoadError> {
     let Ok(absolute) = std::fs::canonicalize(path).or_else(|_| std::path::absolute(path)) else {
         return Ok(None);
     };
-    #[cfg(unix)]
-    let me = crate::proof_key::effective_uid();
-    #[cfg(not(unix))]
-    let me = None;
     let refused = |file: &Path, reason: String| LoadError::Unreadable {
         path: file.to_path_buf(),
         reason,
     };
     for dir in absolute.ancestors().skip(1) {
         let meta = std::fs::symlink_metadata(dir).map_err(|e| refused(dir, e.to_string()))?;
-        if !searched(&meta, me) {
+        if !searched(&meta) {
             return Ok(None);
         }
         let ita = dir.join("ita.una");
-        match entry(&ita, me).map_err(|e| refused(&ita, e))? {
+        match entry(&ita).map_err(|e| refused(&ita, e))? {
             Entry::Absent => {}
-            Entry::Foreign => return Ok(None),
             Entry::Present => {
                 // Read within its bound (spec/30 §1 rule 4).
                 let file = una_project::read_project_file(&ita, "ita.una", ita::MAX_MANIFEST_BYTES)
@@ -402,9 +396,8 @@ fn enclosing_edition(path: &Path) -> Result<Option<Edition>, LoadError> {
             }
         }
         let toml = dir.join("una.toml");
-        match entry(&toml, me).map_err(|e| refused(&toml, e))? {
+        match entry(&toml).map_err(|e| refused(&toml, e))? {
             Entry::Absent => {}
-            Entry::Foreign => return Ok(None),
             Entry::Present => {
                 let text = read_toml(&toml).map_err(|reason| refused(&toml, reason))?;
                 return Ok(Some(
@@ -421,54 +414,30 @@ fn enclosing_edition(path: &Path) -> Result<Option<Edition>, LoadError> {
 enum Entry {
     /// Nothing: the search goes on.
     Absent,
-    /// An entry this user may rely on, or one that does not read, which is refused.
+    /// An entry, which is read, or refused when it does not read.
     Present,
-    /// An entry owned by another user, or a link to one: the search ends, unread.
-    Foreign,
 }
 
-/// The entry at `path` for the user `me` (`None` off Unix): only "not found" is absent, and any
-/// other error is returned.
-fn entry(path: &Path, me: Option<u32>) -> Result<Entry, String> {
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Entry::Absent),
-        Err(error) => return Err(error.to_string()),
-    };
-    if !owned(&meta, me) {
-        return Ok(Entry::Foreign);
+/// The entry at `path`: only "not found" is absent, and any other error is returned, never
+/// taken for no manifest (#2410).
+fn entry(path: &Path) -> Result<Entry, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(Entry::Present),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Entry::Absent),
+        Err(error) => Err(error.to_string()),
     }
-    if meta.file_type().is_symlink()
-        && let Ok(target) = std::fs::metadata(path)
-        && !owned(&target, me)
-    {
-        return Ok(Entry::Foreign);
-    }
-    Ok(Entry::Present)
 }
 
-/// Whether `meta` belongs to the user `me` or to the superuser; always off Unix.
+/// Whether the search for an enclosing manifest looks into the directory of `meta`: one that
+/// is not world-writable, whoever owns it; always off Unix.
 #[cfg(unix)]
-fn owned(meta: &std::fs::Metadata, me: Option<u32>) -> bool {
+fn searched(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
-    meta.uid() == 0 || Some(meta.uid()) == me
+    meta.mode() & 0o002 == 0
 }
 
 #[cfg(not(unix))]
-fn owned(_: &std::fs::Metadata, _: Option<u32>) -> bool {
-    true
-}
-
-/// Whether the search for an enclosing manifest looks into the directory of `meta`: one owned
-/// by `me` or the superuser and not world-writable; always off Unix.
-#[cfg(unix)]
-fn searched(meta: &std::fs::Metadata, me: Option<u32>) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    owned(meta, me) && meta.mode() & 0o002 == 0
-}
-
-#[cfg(not(unix))]
-fn searched(_: &std::fs::Metadata, _: Option<u32>) -> bool {
+fn searched(_: &std::fs::Metadata) -> bool {
     true
 }
 
@@ -1157,42 +1126,64 @@ mod tests {
     use super::*;
 
     /// Only "not found" makes a manifest absent: any other error, such as a path below a
-    /// file, is returned, never taken for no manifest (#2410). A file or a directory owned by
-    /// another user, here this user's own seen as someone else's, ends the search unread, and a
-    /// world-writable directory is not searched (#2412).
+    /// file, is returned, never taken for no manifest (#2410). A world-writable directory is
+    /// not searched (#2410); any other is, whoever owns it (#2427).
     #[cfg(unix)]
     #[test]
-    fn the_search_for_a_manifest_trusts_only_this_users_entries() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    fn the_search_for_a_manifest_skips_only_world_writable_directories() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("una-cli-entry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("una.toml");
         std::fs::write(&file, "[package]\n").unwrap();
-        let mine = std::fs::metadata(&file).unwrap().uid();
-        let other = if mine == 1 { 2 } else { 1 };
-        assert_eq!(entry(&dir.join("ita.una"), Some(mine)), Ok(Entry::Absent));
-        assert_eq!(entry(&file, Some(mine)), Ok(Entry::Present));
-        let error = entry(&file.join("ita.una"), Some(mine));
+        assert_eq!(entry(&dir.join("ita.una")), Ok(Entry::Absent));
+        assert_eq!(entry(&file), Ok(Entry::Present));
+        let error = entry(&file.join("ita.una"));
         assert!(error.is_err(), "{error:?}");
-        if mine != 0 {
-            assert_eq!(entry(&file, Some(other)), Ok(Entry::Foreign));
-            // A link to a file of this user's own is relied on; to one of another's, foreign.
-            std::os::unix::fs::symlink(&file, dir.join("link")).unwrap();
-            assert_eq!(entry(&dir.join("link"), Some(mine)), Ok(Entry::Present));
-            assert_eq!(entry(&dir.join("link"), Some(other)), Ok(Entry::Foreign));
+        assert!(searched(&std::fs::metadata(&dir).unwrap()));
+        for mode in [0o1777, 0o777, 0o757] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
             let meta = std::fs::metadata(&dir).unwrap();
-            assert!(searched(&meta, Some(mine)));
-            assert!(!searched(&meta, Some(other)));
-            assert!(!searched(&meta, None));
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                !searched(&meta),
+                "a directory of mode {mode:o} was searched"
+            );
         }
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        for mode in [0o755, 0o775, 0o700, 0o1755] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let meta = std::fs::metadata(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                searched(&meta),
+                "a directory of mode {mode:o} was not searched"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A manifest in an ancestor owned by another user gives its edition (#2427): the search
+    /// reads no owner, so a checkout mounted in a container under another uid keeps its
+    /// edition. The real case, a checkout of the runner's uid tested as another user, is the
+    /// Linux CI leg; here the directory is this user's, and its decisions take no user at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_of_another_users_ancestor_gives_its_edition() {
+        let dir = std::env::temp_dir().join(format!("una-cli-foreign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("ita.una"),
+            "ita a\n  version 0.1.0\n  edition 0.4\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/x.una"), "module x\n").unwrap();
         let meta = std::fs::metadata(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(
-            !searched(&meta, Some(mine)),
-            "a world-writable directory was searched"
-        );
+        assert!(searched(&meta));
+        assert_eq!(entry(&dir.join("ita.una")), Ok(Entry::Present));
+        let edition = enclosing_edition(&dir.join("src/x.una")).unwrap();
+        assert_eq!(edition, Some(Edition::V0_4));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
