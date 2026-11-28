@@ -80,14 +80,17 @@ jobs:
           echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
           sudo systemctl start docker
           # The containers run as uid 1000, as on the gate machine, where Docker Desktop shows
-          # the checkout as that user's. Here the checkout is the runner's: its entries are made
-          # writable for the containers, and its top directory is handed to uid 1000 with mode
-          # 755, since the installer's tests as root (install.rs, #1938) take the test's own user
-          # as root's stand-in for every directory above their work directory. `target`, which
-          # the host's own cargo step writes, is made first; the runner's git reads the checkout.
+          # the checkout as that user's. Here the checkout is handed to uid 1000 and to the
+          # runner's group, writable by both and by no one else: a world-writable directory ends
+          # una's search for the manifest above a loose file (spec/30 §1 rule 4, #2410), so a
+          # checkout made writable for all reads every case as edition 0.1 (#2427). Its top
+          # directory gets mode 755, since the installer's tests as root (install.rs, #1938) take
+          # the test's own user as root's stand-in for every directory above their work
+          # directory. `target`, which the host's own cargo step writes, is made first; the
+          # runner's git reads the checkout.
           mkdir -p "$GITHUB_WORKSPACE/target"
-          chmod -R a+rwX "$GITHUB_WORKSPACE"
-          sudo chown 1000 "$GITHUB_WORKSPACE"
+          sudo chown -R "1000:$(id -g)" "$GITHUB_WORKSPACE"
+          sudo chmod -R g+rwX,o-w "$GITHUB_WORKSPACE"
           sudo chmod 755 "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           df -h / /mnt

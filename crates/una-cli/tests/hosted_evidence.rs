@@ -443,6 +443,12 @@ fn the_gates_take_the_x86_64_legs_from_the_hosted_evidence_off_an_x86_64_engine(
         !workflow.contains("secrets."),
         "the workflow uses no secret"
     );
+    // #2427: a world-writable checkout ends una's search for an enclosing manifest at once, so
+    // every loose case would read as edition 0.1; the checkout is writable by its group only.
+    assert!(
+        !workflow.contains("a+rwX") && !workflow.contains("a+w") && workflow.contains("o-w"),
+        "the workflow makes the checkout writable for all"
+    );
     for line in workflow
         .lines()
         .filter(|l| l.trim_start().starts_with("uses:"))
