@@ -3096,7 +3096,7 @@ fn schedule_fixture(dir: &Path) -> (PathBuf, String, PathBuf) {
         (
             "scripts/sanitize.sh",
             format!(
-                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_SANITIZE_HANG:-}}\" ]; then echo $$ > \"$STUB_DIR/sanitize.pid\"; i=0; while [ $i -lt 3000 ]; do sleep 0.1; i=$((i + 1)); done; exit 0; fi\nif [ -n \"${{STUB_SANITIZE_NO_ROW:-}}\" ]; then kill -9 -- -$(ps -o pgid= -p $$ | tr -d ' '); exit 1; fi\nif [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/sanitize\"; await deps; sleep 1; fi\nmkdir -p target/debug && echo built > target/debug/una\necho \"sanitize end\" >> \"$STUB_LOG\"\n[ -z \"${{STUB_SANITIZE_FAIL:-}}\" ]\n",
+                "#!/bin/sh\n{await_other}{}if [ -n \"${{STUB_SANITIZE_HANG:-}}\" ]; then echo $$ > \"$STUB_DIR/sanitize.pid\"; i=0; while [ $i -lt 3000 ]; do sleep 0.1; i=$((i + 1)); done; exit 0; fi\nif [ -n \"${{STUB_SANITIZE_NO_ROW:-}}\" ]; then kill -9 -$(ps -o pgid= -p $$ | tr -d ' '); exit 1; fi\nif [ -n \"${{STUB_PARALLEL:-}}\" ]; then : > \"$STUB_DIR/sanitize\"; await deps; sleep 1; fi\nmkdir -p target/debug && echo built > target/debug/una\necho \"sanitize end\" >> \"$STUB_LOG\"\n[ -z \"${{STUB_SANITIZE_FAIL:-}}\" ]\n",
                 start("sanitize")
             ),
         ),
