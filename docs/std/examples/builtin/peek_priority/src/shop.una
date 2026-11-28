@@ -1,0 +1,11 @@
+module shop
+
+import std.collections (PriorityQueue, lowest_first)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var waiting: PriorityQueue[Text, Int] = lowest_first()
+  edit waiting.push(item: "restock lamps", priority: 2)
+  edit waiting.push(item: "fix the till", priority: 1)
+  @console.print("the most urgent priority is {waiting.peek_priority()}")

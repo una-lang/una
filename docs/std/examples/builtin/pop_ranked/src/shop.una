@@ -1,0 +1,14 @@
+module shop
+
+import std.collections (PriorityQueue, lowest_first)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var waiting: PriorityQueue[Text, Int] = lowest_first()
+  edit waiting.push(item: "restock lamps", priority: 2)
+  edit waiting.push(item: "fix the till", priority: 1)
+  const next = edit waiting.pop_ranked()
+  when next
+    is Some(r) -> @console.print("{r.item}, priority {r.priority}")
+    is None -> @console.print("nothing to do")

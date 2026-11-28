@@ -1,0 +1,14 @@
+module shop
+
+import std.collections (HashMap, to_hash_map)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const a: HashMap[Text,
+    Int
+  ] = to_hash_map([Entry(key: "lamp", value: 3), Entry(key: "desk", value: 1)])
+  const b: HashMap[Text,
+    Int
+  ] = to_hash_map([Entry(key: "desk", value: 1), Entry(key: "lamp", value: 3)])
+  @console.print("same stock: {a.same_entries(as: b)}")

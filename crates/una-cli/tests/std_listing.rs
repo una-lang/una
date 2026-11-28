@@ -1380,6 +1380,15 @@ fn row_requires(line: &str) -> (Vec<String>, bool) {
         }
         at += 1;
     }
+    // The word `requires` in prose followed at once by the condition in a code span, as
+    // spec/28 §9 writes `requires `0 <= i and i < b.size`` (#904).
+    for (index, _) in row.match_indices("requires `") {
+        if row[..index].matches('`').count().is_multiple_of(2)
+            && let Some(condition) = row[index + "requires `".len()..].split('`').next()
+        {
+            found.push(condition.trim().to_owned());
+        }
+    }
     let unread = row.matches("requires").count() > found.len();
     (found, unread)
 }
@@ -1409,7 +1418,7 @@ fn method_requires(name: &str, sections: &[(String, String)]) -> (Vec<String>, V
 }
 
 #[test]
-fn the_requires_of_a_spec_row_are_read_in_both_forms_or_refused() {
+fn the_requires_of_a_spec_row_are_read_in_three_forms_or_refused() {
     let section = |row: &str| {
         vec![(
             "spec/99 §1".to_owned(),
@@ -1434,6 +1443,10 @@ fn the_requires_of_a_spec_row_are_read_in_both_forms_or_refused() {
             &section("| `a.f(by: n)` | requires that `n` is positive |")
         ),
         (none.clone(), vec!["spec/99 §1".to_owned()])
+    );
+    assert_eq!(
+        method_requires("f", &section("| `a.f(by: n)` | requires `0 <= n`; total |")),
+        (vec!["0 <= by".to_owned()], none.clone())
     );
     assert_eq!(
         method_requires("g", &section("| `a.f(by: n)` | `requires 0 <= n` |")),

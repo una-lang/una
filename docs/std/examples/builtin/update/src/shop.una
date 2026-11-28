@@ -1,0 +1,11 @@
+module shop
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  var stock = empty_map().with(key: "lamp", value: 3)
+  edit stock.update(key: "lamp", initial: 0, change: fn(n) -> n + 1)
+  edit stock.update(key: "desk", initial: 1, change: fn(n) -> n + 1)
+  const lamps = stock.get(key: "lamp")
+  const desks = stock.get(key: "desk")
+  @console.print("lamps {lamps}, desks {desks}")

@@ -1,0 +1,10 @@
+module shop
+
+import std.collections (Set, to_set)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const order: Set[Text] = to_set(["lamp", "desk"])
+  const stocked: Set[Text] = to_set(["lamp", "desk", "chair"])
+  @console.print("all in stock: {order.is_subset(of: stocked)}")

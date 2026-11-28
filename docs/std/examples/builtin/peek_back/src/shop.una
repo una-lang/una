@@ -1,0 +1,9 @@
+module shop
+
+import std.collections (Queue, to_queue)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  const line: Queue[Text] = to_queue(["Ana", "Bo", "Cy"])
+  @console.print("last in line: {line.peek_back()}")
