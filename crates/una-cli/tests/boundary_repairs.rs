@@ -37,6 +37,18 @@ fn una(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// The JSON document on the stdout of `output`; a run that wrote none fails with its status and
+/// stderr.
+fn json_of(output: &Output) -> Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "no JSON document ({error}): {:?}, stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
 /// Every file under `root`, relative to it, with its bytes.
 fn files_of(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut out = BTreeMap::new();
@@ -58,31 +70,57 @@ fn files_of(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
-/// A fresh copy of the case at `case`, for `una fix` to write.
-fn copy_of(case: &str) -> PathBuf {
+/// A fresh copy of a case for `una fix` to write, removed when dropped. It derefs to its root.
+struct CaseCopy(PathBuf);
+
+impl std::ops::Deref for CaseCopy {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for CaseCopy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A fresh copy of the case at `case`, for `una fix` to write: a directory of its own for each
+/// call, named by the process and a count, since the tests run at once in many processes and
+/// several copy the same case (#2334: a copy shared by name was removed under another test's
+/// `una check`, which then printed nothing).
+fn copy_of(case: &str) -> CaseCopy {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let copy = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("boundary-repairs")
-        .join(case.replace('/', "-"));
+        .join(format!(
+            "{}-{}-{n}",
+            case.replace('/', "-"),
+            std::process::id()
+        ));
     let _ = std::fs::remove_dir_all(&copy);
     for (file, bytes) in files_of(&conformance(case)) {
         let target = copy.join(&file);
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(target, bytes).unwrap();
     }
-    copy
+    CaseCopy(copy)
 }
 
 /// The diagnostics of `una --json check` on the case at `case`.
 fn check_json(case: &str) -> Vec<Value> {
     let output = una(&conformance(case), &["--json", "check", "--tier", "0", "."]);
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = json_of(&output);
     document["diagnostics"].as_array().cloned().unwrap()
 }
 
 /// The `una.fix/1` document of `una --json fix --tier 0` on `root`.
 fn fix(root: &Path) -> Value {
     let output = una(root, &["--json", "fix", "--tier", "0", "."]);
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document = json_of(&output);
     assert_eq!(document["schema"], "una.fix/1", "{document}");
     document
 }
@@ -377,7 +415,7 @@ fn una_fix_never_writes_a_ceiling_nor_applies_a_boundary_edit_beyond_the_narrowe
         let copy = copy_of(&case);
         let manifest = std::fs::read(copy.join(manifest_file)).unwrap();
         let before = una(&copy, &["--json", "check", "--tier", "0", "."]);
-        let before: Value = serde_json::from_slice(&before.stdout).unwrap();
+        let before = json_of(&before);
         let over_before = u3021s(before["diagnostics"].as_array().unwrap());
         let document = fix(&copy);
         assert_eq!(
